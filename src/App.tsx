@@ -187,6 +187,16 @@ function App() {
     [addSession, setPendingConnection, setShowAuthDialog]
   );
 
+  // One-click local shell — a "normal terminal" running the user's default shell.
+  const openLocalShell = useCallback(() => {
+    handleConnect({
+      id: generateId(),
+      name: 'Local Shell',
+      protocol: 'local',
+      deviceType: 'generic',
+    });
+  }, [handleConnect]);
+
   const handleAuthenticate = useCallback(
     async (password: string, _saveCredential: boolean) => {
       const pending = useSessionStore.getState().pendingConnection;
@@ -359,16 +369,26 @@ function App() {
                     <p className="text-sm mb-4">
                       Connect to a device to start your session
                     </p>
-                    <button
-                      onClick={() =>
-                        useSessionStore
-                          .getState()
-                          .setShowQuickConnect(true)
-                      }
-                      className="px-4 py-2 text-sm bg-[#238636] hover:bg-[#2ea043] text-white rounded-lg transition-colors"
-                    >
-                      Quick Connect
-                    </button>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() =>
+                          useSessionStore
+                            .getState()
+                            .setShowQuickConnect(true)
+                        }
+                        className="px-4 py-2 text-sm bg-[#238636] hover:bg-[#2ea043] text-white rounded-lg transition-colors"
+                      >
+                        Quick Connect
+                      </button>
+                      <button
+                        onClick={openLocalShell}
+                        className="flex items-center gap-1.5 px-4 py-2 text-sm bg-[#21262d] hover:bg-[#30363d] text-[#c9d1d9] rounded-lg transition-colors"
+                        title="Open a local shell terminal"
+                      >
+                        <FileCode size={14} />
+                        Local Shell
+                      </button>
+                    </div>
                     <div className="mt-6 text-xs space-y-1 text-center">
                       <p>
                         <kbd className="px-1.5 py-0.5 bg-[#21262d] rounded text-[#8b949e]">
