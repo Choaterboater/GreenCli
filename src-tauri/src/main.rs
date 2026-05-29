@@ -217,7 +217,6 @@ fn spawn_ssh_supervisor(
                 match conn.connect().await {
                     Ok(_) => match conn.take_data_receiver() {
                         Some(nrx) => {
-                            backoff = 1;
                             let _ = session_manager
                                 .lock()
                                 .await
@@ -247,6 +246,7 @@ fn spawn_ssh_supervisor(
             first = false;
 
             // Forward until the stream closes.
+            let started = std::time::Instant::now();
             while let Some(data) = rx.recv().await {
                 write_and_emit(&app, &buffers, &logs, &session_id, data).await;
             }
@@ -264,6 +264,12 @@ fn spawn_ssh_supervisor(
                 );
                 return;
             }
+            // Reset backoff only after a stable session; escalate if it flapped.
+            backoff = if started.elapsed() >= std::time::Duration::from_secs(5) {
+                1
+            } else {
+                (backoff * 2).min(30)
+            };
         }
     });
 }

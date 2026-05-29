@@ -201,7 +201,10 @@ async function executeTool(
         }
       }
 
-      const cleaned = stripAnsiSeq(buf.slice(before)).trim();
+      // If output exceeded the backend's tail cap, `before` is past the start
+      // of the (trimmed) buffer — fall back to the whole tail in that case.
+      const delta = buf.length >= before ? buf.slice(before) : buf;
+      const cleaned = stripAnsiSeq(delta).trim();
       if (!cleaned) {
         return `Command \`${command}\` was sent, but no output was captured (it may be interactive, paged, or still running).`;
       }

@@ -406,7 +406,7 @@ export default function ConfigEditor() {
           last = buf.length;
         }
       }
-      const out = stripTerminalSequences(buf.slice(before)).trim();
+      const out = stripTerminalSequences(buf.length >= before ? buf.slice(before) : buf).trim();
       if (!out) {
         showStatus('No output captured');
         return;
