@@ -22,6 +22,7 @@ import {
   Trash2,
   Play,
 } from 'lucide-react';
+import { invoke } from '@tauri-apps/api/tauri';
 import { useSessionStore } from '../store/sessionStore';
 import {
   ApiConnection,
@@ -29,6 +30,8 @@ import {
   ApiResponse,
   DEFAULT_ENDPOINTS,
 } from '../types';
+
+const IS_TAURI = typeof window !== 'undefined' && '__TAURI_IPC__' in window;
 
 const CATEGORY_ICONS: Record<string, React.ReactNode> = {
   System: <Server size={14} className="text-[#58a6ff]" />,
@@ -152,60 +155,31 @@ export default function ApiExplorer() {
     setResponse(null);
 
     const startTime = performance.now();
-    const fullUrl = `${url}${endpointPath}`;
 
     try {
-      const headers: Record<string, string> = {
-        'Content-Type': 'application/json',
-      };
-
-      if (activeConnection?.cookie) {
-        headers['Cookie'] = activeConnection.cookie;
+      if (!IS_TAURI) {
+        throw new Error('The API Explorer runs through the desktop backend — launch the app (not a browser tab).');
+      }
+      if (!activeConnection) {
+        throw new Error('Connect to a device first (use the Connect button above).');
       }
 
-      const fetchOptions: RequestInit = {
+      // Route through Rust: handles self-signed certs + cookie auth, no CORS.
+      const data = await invoke<{ status: number; body: unknown }>('api_request', {
+        host: activeConnection.host,
         method,
-        headers,
-        credentials: 'include',
-        mode: 'cors',
-      };
-
-      if ((method === 'POST' || method === 'PUT') && requestBody) {
-        try {
-          const parsed = JSON.parse(requestBody);
-          fetchOptions.body = JSON.stringify(parsed);
-        } catch {
-          fetchOptions.body = requestBody;
-        }
-      }
-
-      // In a Tauri app, use the proxy through Rust backend if needed
-      // For now we use fetch directly with CORS bypass via Tauri proxy
-      const res = await fetch(fullUrl, fetchOptions);
-
-      const bodyText = await res.text();
-      let bodyParsed: unknown;
-      try {
-        bodyParsed = JSON.parse(bodyText);
-      } catch {
-        bodyParsed = bodyText;
-      }
-
-      const headerMap: Record<string, string> = {};
-      res.headers.forEach((value, key) => {
-        headerMap[key] = value;
+        path: endpointPath,
+        body: (method === 'POST' || method === 'PUT') && requestBody ? requestBody : null,
       });
-
-      const duration = Math.round(performance.now() - startTime);
 
       setResponse({
-        status: res.status,
-        headers: headerMap,
-        body: bodyParsed,
-        duration,
+        status: data.status,
+        headers: {},
+        body: data.body,
+        duration: Math.round(performance.now() - startTime),
       });
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Request failed';
+      const msg = err instanceof Error ? err.message : String(err);
       setError(msg);
       setResponse({
         status: 0,
@@ -216,34 +190,28 @@ export default function ApiExplorer() {
     } finally {
       setLoading(false);
     }
-  }, [url, endpointPath, method, requestBody, activeConnection]);
+  }, [endpointPath, method, requestBody, activeConnection]);
 
   const handleLogin = async () => {
     if (!newConnHost || !newConnUser) return;
-
-    const loginUrl = `https://${newConnHost}/rest/v10.09/login`;
+    setError(null);
     try {
-      const res = await fetch(loginUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          username: newConnUser,
-          password: newConnPass,
-        }),
-        credentials: 'include',
+      if (!IS_TAURI) {
+        throw new Error('Login requires the desktop app (the browser can\'t reach the switch directly).');
+      }
+      // Rust client logs in (cookie stored server-side; self-signed certs OK).
+      await invoke('api_login', {
+        request: { host: newConnHost, username: newConnUser, password: newConnPass },
       });
 
-      // Extract cookie from response
-      const setCookie = res.headers.get('set-cookie') || '';
       const id = Math.random().toString(36).slice(2);
       const newConn: ApiConnection = {
         id,
         name: newConnName || newConnHost,
         host: newConnHost,
         username: newConnUser,
-        cookie: setCookie,
         baseUrl: `https://${newConnHost}/rest/v10.09`,
-        connected: res.ok,
+        connected: true,
       };
 
       setConnections((prev) => [...prev, newConn]);
@@ -251,7 +219,6 @@ export default function ApiExplorer() {
       setUrl(newConn.baseUrl);
       setShowNewConnection(false);
 
-      // Clear form
       setNewConnHost('');
       setNewConnName('');
       setNewConnUser('');

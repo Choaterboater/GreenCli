@@ -265,6 +265,51 @@ impl ArubaCxClient {
         Ok(())
     }
 
+    /// Generic authenticated request for the API Explorer (Postman-style).
+    /// `path` is relative to the base URL (e.g. "/system/interfaces") or an
+    /// absolute URL. Returns (status, body_text) and does NOT treat 4xx/5xx as
+    /// an error so the caller can display the response.
+    pub async fn request(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<&str>,
+    ) -> Result<(u16, String), AppError> {
+        let url = if path.starts_with("http") {
+            path.to_string()
+        } else {
+            format!("{}{}", self.base_url, path)
+        };
+
+        let mut builder = match method.to_uppercase().as_str() {
+            "GET" => self.client.get(&url),
+            "POST" => self.client.post(&url),
+            "PUT" => self.client.put(&url),
+            "DELETE" => self.client.delete(&url),
+            "PATCH" => self.client.patch(&url),
+            other => return Err(AppError::ApiError(format!("Unsupported method: {}", other))),
+        };
+
+        if let Some(ref cookie) = self.cookie {
+            builder = builder.header("Cookie", cookie);
+        }
+        if let Some(b) = body {
+            if !b.trim().is_empty() {
+                builder = builder
+                    .header("Content-Type", "application/json")
+                    .body(b.to_string());
+            }
+        }
+
+        let response = builder
+            .send()
+            .await
+            .map_err(|e| AppError::ApiError(format!("Request failed: {}", e)))?;
+        let status = response.status().as_u16();
+        let text = response.text().await.unwrap_or_default();
+        Ok((status, text))
+    }
+
     // ─── Internal helpers ───
 
     async fn authenticated_request<F>(&self, build: F) -> Result<reqwest::Response, AppError>
