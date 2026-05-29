@@ -19,6 +19,7 @@ interface SessionState {
   showApiExplorer: boolean;
   showAiAssistant: boolean;
   broadcastMode: boolean;
+  showCommandPalette: boolean;
 
   // Actions
   addSession: (config: ConnectionConfig, sessionId: string) => void;
@@ -36,6 +37,7 @@ interface SessionState {
   setShowQuickConnect: (show: boolean) => void;
   setShowApiExplorer: (show: boolean) => void;
   setShowAiAssistant: (show: boolean) => void;
+  setShowCommandPalette: (show: boolean) => void;
   showConfigEditor: boolean;
   toggleConfigEditor: () => void;
   toggleApiExplorer: () => void;
@@ -71,6 +73,7 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
   showAiAssistant: false,
   showConfigEditor: false,
   broadcastMode: false,
+  showCommandPalette: false,
 
   addSession: (config, sessionId) =>
     set((state) => {
@@ -129,6 +132,7 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
   setShowQuickConnect: (show) => set({ showQuickConnect: show }),
   setShowApiExplorer: (show) => set({ showApiExplorer: show }),
   setShowAiAssistant: (show) => set({ showAiAssistant: show }),
+  setShowCommandPalette: (show) => set({ showCommandPalette: show }),
   toggleConfigEditor: () => set((state) => ({ showConfigEditor: !state.showConfigEditor })),
   toggleApiExplorer: () => set((state) => ({ showApiExplorer: !state.showApiExplorer, showAiAssistant: false })),
   toggleAiAssistant: () => set((state) => ({ showAiAssistant: !state.showAiAssistant, showApiExplorer: false })),
