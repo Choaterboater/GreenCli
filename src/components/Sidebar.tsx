@@ -14,6 +14,7 @@ import {
   Edit3,
   PanelLeftClose,
 } from 'lucide-react';
+import { invoke } from '@tauri-apps/api/tauri';
 import { useSessionStore } from '../store/sessionStore';
 import { ConnectionConfig } from '../types';
 
@@ -34,6 +35,7 @@ export default function Sidebar({ onConnect }: SidebarProps) {
     sidebarVisible,
     toggleSidebar,
     updateFolder,
+    addFolder,
     removeSessionFromFolder,
   } = useSessionStore();
   const [contextMenu, setContextMenu] = useState<{
@@ -42,6 +44,44 @@ export default function Sidebar({ onConnect }: SidebarProps) {
     sessionId: string;
     folderId: string;
   } | null>(null);
+
+  // Add a folder (persisted via the backend when available).
+  const handleAddFolder = () => {
+    const name = window.prompt('Folder name:', 'New Folder');
+    if (!name) return;
+    invoke<string>('create_folder', { name })
+      .then((id) => addFolder({ id, name, items: [], expanded: true }))
+      .catch(() => addFolder({ id: `folder-${Date.now()}`, name, items: [], expanded: true }));
+  };
+
+  // Resolve the session a context-menu action targets.
+  const ctxItem = () => {
+    if (!contextMenu) return undefined;
+    return folders
+      .find((f) => f.id === contextMenu.folderId)
+      ?.items.find((s) => s.id === contextMenu.sessionId);
+  };
+
+  const handleCtxConnect = () => {
+    const item = ctxItem();
+    setContextMenu(null);
+    if (item) onConnect(item);
+  };
+
+  const handleCtxEdit = () => {
+    const item = ctxItem();
+    if (!item || !contextMenu) return;
+    const name = window.prompt('Rename session:', item.name);
+    if (name) {
+      const folder = folders.find((f) => f.id === contextMenu.folderId);
+      if (folder) {
+        updateFolder(folder.id, {
+          items: folder.items.map((s) => (s.id === item.id ? { ...s, name } : s)),
+        });
+      }
+    }
+    setContextMenu(null);
+  };
 
   if (!sidebarVisible) {
     return (
@@ -71,7 +111,11 @@ export default function Sidebar({ onConnect }: SidebarProps) {
           Sessions
         </span>
         <div className="flex items-center gap-1">
-          <button className="p-1 rounded hover:bg-[#21262d] text-[#8b949e] hover:text-[#c9d1d9]">
+          <button
+            onClick={handleAddFolder}
+            className="p-1 rounded hover:bg-[#21262d] text-[#8b949e] hover:text-[#c9d1d9]"
+            title="Add folder"
+          >
             <Plus size={14} />
           </button>
           <button
@@ -170,18 +214,18 @@ export default function Sidebar({ onConnect }: SidebarProps) {
             style={{ top: contextMenu.y, left: contextMenu.x }}
           >
             <button
-              onClick={() => {
-                // Find session and connect
-                setContextMenu(null);
-              }}
+              onClick={handleCtxConnect}
               className="flex items-center gap-2 w-full px-3 py-1.5 text-sm text-[#c9d1d9] hover:bg-[#21262d]"
             >
               <Play size={14} />
               Connect
             </button>
-            <button className="flex items-center gap-2 w-full px-3 py-1.5 text-sm text-[#c9d1d9] hover:bg-[#21262d]">
+            <button
+              onClick={handleCtxEdit}
+              className="flex items-center gap-2 w-full px-3 py-1.5 text-sm text-[#c9d1d9] hover:bg-[#21262d]"
+            >
               <Edit3 size={14} />
-              Edit
+              Rename
             </button>
             <button
               onClick={() => {
