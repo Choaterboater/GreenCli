@@ -29,6 +29,7 @@ import SearchOverlay from './components/SearchOverlay';
 import ApiExplorer from './components/ApiExplorer';
 import AiAssistant from './components/AiAssistant';
 import ConfigEditor from './components/ConfigEditor';
+import SnippetsMenu from './components/SnippetsMenu';
 
 function App() {
   const { theme } = useTheme();
@@ -318,6 +319,9 @@ function App() {
             <Sparkles size={12} />
             <span>AI</span>
           </button>
+          {/* Snippets */}
+          <SnippetsMenu />
+
           {/* Broadcast toggle */}
           <button
             onClick={toggleBroadcast}
