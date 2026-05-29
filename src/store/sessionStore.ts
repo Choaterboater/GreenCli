@@ -22,6 +22,8 @@ interface SessionState {
   showCommandPalette: boolean;
   splitView: boolean;
   secondarySessionId: string | null;
+  showVaultUnlock: boolean;
+  vaultUnlocked: boolean;
 
   // Actions
   addSession: (config: ConnectionConfig, sessionId: string) => void;
@@ -40,6 +42,8 @@ interface SessionState {
   setShowApiExplorer: (show: boolean) => void;
   setShowAiAssistant: (show: boolean) => void;
   setShowCommandPalette: (show: boolean) => void;
+  setShowVaultUnlock: (show: boolean) => void;
+  setVaultUnlocked: (unlocked: boolean) => void;
   showConfigEditor: boolean;
   toggleConfigEditor: () => void;
   toggleApiExplorer: () => void;
@@ -80,6 +84,8 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
   showCommandPalette: false,
   splitView: false,
   secondarySessionId: null,
+  showVaultUnlock: false,
+  vaultUnlocked: false,
 
   addSession: (config, sessionId) =>
     set((state) => {
@@ -139,6 +145,8 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
   setShowApiExplorer: (show) => set({ showApiExplorer: show }),
   setShowAiAssistant: (show) => set({ showAiAssistant: show }),
   setShowCommandPalette: (show) => set({ showCommandPalette: show }),
+  setShowVaultUnlock: (show) => set({ showVaultUnlock: show }),
+  setVaultUnlocked: (unlocked) => set({ vaultUnlocked: unlocked }),
   toggleConfigEditor: () => set((state) => ({ showConfigEditor: !state.showConfigEditor })),
   toggleApiExplorer: () => set((state) => ({ showApiExplorer: !state.showApiExplorer, showAiAssistant: false })),
   toggleAiAssistant: () => set((state) => ({ showAiAssistant: !state.showAiAssistant, showApiExplorer: false })),
