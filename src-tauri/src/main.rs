@@ -44,6 +44,8 @@ struct AppState {
     /// Recent terminal output per session, so the AI assistant can read back
     /// command results (bounded tail, plain bytes lossily decoded).
     terminal_buffers: Arc<AsyncMutex<HashMap<String, String>>>,
+    /// Open session-log files keyed by session id (raw output streamed to disk).
+    session_logs: Arc<AsyncMutex<HashMap<String, std::fs::File>>>,
     app_dir: std::path::PathBuf,
 }
 
@@ -58,6 +60,7 @@ impl AppState {
             api_clients: Arc::new(AsyncMutex::new(HashMap::new())),
             ai_keys: AiKeyStore::new(app_dir.clone()),
             terminal_buffers: Arc::new(AsyncMutex::new(HashMap::new())),
+            session_logs: Arc::new(AsyncMutex::new(HashMap::new())),
             app_dir,
         })
     }
@@ -108,6 +111,7 @@ pub struct ApiLoginRequest {
 fn spawn_forwarder(
     app: AppHandle,
     buffers: Arc<AsyncMutex<HashMap<String, String>>>,
+    logs: Arc<AsyncMutex<HashMap<String, std::fs::File>>>,
     session_id: String,
     mut rx: tokio::sync::mpsc::Receiver<Vec<u8>>,
     close_msg: &'static str,
@@ -125,6 +129,14 @@ fn spawn_forwarder(
                         cut += 1;
                     }
                     *buf = buf[cut..].to_string();
+                }
+            }
+            // Stream raw output to the session log file if one is open.
+            {
+                let mut logs = logs.lock().await;
+                if let Some(file) = logs.get_mut(&session_id) {
+                    use std::io::Write;
+                    let _ = file.write_all(&data);
                 }
             }
             let _ = app.emit_all(
@@ -186,6 +198,7 @@ async fn connect(
                 spawn_forwarder(
                     app.clone(),
                     state.terminal_buffers.clone(),
+                    state.session_logs.clone(),
                     session_id.clone(),
                     rx,
                     "SSH connection closed",
@@ -226,6 +239,7 @@ async fn connect(
                 spawn_forwarder(
                     app.clone(),
                     state.terminal_buffers.clone(),
+                    state.session_logs.clone(),
                     session_id.clone(),
                     rx,
                     "Telnet connection closed",
@@ -269,6 +283,7 @@ async fn connect(
                 spawn_forwarder(
                     app.clone(),
                     state.terminal_buffers.clone(),
+                    state.session_logs.clone(),
                     session_id.clone(),
                     rx,
                     "Serial port closed",
@@ -310,6 +325,7 @@ async fn connect(
                 spawn_forwarder(
                     app.clone(),
                     state.terminal_buffers.clone(),
+                    state.session_logs.clone(),
                     session_id.clone(),
                     rx,
                     "Local session ended",
@@ -354,6 +370,7 @@ async fn disconnect(
         .map_err(|e| e.to_string())?;
 
     state.terminal_buffers.lock().await.remove(&session_id);
+    state.session_logs.lock().await.remove(&session_id);
 
     let _ = app.emit_all(
         "connection_status",
@@ -544,6 +561,46 @@ async fn get_terminal_output(
 ) -> Result<String, String> {
     let map = state.terminal_buffers.lock().await;
     Ok(map.get(&session_id).cloned().unwrap_or_default())
+}
+
+/// Begin streaming a session's raw output to a timestamped log file under the
+/// app data dir's `logs/` folder. Returns the file path.
+#[tauri::command]
+async fn start_session_log(
+    session_id: String,
+    name: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let dir = state.app_dir.join("logs");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let safe: String = name
+        .chars()
+        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .collect();
+    let safe = if safe.is_empty() { "session".to_string() } else { safe };
+    let path = dir.join(format!("{}_{}.log", safe, millis));
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map_err(|e| e.to_string())?;
+    state.session_logs.lock().await.insert(session_id, file);
+    Ok(path.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+async fn stop_session_log(session_id: String, state: State<'_, AppState>) -> Result<(), String> {
+    state.session_logs.lock().await.remove(&session_id);
+    Ok(())
+}
+
+#[tauri::command]
+async fn is_session_logging(session_id: String, state: State<'_, AppState>) -> Result<bool, String> {
+    Ok(state.session_logs.lock().await.contains_key(&session_id))
 }
 
 #[tauri::command]
@@ -772,6 +829,9 @@ fn main() {
             vault_is_unlocked,
             list_serial_ports,
             get_terminal_output,
+            start_session_log,
+            stop_session_log,
+            is_session_logging,
             read_file_text,
             write_file_text,
             generate_keypair,
