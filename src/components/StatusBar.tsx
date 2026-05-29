@@ -6,7 +6,7 @@ import { useSessionStore } from '../store/sessionStore';
 const protocolIcons: Record<string, React.ReactNode> = {
   ssh: <Shield size={12} className="text-[#58a6ff]" />,
   telnet: <ShieldOff size={12} className="text-[#d29922]" />,
-  serial: <Usb size={12} className="text-[#8b949e]" />,
+  serial: <Usb size={12} className="text-[var(--text-secondary)]" />,
   local: <TerminalSquare size={12} className="text-[#3fb950]" />,
 };
 
@@ -54,7 +54,7 @@ export default function StatusBar() {
   };
 
   return (
-    <div className="flex items-center h-7 px-3 bg-[#161b22] border-t border-[#21262d] text-[11px] text-[#8b949e]">
+    <div className="flex items-center h-7 px-3 bg-[var(--bg-secondary)] border-t border-[var(--bg-tertiary)] text-[11px] text-[var(--text-secondary)]">
       {activeSession ? (
         <>
           {/* Protocol */}
@@ -103,13 +103,13 @@ export default function StatusBar() {
 
           {/* Session log toggle */}
           <div className="flex items-center gap-2 ml-auto mr-3">
-            {logHint && <span className="text-[10px] text-[#484f58]">{logHint}</span>}
+            {logHint && <span className="text-[10px] text-[var(--text-muted)]">{logHint}</span>}
             <button
               onClick={toggleLog}
               className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] transition-colors ${
                 logging
                   ? 'text-[#ff7b72] bg-[#ff7b7215]'
-                  : 'text-[#8b949e] hover:text-[#c9d1d9] hover:bg-[#21262d]'
+                  : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
               }`}
               title={logging ? 'Stop logging this session to file' : 'Log this session to a file'}
             >
@@ -120,7 +120,7 @@ export default function StatusBar() {
 
           {/* Device Type */}
           <div className="flex items-center gap-1.5">
-            <span className="px-1.5 py-0.5 rounded bg-[#21262d] text-[10px] uppercase">
+            <span className="px-1.5 py-0.5 rounded bg-[var(--bg-tertiary)] text-[10px] uppercase">
               {activeSession.config.deviceType === 'aruba-cx'
                 ? 'CX'
                 : activeSession.config.deviceType === 'aruba-ap'
@@ -132,7 +132,7 @@ export default function StatusBar() {
           </div>
         </>
       ) : (
-        <span className="text-[#484f58]">No active connection</span>
+        <span className="text-[var(--text-muted)]">No active connection</span>
       )}
     </div>
   );

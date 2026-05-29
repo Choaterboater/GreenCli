@@ -398,8 +398,8 @@ function renderMarkdown(text: string) {
         i++;
       }
       result.push(
-        <pre key={key++} className="my-2 p-3 bg-[#0d1117] border border-[#30363d] rounded-lg overflow-x-auto">
-          <code className="text-[11px] text-[#c9d1d9] font-mono whitespace-pre">
+        <pre key={key++} className="my-2 p-3 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg overflow-x-auto">
+          <code className="text-[11px] text-[var(--text-primary)] font-mono whitespace-pre">
             {codeLines.join('\n')}
           </code>
         </pre>
@@ -410,7 +410,7 @@ function renderMarkdown(text: string) {
 
     // Heading
     if (line.startsWith('## ')) {
-      result.push(<h4 key={key++} className="text-xs font-bold text-[#c9d1d9] mt-2 mb-1">{line.slice(3)}</h4>);
+      result.push(<h4 key={key++} className="text-xs font-bold text-[var(--text-primary)] mt-2 mb-1">{line.slice(3)}</h4>);
       i++;
       continue;
     }
@@ -422,7 +422,7 @@ function renderMarkdown(text: string) {
 
     // Horizontal rule
     if (line.match(/^---+$/)) {
-      result.push(<hr key={key++} className="border-[#30363d] my-2" />);
+      result.push(<hr key={key++} className="border-[var(--border)] my-2" />);
       i++;
       continue;
     }
@@ -455,7 +455,7 @@ function renderInline(text: string): (JSX.Element | string)[] {
     if (tok.startsWith('**')) {
       parts.push(<strong key={k++} className="text-white font-semibold">{tok.slice(2, -2)}</strong>);
     } else if (tok.startsWith('`')) {
-      parts.push(<code key={k++} className="px-1 py-0.5 bg-[#0d1117] border border-[#30363d] rounded text-[#d29922] text-[10px] font-mono">{tok.slice(1, -1)}</code>);
+      parts.push(<code key={k++} className="px-1 py-0.5 bg-[var(--bg-primary)] border border-[var(--border)] rounded text-[#d29922] text-[10px] font-mono">{tok.slice(1, -1)}</code>);
     } else if (tok.startsWith('*')) {
       parts.push(<em key={k++} className="italic">{tok.slice(1, -1)}</em>);
     }
@@ -669,7 +669,7 @@ export default function AiAssistant() {
 
   return (
     <div
-      className="flex-shrink-0 flex flex-col bg-[#0d1117] border-l border-[#21262d] overflow-hidden relative"
+      className="flex-shrink-0 flex flex-col bg-[var(--bg-primary)] border-l border-[var(--bg-tertiary)] overflow-hidden relative"
       style={{ width: panelWidth }}
     >
       {/* Drag handle */}
@@ -681,10 +681,10 @@ export default function AiAssistant() {
       />
 
       {/* Header */}
-      <div className="flex items-center justify-between h-10 px-3 pl-4 border-b border-[#21262d] bg-[#161b22]">
+      <div className="flex items-center justify-between h-10 px-3 pl-4 border-b border-[var(--bg-tertiary)] bg-[var(--bg-secondary)]">
         <div className="flex items-center gap-2">
           <Sparkles size={14} className="text-[#d2a8ff]" />
-          <span className="text-xs font-semibold text-[#c9d1d9] uppercase tracking-wider">
+          <span className="text-xs font-semibold text-[var(--text-primary)] uppercase tracking-wider">
             AI Assistant
           </span>
           <span className={`text-[10px] px-1.5 py-0.5 rounded ${
@@ -698,14 +698,14 @@ export default function AiAssistant() {
         <div className="flex items-center gap-1">
           <button
             onClick={() => useSessionStore.getState().setShowSettings(true)}
-            className="p-1 rounded hover:bg-[#21262d] text-[#8b949e] hover:text-[#c9d1d9]"
+            className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
             title="Settings"
           >
             <Settings size={13} />
           </button>
           <button
             onClick={toggleAiAssistant}
-            className="p-1 rounded hover:bg-[#21262d] text-[#8b949e] hover:text-[#ff7b72]"
+            className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[#ff7b72]"
             title="Close"
           >
             <X size={14} />
@@ -714,20 +714,20 @@ export default function AiAssistant() {
       </div>
 
       {/* Device context bar */}
-      <div className="flex items-center gap-2 px-3 py-1.5 border-b border-[#21262d] bg-[#161b22]">
-        <Terminal size={11} className={activeSession?.connected ? 'text-[#3fb950]' : 'text-[#484f58]'} />
+      <div className="flex items-center gap-2 px-3 py-1.5 border-b border-[var(--bg-tertiary)] bg-[var(--bg-secondary)]">
+        <Terminal size={11} className={activeSession?.connected ? 'text-[#3fb950]' : 'text-[var(--text-muted)]'} />
         {activeSession ? (
-          <span className="text-[10px] text-[#8b949e]">
-            <span className="text-[#c9d1d9]">{activeSession.config.name}</span>
-            <span className="mx-1 text-[#30363d]">·</span>
+          <span className="text-[10px] text-[var(--text-secondary)]">
+            <span className="text-[var(--text-primary)]">{activeSession.config.name}</span>
+            <span className="mx-1 text-[var(--border)]">·</span>
             {activeSession.config.deviceType}
-            <span className="mx-1 text-[#30363d]">·</span>
-            <span className={activeSession.connected ? 'text-[#3fb950]' : 'text-[#484f58]'}>
+            <span className="mx-1 text-[var(--border)]">·</span>
+            <span className={activeSession.connected ? 'text-[#3fb950]' : 'text-[var(--text-muted)]'}>
               {activeSession.connected ? 'connected' : 'disconnected'}
             </span>
           </span>
         ) : (
-          <span className="text-[10px] text-[#484f58]">No active session</span>
+          <span className="text-[10px] text-[var(--text-muted)]">No active session</span>
         )}
       </div>
 
@@ -746,13 +746,13 @@ export default function AiAssistant() {
         {/* Prebuilt prompts when chat is empty */}
         {messages.length === 0 && (
           <div className="space-y-1.5">
-            <p className="text-[10px] text-[#484f58] mb-2">Quick actions:</p>
+            <p className="text-[10px] text-[var(--text-muted)] mb-2">Quick actions:</p>
             {PREBUILT_PROMPTS.map((p) => (
               <button
                 key={p.label}
                 onClick={() => sendMessage(p.prompt)}
                 disabled={isLoading}
-                className="w-full flex items-center gap-2 px-3 py-2 text-xs text-left text-[#8b949e] hover:text-[#c9d1d9] bg-[#161b22] hover:bg-[#21262d] border border-[#30363d] hover:border-[#484f58] rounded-lg transition-all disabled:opacity-50"
+                className="w-full flex items-center gap-2 px-3 py-2 text-xs text-left text-[var(--text-secondary)] hover:text-[var(--text-primary)] bg-[var(--bg-secondary)] hover:bg-[var(--bg-tertiary)] border border-[var(--border)] hover:border-[var(--text-muted)] rounded-lg transition-all disabled:opacity-50"
               >
                 <ChevronRight size={10} className="text-[#d2a8ff]" />
                 {p.label}
@@ -769,9 +769,9 @@ export default function AiAssistant() {
                 <div className="flex-shrink-0 w-6 h-6 rounded-full bg-[#58a6ff20] flex items-center justify-center">
                   <User size={12} className="text-[#58a6ff]" />
                 </div>
-                <div className="max-w-[88%] px-3 py-2 rounded-lg bg-[#58a6ff15] border border-[#58a6ff25] text-[#c9d1d9]">
+                <div className="max-w-[88%] px-3 py-2 rounded-lg bg-[#58a6ff15] border border-[#58a6ff25] text-[var(--text-primary)]">
                   <p className="text-[11px] leading-relaxed whitespace-pre-wrap">{msg.content}</p>
-                  <div className="text-[9px] text-[#484f58] mt-1 flex items-center gap-1 justify-end">
+                  <div className="text-[9px] text-[var(--text-muted)] mt-1 flex items-center gap-1 justify-end">
                     <Clock size={7} />
                     {new Date(msg.timestamp).toLocaleTimeString()}
                   </div>
@@ -791,10 +791,10 @@ export default function AiAssistant() {
                   {msg.toolExecutions && msg.toolExecutions.length > 0 && (
                     <div className="mb-2 space-y-1">
                       {msg.toolExecutions.map((te, ti) => (
-                        <div key={ti} className="border border-[#30363d] rounded-lg overflow-hidden">
+                        <div key={ti} className="border border-[var(--border)] rounded-lg overflow-hidden">
                           <button
                             onClick={() => toggleTool(i * 100 + ti)}
-                            className="w-full flex items-center gap-2 px-2.5 py-1.5 bg-[#161b22] hover:bg-[#21262d] text-left transition-colors"
+                            className="w-full flex items-center gap-2 px-2.5 py-1.5 bg-[var(--bg-secondary)] hover:bg-[var(--bg-tertiary)] text-left transition-colors"
                           >
                             <Terminal size={10} className="text-[#58a6ff]" />
                             <code className="text-[10px] text-[#58a6ff] font-mono flex-1 truncate">
@@ -802,14 +802,14 @@ export default function AiAssistant() {
                             </code>
                             <CheckCircle2 size={9} className="text-[#3fb950] flex-shrink-0" />
                             {expandedTools.has(i * 100 + ti) ? (
-                              <ChevronDown size={9} className="text-[#484f58]" />
+                              <ChevronDown size={9} className="text-[var(--text-muted)]" />
                             ) : (
-                              <ChevronRight size={9} className="text-[#484f58]" />
+                              <ChevronRight size={9} className="text-[var(--text-muted)]" />
                             )}
                           </button>
                           {expandedTools.has(i * 100 + ti) && (
-                            <div className="px-2.5 py-2 bg-[#0d1117] border-t border-[#30363d]">
-                              <p className="text-[10px] text-[#8b949e] font-mono">{te.result}</p>
+                            <div className="px-2.5 py-2 bg-[var(--bg-primary)] border-t border-[var(--border)]">
+                              <p className="text-[10px] text-[var(--text-secondary)] font-mono">{te.result}</p>
                             </div>
                           )}
                         </div>
@@ -818,9 +818,9 @@ export default function AiAssistant() {
                   )}
 
                   {/* Message content */}
-                  <div className={`px-3 py-2 rounded-lg ${msg.isError ? 'bg-[#ff7b7210] border border-[#ff7b7225] text-[#ff7b72]' : 'bg-[#161b22] border border-[#30363d] text-[#c9d1d9]'}`}>
+                  <div className={`px-3 py-2 rounded-lg ${msg.isError ? 'bg-[#ff7b7210] border border-[#ff7b7225] text-[#ff7b72]' : 'bg-[var(--bg-secondary)] border border-[var(--border)] text-[var(--text-primary)]'}`}>
                     <div className="space-y-0.5">{renderMarkdown(msg.content)}</div>
-                    <div className="text-[9px] text-[#484f58] mt-1.5 flex items-center gap-1">
+                    <div className="text-[9px] text-[var(--text-muted)] mt-1.5 flex items-center gap-1">
                       <Clock size={7} />
                       {new Date(msg.timestamp).toLocaleTimeString()}
                     </div>
@@ -837,7 +837,7 @@ export default function AiAssistant() {
             <div className="w-6 h-6 rounded-full bg-[#d2a8ff20] flex items-center justify-center flex-shrink-0">
               <Bot size={12} className="text-[#d2a8ff]" />
             </div>
-            <div className="flex items-center gap-1.5 px-3 py-2 bg-[#161b22] border border-[#30363d] rounded-lg text-[11px] text-[#8b949e]">
+            <div className="flex items-center gap-1.5 px-3 py-2 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg text-[11px] text-[var(--text-secondary)]">
               <Loader2 size={11} className="animate-spin text-[#d2a8ff]" />
               Thinking…
             </div>
@@ -846,7 +846,7 @@ export default function AiAssistant() {
       </div>
 
       {/* Input */}
-      <div className="px-3 py-2 border-t border-[#21262d] bg-[#161b22]">
+      <div className="px-3 py-2 border-t border-[var(--bg-tertiary)] bg-[var(--bg-secondary)]">
         <div className="flex items-end gap-2">
           <textarea
             ref={inputRef}
@@ -856,7 +856,7 @@ export default function AiAssistant() {
             placeholder={isReady ? 'Ask about the device…' : 'Configure AI provider in Settings…'}
             rows={1}
             disabled={isLoading}
-            className="flex-1 text-xs bg-[#0d1117] border border-[#30363d] rounded-lg px-3 py-2 text-[#c9d1d9] placeholder-[#484f58] focus:outline-none focus:border-[#58a6ff] resize-none max-h-28 disabled:opacity-50"
+            className="flex-1 text-xs bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg px-3 py-2 text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[#58a6ff] resize-none max-h-28 disabled:opacity-50"
             style={{ minHeight: '36px' }}
           />
           <button
@@ -868,7 +868,7 @@ export default function AiAssistant() {
             <Send size={14} />
           </button>
         </div>
-        <p className="text-[9px] text-[#484f58] mt-1 text-center">
+        <p className="text-[9px] text-[var(--text-muted)] mt-1 text-center">
           Shift+Enter for new line · Commands execute on active device
         </p>
       </div>

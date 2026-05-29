@@ -22,7 +22,7 @@ const deviceIcons: Record<string, React.ReactNode> = {
   'aruba-cx': <Server size={14} className="text-[#58a6ff]" />,
   'aruba-ap': <Wifi size={14} className="text-[#3fb950]" />,
   'aruba-controller': <Router size={14} className="text-[#d29922]" />,
-  generic: <Monitor size={14} className="text-[#8b949e]" />,
+  generic: <Monitor size={14} className="text-[var(--text-secondary)]" />,
 };
 
 interface SidebarProps {
@@ -87,7 +87,7 @@ export default function Sidebar({ onConnect }: SidebarProps) {
     return (
       <button
         onClick={toggleSidebar}
-        className="fixed left-0 top-[40px] z-10 p-1.5 bg-[#161b22] border border-[#30363d] rounded-r hover:bg-[#21262d] text-[#8b949e] hover:text-[#c9d1d9] transition-colors"
+        className="fixed left-0 top-[40px] z-10 p-1.5 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-r hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
       >
         <PanelLeftClose size={16} />
       </button>
@@ -104,23 +104,23 @@ export default function Sidebar({ onConnect }: SidebarProps) {
   };
 
   return (
-    <div className="w-64 flex-shrink-0 flex flex-col bg-[#161b22] border-r border-[#21262d] overflow-hidden">
+    <div className="w-64 flex-shrink-0 flex flex-col bg-[var(--bg-secondary)] border-r border-[var(--bg-tertiary)] overflow-hidden">
       {/* Header */}
-      <div className="flex items-center justify-between h-10 px-3 border-b border-[#21262d]">
-        <span className="text-xs font-semibold text-[#8b949e] uppercase tracking-wider">
+      <div className="flex items-center justify-between h-10 px-3 border-b border-[var(--bg-tertiary)]">
+        <span className="text-xs font-semibold text-[var(--text-secondary)] uppercase tracking-wider">
           Sessions
         </span>
         <div className="flex items-center gap-1">
           <button
             onClick={handleAddFolder}
-            className="p-1 rounded hover:bg-[#21262d] text-[#8b949e] hover:text-[#c9d1d9]"
+            className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
             title="Add folder"
           >
             <Plus size={14} />
           </button>
           <button
             onClick={toggleSidebar}
-            className="p-1 rounded hover:bg-[#21262d] text-[#8b949e] hover:text-[#c9d1d9]"
+            className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
           >
             <PanelLeftClose size={14} />
           </button>
@@ -136,20 +136,20 @@ export default function Sidebar({ onConnect }: SidebarProps) {
               onClick={() =>
                 updateFolder(folder.id, { expanded: !folder.expanded })
               }
-              className="flex items-center gap-1.5 w-full px-3 py-1.5 text-left hover:bg-[#21262d] transition-colors"
+              className="flex items-center gap-1.5 w-full px-3 py-1.5 text-left hover:bg-[var(--bg-tertiary)] transition-colors"
             >
               {folder.expanded ? (
-                <ChevronDown size={14} className="text-[#8b949e]" />
+                <ChevronDown size={14} className="text-[var(--text-secondary)]" />
               ) : (
-                <ChevronRight size={14} className="text-[#8b949e]" />
+                <ChevronRight size={14} className="text-[var(--text-secondary)]" />
               )}
               {folder.expanded ? (
                 <FolderOpen size={14} className="text-[#d29922]" />
               ) : (
-                <Folder size={14} className="text-[#8b949e]" />
+                <Folder size={14} className="text-[var(--text-secondary)]" />
               )}
-              <span className="text-sm text-[#c9d1d9]">{folder.name}</span>
-              <span className="ml-auto text-xs text-[#484f58]">
+              <span className="text-sm text-[var(--text-primary)]">{folder.name}</span>
+              <span className="ml-auto text-xs text-[var(--text-muted)]">
                 {folder.items.length}
               </span>
             </button>
@@ -158,7 +158,7 @@ export default function Sidebar({ onConnect }: SidebarProps) {
             {folder.expanded && (
               <div className="ml-2">
                 {folder.items.length === 0 && (
-                  <div className="px-6 py-2 text-xs text-[#484f58]">
+                  <div className="px-6 py-2 text-xs text-[var(--text-muted)]">
                     No sessions
                   </div>
                 )}
@@ -168,18 +168,18 @@ export default function Sidebar({ onConnect }: SidebarProps) {
                     onContextMenu={(e) =>
                       handleContextMenu(e, session.id, folder.id)
                     }
-                    className="group flex items-center gap-2 px-6 py-1.5 cursor-pointer hover:bg-[#21262d] transition-colors"
+                    className="group flex items-center gap-2 px-6 py-1.5 cursor-pointer hover:bg-[var(--bg-tertiary)] transition-colors"
                   >
                     {deviceIcons[session.deviceType] || deviceIcons.generic}
                     <span
-                      className="flex-1 text-sm text-[#8b949e] group-hover:text-[#c9d1d9] truncate"
+                      className="flex-1 text-sm text-[var(--text-secondary)] group-hover:text-[var(--text-primary)] truncate"
                       onClick={() => onConnect(session)}
                     >
                       {session.name}
                     </span>
                     <button
                       onClick={() => onConnect(session)}
-                      className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-[#30363d] text-[#3fb950]"
+                      className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-[var(--border)] text-[#3fb950]"
                     >
                       <Play size={12} />
                     </button>
@@ -192,7 +192,7 @@ export default function Sidebar({ onConnect }: SidebarProps) {
       </div>
 
       {/* Quick Connect Bar */}
-      <div className="px-3 py-2 border-t border-[#21262d]">
+      <div className="px-3 py-2 border-t border-[var(--bg-tertiary)]">
         <button
           onClick={() => useSessionStore.getState().setShowQuickConnect(true)}
           className="flex items-center justify-center gap-2 w-full h-8 text-sm bg-[#238636] hover:bg-[#2ea043] text-white rounded transition-colors"
@@ -210,19 +210,19 @@ export default function Sidebar({ onConnect }: SidebarProps) {
             onClick={() => setContextMenu(null)}
           />
           <div
-            className="fixed z-50 min-w-[140px] bg-[#161b22] border border-[#30363d] rounded-lg shadow-lg py-1"
+            className="fixed z-50 min-w-[140px] bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg shadow-lg py-1"
             style={{ top: contextMenu.y, left: contextMenu.x }}
           >
             <button
               onClick={handleCtxConnect}
-              className="flex items-center gap-2 w-full px-3 py-1.5 text-sm text-[#c9d1d9] hover:bg-[#21262d]"
+              className="flex items-center gap-2 w-full px-3 py-1.5 text-sm text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]"
             >
               <Play size={14} />
               Connect
             </button>
             <button
               onClick={handleCtxEdit}
-              className="flex items-center gap-2 w-full px-3 py-1.5 text-sm text-[#c9d1d9] hover:bg-[#21262d]"
+              className="flex items-center gap-2 w-full px-3 py-1.5 text-sm text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]"
             >
               <Edit3 size={14} />
               Rename
@@ -235,7 +235,7 @@ export default function Sidebar({ onConnect }: SidebarProps) {
                 );
                 setContextMenu(null);
               }}
-              className="flex items-center gap-2 w-full px-3 py-1.5 text-sm text-[#ff7b72] hover:bg-[#21262d]"
+              className="flex items-center gap-2 w-full px-3 py-1.5 text-sm text-[#ff7b72] hover:bg-[var(--bg-tertiary)]"
             >
               <Trash2 size={14} />
               Delete

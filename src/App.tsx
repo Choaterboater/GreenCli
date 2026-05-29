@@ -298,12 +298,12 @@ function App() {
     <div
       className="h-screen w-screen flex flex-col overflow-hidden"
       data-theme={theme}
-      style={{ background: theme === 'dark' ? '#0d1117' : '#ffffff' }}
+      style={{ background: theme === 'dark' ? 'var(--bg-primary)' : '#ffffff' }}
     >
       {/* Title Bar */}
-      <div className="flex items-center justify-between h-9 px-3 bg-[#161b22] border-b border-[#21262d] drag-region">
+      <div className="flex items-center justify-between h-9 px-3 bg-[var(--bg-secondary)] border-b border-[var(--bg-tertiary)] drag-region">
         <div className="flex items-center gap-3">
-          <span className="text-sm font-semibold text-[#c9d1d9]">
+          <span className="text-sm font-semibold text-[var(--text-primary)]">
             Aruba Terminal Pro
           </span>
           {!sidebarVisible && (
@@ -311,7 +311,7 @@ function App() {
               onClick={() =>
                 useSessionStore.getState().toggleSidebar()
               }
-              className="p-1 rounded hover:bg-[#21262d] text-[#8b949e] hover:text-[#c9d1d9]"
+              className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
             >
               <PanelLeft size={14} />
             </button>
@@ -324,7 +324,7 @@ function App() {
             className={`flex items-center gap-1.5 px-2 py-1 text-xs rounded transition-colors ${
               showConfigEditor
                 ? 'text-[#e5c07b] bg-[#e5c07b20]'
-                : 'text-[#8b949e] hover:text-[#c9d1d9] hover:bg-[#21262d]'
+                : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
             }`}
             title="Config Editor (Ctrl+Shift+E)"
           >
@@ -337,7 +337,7 @@ function App() {
             className={`flex items-center gap-1.5 px-2 py-1 text-xs rounded transition-colors ${
               showApiExplorer
                 ? 'text-[#58a6ff] bg-[#58a6ff20]'
-                : 'text-[#8b949e] hover:text-[#c9d1d9] hover:bg-[#21262d]'
+                : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
             }`}
             title="API Explorer (Ctrl+Shift+A)"
           >
@@ -350,7 +350,7 @@ function App() {
             className={`flex items-center gap-1.5 px-2 py-1 text-xs rounded transition-colors ${
               showAiAssistant
                 ? 'text-[#d2a8ff] bg-[#d2a8ff20]'
-                : 'text-[#8b949e] hover:text-[#c9d1d9] hover:bg-[#21262d]'
+                : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
             }`}
             title="AI Assistant (Ctrl+Shift+I)"
           >
@@ -366,7 +366,7 @@ function App() {
             className={`flex items-center gap-1.5 px-2 py-1 text-xs rounded transition-colors ${
               splitView
                 ? 'text-[#58a6ff] bg-[#58a6ff20]'
-                : 'text-[#8b949e] hover:text-[#c9d1d9] hover:bg-[#21262d]'
+                : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
             }`}
             title="Split the terminal into two panes"
           >
@@ -383,40 +383,40 @@ function App() {
             className={`flex items-center gap-1.5 px-2 py-1 text-xs rounded transition-colors ${
               broadcastMode
                 ? 'text-[#ff7b72] bg-[#ff7b7220]'
-                : 'text-[#8b949e] hover:text-[#c9d1d9] hover:bg-[#21262d]'
+                : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
             }`}
             title="Broadcast a command to all connected sessions"
           >
             <Radio size={12} />
             <span>Broadcast</span>
           </button>
-          <div className="w-px h-4 bg-[#30363d] mx-1" />
+          <div className="w-px h-4 bg-[var(--border)] mx-1" />
           <button
             onClick={() =>
               useSessionStore.getState().setShowQuickConnect(true)
             }
-            className="flex items-center gap-1.5 px-2 py-1 text-xs text-[#8b949e] hover:text-[#c9d1d9] hover:bg-[#21262d] rounded transition-colors"
+            className="flex items-center gap-1.5 px-2 py-1 text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] rounded transition-colors"
           >
             <Plug size={12} />
             <span>Connect</span>
           </button>
           <button
             onClick={() => setShowSearch(true)}
-            className="p-1.5 text-[#8b949e] hover:text-[#c9d1d9] hover:bg-[#21262d] rounded transition-colors"
+            className="p-1.5 text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] rounded transition-colors"
             title="Search (Ctrl+F)"
           >
             <Search size={14} />
           </button>
           <button
             onClick={() => setShowSettings(true)}
-            className="p-1.5 text-[#8b949e] hover:text-[#c9d1d9] hover:bg-[#21262d] rounded transition-colors"
+            className="p-1.5 text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] rounded transition-colors"
             title="Settings (Ctrl+,)"
           >
             <Settings size={14} />
           </button>
           <button
             onClick={() => useSessionStore.getState().setShowCommandPalette(true)}
-            className="p-1.5 text-[#8b949e] hover:text-[#c9d1d9] hover:bg-[#21262d] rounded transition-colors"
+            className="p-1.5 text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] rounded transition-colors"
             title="Command palette (Ctrl+K)"
           >
             <HelpCircle size={14} />
@@ -455,7 +455,7 @@ function App() {
                 placeholder={`Send a command to all ${
                   sessions.filter((s) => s.connected).length
                 } connected session(s)…`}
-                className="flex-1 h-7 px-2 bg-[#0d1117] border border-[#30363d] rounded text-xs text-[#c9d1d9] placeholder-[#484f58] focus:outline-none focus:border-[#ff7b72]"
+                className="flex-1 h-7 px-2 bg-[var(--bg-primary)] border border-[var(--border)] rounded text-xs text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[#ff7b72]"
               />
               <button
                 onClick={sendBroadcast}
@@ -475,7 +475,7 @@ function App() {
                   canSplit && secondarySession ? (
                     <div className="flex h-full w-full">
                       {/* Left pane: active session */}
-                      <div className="flex-1 min-w-0 border-r border-[#21262d]">
+                      <div className="flex-1 min-w-0 border-r border-[var(--bg-tertiary)]">
                         <Terminal
                           key={activeSession.sessionId}
                           sessionId={activeSession.sessionId}
@@ -487,15 +487,15 @@ function App() {
                       </div>
                       {/* Right pane: selectable secondary session */}
                       <div className="flex-1 min-w-0 flex flex-col">
-                        <div className="flex items-center gap-2 h-7 px-2 bg-[#161b22] border-b border-[#21262d] flex-shrink-0">
-                          <span className="text-[10px] text-[#8b949e]">Pane 2</span>
+                        <div className="flex items-center gap-2 h-7 px-2 bg-[var(--bg-secondary)] border-b border-[var(--bg-tertiary)] flex-shrink-0">
+                          <span className="text-[10px] text-[var(--text-secondary)]">Pane 2</span>
                           <select
                             value={secondarySession.sessionId}
                             onChange={(e) => {
                               setSecondarySession(e.target.value);
                               refitTerminals();
                             }}
-                            className="flex-1 text-[11px] bg-[#0d1117] border border-[#30363d] rounded px-1 py-0.5 text-[#c9d1d9] focus:outline-none focus:border-[#58a6ff]"
+                            className="flex-1 text-[11px] bg-[var(--bg-primary)] border border-[var(--border)] rounded px-1 py-0.5 text-[var(--text-primary)] focus:outline-none focus:border-[#58a6ff]"
                           >
                             {sessions
                               .filter((s) => s.sessionId !== activeSessionId)
@@ -532,7 +532,7 @@ function App() {
                     />
                   )
                 ) : (
-                  <div className="flex flex-col items-center justify-center h-full text-[#484f58]">
+                  <div className="flex flex-col items-center justify-center h-full text-[var(--text-muted)]">
                     <Plug size={48} className="mb-4 opacity-30" />
                     <p className="text-lg font-medium mb-2">
                       No Active Session
@@ -553,7 +553,7 @@ function App() {
                       </button>
                       <button
                         onClick={openLocalShell}
-                        className="flex items-center gap-1.5 px-4 py-2 text-sm bg-[#21262d] hover:bg-[#30363d] text-[#c9d1d9] rounded-lg transition-colors"
+                        className="flex items-center gap-1.5 px-4 py-2 text-sm bg-[var(--bg-tertiary)] hover:bg-[var(--border)] text-[var(--text-primary)] rounded-lg transition-colors"
                         title="Open a local shell terminal"
                       >
                         <FileCode size={14} />
@@ -562,37 +562,37 @@ function App() {
                     </div>
                     <div className="mt-6 text-xs space-y-1 text-center">
                       <p>
-                        <kbd className="px-1.5 py-0.5 bg-[#21262d] rounded text-[#8b949e]">
+                        <kbd className="px-1.5 py-0.5 bg-[var(--bg-tertiary)] rounded text-[var(--text-secondary)]">
                           Ctrl+T
                         </kbd>{' '}
                         Quick Connect
                       </p>
                       <p>
-                        <kbd className="px-1.5 py-0.5 bg-[#21262d] rounded text-[#8b949e]">
+                        <kbd className="px-1.5 py-0.5 bg-[var(--bg-tertiary)] rounded text-[var(--text-secondary)]">
                           Ctrl+W
                         </kbd>{' '}
                         Close Tab
                       </p>
                       <p>
-                        <kbd className="px-1.5 py-0.5 bg-[#21262d] rounded text-[#8b949e]">
+                        <kbd className="px-1.5 py-0.5 bg-[var(--bg-tertiary)] rounded text-[var(--text-secondary)]">
                           Ctrl+F
                         </kbd>{' '}
                         Search
                       </p>
                       <p>
-                        <kbd className="px-1.5 py-0.5 bg-[#21262d] rounded text-[#8b949e]">
+                        <kbd className="px-1.5 py-0.5 bg-[var(--bg-tertiary)] rounded text-[var(--text-secondary)]">
                           Ctrl+Shift+E
                         </kbd>{' '}
                         Config Editor
                       </p>
                       <p>
-                        <kbd className="px-1.5 py-0.5 bg-[#21262d] rounded text-[#8b949e]">
+                        <kbd className="px-1.5 py-0.5 bg-[var(--bg-tertiary)] rounded text-[var(--text-secondary)]">
                           Ctrl+Shift+A
                         </kbd>{' '}
                         API Explorer
                       </p>
                       <p>
-                        <kbd className="px-1.5 py-0.5 bg-[#21262d] rounded text-[#8b949e]">
+                        <kbd className="px-1.5 py-0.5 bg-[var(--bg-tertiary)] rounded text-[var(--text-secondary)]">
                           Ctrl+Shift+I
                         </kbd>{' '}
                         AI Assistant

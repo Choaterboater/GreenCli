@@ -43,27 +43,27 @@ export default function SshAuthDialog({ onAuthenticate }: SshAuthDialogProps) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
-      <div className="w-[420px] bg-[#161b22] border border-[#30363d] rounded-xl shadow-2xl">
+      <div className="w-[420px] bg-[var(--bg-secondary)] border border-[var(--border)] rounded-xl shadow-2xl">
         {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-[#21262d]">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--bg-tertiary)]">
           <div className="flex items-center gap-2">
             <KeyRound size={18} className="text-[#58a6ff]" />
-            <h2 className="text-lg font-semibold text-[#c9d1d9]">
+            <h2 className="text-lg font-semibold text-[var(--text-primary)]">
               Authentication
             </h2>
           </div>
           <button
             onClick={() => setShowAuthDialog(false)}
-            className="p-1 rounded hover:bg-[#21262d] text-[#8b949e] hover:text-[#c9d1d9]"
+            className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
           >
             <X size={18} />
           </button>
         </div>
 
         {/* Target Info */}
-        <div className="px-5 py-3 bg-[#0d1117] border-b border-[#21262d]">
+        <div className="px-5 py-3 bg-[var(--bg-primary)] border-b border-[var(--bg-tertiary)]">
           <div className="flex items-center gap-2 text-sm">
-            <span className="text-[#8b949e]">Connecting to</span>
+            <span className="text-[var(--text-secondary)]">Connecting to</span>
             <span className="text-[#58a6ff] font-mono">
               {pendingConnection.username
                 ? `${pendingConnection.username}@`
@@ -78,7 +78,7 @@ export default function SshAuthDialog({ onAuthenticate }: SshAuthDialogProps) {
 
         <form onSubmit={handleSubmit} className="px-5 py-4 space-y-4">
           {/* Auth Type Tabs */}
-          <div className="flex gap-1 p-1 bg-[#0d1117] rounded-lg">
+          <div className="flex gap-1 p-1 bg-[var(--bg-primary)] rounded-lg">
             <button
               type="button"
               onClick={() => setAuthType('password')}
@@ -86,8 +86,8 @@ export default function SshAuthDialog({ onAuthenticate }: SshAuthDialogProps) {
                 flex-1 py-1.5 text-sm rounded-md transition-colors
                 ${
                   authType === 'password'
-                    ? 'bg-[#21262d] text-[#c9d1d9]'
-                    : 'text-[#8b949e] hover:text-[#c9d1d9]'
+                    ? 'bg-[var(--bg-tertiary)] text-[var(--text-primary)]'
+                    : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
                 }
               `}
             >
@@ -100,8 +100,8 @@ export default function SshAuthDialog({ onAuthenticate }: SshAuthDialogProps) {
                 flex-1 py-1.5 text-sm rounded-md transition-colors
                 ${
                   authType === 'key'
-                    ? 'bg-[#21262d] text-[#c9d1d9]'
-                    : 'text-[#8b949e] hover:text-[#c9d1d9]'
+                    ? 'bg-[var(--bg-tertiary)] text-[var(--text-primary)]'
+                    : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
                 }
               `}
             >
@@ -111,7 +111,7 @@ export default function SshAuthDialog({ onAuthenticate }: SshAuthDialogProps) {
 
           {authType === 'password' ? (
             <div>
-              <label className="block text-xs font-medium text-[#8b949e] mb-1.5">
+              <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1.5">
                 Password
               </label>
               <div className="relative">
@@ -121,12 +121,12 @@ export default function SshAuthDialog({ onAuthenticate }: SshAuthDialogProps) {
                   onChange={(e) => setPassword(e.target.value)}
                   autoFocus
                   required
-                  className="w-full h-9 pl-3 pr-10 bg-[#0d1117] border border-[#30363d] rounded-lg text-sm text-[#c9d1d9] focus:outline-none focus:border-[#58a6ff]"
+                  className="w-full h-9 pl-3 pr-10 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] focus:outline-none focus:border-[#58a6ff]"
                 />
                 <button
                   type="button"
                   onClick={() => setShowPassword(!showPassword)}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-[#8b949e] hover:text-[#c9d1d9]"
+                  className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
                 >
                   {showPassword ? <EyeOff size={14} /> : <Eye size={14} />}
                 </button>
@@ -135,7 +135,7 @@ export default function SshAuthDialog({ onAuthenticate }: SshAuthDialogProps) {
           ) : (
             <div className="space-y-3">
               <div>
-                <label className="block text-xs font-medium text-[#8b949e] mb-1.5">
+                <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1.5">
                   Private Key (PEM)
                 </label>
                 <textarea
@@ -144,11 +144,11 @@ export default function SshAuthDialog({ onAuthenticate }: SshAuthDialogProps) {
                   placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
                   rows={4}
                   required
-                  className="w-full px-3 py-2 bg-[#0d1117] border border-[#30363d] rounded-lg text-sm text-[#c9d1d9] placeholder-[#484f58] focus:outline-none focus:border-[#58a6ff] font-mono resize-none"
+                  className="w-full px-3 py-2 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[#58a6ff] font-mono resize-none"
                 />
               </div>
               <div>
-                <label className="block text-xs font-medium text-[#8b949e] mb-1.5">
+                <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1.5">
                   Key Passphrase (optional)
                 </label>
                 <div className="relative">
@@ -156,12 +156,12 @@ export default function SshAuthDialog({ onAuthenticate }: SshAuthDialogProps) {
                     type={showKeyPassphrase ? 'text' : 'password'}
                     value={keyPassphrase}
                     onChange={(e) => setKeyPassphrase(e.target.value)}
-                    className="w-full h-9 pl-3 pr-10 bg-[#0d1117] border border-[#30363d] rounded-lg text-sm text-[#c9d1d9] focus:outline-none focus:border-[#58a6ff]"
+                    className="w-full h-9 pl-3 pr-10 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] focus:outline-none focus:border-[#58a6ff]"
                   />
                   <button
                     type="button"
                     onClick={() => setShowKeyPassphrase(!showKeyPassphrase)}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-[#8b949e] hover:text-[#c9d1d9]"
+                    className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
                   >
                     {showKeyPassphrase ? (
                       <EyeOff size={14} />
@@ -180,9 +180,9 @@ export default function SshAuthDialog({ onAuthenticate }: SshAuthDialogProps) {
               type="checkbox"
               checked={saveCredential}
               onChange={(e) => setSaveCredential(e.target.checked)}
-              className="w-4 h-4 rounded border-[#30363d] bg-[#0d1117] text-[#238636] focus:ring-[#238636]"
+              className="w-4 h-4 rounded border-[var(--border)] bg-[var(--bg-primary)] text-[#238636] focus:ring-[#238636]"
             />
-            <span className="text-sm text-[#8b949e]">
+            <span className="text-sm text-[var(--text-secondary)]">
               Save credential to encrypted vault
             </span>
           </label>
@@ -192,14 +192,14 @@ export default function SshAuthDialog({ onAuthenticate }: SshAuthDialogProps) {
             <button
               type="button"
               onClick={() => setShowAuthDialog(false)}
-              className="flex-1 h-9 text-sm bg-[#21262d] hover:bg-[#30363d] text-[#c9d1d9] rounded-lg transition-colors"
+              className="flex-1 h-9 text-sm bg-[var(--bg-tertiary)] hover:bg-[var(--border)] text-[var(--text-primary)] rounded-lg transition-colors"
             >
               Cancel
             </button>
             <button
               type="submit"
               disabled={authType === 'password' ? !password : !privateKey}
-              className="flex-1 flex items-center justify-center gap-2 h-9 text-sm bg-[#238636] hover:bg-[#2ea043] disabled:bg-[#1c4f3e] disabled:text-[#484f58] text-white rounded-lg transition-colors"
+              className="flex-1 flex items-center justify-center gap-2 h-9 text-sm bg-[#238636] hover:bg-[#2ea043] disabled:bg-[#1c4f3e] disabled:text-[var(--text-muted)] text-white rounded-lg transition-colors"
             >
               <Lock size={14} />
               Authenticate

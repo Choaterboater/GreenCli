@@ -38,21 +38,21 @@ export default function SettingsPanel() {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
-      <div className="w-[520px] max-h-[80vh] bg-[#161b22] border border-[#30363d] rounded-xl shadow-2xl flex flex-col">
+      <div className="w-[520px] max-h-[80vh] bg-[var(--bg-secondary)] border border-[var(--border)] rounded-xl shadow-2xl flex flex-col">
         {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-[#21262d]">
-          <h2 className="text-lg font-semibold text-[#c9d1d9]">Settings</h2>
+        <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--bg-tertiary)]">
+          <h2 className="text-lg font-semibold text-[var(--text-primary)]">Settings</h2>
           <div className="flex items-center gap-2">
             <button
               onClick={() => settings.resetToDefaults()}
-              className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs bg-[#21262d] hover:bg-[#30363d] text-[#8b949e] rounded-lg transition-colors"
+              className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs bg-[var(--bg-tertiary)] hover:bg-[var(--border)] text-[var(--text-secondary)] rounded-lg transition-colors"
             >
               <RotateCcw size={12} />
               Reset
             </button>
             <button
               onClick={() => setShowSettings(false)}
-              className="p-1.5 rounded hover:bg-[#21262d] text-[#8b949e] hover:text-[#c9d1d9]"
+              className="p-1.5 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
             >
               <X size={16} />
             </button>
@@ -63,13 +63,13 @@ export default function SettingsPanel() {
         <div className="flex-1 overflow-y-auto px-5 py-4 space-y-5">
           {/* Appearance */}
           <section>
-            <h3 className="text-sm font-semibold text-[#c9d1d9] mb-3">
+            <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-3">
               Appearance
             </h3>
 
             {/* Theme */}
             <div className="mb-3">
-              <label className="block text-xs text-[#8b949e] mb-1.5">
+              <label className="block text-xs text-[var(--text-secondary)] mb-1.5">
                 Theme
               </label>
               <div className="flex gap-2">
@@ -79,8 +79,8 @@ export default function SettingsPanel() {
                     flex items-center gap-2 flex-1 py-2 rounded-lg border text-sm transition-colors
                     ${
                       settings.theme === 'dark'
-                        ? 'bg-[#21262d] border-[#58a6ff] text-[#c9d1d9]'
-                        : 'bg-[#0d1117] border-[#30363d] text-[#8b949e] hover:border-[#484f58]'
+                        ? 'bg-[var(--bg-tertiary)] border-[#58a6ff] text-[var(--text-primary)]'
+                        : 'bg-[var(--bg-primary)] border-[var(--border)] text-[var(--text-secondary)] hover:border-[var(--text-muted)]'
                     }
                   `}
                 >
@@ -94,7 +94,7 @@ export default function SettingsPanel() {
                     ${
                       settings.theme === 'light'
                         ? 'bg-[#ffffff] border-[#58a6ff] text-[#1f2328]'
-                        : 'bg-[#0d1117] border-[#30363d] text-[#8b949e] hover:border-[#484f58]'
+                        : 'bg-[var(--bg-primary)] border-[var(--border)] text-[var(--text-secondary)] hover:border-[var(--text-muted)]'
                     }
                   `}
                 >
@@ -107,7 +107,7 @@ export default function SettingsPanel() {
             {/* Font */}
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="block text-xs text-[#8b949e] mb-1.5">
+                <label className="block text-xs text-[var(--text-secondary)] mb-1.5">
                   Font Size
                 </label>
                 <div className="flex items-center gap-2">
@@ -121,19 +121,19 @@ export default function SettingsPanel() {
                     }
                     className="flex-1 accent-[#238636]"
                   />
-                  <span className="text-sm text-[#c9d1d9] w-6 text-right">
+                  <span className="text-sm text-[var(--text-primary)] w-6 text-right">
                     {settings.fontSize}
                   </span>
                 </div>
               </div>
               <div>
-                <label className="block text-xs text-[#8b949e] mb-1.5">
+                <label className="block text-xs text-[var(--text-secondary)] mb-1.5">
                   Font Family
                 </label>
                 <select
                   value={settings.fontFamily}
                   onChange={(e) => settings.setFontFamily(e.target.value)}
-                  className="w-full h-8 px-2 bg-[#0d1117] border border-[#30363d] rounded-lg text-sm text-[#c9d1d9] focus:outline-none focus:border-[#58a6ff]"
+                  className="w-full h-8 px-2 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] focus:outline-none focus:border-[#58a6ff]"
                 >
                   <option value="JetBrains Mono, Consolas, monospace">
                     JetBrains Mono
@@ -149,18 +149,18 @@ export default function SettingsPanel() {
             </div>
           </section>
 
-          <div className="border-t border-[#21262d]" />
+          <div className="border-t border-[var(--bg-tertiary)]" />
 
           {/* Terminal Behavior */}
           <section>
-            <h3 className="text-sm font-semibold text-[#c9d1d9] mb-3">
+            <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-3">
               Terminal
             </h3>
 
             <div className="grid grid-cols-2 gap-3 mb-3">
               {/* Cursor Style */}
               <div>
-                <label className="block text-xs text-[#8b949e] mb-1.5">
+                <label className="block text-xs text-[var(--text-secondary)] mb-1.5">
                   Cursor Style
                 </label>
                 <div className="flex gap-1">
@@ -172,8 +172,8 @@ export default function SettingsPanel() {
                         flex-1 py-1.5 text-xs rounded-md border capitalize transition-colors
                         ${
                           settings.cursorStyle === style
-                            ? 'bg-[#21262d] border-[#58a6ff] text-[#c9d1d9]'
-                            : 'bg-[#0d1117] border-[#30363d] text-[#8b949e] hover:border-[#484f58]'
+                            ? 'bg-[var(--bg-tertiary)] border-[#58a6ff] text-[var(--text-primary)]'
+                            : 'bg-[var(--bg-primary)] border-[var(--border)] text-[var(--text-secondary)] hover:border-[var(--text-muted)]'
                         }
                       `}
                     >
@@ -185,7 +185,7 @@ export default function SettingsPanel() {
 
               {/* Scrollback */}
               <div>
-                <label className="block text-xs text-[#8b949e] mb-1.5">
+                <label className="block text-xs text-[var(--text-secondary)] mb-1.5">
                   Scrollback Lines
                 </label>
                 <div className="flex items-center gap-2">
@@ -200,7 +200,7 @@ export default function SettingsPanel() {
                     }
                     className="flex-1 accent-[#238636]"
                   />
-                  <span className="text-xs text-[#c9d1d9] w-12 text-right">
+                  <span className="text-xs text-[var(--text-primary)] w-12 text-right">
                     {settings.scrollback >= 1000
                       ? `${settings.scrollback / 1000}K`
                       : settings.scrollback}
@@ -242,12 +242,12 @@ export default function SettingsPanel() {
                   key={label}
                   className="flex items-center justify-between cursor-pointer py-1"
                 >
-                  <span className="text-sm text-[#c9d1d9]">{label}</span>
+                  <span className="text-sm text-[var(--text-primary)]">{label}</span>
                   <div
                     onClick={() => onChange(!value)}
                     className={`
                       w-9 h-5 rounded-full transition-colors cursor-pointer relative
-                      ${value ? 'bg-[#238636]' : 'bg-[#30363d]'}
+                      ${value ? 'bg-[#238636]' : 'bg-[var(--border)]'}
                     `}
                   >
                     <div
@@ -265,15 +265,15 @@ export default function SettingsPanel() {
             </div>
           </section>
 
-          <div className="border-t border-[#21262d]" />
+          <div className="border-t border-[var(--bg-tertiary)]" />
 
           {/* Connection */}
           <section>
-            <h3 className="text-sm font-semibold text-[#c9d1d9] mb-3">
+            <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-3">
               Connection
             </h3>
             <div>
-              <label className="block text-xs text-[#8b949e] mb-1.5">
+              <label className="block text-xs text-[var(--text-secondary)] mb-1.5">
                 Keep-Alive Interval (seconds)
               </label>
               <div className="flex items-center gap-2">
@@ -287,24 +287,24 @@ export default function SettingsPanel() {
                   }
                   className="flex-1 accent-[#238636]"
                 />
-                <span className="text-sm text-[#c9d1d9] w-8 text-right">
+                <span className="text-sm text-[var(--text-primary)] w-8 text-right">
                   {settings.keepAliveInterval}
                 </span>
               </div>
             </div>
           </section>
 
-          <div className="border-t border-[#21262d]" />
+          <div className="border-t border-[var(--bg-tertiary)]" />
 
           {/* AI */}
           <section>
-            <h3 className="text-sm font-semibold text-[#c9d1d9] mb-3">
+            <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-3">
               AI Assistant
             </h3>
             <div className="space-y-3">
               {/* Provider selector */}
               <div>
-                <label className="block text-xs text-[#8b949e] mb-1.5">Provider</label>
+                <label className="block text-xs text-[var(--text-secondary)] mb-1.5">Provider</label>
                 <div className="grid grid-cols-3 gap-2">
                   {AI_PROVIDERS.map((p) => (
                     <button
@@ -312,8 +312,8 @@ export default function SettingsPanel() {
                       onClick={() => settings.setAiProvider(p.value)}
                       className={`py-2 text-[11px] rounded-lg border transition-colors ${
                         settings.aiProvider === p.value
-                          ? 'bg-[#21262d] border-[#58a6ff] text-[#c9d1d9]'
-                          : 'bg-[#0d1117] border-[#30363d] text-[#8b949e] hover:border-[#484f58]'
+                          ? 'bg-[var(--bg-tertiary)] border-[#58a6ff] text-[var(--text-primary)]'
+                          : 'bg-[var(--bg-primary)] border-[var(--border)] text-[var(--text-secondary)] hover:border-[var(--text-muted)]'
                       }`}
                     >
                       {p.label}
@@ -325,7 +325,7 @@ export default function SettingsPanel() {
               {/* Key-based providers: API key (stored in Rust, never in localStorage) */}
               {providerMeta?.needsKey && (
                 <div>
-                  <label className="block text-xs text-[#8b949e] mb-1.5 flex items-center gap-1.5">
+                  <label className="block text-xs text-[var(--text-secondary)] mb-1.5 flex items-center gap-1.5">
                     API Key
                     {keySaved && (
                       <span className="flex items-center gap-1 text-[#3fb950]">
@@ -340,17 +340,17 @@ export default function SettingsPanel() {
                       onChange={(e) => setKeyInput(e.target.value)}
                       onBlur={saveKey}
                       placeholder={keySaved ? '•••••••• (saved — type to replace)' : 'Enter API key'}
-                      className="w-full h-8 px-2 pr-8 bg-[#0d1117] border border-[#30363d] rounded-lg text-sm text-[#c9d1d9] placeholder-[#484f58] focus:outline-none focus:border-[#58a6ff] font-mono"
+                      className="w-full h-8 px-2 pr-8 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[#58a6ff] font-mono"
                     />
                     <button
                       type="button"
                       onClick={() => setShowApiKey(!showApiKey)}
-                      className="absolute right-2 top-1/2 -translate-y-1/2 text-[#484f58] hover:text-[#8b949e]"
+                      className="absolute right-2 top-1/2 -translate-y-1/2 text-[var(--text-muted)] hover:text-[var(--text-secondary)]"
                     >
                       {showApiKey ? <EyeOff size={12} /> : <Eye size={12} />}
                     </button>
                   </div>
-                  <p className="text-[10px] text-[#484f58] mt-1">
+                  <p className="text-[10px] text-[var(--text-muted)] mt-1">
                     Stored in the app data dir (outside the browser), sent only to the provider from the Rust backend.
                   </p>
                 </div>
@@ -359,11 +359,11 @@ export default function SettingsPanel() {
               {/* Model for key-based providers */}
               {providerMeta?.needsKey && aiProvider === 'anthropic' && (
                 <div>
-                  <label className="block text-xs text-[#8b949e] mb-1.5">Model</label>
+                  <label className="block text-xs text-[var(--text-secondary)] mb-1.5">Model</label>
                   <select
                     value={settings.aiModel}
                     onChange={(e) => settings.setAiModel(e.target.value)}
-                    className="w-full h-8 px-2 bg-[#0d1117] border border-[#30363d] rounded-lg text-sm text-[#c9d1d9] focus:outline-none focus:border-[#58a6ff]"
+                    className="w-full h-8 px-2 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] focus:outline-none focus:border-[#58a6ff]"
                   >
                     <option value="claude-sonnet-4-6">Claude Sonnet 4.6 (Recommended)</option>
                     <option value="claude-opus-4-7">Claude Opus 4.7 (Most capable)</option>
@@ -373,31 +373,31 @@ export default function SettingsPanel() {
               )}
               {aiProvider === 'openrouter' && (
                 <div>
-                  <label className="block text-xs text-[#8b949e] mb-1.5">Model</label>
+                  <label className="block text-xs text-[var(--text-secondary)] mb-1.5">Model</label>
                   <input
                     type="text"
                     value={settings.openrouterModel}
                     onChange={(e) => settings.setOpenrouterModel(e.target.value)}
                     placeholder="e.g. anthropic/claude-3.5-sonnet"
-                    className="w-full h-8 px-2 bg-[#0d1117] border border-[#30363d] rounded-lg text-sm text-[#c9d1d9] placeholder-[#484f58] focus:outline-none focus:border-[#58a6ff] font-mono"
+                    className="w-full h-8 px-2 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[#58a6ff] font-mono"
                   />
-                  <p className="text-[10px] text-[#484f58] mt-1">
-                    Any OpenRouter model id (see openrouter.ai/models), e.g. <code className="text-[#c9d1d9]">openai/gpt-4o</code>, <code className="text-[#c9d1d9]">meta-llama/llama-3.1-70b-instruct</code>.
+                  <p className="text-[10px] text-[var(--text-muted)] mt-1">
+                    Any OpenRouter model id (see openrouter.ai/models), e.g. <code className="text-[var(--text-primary)]">openai/gpt-4o</code>, <code className="text-[var(--text-primary)]">meta-llama/llama-3.1-70b-instruct</code>.
                   </p>
                 </div>
               )}
               {aiProvider === 'moonshot' && (
                 <div>
-                  <label className="block text-xs text-[#8b949e] mb-1.5">Model</label>
+                  <label className="block text-xs text-[var(--text-secondary)] mb-1.5">Model</label>
                   <input
                     type="text"
                     value={settings.moonshotModel}
                     onChange={(e) => settings.setMoonshotModel(e.target.value)}
                     placeholder="e.g. kimi-k2-0905-preview"
-                    className="w-full h-8 px-2 bg-[#0d1117] border border-[#30363d] rounded-lg text-sm text-[#c9d1d9] placeholder-[#484f58] focus:outline-none focus:border-[#58a6ff] font-mono"
+                    className="w-full h-8 px-2 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[#58a6ff] font-mono"
                   />
-                  <p className="text-[10px] text-[#484f58] mt-1">
-                    A Moonshot/Kimi model id (see platform.moonshot.ai), e.g. <code className="text-[#c9d1d9]">moonshot-v1-8k</code>.
+                  <p className="text-[10px] text-[var(--text-muted)] mt-1">
+                    A Moonshot/Kimi model id (see platform.moonshot.ai), e.g. <code className="text-[var(--text-primary)]">moonshot-v1-8k</code>.
                   </p>
                 </div>
               )}
@@ -405,7 +405,7 @@ export default function SettingsPanel() {
               {/* Local CLI settings — no API key; the CLI handles its own login */}
               {aiProvider === 'local-cli' && (
                 <div>
-                  <label className="block text-xs text-[#8b949e] mb-1.5">CLI Command</label>
+                  <label className="block text-xs text-[var(--text-secondary)] mb-1.5">CLI Command</label>
                   <div className="flex gap-2 mb-2">
                     {AI_CLI_PRESETS.map((p) => (
                       <button
@@ -413,8 +413,8 @@ export default function SettingsPanel() {
                         onClick={() => settings.setLocalCliCommand(p.command)}
                         className={`flex-1 py-1.5 text-[11px] rounded-lg border transition-colors ${
                           settings.localCliCommand === p.command
-                            ? 'bg-[#21262d] border-[#58a6ff] text-[#c9d1d9]'
-                            : 'bg-[#0d1117] border-[#30363d] text-[#8b949e] hover:border-[#484f58]'
+                            ? 'bg-[var(--bg-tertiary)] border-[#58a6ff] text-[var(--text-primary)]'
+                            : 'bg-[var(--bg-primary)] border-[var(--border)] text-[var(--text-secondary)] hover:border-[var(--text-muted)]'
                         }`}
                       >
                         {p.label}
@@ -426,10 +426,10 @@ export default function SettingsPanel() {
                     value={settings.localCliCommand}
                     onChange={(e) => settings.setLocalCliCommand(e.target.value)}
                     placeholder="claude -p"
-                    className="w-full h-8 px-2 bg-[#0d1117] border border-[#30363d] rounded-lg text-sm text-[#c9d1d9] placeholder-[#484f58] focus:outline-none focus:border-[#58a6ff] font-mono"
+                    className="w-full h-8 px-2 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[#58a6ff] font-mono"
                   />
-                  <p className="text-[10px] text-[#484f58] mt-1">
-                    Runs a locally-installed CLI one-shot with the prompt on stdin — <span className="text-[#3fb950]">no API key needed</span> (the CLI uses its own login). E.g. <code className="text-[#c9d1d9]">claude -p</code>, <code className="text-[#c9d1d9]">kimi</code>, <code className="text-[#c9d1d9]">copilot -p</code>.
+                  <p className="text-[10px] text-[var(--text-muted)] mt-1">
+                    Runs a locally-installed CLI one-shot with the prompt on stdin — <span className="text-[#3fb950]">no API key needed</span> (the CLI uses its own login). E.g. <code className="text-[var(--text-primary)]">claude -p</code>, <code className="text-[var(--text-primary)]">kimi</code>, <code className="text-[var(--text-primary)]">copilot -p</code>.
                   </p>
                 </div>
               )}
@@ -438,26 +438,26 @@ export default function SettingsPanel() {
               {settings.aiProvider === 'ollama' && (
                 <>
                   <div>
-                    <label className="block text-xs text-[#8b949e] mb-1.5">Ollama URL</label>
+                    <label className="block text-xs text-[var(--text-secondary)] mb-1.5">Ollama URL</label>
                     <input
                       type="text"
                       value={settings.ollamaUrl}
                       onChange={(e) => settings.setOllamaUrl(e.target.value)}
                       placeholder="http://localhost:11434"
-                      className="w-full h-8 px-2 bg-[#0d1117] border border-[#30363d] rounded-lg text-sm text-[#c9d1d9] placeholder-[#484f58] focus:outline-none focus:border-[#58a6ff] font-mono"
+                      className="w-full h-8 px-2 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[#58a6ff] font-mono"
                     />
                   </div>
                   <div>
-                    <label className="block text-xs text-[#8b949e] mb-1.5">Model</label>
+                    <label className="block text-xs text-[var(--text-secondary)] mb-1.5">Model</label>
                     <input
                       type="text"
                       value={settings.ollamaModel}
                       onChange={(e) => settings.setOllamaModel(e.target.value)}
                       placeholder="llama3.2"
-                      className="w-full h-8 px-2 bg-[#0d1117] border border-[#30363d] rounded-lg text-sm text-[#c9d1d9] placeholder-[#484f58] focus:outline-none focus:border-[#58a6ff] font-mono"
+                      className="w-full h-8 px-2 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[#58a6ff] font-mono"
                     />
-                    <p className="text-[10px] text-[#484f58] mt-1">
-                      Run <code className="text-[#c9d1d9]">ollama list</code> to see installed models. Recommended: llama3.2, mistral, codellama
+                    <p className="text-[10px] text-[var(--text-muted)] mt-1">
+                      Run <code className="text-[var(--text-primary)]">ollama list</code> to see installed models. Recommended: llama3.2, mistral, codellama
                     </p>
                   </div>
                 </>

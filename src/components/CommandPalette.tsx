@@ -174,25 +174,25 @@ export default function CommandPalette({ onConnect, onLocalShell }: CommandPalet
   return (
     <div className="fixed inset-0 z-[60] flex items-start justify-center pt-[12vh] bg-black/50 backdrop-blur-sm" onClick={close}>
       <div
-        className="w-[560px] max-w-[90vw] bg-[#161b22] border border-[#30363d] rounded-xl shadow-2xl overflow-hidden"
+        className="w-[560px] max-w-[90vw] bg-[var(--bg-secondary)] border border-[var(--border)] rounded-xl shadow-2xl overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center gap-2 px-3 py-2.5 border-b border-[#21262d]">
-          <Search size={15} className="text-[#8b949e]" />
+        <div className="flex items-center gap-2 px-3 py-2.5 border-b border-[var(--bg-tertiary)]">
+          <Search size={15} className="text-[var(--text-secondary)]" />
           <input
             autoFocus
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={onKeyDown}
             placeholder="Type a command or search sessions…"
-            className="flex-1 bg-transparent text-sm text-[#c9d1d9] placeholder-[#484f58] focus:outline-none"
+            className="flex-1 bg-transparent text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none"
           />
-          <kbd className="text-[10px] text-[#484f58] border border-[#30363d] rounded px-1">esc</kbd>
+          <kbd className="text-[10px] text-[var(--text-muted)] border border-[var(--border)] rounded px-1">esc</kbd>
         </div>
 
         <div ref={listRef} className="max-h-[50vh] overflow-y-auto py-1">
           {filtered.length === 0 && (
-            <p className="px-4 py-6 text-center text-xs text-[#484f58]">No matching commands</p>
+            <p className="px-4 py-6 text-center text-xs text-[var(--text-muted)]">No matching commands</p>
           )}
           {filtered.map((a, i) => (
             <button
@@ -201,17 +201,17 @@ export default function CommandPalette({ onConnect, onLocalShell }: CommandPalet
               onMouseEnter={() => setSelected(i)}
               onClick={() => runAt(i)}
               className={`flex items-center gap-3 w-full px-4 py-2 text-left transition-colors ${
-                i === selected ? 'bg-[#1f6feb33]' : 'hover:bg-[#21262d]'
+                i === selected ? 'bg-[#1f6feb33]' : 'hover:bg-[var(--bg-tertiary)]'
               }`}
             >
-              <span className="text-[#8b949e] flex-shrink-0">{a.icon}</span>
-              <span className="flex-1 text-sm text-[#c9d1d9] truncate">{a.label}</span>
+              <span className="text-[var(--text-secondary)] flex-shrink-0">{a.icon}</span>
+              <span className="flex-1 text-sm text-[var(--text-primary)] truncate">{a.label}</span>
               {a.hint && (
-                <kbd className="text-[10px] text-[#484f58] border border-[#30363d] rounded px-1 flex-shrink-0">
+                <kbd className="text-[10px] text-[var(--text-muted)] border border-[var(--border)] rounded px-1 flex-shrink-0">
                   {a.hint}
                 </kbd>
               )}
-              {i === selected && <CornerDownLeft size={12} className="text-[#484f58] flex-shrink-0" />}
+              {i === selected && <CornerDownLeft size={12} className="text-[var(--text-muted)] flex-shrink-0" />}
             </button>
           ))}
         </div>
