@@ -255,11 +255,11 @@ export default function ApiExplorer() {
   // Collapsed mode
   if (collapsed) {
     return (
-      <div className="w-10 flex-shrink-0 flex flex-col items-center py-3 bg-[#0d1117] border-l border-[#21262d] gap-3">
-        <button onClick={() => setCollapsed(false)} className="p-2 rounded-lg hover:bg-[#21262d] text-[#58a6ff] transition-colors" title="Expand API Explorer">
+      <div className="w-10 flex-shrink-0 flex flex-col items-center py-3 bg-[var(--bg-primary)] border-l border-[var(--bg-tertiary)] gap-3">
+        <button onClick={() => setCollapsed(false)} className="p-2 rounded-lg hover:bg-[var(--bg-tertiary)] text-[#58a6ff] transition-colors" title="Expand API Explorer">
           <Globe size={18} />
         </button>
-        <button onClick={toggleApiExplorer} className="p-2 rounded-lg hover:bg-[#21262d] text-[#8b949e] hover:text-[#ff7b72] transition-colors" title="Close">
+        <button onClick={toggleApiExplorer} className="p-2 rounded-lg hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[#ff7b72] transition-colors" title="Close">
           <X size={16} />
         </button>
       </div>
@@ -267,14 +267,14 @@ export default function ApiExplorer() {
   }
 
   return (
-    <div className="flex-shrink-0 flex flex-col bg-[#0d1117] border-l border-[#21262d] overflow-hidden relative" style={{ width: panelWidth }}>
+    <div className="flex-shrink-0 flex flex-col bg-[var(--bg-primary)] border-l border-[var(--bg-tertiary)] overflow-hidden relative" style={{ width: panelWidth }}>
       {/* Drag Handle */}
       <div className={`absolute left-0 top-0 bottom-0 w-1 cursor-col-resize z-10 ${isDragging ? 'bg-[#58a6ff]' : 'bg-transparent hover:bg-[#58a6ff60]'} transition-colors`} onMouseDown={handleDragStart} />
       {/* Header */}
-      <div className="flex items-center justify-between h-10 px-3 pl-4 border-b border-[#21262d] bg-[#161b22]">
+      <div className="flex items-center justify-between h-10 px-3 pl-4 border-b border-[var(--bg-tertiary)] bg-[var(--bg-secondary)]">
         <div className="flex items-center gap-2">
           <Globe size={14} className="text-[#58a6ff]" />
-          <span className="text-xs font-semibold text-[#c9d1d9] uppercase tracking-wider">
+          <span className="text-xs font-semibold text-[var(--text-primary)] uppercase tracking-wider">
             API Explorer
           </span>
           {loading && (
@@ -282,20 +282,20 @@ export default function ApiExplorer() {
           )}
         </div>
         <div className="flex items-center gap-1">
-          <button onClick={() => setCollapsed(true)} className="p-1 rounded hover:bg-[#21262d] text-[#8b949e] hover:text-[#c9d1d9]" title="Collapse">
+          <button onClick={() => setCollapsed(true)} className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]" title="Collapse">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M15 3v18"/></svg>
           </button>
-          <button onClick={toggleApiExplorer} className="p-1 rounded hover:bg-[#21262d] text-[#8b949e] hover:text-[#ff7b72]" title="Close">
+          <button onClick={toggleApiExplorer} className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[#ff7b72]" title="Close">
             <X size={14} />
           </button>
         </div>
       </div>
 
       {/* Connection Selector */}
-      <div className="px-3 py-2 border-b border-[#21262d] bg-[#161b22]">
+      <div className="px-3 py-2 border-b border-[var(--bg-tertiary)] bg-[var(--bg-secondary)]">
         <div className="flex items-center gap-2 mb-2">
-          <Link2 size={12} className="text-[#8b949e]" />
-          <span className="text-xs text-[#8b949e]">Connection</span>
+          <Link2 size={12} className="text-[var(--text-secondary)]" />
+          <span className="text-xs text-[var(--text-secondary)]">Connection</span>
           {connections.length > 0 && (
             <select
               value={activeConnectionId || ''}
@@ -305,7 +305,7 @@ export default function ApiExplorer() {
                 const conn = connections.find((c) => c.id === id);
                 if (conn) setUrl(conn.baseUrl);
               }}
-              className="flex-1 text-xs bg-[#0d1117] border border-[#30363d] rounded px-2 py-1 text-[#c9d1d9] focus:outline-none focus:border-[#58a6ff]"
+              className="flex-1 text-xs bg-[var(--bg-primary)] border border-[var(--border)] rounded px-2 py-1 text-[var(--text-primary)] focus:outline-none focus:border-[#58a6ff]"
             >
               <option value="">-- Select --</option>
               {connections.map((c) => (
@@ -324,7 +324,7 @@ export default function ApiExplorer() {
           {activeConnection && (
             <button
               onClick={() => removeConnection(activeConnection.id)}
-              className="p-1 rounded hover:bg-[#21262d] text-[#ff7b72]"
+              className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[#ff7b72]"
             >
               <Trash2 size={12} />
             </button>
@@ -332,11 +332,11 @@ export default function ApiExplorer() {
         </div>
 
         {showNewConnection && (
-          <div className="space-y-2 p-2 bg-[#0d1117] border border-[#30363d] rounded">
+          <div className="space-y-2 p-2 bg-[var(--bg-primary)] border border-[var(--border)] rounded">
             {activeSession && (
               <button
                 onClick={handleAutofillSession}
-                className="w-full px-2 py-1 text-xs bg-[#21262d] hover:bg-[#30363d] text-[#58a6ff] rounded transition-colors"
+                className="w-full px-2 py-1 text-xs bg-[var(--bg-tertiary)] hover:bg-[var(--border)] text-[#58a6ff] rounded transition-colors"
               >
                 Autofill from active session ({activeSession.config.host})
               </button>
@@ -345,26 +345,26 @@ export default function ApiExplorer() {
               placeholder="Host (e.g. 192.168.1.10)"
               value={newConnHost}
               onChange={(e) => setNewConnHost(e.target.value)}
-              className="w-full text-xs bg-[#161b22] border border-[#30363d] rounded px-2 py-1.5 text-[#c9d1d9] placeholder-[#484f58] focus:outline-none focus:border-[#58a6ff]"
+              className="w-full text-xs bg-[var(--bg-secondary)] border border-[var(--border)] rounded px-2 py-1.5 text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[#58a6ff]"
             />
             <input
               placeholder="Name (optional)"
               value={newConnName}
               onChange={(e) => setNewConnName(e.target.value)}
-              className="w-full text-xs bg-[#161b22] border border-[#30363d] rounded px-2 py-1.5 text-[#c9d1d9] placeholder-[#484f58] focus:outline-none focus:border-[#58a6ff]"
+              className="w-full text-xs bg-[var(--bg-secondary)] border border-[var(--border)] rounded px-2 py-1.5 text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[#58a6ff]"
             />
             <input
               placeholder="Username"
               value={newConnUser}
               onChange={(e) => setNewConnUser(e.target.value)}
-              className="w-full text-xs bg-[#161b22] border border-[#30363d] rounded px-2 py-1.5 text-[#c9d1d9] placeholder-[#484f58] focus:outline-none focus:border-[#58a6ff]"
+              className="w-full text-xs bg-[var(--bg-secondary)] border border-[var(--border)] rounded px-2 py-1.5 text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[#58a6ff]"
             />
             <input
               type="password"
               placeholder="Password"
               value={newConnPass}
               onChange={(e) => setNewConnPass(e.target.value)}
-              className="w-full text-xs bg-[#161b22] border border-[#30363d] rounded px-2 py-1.5 text-[#c9d1d9] placeholder-[#484f58] focus:outline-none focus:border-[#58a6ff]"
+              className="w-full text-xs bg-[var(--bg-secondary)] border border-[var(--border)] rounded px-2 py-1.5 text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[#58a6ff]"
             />
             <label className="flex items-center gap-2 cursor-pointer select-none">
               <input
@@ -373,7 +373,7 @@ export default function ApiExplorer() {
                 onChange={(e) => setVerifyTls(e.target.checked)}
                 className="w-3.5 h-3.5 rounded accent-[#238636]"
               />
-              <span className="text-[11px] text-[#8b949e]">
+              <span className="text-[11px] text-[var(--text-secondary)]">
                 Verify TLS certificate (off = allow self-signed, default for switches)
               </span>
             </label>
@@ -388,29 +388,29 @@ export default function ApiExplorer() {
       </div>
 
       {/* Endpoint Tree */}
-      <div className="flex-1 overflow-y-auto border-b border-[#21262d]">
-        <div className="px-3 py-1.5 text-xs font-semibold text-[#8b949e] uppercase tracking-wider bg-[#161b22]">
+      <div className="flex-1 overflow-y-auto border-b border-[var(--bg-tertiary)]">
+        <div className="px-3 py-1.5 text-xs font-semibold text-[var(--text-secondary)] uppercase tracking-wider bg-[var(--bg-secondary)]">
           Endpoints
         </div>
         {Object.entries(groupedEndpoints).map(([category, endpoints]) => (
           <div key={category}>
             <button
               onClick={() => toggleCategory(category)}
-              className="flex items-center gap-1.5 w-full px-3 py-1.5 text-left hover:bg-[#161b22] transition-colors"
+              className="flex items-center gap-1.5 w-full px-3 py-1.5 text-left hover:bg-[var(--bg-secondary)] transition-colors"
             >
               {expandedCategories.has(category) ? (
-                <ChevronDown size={12} className="text-[#8b949e]" />
+                <ChevronDown size={12} className="text-[var(--text-secondary)]" />
               ) : (
-                <ChevronRight size={12} className="text-[#8b949e]" />
+                <ChevronRight size={12} className="text-[var(--text-secondary)]" />
               )}
               {CATEGORY_ICONS[category]}
               <span
                 className="text-xs font-medium"
-                style={{ color: CATEGORY_COLORS[category] || '#8b949e' }}
+                style={{ color: CATEGORY_COLORS[category] || 'var(--text-secondary)' }}
               >
                 {category}
               </span>
-              <span className="ml-auto text-[10px] text-[#484f58]">
+              <span className="ml-auto text-[10px] text-[var(--text-muted)]">
                 {endpoints.length}
               </span>
             </button>
@@ -420,7 +420,7 @@ export default function ApiExplorer() {
                 <button
                   key={`${ep.method}-${ep.path}-${ep.name}`}
                   onClick={() => selectEndpoint(ep)}
-                  className="flex items-start gap-2 w-full px-6 py-1.5 text-left hover:bg-[#161b22] transition-colors group"
+                  className="flex items-start gap-2 w-full px-6 py-1.5 text-left hover:bg-[var(--bg-secondary)] transition-colors group"
                 >
                   <span
                     className="text-[10px] font-bold px-1 rounded flex-shrink-0 mt-0.5"
@@ -432,10 +432,10 @@ export default function ApiExplorer() {
                     {ep.method}
                   </span>
                   <div className="flex-1 min-w-0">
-                    <div className="text-xs text-[#c9d1d9] group-hover:text-white truncate">
+                    <div className="text-xs text-[var(--text-primary)] group-hover:text-white truncate">
                       {ep.name}
                     </div>
-                    <div className="text-[10px] text-[#484f58] truncate">
+                    <div className="text-[10px] text-[var(--text-muted)] truncate">
                       {ep.path}
                     </div>
                   </div>
@@ -446,14 +446,14 @@ export default function ApiExplorer() {
       </div>
 
       {/* Request Builder */}
-      <div className="px-3 py-2 border-b border-[#21262d] space-y-2">
+      <div className="px-3 py-2 border-b border-[var(--bg-tertiary)] space-y-2">
         <div className="flex items-center gap-2">
           <select
             value={method}
             onChange={(e) =>
               setMethod(e.target.value as 'GET' | 'POST' | 'PUT' | 'DELETE')
             }
-            className="text-xs bg-[#161b22] border border-[#30363d] rounded px-2 py-1.5 text-[#c9d1d9] focus:outline-none focus:border-[#58a6ff]"
+            className="text-xs bg-[var(--bg-secondary)] border border-[var(--border)] rounded px-2 py-1.5 text-[var(--text-primary)] focus:outline-none focus:border-[#58a6ff]"
           >
             <option value="GET">GET</option>
             <option value="POST">POST</option>
@@ -464,14 +464,14 @@ export default function ApiExplorer() {
             value={url}
             onChange={(e) => setUrl(e.target.value)}
             placeholder="Base URL (e.g. https://192.168.1.10/rest/v10.09)"
-            className="flex-1 text-xs bg-[#161b22] border border-[#30363d] rounded px-2 py-1.5 text-[#c9d1d9] placeholder-[#484f58] focus:outline-none focus:border-[#58a6ff]"
+            className="flex-1 text-xs bg-[var(--bg-secondary)] border border-[var(--border)] rounded px-2 py-1.5 text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[#58a6ff]"
           />
         </div>
         <input
           value={endpointPath}
           onChange={(e) => setEndpointPath(e.target.value)}
           placeholder="Endpoint path (e.g. /system/interfaces)"
-          className="w-full text-xs bg-[#161b22] border border-[#30363d] rounded px-2 py-1.5 text-[#c9d1d9] placeholder-[#484f58] focus:outline-none focus:border-[#58a6ff]"
+          className="w-full text-xs bg-[var(--bg-secondary)] border border-[var(--border)] rounded px-2 py-1.5 text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[#58a6ff]"
         />
         {(method === 'POST' || method === 'PUT') && (
           <textarea
@@ -480,7 +480,7 @@ export default function ApiExplorer() {
             onChange={(e) => setRequestBody(e.target.value)}
             placeholder='Request body (JSON)...'
             rows={3}
-            className="w-full text-xs bg-[#161b22] border border-[#30363d] rounded px-2 py-1.5 text-[#c9d1d9] placeholder-[#484f58] focus:outline-none focus:border-[#58a6ff] font-mono resize-none"
+            className="w-full text-xs bg-[var(--bg-secondary)] border border-[var(--border)] rounded px-2 py-1.5 text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[#58a6ff] font-mono resize-none"
           />
         )}
         <button
@@ -506,7 +506,7 @@ export default function ApiExplorer() {
       <div className="flex-1 flex flex-col overflow-hidden min-h-[160px]">
         {response && (
           <>
-            <div className="flex items-center justify-between px-3 py-1.5 border-b border-[#21262d] bg-[#161b22]">
+            <div className="flex items-center justify-between px-3 py-1.5 border-b border-[var(--bg-tertiary)] bg-[var(--bg-secondary)]">
               <div className="flex items-center gap-2">
                 {response.status >= 200 && response.status < 300 ? (
                   <CheckCircle2 size={12} className="text-[#3fb950]" />
@@ -528,14 +528,14 @@ export default function ApiExplorer() {
                 >
                   {response.status || 'Error'}
                 </span>
-                <span className="flex items-center gap-1 text-[10px] text-[#484f58]">
+                <span className="flex items-center gap-1 text-[10px] text-[var(--text-muted)]">
                   <Clock size={10} />
                   {response.duration}ms
                 </span>
               </div>
               <button
                 onClick={copyResponse}
-                className="flex items-center gap-1 px-2 py-0.5 text-[10px] text-[#8b949e] hover:text-[#c9d1d9] hover:bg-[#21262d] rounded transition-colors"
+                className="flex items-center gap-1 px-2 py-0.5 text-[10px] text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] rounded transition-colors"
               >
                 {copied ? (
                   <>
@@ -550,15 +550,15 @@ export default function ApiExplorer() {
                 )}
               </button>
             </div>
-            <div className="flex-1 overflow-auto p-3 bg-[#0d1117]">
-              <pre className="text-[11px] font-mono text-[#c9d1d9] whitespace-pre-wrap break-all">
+            <div className="flex-1 overflow-auto p-3 bg-[var(--bg-primary)]">
+              <pre className="text-[11px] font-mono text-[var(--text-primary)] whitespace-pre-wrap break-all">
                 <code>{JSON.stringify(response.body, null, 2)}</code>
               </pre>
             </div>
           </>
         )}
         {!response && !error && (
-          <div className="flex-1 flex flex-col items-center justify-center text-[#484f58]">
+          <div className="flex-1 flex flex-col items-center justify-center text-[var(--text-muted)]">
             <Globe size={24} className="mb-2 opacity-30" />
             <p className="text-xs">Select an endpoint and execute</p>
           </div>

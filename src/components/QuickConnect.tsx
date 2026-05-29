@@ -104,15 +104,15 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
-      <div className="w-[480px] bg-[#161b22] border border-[#30363d] rounded-xl shadow-2xl">
+      <div className="w-[480px] bg-[var(--bg-secondary)] border border-[var(--border)] rounded-xl shadow-2xl">
         {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-[#21262d]">
-          <h2 className="text-lg font-semibold text-[#c9d1d9]">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--bg-tertiary)]">
+          <h2 className="text-lg font-semibold text-[var(--text-primary)]">
             Quick Connect
           </h2>
           <button
             onClick={() => setShowQuickConnect(false)}
-            className="p-1 rounded hover:bg-[#21262d] text-[#8b949e] hover:text-[#c9d1d9]"
+            className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
           >
             <X size={18} />
           </button>
@@ -122,7 +122,7 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
         <form onSubmit={handleSubmit} className="px-5 py-4 space-y-4">
           {/* Protocol */}
           <div>
-            <label className="block text-xs font-medium text-[#8b949e] mb-1.5">
+            <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1.5">
               Protocol
             </label>
             <div className="flex gap-2">
@@ -136,7 +136,7 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
                     ${
                       protocol === p.value
                         ? 'bg-[#238636] border-[#238636] text-white'
-                        : 'bg-[#0d1117] border-[#30363d] text-[#8b949e] hover:border-[#58a6ff] hover:text-[#c9d1d9]'
+                        : 'bg-[var(--bg-primary)] border-[var(--border)] text-[var(--text-secondary)] hover:border-[#58a6ff] hover:text-[var(--text-primary)]'
                     }
                   `}
                 >
@@ -151,7 +151,7 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
             {isHostBased ? (
               <>
                 <div className="col-span-2">
-                  <label className="block text-xs font-medium text-[#8b949e] mb-1.5">
+                  <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1.5">
                     Host
                   </label>
                   <input
@@ -160,11 +160,11 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
                     onChange={(e) => setHost(e.target.value)}
                     placeholder="192.168.1.1"
                     required
-                    className="w-full h-9 px-3 bg-[#0d1117] border border-[#30363d] rounded-lg text-sm text-[#c9d1d9] placeholder-[#484f58] focus:outline-none focus:border-[#58a6ff]"
+                    className="w-full h-9 px-3 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[#58a6ff]"
                   />
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-[#8b949e] mb-1.5">
+                  <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1.5">
                     Port
                   </label>
                   <input
@@ -173,14 +173,14 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
                     onChange={(e) => setPort(Number(e.target.value))}
                     min={1}
                     max={65535}
-                    className="w-full h-9 px-3 bg-[#0d1117] border border-[#30363d] rounded-lg text-sm text-[#c9d1d9] focus:outline-none focus:border-[#58a6ff]"
+                    className="w-full h-9 px-3 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] focus:outline-none focus:border-[#58a6ff]"
                   />
                 </div>
               </>
             ) : protocol === 'serial' ? (
               <>
                 <div className="col-span-2">
-                  <label className="block text-xs font-medium text-[#8b949e] mb-1.5">
+                  <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1.5">
                     Serial Port
                   </label>
                   <input
@@ -189,17 +189,17 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
                     onChange={(e) => setSerialPort(e.target.value)}
                     placeholder="/dev/ttyUSB0"
                     required
-                    className="w-full h-9 px-3 bg-[#0d1117] border border-[#30363d] rounded-lg text-sm text-[#c9d1d9] placeholder-[#484f58] focus:outline-none focus:border-[#58a6ff]"
+                    className="w-full h-9 px-3 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[#58a6ff]"
                   />
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-[#8b949e] mb-1.5">
+                  <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1.5">
                     Baud Rate
                   </label>
                   <select
                     value={baudRate}
                     onChange={(e) => setBaudRate(Number(e.target.value))}
-                    className="w-full h-9 px-3 bg-[#0d1117] border border-[#30363d] rounded-lg text-sm text-[#c9d1d9] focus:outline-none focus:border-[#58a6ff]"
+                    className="w-full h-9 px-3 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] focus:outline-none focus:border-[#58a6ff]"
                   >
                     <option value={9600}>9600</option>
                     <option value={19200}>19200</option>
@@ -216,7 +216,7 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
           {protocol === 'local' && (
             <div className="space-y-3">
               <div>
-                <label className="block text-xs font-medium text-[#8b949e] mb-1.5">
+                <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1.5">
                   Launch
                 </label>
                 <div className="grid grid-cols-4 gap-2">
@@ -231,7 +231,7 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
                       className={`flex flex-col items-center gap-1 py-2.5 rounded-lg border transition-all ${
                         cliPresetId === p.id && !customCommand
                           ? 'bg-[#1c4f3e] border-[#238636] text-[#3fb950]'
-                          : 'bg-[#0d1117] border-[#30363d] text-[#8b949e] hover:border-[#58a6ff]'
+                          : 'bg-[var(--bg-primary)] border-[var(--border)] text-[var(--text-secondary)] hover:border-[#58a6ff]'
                       }`}
                     >
                       <TerminalSquare size={16} />
@@ -241,7 +241,7 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
                 </div>
               </div>
               <div>
-                <label className="block text-xs font-medium text-[#8b949e] mb-1.5">
+                <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1.5">
                   Custom command (optional)
                 </label>
                 <input
@@ -249,7 +249,7 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
                   value={customCommand}
                   onChange={(e) => setCustomCommand(e.target.value)}
                   placeholder="e.g. gh copilot — overrides the preset above"
-                  className="w-full h-9 px-3 bg-[#0d1117] border border-[#30363d] rounded-lg text-sm text-[#c9d1d9] placeholder-[#484f58] focus:outline-none focus:border-[#58a6ff]"
+                  className="w-full h-9 px-3 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[#58a6ff]"
                 />
               </div>
             </div>
@@ -258,7 +258,7 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
           {/* Username */}
           {isHostBased && (
             <div>
-              <label className="block text-xs font-medium text-[#8b949e] mb-1.5">
+              <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1.5">
                 Username
               </label>
               <input
@@ -266,7 +266,7 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
                 placeholder="admin"
-                className="w-full h-9 px-3 bg-[#0d1117] border border-[#30363d] rounded-lg text-sm text-[#c9d1d9] placeholder-[#484f58] focus:outline-none focus:border-[#58a6ff]"
+                className="w-full h-9 px-3 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[#58a6ff]"
               />
             </div>
           )}
@@ -274,7 +274,7 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
           {/* Device Type */}
           {protocol !== 'local' && (
           <div>
-            <label className="block text-xs font-medium text-[#8b949e] mb-1.5">
+            <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1.5">
               Device Type
             </label>
             <div className="grid grid-cols-4 gap-2">
@@ -288,7 +288,7 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
                     ${
                       deviceType === dt.value
                         ? 'bg-[#1c4f3e] border-[#238636] text-[#3fb950]'
-                        : 'bg-[#0d1117] border-[#30363d] text-[#8b949e] hover:border-[#58a6ff]'
+                        : 'bg-[var(--bg-primary)] border-[var(--border)] text-[var(--text-secondary)] hover:border-[#58a6ff]'
                     }
                   `}
                 >
@@ -308,7 +308,7 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
               onChange={(e) => setSaveSession(e.target.checked)}
               className="w-4 h-4 rounded accent-[#238636]"
             />
-            <span className="text-sm text-[#8b949e]">Save to Sidebar</span>
+            <span className="text-sm text-[var(--text-secondary)]">Save to Sidebar</span>
           </label>
 
           {/* Error */}
@@ -323,14 +323,14 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
             <button
               type="button"
               onClick={() => setShowQuickConnect(false)}
-              className="flex-1 h-9 text-sm bg-[#21262d] hover:bg-[#30363d] text-[#c9d1d9] rounded-lg transition-colors"
+              className="flex-1 h-9 text-sm bg-[var(--bg-tertiary)] hover:bg-[var(--border)] text-[var(--text-primary)] rounded-lg transition-colors"
             >
               Cancel
             </button>
             <button
               type="submit"
               disabled={connecting || (isHostBased && !host) || (protocol === 'serial' && !serialPort)}
-              className="flex-1 flex items-center justify-center gap-2 h-9 text-sm bg-[#238636] hover:bg-[#2ea043] disabled:bg-[#1c4f3e] disabled:text-[#484f58] text-white rounded-lg transition-colors"
+              className="flex-1 flex items-center justify-center gap-2 h-9 text-sm bg-[#238636] hover:bg-[#2ea043] disabled:bg-[#1c4f3e] disabled:text-[var(--text-muted)] text-white rounded-lg transition-colors"
             >
               <Plug size={14} />
               {connecting ? 'Connecting...' : 'Connect'}

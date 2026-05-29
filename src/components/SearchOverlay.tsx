@@ -111,7 +111,7 @@ export default function SearchOverlay() {
   if (!showSearch) return null;
 
   return (
-    <div className="absolute top-10 right-4 z-40 w-[440px] bg-[#161b22] border border-[#30363d] rounded-lg shadow-xl">
+    <div className="absolute top-10 right-4 z-40 w-[440px] bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg shadow-xl">
       {/* Search row */}
       <div className="flex items-center gap-1.5 px-3 py-2">
         <input
@@ -121,14 +121,14 @@ export default function SearchOverlay() {
           onChange={(e) => handleChange(e.target.value)}
           onKeyDown={handleKeyDown}
           placeholder="Find in terminal..."
-          className={`flex-1 h-7 bg-transparent text-sm placeholder-[#484f58] focus:outline-none ${
-            notFound ? 'text-[#f85149]' : 'text-[#c9d1d9]'
+          className={`flex-1 h-7 bg-transparent text-sm placeholder-[var(--text-muted)] focus:outline-none ${
+            notFound ? 'text-[#f85149]' : 'text-[var(--text-primary)]'
           }`}
         />
 
         <span
           className={`text-xs whitespace-nowrap min-w-[60px] text-right tabular-nums ${
-            notFound ? 'text-[#f85149]' : 'text-[#8b949e]'
+            notFound ? 'text-[#f85149]' : 'text-[var(--text-secondary)]'
           }`}
         >
           {resultLabel()}
@@ -138,7 +138,7 @@ export default function SearchOverlay() {
           onClick={() => adapter?.findPrevious(query, { regex: useRegex, caseSensitive })}
           disabled={!query}
           title="Previous match (Shift+Enter)"
-          className="p-1 rounded hover:bg-[#21262d] text-[#8b949e] hover:text-[#c9d1d9] disabled:opacity-40"
+          className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] disabled:opacity-40"
         >
           <ChevronUp size={14} />
         </button>
@@ -146,7 +146,7 @@ export default function SearchOverlay() {
           onClick={() => adapter?.findNext(query, { regex: useRegex, caseSensitive })}
           disabled={!query}
           title="Next match (Enter)"
-          className="p-1 rounded hover:bg-[#21262d] text-[#8b949e] hover:text-[#c9d1d9] disabled:opacity-40"
+          className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] disabled:opacity-40"
         >
           <ChevronDown size={14} />
         </button>
@@ -157,7 +157,7 @@ export default function SearchOverlay() {
           className={`px-1.5 py-0.5 text-[10px] font-semibold rounded border transition-colors ${
             caseSensitive
               ? 'bg-[#238636] border-[#238636] text-white'
-              : 'bg-transparent border-[#30363d] text-[#8b949e] hover:border-[#484f58]'
+              : 'bg-transparent border-[var(--border)] text-[var(--text-secondary)] hover:border-[var(--text-muted)]'
           }`}
         >
           Aa
@@ -168,7 +168,7 @@ export default function SearchOverlay() {
           className={`px-1.5 py-0.5 text-[10px] font-mono rounded border transition-colors ${
             useRegex
               ? 'bg-[#238636] border-[#238636] text-white'
-              : 'bg-transparent border-[#30363d] text-[#8b949e] hover:border-[#484f58]'
+              : 'bg-transparent border-[var(--border)] text-[var(--text-secondary)] hover:border-[var(--text-muted)]'
           }`}
         >
           .*
@@ -176,23 +176,23 @@ export default function SearchOverlay() {
 
         <button
           onClick={() => setShowSearch(false)}
-          className="p-1 rounded hover:bg-[#21262d] text-[#8b949e] hover:text-[#c9d1d9]"
+          className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
         >
           <X size={14} />
         </button>
       </div>
 
       {/* Section chips */}
-      <div className="px-3 pb-2 pt-1.5 flex flex-wrap gap-1 border-t border-[#21262d]">
-        <span className="text-[10px] text-[#484f58] self-center mr-0.5">Jump to:</span>
+      <div className="px-3 pb-2 pt-1.5 flex flex-wrap gap-1 border-t border-[var(--bg-tertiary)]">
+        <span className="text-[10px] text-[var(--text-muted)] self-center mr-0.5">Jump to:</span>
         {SECTION_CHIPS.map(({ label, pattern }) => (
           <button
             key={label}
             onClick={() => handleChip(pattern)}
             className={`px-2 py-0.5 text-[10px] rounded border transition-colors whitespace-nowrap ${
               query === pattern && useRegex
-                ? 'bg-[#1f6feb] border-[#388bfd] text-[#c9d1d9]'
-                : 'bg-[#0d1117] border-[#30363d] text-[#8b949e] hover:border-[#484f58] hover:text-[#c9d1d9]'
+                ? 'bg-[#1f6feb] border-[#388bfd] text-[var(--text-primary)]'
+                : 'bg-[var(--bg-primary)] border-[var(--border)] text-[var(--text-secondary)] hover:border-[var(--text-muted)] hover:text-[var(--text-primary)]'
             }`}
           >
             {label}
