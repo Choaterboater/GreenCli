@@ -1,0 +1,210 @@
+import { useState, useEffect, useMemo, useRef } from 'react';
+import { invoke } from '@tauri-apps/api/tauri';
+import {
+  Search,
+  Plug,
+  TerminalSquare,
+  Globe,
+  Sparkles,
+  FileCode,
+  Settings as SettingsIcon,
+  PanelLeft,
+  Radio,
+  Sun,
+  Moon,
+  X,
+  CornerDownLeft,
+} from 'lucide-react';
+import { useSessionStore } from '../store/sessionStore';
+import { useSettingsStore } from '../store/settingsStore';
+import { ConnectionConfig } from '../types';
+
+interface PaletteAction {
+  id: string;
+  label: string;
+  hint?: string;
+  keywords?: string;
+  icon: React.ReactNode;
+  run: () => void;
+}
+
+interface CommandPaletteProps {
+  onConnect: (config: ConnectionConfig) => void;
+  onLocalShell: () => void;
+}
+
+export default function CommandPalette({ onConnect, onLocalShell }: CommandPaletteProps) {
+  const store = useSessionStore();
+  const { theme, setTheme } = useSettingsStore();
+  const {
+    showCommandPalette,
+    setShowCommandPalette,
+    folders,
+    sessions,
+    activeSessionId,
+  } = store;
+
+  const [query, setQuery] = useState('');
+  const [selected, setSelected] = useState(0);
+  const listRef = useRef<HTMLDivElement>(null);
+
+  const close = () => {
+    setShowCommandPalette(false);
+    setQuery('');
+    setSelected(0);
+  };
+
+  const actions: PaletteAction[] = useMemo(() => {
+    const a: PaletteAction[] = [
+      { id: 'quick-connect', label: 'Quick Connect', hint: 'Ctrl+T', icon: <Plug size={14} />, run: () => store.setShowQuickConnect(true) },
+      { id: 'local-shell', label: 'New Local Shell', keywords: 'terminal cli claude kimi', icon: <TerminalSquare size={14} />, run: onLocalShell },
+      { id: 'toggle-editor', label: 'Toggle Config Editor', hint: 'Ctrl+Shift+E', icon: <FileCode size={14} />, run: store.toggleConfigEditor },
+      { id: 'toggle-api', label: 'Toggle API Explorer', hint: 'Ctrl+Shift+A', icon: <Globe size={14} />, run: store.toggleApiExplorer },
+      { id: 'toggle-ai', label: 'Toggle AI Assistant', hint: 'Ctrl+Shift+I', icon: <Sparkles size={14} />, run: store.toggleAiAssistant },
+      { id: 'toggle-broadcast', label: 'Toggle Broadcast', keywords: 'send all', icon: <Radio size={14} />, run: store.toggleBroadcast },
+      { id: 'toggle-sidebar', label: 'Toggle Sidebar', hint: 'Ctrl+B', icon: <PanelLeft size={14} />, run: store.toggleSidebar },
+      { id: 'search', label: 'Search in Terminal', hint: 'Ctrl+F', icon: <Search size={14} />, run: () => store.setShowSearch(true) },
+      { id: 'settings', label: 'Open Settings', hint: 'Ctrl+,', icon: <SettingsIcon size={14} />, run: () => store.setShowSettings(true) },
+      {
+        id: 'theme',
+        label: `Switch to ${theme === 'dark' ? 'Light' : 'Dark'} theme`,
+        keywords: 'theme dark light appearance',
+        icon: theme === 'dark' ? <Sun size={14} /> : <Moon size={14} />,
+        run: () => setTheme(theme === 'dark' ? 'light' : 'dark'),
+      },
+    ];
+
+    // Saved sessions → connect actions
+    for (const folder of folders) {
+      for (const item of folder.items) {
+        a.push({
+          id: `connect-${item.id}`,
+          label: `Connect: ${item.name || item.host || 'session'}`,
+          hint: item.protocol.toUpperCase(),
+          keywords: `${item.host ?? ''} ${item.protocol} ${folder.name}`,
+          icon: <Plug size={14} className="text-[#3fb950]" />,
+          run: () => onConnect(item),
+        });
+      }
+    }
+
+    // Open tabs → switch actions
+    for (const s of sessions) {
+      if (s.sessionId === activeSessionId) continue;
+      a.push({
+        id: `goto-${s.sessionId}`,
+        label: `Go to tab: ${s.config.name || s.config.host || 'Session'}`,
+        keywords: `tab switch ${s.config.host ?? ''}`,
+        icon: <TerminalSquare size={14} className="text-[#58a6ff]" />,
+        run: () => store.setActiveSession(s.sessionId),
+      });
+    }
+
+    // Close current tab
+    if (activeSessionId) {
+      a.push({
+        id: 'close-tab',
+        label: 'Close Current Tab',
+        hint: 'Ctrl+W',
+        icon: <X size={14} className="text-[#ff7b72]" />,
+        run: () => {
+          invoke('disconnect', { sessionId: activeSessionId }).catch(() => {});
+          store.removeSession(activeSessionId);
+        },
+      });
+    }
+
+    return a;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [folders, sessions, activeSessionId, theme]);
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return actions;
+    return actions.filter((a) =>
+      `${a.label} ${a.keywords ?? ''} ${a.hint ?? ''}`.toLowerCase().includes(q)
+    );
+  }, [actions, query]);
+
+  useEffect(() => setSelected(0), [query]);
+
+  // Keep the selected row in view.
+  useEffect(() => {
+    const el = listRef.current?.querySelector(`[data-idx="${selected}"]`);
+    el?.scrollIntoView({ block: 'nearest' });
+  }, [selected]);
+
+  if (!showCommandPalette) return null;
+
+  const runAt = (i: number) => {
+    const action = filtered[i];
+    if (!action) return;
+    close();
+    // defer so state updates from close() don't clobber the action
+    setTimeout(() => action.run(), 0);
+  };
+
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setSelected((s) => Math.min(s + 1, filtered.length - 1));
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setSelected((s) => Math.max(s - 1, 0));
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      runAt(selected);
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      close();
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-start justify-center pt-[12vh] bg-black/50 backdrop-blur-sm" onClick={close}>
+      <div
+        className="w-[560px] max-w-[90vw] bg-[#161b22] border border-[#30363d] rounded-xl shadow-2xl overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center gap-2 px-3 py-2.5 border-b border-[#21262d]">
+          <Search size={15} className="text-[#8b949e]" />
+          <input
+            autoFocus
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={onKeyDown}
+            placeholder="Type a command or search sessions…"
+            className="flex-1 bg-transparent text-sm text-[#c9d1d9] placeholder-[#484f58] focus:outline-none"
+          />
+          <kbd className="text-[10px] text-[#484f58] border border-[#30363d] rounded px-1">esc</kbd>
+        </div>
+
+        <div ref={listRef} className="max-h-[50vh] overflow-y-auto py-1">
+          {filtered.length === 0 && (
+            <p className="px-4 py-6 text-center text-xs text-[#484f58]">No matching commands</p>
+          )}
+          {filtered.map((a, i) => (
+            <button
+              key={a.id}
+              data-idx={i}
+              onMouseEnter={() => setSelected(i)}
+              onClick={() => runAt(i)}
+              className={`flex items-center gap-3 w-full px-4 py-2 text-left transition-colors ${
+                i === selected ? 'bg-[#1f6feb33]' : 'hover:bg-[#21262d]'
+              }`}
+            >
+              <span className="text-[#8b949e] flex-shrink-0">{a.icon}</span>
+              <span className="flex-1 text-sm text-[#c9d1d9] truncate">{a.label}</span>
+              {a.hint && (
+                <kbd className="text-[10px] text-[#484f58] border border-[#30363d] rounded px-1 flex-shrink-0">
+                  {a.hint}
+                </kbd>
+              )}
+              {i === selected && <CornerDownLeft size={12} className="text-[#484f58] flex-shrink-0" />}
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}

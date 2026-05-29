@@ -30,6 +30,7 @@ import ApiExplorer from './components/ApiExplorer';
 import AiAssistant from './components/AiAssistant';
 import ConfigEditor from './components/ConfigEditor';
 import SnippetsMenu from './components/SnippetsMenu';
+import CommandPalette from './components/CommandPalette';
 
 function App() {
   const { theme } = useTheme();
@@ -100,6 +101,11 @@ function App() {
   // Keyboard shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      // Ctrl+K: Command Palette
+      if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+        e.preventDefault();
+        useSessionStore.getState().setShowCommandPalette(true);
+      }
       // Ctrl+T: Quick Connect
       if ((e.ctrlKey || e.metaKey) && e.key === 't') {
         e.preventDefault();
@@ -359,7 +365,11 @@ function App() {
           >
             <Settings size={14} />
           </button>
-          <button className="p-1.5 text-[#8b949e] hover:text-[#c9d1d9] hover:bg-[#21262d] rounded transition-colors">
+          <button
+            onClick={() => useSessionStore.getState().setShowCommandPalette(true)}
+            className="p-1.5 text-[#8b949e] hover:text-[#c9d1d9] hover:bg-[#21262d] rounded transition-colors"
+            title="Command palette (Ctrl+K)"
+          >
             <HelpCircle size={14} />
           </button>
         </div>
@@ -515,6 +525,7 @@ function App() {
       </div>
 
       {/* Modals & Overlays */}
+      <CommandPalette onConnect={handleConnect} onLocalShell={openLocalShell} />
       <QuickConnect onConnect={handleConnect} />
       <SshAuthDialog onAuthenticate={handleAuthenticate} />
       <SettingsPanel />
