@@ -10,6 +10,7 @@ import {
   Sparkles,
   FileCode,
   Radio,
+  Columns2,
 } from 'lucide-react';
 
 import { useSessionStore } from './store/sessionStore';
@@ -52,8 +53,17 @@ function App() {
     toggleConfigEditor,
     broadcastMode,
     toggleBroadcast,
+    splitView,
+    secondarySessionId,
+    toggleSplitView,
+    setSecondarySession,
     setFolders,
   } = useSessionStore();
+
+  // xterm only refits on window resize, so nudge a resize when the pane layout
+  // changes so both terminals size correctly.
+  const refitTerminals = () =>
+    setTimeout(() => window.dispatchEvent(new Event('resize')), 60);
 
   const [broadcastInput, setBroadcastInput] = useState('');
 
@@ -97,6 +107,13 @@ function App() {
   }, [setFolders]);
 
   const activeSession = sessions.find((s) => s.sessionId === activeSessionId);
+
+  // Second pane for split view: the chosen secondary session, or any other open
+  // session, but never the same one shown on the left.
+  const secondarySession =
+    sessions.find((s) => s.sessionId === secondarySessionId && s.sessionId !== activeSessionId) ||
+    sessions.find((s) => s.sessionId !== activeSessionId);
+  const canSplit = splitView && !!activeSession && !!secondarySession;
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -340,6 +357,23 @@ function App() {
             <Sparkles size={12} />
             <span>AI</span>
           </button>
+          {/* Split view toggle */}
+          <button
+            onClick={() => {
+              toggleSplitView();
+              refitTerminals();
+            }}
+            className={`flex items-center gap-1.5 px-2 py-1 text-xs rounded transition-colors ${
+              splitView
+                ? 'text-[#58a6ff] bg-[#58a6ff20]'
+                : 'text-[#8b949e] hover:text-[#c9d1d9] hover:bg-[#21262d]'
+            }`}
+            title="Split the terminal into two panes"
+          >
+            <Columns2 size={12} />
+            <span>Split</span>
+          </button>
+
           {/* Snippets */}
           <SnippetsMenu />
 
@@ -438,17 +472,65 @@ function App() {
             <div className="flex-1 flex flex-col min-w-0">
               <div className="flex-1 relative overflow-hidden">
                 {activeSession ? (
-                  <Terminal
-                    key={activeSession.sessionId}
-                    sessionId={activeSession.sessionId}
-                    deviceType={activeSession.config.deviceType}
-                    onSend={(data) => {
-                      invoke('send_data', {
-                        sessionId: activeSession.sessionId,
-                        data,
-                      }).catch(console.error);
-                    }}
-                  />
+                  canSplit && secondarySession ? (
+                    <div className="flex h-full w-full">
+                      {/* Left pane: active session */}
+                      <div className="flex-1 min-w-0 border-r border-[#21262d]">
+                        <Terminal
+                          key={activeSession.sessionId}
+                          sessionId={activeSession.sessionId}
+                          deviceType={activeSession.config.deviceType}
+                          onSend={(data) => {
+                            invoke('send_data', { sessionId: activeSession.sessionId, data }).catch(console.error);
+                          }}
+                        />
+                      </div>
+                      {/* Right pane: selectable secondary session */}
+                      <div className="flex-1 min-w-0 flex flex-col">
+                        <div className="flex items-center gap-2 h-7 px-2 bg-[#161b22] border-b border-[#21262d] flex-shrink-0">
+                          <span className="text-[10px] text-[#8b949e]">Pane 2</span>
+                          <select
+                            value={secondarySession.sessionId}
+                            onChange={(e) => {
+                              setSecondarySession(e.target.value);
+                              refitTerminals();
+                            }}
+                            className="flex-1 text-[11px] bg-[#0d1117] border border-[#30363d] rounded px-1 py-0.5 text-[#c9d1d9] focus:outline-none focus:border-[#58a6ff]"
+                          >
+                            {sessions
+                              .filter((s) => s.sessionId !== activeSessionId)
+                              .map((s) => (
+                                <option key={s.sessionId} value={s.sessionId}>
+                                  {s.config.name || s.config.host || 'Session'}
+                                </option>
+                              ))}
+                          </select>
+                        </div>
+                        <div className="flex-1 min-h-0">
+                          <Terminal
+                            key={secondarySession.sessionId}
+                            sessionId={secondarySession.sessionId}
+                            deviceType={secondarySession.config.deviceType}
+                            onSend={(data) => {
+                              invoke('send_data', { sessionId: secondarySession.sessionId, data }).catch(console.error);
+                            }}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <Terminal
+                      key={activeSession.sessionId}
+                      sessionId={activeSession.sessionId}
+                      deviceType={activeSession.config.deviceType}
+                      onSend={(data) => {
+                        invoke('send_data', {
+                          sessionId: activeSession.sessionId,
+                          data,
+                        }).catch(console.error);
+                      }}
+                    />
+                  )
                 ) : (
                   <div className="flex flex-col items-center justify-center h-full text-[#484f58]">
                     <Plug size={48} className="mb-4 opacity-30" />

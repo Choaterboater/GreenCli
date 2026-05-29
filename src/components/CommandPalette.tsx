@@ -10,6 +10,7 @@ import {
   Settings as SettingsIcon,
   PanelLeft,
   Radio,
+  Columns2,
   Sun,
   Moon,
   X,
@@ -62,6 +63,16 @@ export default function CommandPalette({ onConnect, onLocalShell }: CommandPalet
       { id: 'toggle-api', label: 'Toggle API Explorer', hint: 'Ctrl+Shift+A', icon: <Globe size={14} />, run: store.toggleApiExplorer },
       { id: 'toggle-ai', label: 'Toggle AI Assistant', hint: 'Ctrl+Shift+I', icon: <Sparkles size={14} />, run: store.toggleAiAssistant },
       { id: 'toggle-broadcast', label: 'Toggle Broadcast', keywords: 'send all', icon: <Radio size={14} />, run: store.toggleBroadcast },
+      {
+        id: 'toggle-split',
+        label: 'Toggle Split View',
+        keywords: 'pane side by side two terminals',
+        icon: <Columns2 size={14} />,
+        run: () => {
+          store.toggleSplitView();
+          setTimeout(() => window.dispatchEvent(new Event('resize')), 60);
+        },
+      },
       { id: 'toggle-sidebar', label: 'Toggle Sidebar', hint: 'Ctrl+B', icon: <PanelLeft size={14} />, run: store.toggleSidebar },
       { id: 'search', label: 'Search in Terminal', hint: 'Ctrl+F', icon: <Search size={14} />, run: () => store.setShowSearch(true) },
       { id: 'settings', label: 'Open Settings', hint: 'Ctrl+,', icon: <SettingsIcon size={14} />, run: () => store.setShowSettings(true) },
