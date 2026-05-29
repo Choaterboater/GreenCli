@@ -13,6 +13,7 @@ import {
   Columns2,
   Sun,
   Moon,
+  ShieldCheck,
   X,
   CornerDownLeft,
 } from 'lucide-react';
@@ -77,6 +78,19 @@ export default function CommandPalette({ onConnect, onLocalShell }: CommandPalet
       { id: 'search', label: 'Search in Terminal', hint: 'Ctrl+F', icon: <Search size={14} />, run: () => store.setShowSearch(true) },
       { id: 'settings', label: 'Open Settings', hint: 'Ctrl+,', icon: <SettingsIcon size={14} />, run: () => store.setShowSettings(true) },
       {
+        id: 'vault',
+        label: store.vaultUnlocked ? 'Lock credential vault' : 'Unlock credential vault',
+        keywords: 'vault password credential secure',
+        icon: <ShieldCheck size={14} />,
+        run: () => {
+          if (store.vaultUnlocked) {
+            invoke('vault_lock').then(() => store.setVaultUnlocked(false)).catch(() => {});
+          } else {
+            store.setShowVaultUnlock(true);
+          }
+        },
+      },
+      {
         id: 'theme',
         label: `Switch to ${theme === 'dark' ? 'Light' : 'Dark'} theme`,
         keywords: 'theme dark light appearance',
@@ -127,7 +141,7 @@ export default function CommandPalette({ onConnect, onLocalShell }: CommandPalet
 
     return a;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [folders, sessions, activeSessionId, theme]);
+  }, [folders, sessions, activeSessionId, theme, store.vaultUnlocked]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();

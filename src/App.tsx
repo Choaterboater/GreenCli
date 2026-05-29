@@ -1,4 +1,4 @@
-import { useEffect, useCallback, useState } from 'react';
+import { useEffect, useCallback, useState, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/tauri';
 import {
   Settings,
@@ -32,6 +32,7 @@ import AiAssistant from './components/AiAssistant';
 import ConfigEditor from './components/ConfigEditor';
 import SnippetsMenu from './components/SnippetsMenu';
 import CommandPalette from './components/CommandPalette';
+import VaultUnlock from './components/VaultUnlock';
 
 function App() {
   const { theme } = useTheme();
@@ -57,8 +58,24 @@ function App() {
     secondarySessionId,
     toggleSplitView,
     setSecondarySession,
+    vaultUnlocked,
+    setVaultUnlocked,
+    setShowVaultUnlock,
     setFolders,
   } = useSessionStore();
+
+  // Credential save deferred until the vault is unlocked.
+  const pendingCredSave = useRef<{ key: string; value: string } | null>(null);
+
+  const credKey = (c: { host?: string; port?: number; username?: string }) =>
+    `cred:${c.host ?? ''}:${c.port ?? 22}:${c.username ?? ''}`;
+
+  const flushPendingCredSave = useCallback(() => {
+    const pending = pendingCredSave.current;
+    if (!pending) return;
+    pendingCredSave.current = null;
+    invoke('vault_store', { key: pending.key, value: pending.value }).catch(() => {});
+  }, []);
 
   // xterm only refits on window resize, so nudge a resize when the pane layout
   // changes so both terminals size correctly.
@@ -105,6 +122,13 @@ function App() {
       })
       .catch(() => {}); // silently ignore — backend may not be available in browser mode
   }, [setFolders]);
+
+  // Reflect whether the credential vault is already unlocked.
+  useEffect(() => {
+    invoke<boolean>('vault_is_unlocked')
+      .then(setVaultUnlocked)
+      .catch(() => setVaultUnlocked(false));
+  }, [setVaultUnlocked]);
 
   const activeSession = sessions.find((s) => s.sessionId === activeSessionId);
 
@@ -192,6 +216,15 @@ function App() {
 
       addSession(fullConfig, sessionId);
 
+      // For SSH with no inline password, try a saved vault credential.
+      let password = fullConfig.password;
+      if (!password && fullConfig.protocol === 'ssh' && vaultUnlocked) {
+        password =
+          (await invoke<string | null>('vault_retrieve', { key: credKey(fullConfig) }).catch(
+            () => null
+          )) ?? undefined;
+      }
+
       try {
         const result = await invoke<{
           success: boolean;
@@ -205,7 +238,7 @@ function App() {
             port: fullConfig.port,
             username: fullConfig.username,
             auth_type: fullConfig.authType || 'password',
-            password: fullConfig.password,
+            password,
             private_key: fullConfig.privateKey,
             key_passphrase: fullConfig.keyPassphrase,
             serial_port: fullConfig.serialPort,
@@ -240,7 +273,7 @@ function App() {
         }
       }
     },
-    [addSession, setPendingConnection, setShowAuthDialog]
+    [addSession, setPendingConnection, setShowAuthDialog, vaultUnlocked]
   );
 
   // One-click local shell — a "normal terminal" running the user's default shell.
@@ -254,7 +287,7 @@ function App() {
   }, [handleConnect]);
 
   const handleAuthenticate = useCallback(
-    async (creds: AuthCredentials, _saveCredential: boolean) => {
+    async (creds: AuthCredentials, saveCredential: boolean) => {
       const pending = useSessionStore.getState().pendingConnection;
       if (!pending) return;
 
@@ -286,12 +319,24 @@ function App() {
         if (result.success) {
           useSessionStore.getState().updateSessionConnection(pending.id, true);
           setShowAuthDialog(false);
+
+          // Save the password to the vault if requested (passwords only).
+          if (saveCredential && creds.authType === 'password' && creds.password) {
+            const key = credKey(pending);
+            if (vaultUnlocked) {
+              invoke('vault_store', { key, value: creds.password }).catch(() => {});
+            } else {
+              // Defer the store until the user unlocks the vault.
+              pendingCredSave.current = { key, value: creds.password };
+              setShowVaultUnlock(true);
+            }
+          }
         }
       } catch (err) {
         console.error('Auth connection error:', err);
       }
     },
-    [setShowAuthDialog]
+    [setShowAuthDialog, vaultUnlocked, setShowVaultUnlock]
   );
 
   return (
@@ -622,6 +667,7 @@ function App() {
       </div>
 
       {/* Modals & Overlays */}
+      <VaultUnlock onUnlocked={flushPendingCredSave} />
       <CommandPalette onConnect={handleConnect} onLocalShell={openLocalShell} />
       <QuickConnect onConnect={handleConnect} />
       <SshAuthDialog onAuthenticate={handleAuthenticate} />
