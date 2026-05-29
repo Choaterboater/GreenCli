@@ -667,6 +667,29 @@ async fn api_get_system(
     serde_json::to_value(system).map_err(|e| e.to_string())
 }
 
+/// Generic Postman-style request against a logged-in CX device. Routes through
+/// the Rust client (handles self-signed certs + cookie auth; no browser CORS).
+#[tauri::command]
+async fn api_request(
+    host: String,
+    method: String,
+    path: String,
+    body: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    let clients = state.api_clients.lock().await;
+    let client = clients
+        .get(&host)
+        .ok_or("Not logged in. Connect to the device first.")?;
+    let (status, text) = client
+        .request(&method, &path, body.as_deref())
+        .await
+        .map_err(|e| e.to_string())?;
+    let parsed: serde_json::Value =
+        serde_json::from_str(&text).unwrap_or(serde_json::Value::String(text));
+    Ok(serde_json::json!({ "status": status, "body": parsed }))
+}
+
 #[tauri::command]
 async fn api_execute_cli(
     host: String,
@@ -762,6 +785,7 @@ fn main() {
             api_get_vlans,
             api_get_system,
             api_execute_cli,
+            api_request,
             ai_set_key,
             ai_has_key,
             ai_chat,
