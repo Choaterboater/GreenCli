@@ -3,7 +3,7 @@ import { X, RotateCcw, Moon, Sun, Eye, EyeOff, CheckCircle2 } from 'lucide-react
 import { invoke } from '@tauri-apps/api/tauri';
 import { useSessionStore } from '../store/sessionStore';
 import { useSettingsStore } from '../store/settingsStore';
-import { AI_PROVIDERS } from '../types';
+import { AI_PROVIDERS, AI_CLI_PRESETS } from '../types';
 
 export default function SettingsPanel() {
   const { showSettings, setShowSettings } = useSessionStore();
@@ -371,32 +371,56 @@ export default function SettingsPanel() {
                   </select>
                 </div>
               )}
-              {providerMeta?.needsKey && aiProvider !== 'anthropic' && (
+              {aiProvider === 'openrouter' && (
                 <div>
                   <label className="block text-xs text-[#8b949e] mb-1.5">Model</label>
                   <input
                     type="text"
-                    value={settings.aiModel}
-                    onChange={(e) => settings.setAiModel(e.target.value)}
-                    placeholder={
-                      aiProvider === 'openrouter'
-                        ? 'e.g. anthropic/claude-3.5-sonnet'
-                        : 'e.g. kimi-k2-0905-preview'
-                    }
+                    value={settings.openrouterModel}
+                    onChange={(e) => settings.setOpenrouterModel(e.target.value)}
+                    placeholder="e.g. anthropic/claude-3.5-sonnet"
                     className="w-full h-8 px-2 bg-[#0d1117] border border-[#30363d] rounded-lg text-sm text-[#c9d1d9] placeholder-[#484f58] focus:outline-none focus:border-[#58a6ff] font-mono"
                   />
                   <p className="text-[10px] text-[#484f58] mt-1">
-                    {aiProvider === 'openrouter'
-                      ? 'Any OpenRouter model id (see openrouter.ai/models).'
-                      : 'A Moonshot/Kimi model id (see platform.moonshot.ai).'}
+                    Any OpenRouter model id (see openrouter.ai/models), e.g. <code className="text-[#c9d1d9]">openai/gpt-4o</code>, <code className="text-[#c9d1d9]">meta-llama/llama-3.1-70b-instruct</code>.
+                  </p>
+                </div>
+              )}
+              {aiProvider === 'moonshot' && (
+                <div>
+                  <label className="block text-xs text-[#8b949e] mb-1.5">Model</label>
+                  <input
+                    type="text"
+                    value={settings.moonshotModel}
+                    onChange={(e) => settings.setMoonshotModel(e.target.value)}
+                    placeholder="e.g. kimi-k2-0905-preview"
+                    className="w-full h-8 px-2 bg-[#0d1117] border border-[#30363d] rounded-lg text-sm text-[#c9d1d9] placeholder-[#484f58] focus:outline-none focus:border-[#58a6ff] font-mono"
+                  />
+                  <p className="text-[10px] text-[#484f58] mt-1">
+                    A Moonshot/Kimi model id (see platform.moonshot.ai), e.g. <code className="text-[#c9d1d9]">moonshot-v1-8k</code>.
                   </p>
                 </div>
               )}
 
-              {/* Local CLI settings */}
+              {/* Local CLI settings — no API key; the CLI handles its own login */}
               {aiProvider === 'local-cli' && (
                 <div>
                   <label className="block text-xs text-[#8b949e] mb-1.5">CLI Command</label>
+                  <div className="flex gap-2 mb-2">
+                    {AI_CLI_PRESETS.map((p) => (
+                      <button
+                        key={p.label}
+                        onClick={() => settings.setLocalCliCommand(p.command)}
+                        className={`flex-1 py-1.5 text-[11px] rounded-lg border transition-colors ${
+                          settings.localCliCommand === p.command
+                            ? 'bg-[#21262d] border-[#58a6ff] text-[#c9d1d9]'
+                            : 'bg-[#0d1117] border-[#30363d] text-[#8b949e] hover:border-[#484f58]'
+                        }`}
+                      >
+                        {p.label}
+                      </button>
+                    ))}
+                  </div>
                   <input
                     type="text"
                     value={settings.localCliCommand}
@@ -405,7 +429,7 @@ export default function SettingsPanel() {
                     className="w-full h-8 px-2 bg-[#0d1117] border border-[#30363d] rounded-lg text-sm text-[#c9d1d9] placeholder-[#484f58] focus:outline-none focus:border-[#58a6ff] font-mono"
                   />
                   <p className="text-[10px] text-[#484f58] mt-1">
-                    A locally installed CLI run one-shot with the prompt on stdin (e.g. <code className="text-[#c9d1d9]">claude -p</code>, <code className="text-[#c9d1d9]">copilot -p</code>). No tool-use loop.
+                    Runs a locally-installed CLI one-shot with the prompt on stdin — <span className="text-[#3fb950]">no API key needed</span> (the CLI uses its own login). E.g. <code className="text-[#c9d1d9]">claude -p</code>, <code className="text-[#c9d1d9]">kimi</code>, <code className="text-[#c9d1d9]">copilot -p</code>.
                   </p>
                 </div>
               )}
