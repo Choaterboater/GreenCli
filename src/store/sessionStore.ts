@@ -20,6 +20,8 @@ interface SessionState {
   showAiAssistant: boolean;
   broadcastMode: boolean;
   showCommandPalette: boolean;
+  splitView: boolean;
+  secondarySessionId: string | null;
 
   // Actions
   addSession: (config: ConnectionConfig, sessionId: string) => void;
@@ -43,6 +45,8 @@ interface SessionState {
   toggleApiExplorer: () => void;
   toggleAiAssistant: () => void;
   toggleBroadcast: () => void;
+  toggleSplitView: () => void;
+  setSecondarySession: (sessionId: string | null) => void;
 
   setFolders: (folders: SessionFolder[]) => void;
   addFolder: (folder: SessionFolder) => void;
@@ -74,6 +78,8 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
   showConfigEditor: false,
   broadcastMode: false,
   showCommandPalette: false,
+  splitView: false,
+  secondarySessionId: null,
 
   addSession: (config, sessionId) =>
     set((state) => {
@@ -137,6 +143,17 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
   toggleApiExplorer: () => set((state) => ({ showApiExplorer: !state.showApiExplorer, showAiAssistant: false })),
   toggleAiAssistant: () => set((state) => ({ showAiAssistant: !state.showAiAssistant, showApiExplorer: false })),
   toggleBroadcast: () => set((state) => ({ broadcastMode: !state.broadcastMode })),
+  toggleSplitView: () =>
+    set((state) => {
+      const turningOn = !state.splitView;
+      let secondary = state.secondarySessionId;
+      // When enabling, default the second pane to another open session.
+      if (turningOn && (!secondary || secondary === state.activeSessionId)) {
+        secondary = state.sessions.find((s) => s.sessionId !== state.activeSessionId)?.sessionId ?? null;
+      }
+      return { splitView: turningOn, secondarySessionId: secondary };
+    }),
+  setSecondarySession: (sessionId) => set({ secondarySessionId: sessionId }),
 
   setFolders: (folders) => set({ folders }),
 
