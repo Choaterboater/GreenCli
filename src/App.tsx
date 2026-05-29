@@ -163,17 +163,25 @@ function App() {
           },
         });
 
+        // The SSH auth dialog only makes sense for credential-based protocols.
+        const authBased = fullConfig.protocol === 'ssh' || fullConfig.protocol === 'telnet';
         if (!result.success) {
-          // Show auth dialog if auth failed
-          setPendingConnection(fullConfig);
-          setShowAuthDialog(true);
+          if (authBased) {
+            setPendingConnection(fullConfig);
+            setShowAuthDialog(true);
+          }
         } else {
           useSessionStore.getState().updateSessionConnection(sessionId, true);
         }
       } catch (err) {
         console.error('Connection error:', err);
-        setPendingConnection(fullConfig);
-        setShowAuthDialog(true);
+        // For local/serial there's no auth to retry — surface the failure on the tab.
+        if (fullConfig.protocol === 'ssh' || fullConfig.protocol === 'telnet') {
+          setPendingConnection(fullConfig);
+          setShowAuthDialog(true);
+        } else {
+          useSessionStore.getState().updateSessionConnection(sessionId, false);
+        }
       }
     },
     [addSession, setPendingConnection, setShowAuthDialog]

@@ -471,6 +471,24 @@ export default function AiAssistant() {
     setInput('');
     setIsLoading(true);
 
+    // The assistant talks to providers from the Rust backend. In a plain browser
+    // tab there is no Tauri IPC, so fail with a clear message instead of a cryptic
+    // "window.__TAURI_IPC__ is not a function".
+    if (!('__TAURI_IPC__' in window)) {
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: 'assistant',
+          content:
+            'The AI assistant runs through the desktop backend. Launch **Aruba Terminal Pro** (the installed app, or `npm run tauri dev`) — it can\'t reach AI providers or the terminal from a regular browser tab.',
+          timestamp: Date.now(),
+          isError: true,
+        },
+      ]);
+      setIsLoading(false);
+      return;
+    }
+
     const provider: AiProvider = settings.aiProvider || 'ollama';
     const providerMeta = AI_PROVIDERS.find((p) => p.value === provider);
 
