@@ -94,6 +94,15 @@ pub struct ConnectionConfigRequest {
     pub args: Option<Vec<String>>,
     #[serde(default)]
     pub cwd: Option<String>,
+    // Jump host (ProxyJump) for SSH.
+    #[serde(default)]
+    pub jump_host: Option<String>,
+    #[serde(default)]
+    pub jump_port: Option<u16>,
+    #[serde(default)]
+    pub jump_username: Option<String>,
+    #[serde(default)]
+    pub jump_password: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -304,6 +313,10 @@ async fn connect(
                 key_passphrase: config.key_passphrase,
                 keep_alive_interval: config.keep_alive_interval,
                 known_hosts_path: Some(state.app_dir.join("known_hosts.json")),
+                jump_host: config.jump_host.filter(|h| !h.is_empty()),
+                jump_port: config.jump_port,
+                jump_username: config.jump_username,
+                jump_password: config.jump_password,
             };
 
             let auto_reconnect = config.auto_reconnect.unwrap_or(false);

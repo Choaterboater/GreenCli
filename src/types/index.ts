@@ -18,6 +18,11 @@ export interface ConnectionConfig {
   command?: string;
   args?: string[];
   cwd?: string;
+  // Jump host / bastion (ProxyJump) for SSH
+  jumpHost?: string;
+  jumpPort?: number;
+  jumpUsername?: string;
+  jumpPassword?: string;
 }
 
 export interface Session {
