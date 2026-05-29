@@ -1,0 +1,12 @@
+node_modules/
+dist/
+src-tauri/target/
+*.log
+.DS_Store
+
+# Generated 1024px source icon (committed icons/ set is enough for builds)
+src-tauri/app-icon.png
+# AI provider keys (local only — never commit)
+src-tauri/ai_keys.json
+.vscode/
+.idea/
