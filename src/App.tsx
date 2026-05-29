@@ -117,6 +117,21 @@ function App() {
         invoke('disconnect', { sessionId: activeSessionId }).catch(() => {});
         removeSession(activeSessionId);
       }
+      // Ctrl+1..9: jump to tab N
+      if ((e.ctrlKey || e.metaKey) && /^[1-9]$/.test(e.key)) {
+        const idx = parseInt(e.key, 10) - 1;
+        if (sessions[idx]) {
+          e.preventDefault();
+          useSessionStore.getState().setActiveSession(sessions[idx].sessionId);
+        }
+      }
+      // Ctrl+Tab: cycle to next tab
+      if (e.ctrlKey && e.key === 'Tab' && sessions.length > 1) {
+        e.preventDefault();
+        const cur = sessions.findIndex((s) => s.sessionId === activeSessionId);
+        const next = sessions[(cur + 1) % sessions.length];
+        useSessionStore.getState().setActiveSession(next.sessionId);
+      }
       // Ctrl+F: Search
       if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
         e.preventDefault();
@@ -151,7 +166,7 @@ function App() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [activeSessionId, removeSession, setShowSearch, setShowSettings, toggleApiExplorer, toggleAiAssistant, toggleConfigEditor]);
+  }, [activeSessionId, sessions, removeSession, setShowSearch, setShowSettings, toggleApiExplorer, toggleAiAssistant, toggleConfigEditor]);
 
   const handleConnect = useCallback(
     async (config: ConnectionConfig) => {
