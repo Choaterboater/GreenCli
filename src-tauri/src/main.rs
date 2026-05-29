@@ -41,6 +41,9 @@ struct AppState {
     mcp_server: Arc<AsyncMutex<McpServer>>,
     api_clients: Arc<AsyncMutex<HashMap<String, ArubaCxClient>>>,
     ai_keys: AiKeyStore,
+    /// Recent terminal output per session, so the AI assistant can read back
+    /// command results (bounded tail, plain bytes lossily decoded).
+    terminal_buffers: Arc<AsyncMutex<HashMap<String, String>>>,
     app_dir: std::path::PathBuf,
 }
 
@@ -54,6 +57,7 @@ impl AppState {
             mcp_server: Arc::new(AsyncMutex::new(McpServer::new())),
             api_clients: Arc::new(AsyncMutex::new(HashMap::new())),
             ai_keys: AiKeyStore::new(app_dir.clone()),
+            terminal_buffers: Arc::new(AsyncMutex::new(HashMap::new())),
             app_dir,
         })
     }
@@ -96,6 +100,52 @@ pub struct ApiLoginRequest {
     pub password: String,
 }
 
+// ─── Helpers ───
+
+/// Forward a connection's incoming data to the frontend (`terminal_data`),
+/// mirror it into the per-session output buffer (for AI read-back), and emit a
+/// `disconnected` status when the stream ends.
+fn spawn_forwarder(
+    app: AppHandle,
+    buffers: Arc<AsyncMutex<HashMap<String, String>>>,
+    session_id: String,
+    mut rx: tokio::sync::mpsc::Receiver<Vec<u8>>,
+    close_msg: &'static str,
+) {
+    tokio::spawn(async move {
+        while let Some(data) = rx.recv().await {
+            {
+                let mut map = buffers.lock().await;
+                let buf = map.entry(session_id.clone()).or_default();
+                buf.push_str(&String::from_utf8_lossy(&data));
+                // Keep a bounded tail (~150KB) on a char boundary.
+                if buf.len() > 200_000 {
+                    let mut cut = buf.len() - 150_000;
+                    while cut < buf.len() && !buf.is_char_boundary(cut) {
+                        cut += 1;
+                    }
+                    *buf = buf[cut..].to_string();
+                }
+            }
+            let _ = app.emit_all(
+                "terminal_data",
+                TerminalDataEvent {
+                    session_id: session_id.clone(),
+                    data,
+                },
+            );
+        }
+        let _ = app.emit_all(
+            "connection_status",
+            ConnectionStatusEvent {
+                session_id,
+                status: "disconnected".to_string(),
+                message: Some(close_msg.to_string()),
+            },
+        );
+    });
+}
+
 // ─── Tauri Commands ───
 
 #[tauri::command]
@@ -131,23 +181,15 @@ async fn connect(
             let mut connection = SshConnection::new(session_id.clone(), ssh_config);
             let response = connection.connect().await.map_err(|e| e.to_string())?;
 
-            // Spawn task to forward SSH data to frontend via terminal_data events
-            if let Some(mut rx) = connection.take_data_receiver() {
-                let app_fwd = app.clone();
-                let sid = session_id.clone();
-                tokio::spawn(async move {
-                    while let Some(data) = rx.recv().await {
-                        let _ = app_fwd.emit_all("terminal_data", TerminalDataEvent {
-                            session_id: sid.clone(),
-                            data,
-                        });
-                    }
-                    let _ = app_fwd.emit_all("connection_status", ConnectionStatusEvent {
-                        session_id: sid,
-                        status: "disconnected".to_string(),
-                        message: Some("SSH connection closed".to_string()),
-                    });
-                });
+            // Forward SSH data + capture output for AI read-back.
+            if let Some(rx) = connection.take_data_receiver() {
+                spawn_forwarder(
+                    app.clone(),
+                    state.terminal_buffers.clone(),
+                    session_id.clone(),
+                    rx,
+                    "SSH connection closed",
+                );
             }
 
             state
@@ -179,23 +221,15 @@ async fn connect(
             let mut connection = TelnetConnection::new(session_id.clone(), telnet_config);
             let response = connection.connect().await.map_err(|e| e.to_string())?;
 
-            // Spawn task to forward Telnet data to frontend via terminal_data events
-            if let Some(mut rx) = connection.take_data_receiver() {
-                let app_fwd = app.clone();
-                let sid = session_id.clone();
-                tokio::spawn(async move {
-                    while let Some(data) = rx.recv().await {
-                        let _ = app_fwd.emit_all("terminal_data", TerminalDataEvent {
-                            session_id: sid.clone(),
-                            data,
-                        });
-                    }
-                    let _ = app_fwd.emit_all("connection_status", ConnectionStatusEvent {
-                        session_id: sid,
-                        status: "disconnected".to_string(),
-                        message: Some("Telnet connection closed".to_string()),
-                    });
-                });
+            // Forward Telnet data + capture output for AI read-back.
+            if let Some(rx) = connection.take_data_receiver() {
+                spawn_forwarder(
+                    app.clone(),
+                    state.terminal_buffers.clone(),
+                    session_id.clone(),
+                    rx,
+                    "Telnet connection closed",
+                );
             }
 
             state
@@ -230,23 +264,15 @@ async fn connect(
             let mut connection = SerialConnection::new(session_id.clone(), serial_config);
             let response = connection.connect().await.map_err(|e| e.to_string())?;
 
-            // Spawn task to forward serial data to frontend via terminal_data events
-            if let Some(mut rx) = connection.take_data_receiver() {
-                let app_fwd = app.clone();
-                let sid = session_id.clone();
-                tokio::spawn(async move {
-                    while let Some(data) = rx.recv().await {
-                        let _ = app_fwd.emit_all("terminal_data", TerminalDataEvent {
-                            session_id: sid.clone(),
-                            data,
-                        });
-                    }
-                    let _ = app_fwd.emit_all("connection_status", ConnectionStatusEvent {
-                        session_id: sid,
-                        status: "disconnected".to_string(),
-                        message: Some("Serial port closed".to_string()),
-                    });
-                });
+            // Forward serial data + capture output for AI read-back.
+            if let Some(rx) = connection.take_data_receiver() {
+                spawn_forwarder(
+                    app.clone(),
+                    state.terminal_buffers.clone(),
+                    session_id.clone(),
+                    rx,
+                    "Serial port closed",
+                );
             }
 
             state
@@ -279,23 +305,15 @@ async fn connect(
             let mut connection = LocalConnection::new(session_id.clone(), local_config);
             let response = connection.connect().await.map_err(|e| e.to_string())?;
 
-            // Spawn task to forward local PTY data to frontend via terminal_data events
-            if let Some(mut rx) = connection.take_data_receiver() {
-                let app_fwd = app.clone();
-                let sid = session_id.clone();
-                tokio::spawn(async move {
-                    while let Some(data) = rx.recv().await {
-                        let _ = app_fwd.emit_all("terminal_data", TerminalDataEvent {
-                            session_id: sid.clone(),
-                            data,
-                        });
-                    }
-                    let _ = app_fwd.emit_all("connection_status", ConnectionStatusEvent {
-                        session_id: sid,
-                        status: "disconnected".to_string(),
-                        message: Some("Local session ended".to_string()),
-                    });
-                });
+            // Forward local PTY data + capture output for AI read-back.
+            if let Some(rx) = connection.take_data_receiver() {
+                spawn_forwarder(
+                    app.clone(),
+                    state.terminal_buffers.clone(),
+                    session_id.clone(),
+                    rx,
+                    "Local session ended",
+                );
             }
 
             state
@@ -334,6 +352,8 @@ async fn disconnect(
         .remove_session(&session_id)
         .await
         .map_err(|e| e.to_string())?;
+
+    state.terminal_buffers.lock().await.remove(&session_id);
 
     let _ = app.emit_all(
         "connection_status",
@@ -513,6 +533,17 @@ fn read_file_text(path: String) -> Result<String, String> {
 #[tauri::command]
 fn write_file_text(path: String, contents: String) -> Result<(), String> {
     std::fs::write(&path, contents).map_err(|e| format!("Failed to write {}: {}", path, e))
+}
+
+/// Recent captured output for a session (used by the AI assistant to read back
+/// command results). Returns the bounded tail buffer, or empty if none.
+#[tauri::command]
+async fn get_terminal_output(
+    session_id: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let map = state.terminal_buffers.lock().await;
+    Ok(map.get(&session_id).cloned().unwrap_or_default())
 }
 
 #[tauri::command]
@@ -717,6 +748,7 @@ fn main() {
             vault_delete,
             vault_is_unlocked,
             list_serial_ports,
+            get_terminal_output,
             read_file_text,
             write_file_text,
             generate_keypair,
