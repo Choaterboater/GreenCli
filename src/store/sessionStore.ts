@@ -18,6 +18,7 @@ interface SessionState {
   showQuickConnect: boolean;
   showApiExplorer: boolean;
   showAiAssistant: boolean;
+  broadcastMode: boolean;
 
   // Actions
   addSession: (config: ConnectionConfig, sessionId: string) => void;
@@ -39,6 +40,7 @@ interface SessionState {
   toggleConfigEditor: () => void;
   toggleApiExplorer: () => void;
   toggleAiAssistant: () => void;
+  toggleBroadcast: () => void;
 
   setFolders: (folders: SessionFolder[]) => void;
   addFolder: (folder: SessionFolder) => void;
@@ -68,6 +70,7 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
   showApiExplorer: false,
   showAiAssistant: false,
   showConfigEditor: false,
+  broadcastMode: false,
 
   addSession: (config, sessionId) =>
     set((state) => {
@@ -129,6 +132,7 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
   toggleConfigEditor: () => set((state) => ({ showConfigEditor: !state.showConfigEditor })),
   toggleApiExplorer: () => set((state) => ({ showApiExplorer: !state.showApiExplorer, showAiAssistant: false })),
   toggleAiAssistant: () => set((state) => ({ showAiAssistant: !state.showAiAssistant, showApiExplorer: false })),
+  toggleBroadcast: () => set((state) => ({ broadcastMode: !state.broadcastMode })),
 
   setFolders: (folders) => set({ folders }),
 

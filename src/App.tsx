@@ -1,4 +1,4 @@
-import { useEffect, useCallback } from 'react';
+import { useEffect, useCallback, useState } from 'react';
 import { invoke } from '@tauri-apps/api/tauri';
 import {
   Settings,
@@ -9,6 +9,7 @@ import {
   Globe,
   Sparkles,
   FileCode,
+  Radio,
 } from 'lucide-react';
 
 import { useSessionStore } from './store/sessionStore';
@@ -47,8 +48,24 @@ function App() {
     toggleApiExplorer,
     toggleAiAssistant,
     toggleConfigEditor,
+    broadcastMode,
+    toggleBroadcast,
     setFolders,
   } = useSessionStore();
+
+  const [broadcastInput, setBroadcastInput] = useState('');
+
+  // Send a command to every connected session at once.
+  const sendBroadcast = useCallback(() => {
+    const cmd = broadcastInput;
+    if (!cmd.trim()) return;
+    sessions
+      .filter((s) => s.connected)
+      .forEach((s) =>
+        invoke('send_data', { sessionId: s.sessionId, data: cmd + '\r' }).catch(() => {})
+      );
+    setBroadcastInput('');
+  }, [broadcastInput, sessions]);
 
   // Load saved sessions from backend on mount
   useEffect(() => {
@@ -301,6 +318,19 @@ function App() {
             <Sparkles size={12} />
             <span>AI</span>
           </button>
+          {/* Broadcast toggle */}
+          <button
+            onClick={toggleBroadcast}
+            className={`flex items-center gap-1.5 px-2 py-1 text-xs rounded transition-colors ${
+              broadcastMode
+                ? 'text-[#ff7b72] bg-[#ff7b7220]'
+                : 'text-[#8b949e] hover:text-[#c9d1d9] hover:bg-[#21262d]'
+            }`}
+            title="Broadcast a command to all connected sessions"
+          >
+            <Radio size={12} />
+            <span>Broadcast</span>
+          </button>
           <div className="w-px h-4 bg-[#30363d] mx-1" />
           <button
             onClick={() =>
@@ -342,6 +372,36 @@ function App() {
         <div className="flex-1 flex flex-col min-w-0">
           {/* Tabs */}
           <TerminalTabs />
+
+          {/* Broadcast bar */}
+          {broadcastMode && (
+            <div className="flex items-center gap-2 px-3 py-1.5 bg-[#3d1518]/40 border-b border-[#ff7b7240]">
+              <Radio size={12} className="text-[#ff7b72] flex-shrink-0" />
+              <span className="text-[10px] text-[#ff7b72] uppercase font-medium flex-shrink-0">
+                Broadcast
+              </span>
+              <input
+                value={broadcastInput}
+                onChange={(e) => setBroadcastInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    sendBroadcast();
+                  }
+                }}
+                placeholder={`Send a command to all ${
+                  sessions.filter((s) => s.connected).length
+                } connected session(s)…`}
+                className="flex-1 h-7 px-2 bg-[#0d1117] border border-[#30363d] rounded text-xs text-[#c9d1d9] placeholder-[#484f58] focus:outline-none focus:border-[#ff7b72]"
+              />
+              <button
+                onClick={sendBroadcast}
+                className="px-2.5 py-1 text-xs bg-[#da3633] hover:bg-[#f85149] text-white rounded transition-colors flex-shrink-0"
+              >
+                Send to all
+              </button>
+            </div>
+          )}
 
           {/* Terminal Container + Side Panels */}
           <div className="flex flex-1 overflow-hidden">
