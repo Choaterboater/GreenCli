@@ -589,52 +589,45 @@ export default function ConfigEditor() {
       {/* Toolbar */}
       <div className="flex items-center gap-1 px-2 py-1 border-b border-[#21262d] bg-[#161b22]">
 
-        {/* Open */}
-        <button
-          onClick={openFile}
-          className="flex items-center gap-1.5 px-2 py-1 text-xs text-[#8b949e] hover:text-[#c9d1d9] hover:bg-[#21262d] rounded transition-colors"
-          title="Open file (Ctrl+O)"
-        >
-          <FolderOpen size={12} />
-          Open
-        </button>
-
-        {/* Save */}
-        <button
-          onClick={() => saveFile(false)}
-          className={`flex items-center gap-1.5 px-2 py-1 text-xs rounded transition-colors ${
-            isDirty ? 'text-[#e5c07b] hover:bg-[#e5c07b20]' : 'text-[#8b949e] hover:text-[#c9d1d9] hover:bg-[#21262d]'
-          }`}
-          title={currentFilePath ? `Save (Ctrl+S)` : 'Save As… (Ctrl+S)'}
-        >
-          <Download size={12} />
-          {currentFilePath ? 'Save' : 'Save As'}
-        </button>
-
-        {/* Clean terminal escapes */}
-        <button
-          onClick={cleanCurrent}
-          className="flex items-center gap-1.5 px-2 py-1 text-xs text-[#8b949e] hover:text-[#c9d1d9] hover:bg-[#21262d] rounded transition-colors"
-          title="Strip ANSI / terminal control codes from the current text"
-        >
-          <Eraser size={12} />
-          Clean
-        </button>
-
-        {/* Raw/cleaned toggle — only when an opened capture had escapes */}
-        {rawCaptureRef.current != null && (
+        {/* File actions — icon-only group with tooltips */}
+        <div className="flex items-center gap-0.5">
           <button
-            onClick={toggleRaw}
-            className={`px-2 py-1 text-xs rounded transition-colors ${
-              viewingRaw ? 'text-[#e5c07b] bg-[#e5c07b20]' : 'text-[#8b949e] hover:text-[#c9d1d9] hover:bg-[#21262d]'
-            }`}
-            title="Toggle between cleaned and raw capture"
+            onClick={openFile}
+            className="p-1.5 rounded text-[#8b949e] hover:text-[#c9d1d9] hover:bg-[#21262d] transition-colors"
+            title="Open file (Ctrl+O)"
           >
-            {viewingRaw ? 'Raw' : 'Cleaned'}
+            <FolderOpen size={13} />
           </button>
-        )}
+          <button
+            onClick={() => saveFile(false)}
+            className={`p-1.5 rounded transition-colors ${
+              isDirty ? 'text-[#e5c07b] hover:bg-[#e5c07b20]' : 'text-[#8b949e] hover:text-[#c9d1d9] hover:bg-[#21262d]'
+            }`}
+            title={currentFilePath ? 'Save (Ctrl+S)' : 'Save As… (Ctrl+S)'}
+          >
+            <Download size={13} />
+          </button>
+          <button
+            onClick={cleanCurrent}
+            className="p-1.5 rounded text-[#8b949e] hover:text-[#c9d1d9] hover:bg-[#21262d] transition-colors"
+            title="Strip ANSI / terminal control codes"
+          >
+            <Eraser size={13} />
+          </button>
+          {rawCaptureRef.current != null && (
+            <button
+              onClick={toggleRaw}
+              className={`px-1.5 py-1 text-[10px] rounded transition-colors ${
+                viewingRaw ? 'text-[#e5c07b] bg-[#e5c07b20]' : 'text-[#8b949e] hover:text-[#c9d1d9] hover:bg-[#21262d]'
+              }`}
+              title="Toggle cleaned / raw capture"
+            >
+              {viewingRaw ? 'Raw' : 'Clean'}
+            </button>
+          )}
+        </div>
 
-        <div className="w-px h-4 bg-[#30363d] mx-0.5" />
+        <div className="w-px h-4 bg-[#30363d] mx-1" />
 
         {/* Language picker */}
         <div className="relative">
