@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import Editor, { OnMount } from '@monaco-editor/react';
+import Editor, { DiffEditor, OnMount } from '@monaco-editor/react';
 import type { editor as MonacoEditor } from 'monaco-editor';
 import {
   X,
@@ -13,6 +13,8 @@ import {
   FileX,
   Code2,
   Eraser,
+  DownloadCloud,
+  GitCompare,
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/tauri';
 import { useSessionStore } from '../store/sessionStore';
@@ -72,6 +74,8 @@ function looksLikeTerminalCapture(text: string): boolean {
   // Sample the first chunk; flag if it contains ESC sequences.
   return /\x1b\[/.test(text.slice(0, 20000));
 }
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function browserOpen(): Promise<{ name: string; content: string } | null> {
   return new Promise((resolve) => {
@@ -295,6 +299,10 @@ export default function ConfigEditor() {
   const rawCaptureRef = useRef<string | null>(null);
   const [viewingRaw, setViewingRaw] = useState(false);
 
+  // Diff mode: compare current editor content against a loaded baseline.
+  const [diffMode, setDiffMode] = useState(false);
+  const [diffOriginal, setDiffOriginal] = useState('');
+
   const editorRef = useRef<MonacoEditor.IStandaloneCodeEditor | null>(null);
   const saveFileRef = useRef<(forcePicker?: boolean) => Promise<void>>();
   const openFileRef = useRef<() => Promise<void>>();
@@ -367,6 +375,74 @@ export default function ConfigEditor() {
     setContent((c) => stripTerminalSequences(c));
     setIsDirty(true);
     showStatus('Stripped terminal escapes');
+  }, []);
+
+  // Pull the active device's running-config into the editor (terminal read-back).
+  const pullRunningConfig = useCallback(async () => {
+    if (!activeSession?.connected) {
+      showStatus('Connect a session first');
+      return;
+    }
+    const sid = activeSession.sessionId;
+    showStatus('Pulling running-config…');
+    try {
+      // Best-effort: disable paging on controllers so output isn't truncated.
+      if (activeSession.config.deviceType === 'aruba-controller') {
+        await invoke('send_data', { sessionId: sid, data: 'no paging\r' });
+        await sleep(300);
+      }
+      const before = (await invoke<string>('get_terminal_output', { sessionId: sid })).length;
+      await invoke('send_data', { sessionId: sid, data: 'show running-config\r' });
+      let last = before;
+      let stable = 0;
+      let buf = '';
+      for (let i = 0; i < 30; i++) {
+        await sleep(400);
+        buf = await invoke<string>('get_terminal_output', { sessionId: sid });
+        if (buf.length === last) {
+          if (++stable >= 2) break;
+        } else {
+          stable = 0;
+          last = buf.length;
+        }
+      }
+      const out = stripTerminalSequences(buf.slice(before)).trim();
+      if (!out) {
+        showStatus('No output captured');
+        return;
+      }
+      rawCaptureRef.current = null;
+      setViewingRaw(false);
+      setContent(out);
+      setLanguage('aruba-cx');
+      setCurrentFilePath(null);
+      setIsDirty(true);
+      showStatus('Running-config pulled');
+    } catch (e) {
+      showStatus(`Pull failed: ${e}`);
+    }
+  }, [activeSession]);
+
+  // Open a baseline file and diff it against the current editor content.
+  const openDiffAgainst = useCallback(async () => {
+    try {
+      let text: string | null = null;
+      if (isTauri) {
+        const p = await tauriOpen();
+        if (!p) return;
+        text = await tauriReadText(p);
+      } else {
+        const r = await browserOpen();
+        if (!r) return;
+        text = r.content;
+      }
+      if (text == null) return;
+      setDiffOriginal(looksLikeTerminalCapture(text) ? stripTerminalSequences(text) : text);
+      setDiffMode(true);
+      showStatus('Diff: left = baseline file, right = editor');
+    } catch (e) {
+      showStatus(`Diff open failed: ${e}`);
+    }
   }, []);
 
   // ─── File save ───
@@ -706,6 +782,31 @@ export default function ConfigEditor() {
           )}
         </div>
 
+        <div className="w-px h-4 bg-[#30363d] mx-0.5" />
+
+        {/* Pull running-config from the active device */}
+        <button
+          onClick={pullRunningConfig}
+          disabled={!activeSession?.connected}
+          className="flex items-center gap-1.5 px-2 py-1 text-xs rounded transition-colors disabled:opacity-40 text-[#8b949e] hover:text-[#c9d1d9] hover:bg-[#21262d]"
+          title="Pull running-config from the active device"
+        >
+          <DownloadCloud size={12} />
+          Pull
+        </button>
+
+        {/* Diff against a baseline file */}
+        <button
+          onClick={() => (diffMode ? setDiffMode(false) : openDiffAgainst())}
+          className={`flex items-center gap-1.5 px-2 py-1 text-xs rounded transition-colors ${
+            diffMode ? 'text-[#58a6ff] bg-[#58a6ff20]' : 'text-[#8b949e] hover:text-[#c9d1d9] hover:bg-[#21262d]'
+          }`}
+          title="Compare the editor against a file"
+        >
+          <GitCompare size={12} />
+          {diffMode ? 'Exit Diff' : 'Diff'}
+        </button>
+
         <div className="flex-1" />
 
         {statusMsg && <span className="text-[10px] text-[#8b949e] mr-1">{statusMsg}</span>}
@@ -726,6 +827,22 @@ export default function ConfigEditor() {
 
       {/* Monaco Editor */}
       <div className="flex-1 overflow-hidden">
+        {diffMode ? (
+          <DiffEditor
+            original={diffOriginal}
+            modified={content}
+            language={language}
+            theme="aruba-dark"
+            options={{
+              readOnly: true,
+              fontSize: 13,
+              fontFamily: 'JetBrains Mono, Consolas, "Courier New", monospace',
+              minimap: { enabled: false },
+              scrollBeyondLastLine: false,
+              renderSideBySide: true,
+            }}
+          />
+        ) : (
         <Editor
           language={language}
           value={content}
@@ -756,6 +873,7 @@ export default function ConfigEditor() {
             guides: { bracketPairs: true },
           }}
         />
+        )}
       </div>
     </div>
   );
