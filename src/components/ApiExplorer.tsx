@@ -76,6 +76,7 @@ export default function ApiExplorer() {
   const [newConnName, setNewConnName] = useState('');
   const [newConnUser, setNewConnUser] = useState('');
   const [newConnPass, setNewConnPass] = useState('');
+  const [verifyTls, setVerifyTls] = useState(false);
   const bodyRef = useRef<HTMLTextAreaElement>(null);
 
   // Collapsible / Resizable panel state
@@ -201,7 +202,12 @@ export default function ApiExplorer() {
       }
       // Rust client logs in (cookie stored server-side; self-signed certs OK).
       await invoke('api_login', {
-        request: { host: newConnHost, username: newConnUser, password: newConnPass },
+        request: {
+          host: newConnHost,
+          username: newConnUser,
+          password: newConnPass,
+          accept_invalid_certs: !verifyTls,
+        },
       });
 
       const id = Math.random().toString(36).slice(2);
@@ -360,6 +366,17 @@ export default function ApiExplorer() {
               onChange={(e) => setNewConnPass(e.target.value)}
               className="w-full text-xs bg-[#161b22] border border-[#30363d] rounded px-2 py-1.5 text-[#c9d1d9] placeholder-[#484f58] focus:outline-none focus:border-[#58a6ff]"
             />
+            <label className="flex items-center gap-2 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={verifyTls}
+                onChange={(e) => setVerifyTls(e.target.checked)}
+                className="w-3.5 h-3.5 rounded accent-[#238636]"
+              />
+              <span className="text-[11px] text-[#8b949e]">
+                Verify TLS certificate (off = allow self-signed, default for switches)
+              </span>
+            </label>
             <button
               onClick={handleLogin}
               className="w-full px-2 py-1.5 text-xs bg-[#238636] hover:bg-[#2ea043] text-white rounded transition-colors"

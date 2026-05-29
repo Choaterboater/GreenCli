@@ -24,7 +24,7 @@ import TerminalTabs from './components/TerminalTabs';
 import Sidebar from './components/Sidebar';
 import StatusBar from './components/StatusBar';
 import QuickConnect from './components/QuickConnect';
-import SshAuthDialog from './components/SshAuthDialog';
+import SshAuthDialog, { AuthCredentials } from './components/SshAuthDialog';
 import SettingsPanel from './components/SettingsPanel';
 import SearchOverlay from './components/SearchOverlay';
 import ApiExplorer from './components/ApiExplorer';
@@ -254,7 +254,7 @@ function App() {
   }, [handleConnect]);
 
   const handleAuthenticate = useCallback(
-    async (password: string, _saveCredential: boolean) => {
+    async (creds: AuthCredentials, _saveCredential: boolean) => {
       const pending = useSessionStore.getState().pendingConnection;
       if (!pending) return;
 
@@ -270,10 +270,11 @@ function App() {
             host: pending.host,
             port: pending.port,
             username: pending.username,
-            auth_type: pending.authType || 'password',
-            password,
-            private_key: pending.privateKey,
-            key_passphrase: pending.keyPassphrase,
+            // Honour the auth type the user picked in the dialog.
+            auth_type: creds.authType === 'key' ? 'key' : 'password',
+            password: creds.password,
+            private_key: creds.privateKey,
+            key_passphrase: creds.keyPassphrase,
             serial_port: pending.serialPort,
             baud_rate: pending.baudRate,
             device_type: pending.deviceType,
@@ -283,15 +284,14 @@ function App() {
         });
 
         if (result.success) {
-          useSessionStore
-            .getState()
-            .updateSessionConnection(pending.id, true);
+          useSessionStore.getState().updateSessionConnection(pending.id, true);
+          setShowAuthDialog(false);
         }
       } catch (err) {
         console.error('Auth connection error:', err);
       }
     },
-    []
+    [setShowAuthDialog]
   );
 
   return (

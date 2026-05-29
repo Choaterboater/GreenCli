@@ -2,8 +2,15 @@ import { useState } from 'react';
 import { X, KeyRound, Eye, EyeOff, Lock } from 'lucide-react';
 import { useSessionStore } from '../store/sessionStore';
 
+export interface AuthCredentials {
+  authType: 'password' | 'key';
+  password?: string;
+  privateKey?: string;
+  keyPassphrase?: string;
+}
+
 interface SshAuthDialogProps {
-  onAuthenticate: (password: string, saveCredential: boolean) => void;
+  onAuthenticate: (creds: AuthCredentials, saveCredential: boolean) => void;
 }
 
 export default function SshAuthDialog({ onAuthenticate }: SshAuthDialogProps) {
@@ -21,10 +28,12 @@ export default function SshAuthDialog({ onAuthenticate }: SshAuthDialogProps) {
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (authType === 'password') {
-      onAuthenticate(password, saveCredential);
+      onAuthenticate({ authType: 'password', password }, saveCredential);
     } else {
-      // Key-based auth
-      onAuthenticate(privateKey, saveCredential);
+      onAuthenticate(
+        { authType: 'key', privateKey, keyPassphrase: keyPassphrase || undefined },
+        saveCredential
+      );
     }
     setPassword('');
     setPrivateKey('');

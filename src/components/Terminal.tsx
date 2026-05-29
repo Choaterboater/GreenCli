@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef } from 'react';
 import { Terminal as XTerm } from 'xterm';
 import { FitAddon } from 'xterm-addon-fit';
 import { WebLinksAddon } from 'xterm-addon-web-links';
@@ -29,25 +29,11 @@ export default function Terminal({ sessionId, deviceType, onSend }: TerminalProp
   );
   const ansiProcessorRef = useRef<AnsiProcessor>(new AnsiProcessor());
   const bufferRef = useRef<string>('');
-  const [webglAddon, setWebglAddon] = useState<any>(null);
   const unlistenRef = useRef<(() => void) | null>(null);
 
   const { terminalTheme, isDark } = useTheme();
   const settings = useSettingsStore();
   const updateSessionConnection = useSessionStore((s) => s.updateSessionConnection);
-
-  // Load WebGL addon dynamically
-  useEffect(() => {
-    let cancelled = false;
-    import('xterm-addon-webgl').then(({ WebglAddon }) => {
-      if (!cancelled) {
-        setWebglAddon(() => WebglAddon);
-      }
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   // Update highlighter when device type changes
   useEffect(() => {
@@ -87,15 +73,20 @@ export default function Terminal({ sessionId, deviceType, onSend }: TerminalProp
 
     term.open(containerRef.current);
 
-    // Try WebGL renderer
-    if (webglAddon) {
-      try {
-        const glAddon = new webglAddon();
-        term.loadAddon(glAddon);
-      } catch {
-        // WebGL not supported, fallback to canvas
-      }
-    }
+    // Load the WebGL renderer asynchronously (canvas fallback on failure).
+    // Doing it here — rather than in a separate effect keyed on the loaded
+    // addon — avoids disposing/recreating the whole terminal mid-session.
+    let disposed = false;
+    import('xterm-addon-webgl')
+      .then(({ WebglAddon }) => {
+        if (disposed || !terminalRef.current) return;
+        try {
+          term.loadAddon(new WebglAddon());
+        } catch {
+          /* WebGL unsupported — stay on canvas */
+        }
+      })
+      .catch(() => {});
 
     fitAddon.fit();
 
@@ -116,17 +107,22 @@ export default function Terminal({ sessionId, deviceType, onSend }: TerminalProp
     };
 
     window.addEventListener('resize', handleResize);
+    // Refit when the container itself resizes (panels opening, split view, etc.)
+    const ro = new ResizeObserver(() => handleResize());
+    ro.observe(containerRef.current);
     setTimeout(handleResize, 100);
 
     return () => {
+      disposed = true;
       window.removeEventListener('resize', handleResize);
+      ro.disconnect();
       unregisterSearchAdapter(sessionId);
       term.dispose();
       terminalRef.current = null;
       fitAddonRef.current = null;
       searchAddonRef.current = null;
     };
-  }, [sessionId, webglAddon]);
+  }, [sessionId]);
 
   // Listen for terminal data from Tauri backend
   useEffect(() => {
