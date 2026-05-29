@@ -118,11 +118,11 @@ ${ARUBA_KNOWLEDGE}
 
 ## Guidelines
 - Be concise and technical — your users are network engineers
-- When sending CLI commands, send one at a time and explain what each reveals
+- The send_terminal_command tool RETURNS the device's output to you — run a show command, read the result, then explain or act on it
+- Send commands one at a time and interpret each result before the next
 - For configuration changes, always confirm with the user before executing — ask "Shall I apply this?"
 - Format configs in code blocks for easy copying to the Config Editor panel
-- When you don't have live device data, say so clearly and suggest the commands to run
-- You can execute show commands freely; be cautious with config changes`;
+- You can execute show/diagnostic commands freely; be cautious with config changes`;
 
 // ─── Prebuilt prompts ───
 
@@ -138,7 +138,7 @@ const PREBUILT_PROMPTS = [
 const TOOLS = [
   {
     name: 'send_terminal_command',
-    description: 'Execute a CLI command on the currently connected Aruba device terminal. Output appears in the terminal window. Use for show commands to gather information. Always ask before running config-changing commands.',
+    description: 'Execute a CLI command on the currently connected Aruba device terminal AND return its captured output back to you. Use freely for show/diagnostic commands to gather information, then analyse the returned output. Always ask the user before running config-changing commands. Tip: disable paging first (e.g. "no page" on AOS-S, or the device may paginate long output).',
     input_schema: {
       type: 'object',
       properties: {
@@ -154,6 +154,19 @@ const TOOLS = [
 
 // ─── Execute a tool ───
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// Strip ANSI/terminal control sequences from captured device output before
+// handing it to the model.
+function stripAnsiSeq(text: string): string {
+  return text
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
+    .replace(/\x1b[@-Z\\-_]/g, '')
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '')
+    .replace(/\r\n?/g, '\n');
+}
+
 async function executeTool(
   name: string,
   args: Record<string, unknown>,
@@ -167,14 +180,35 @@ async function executeTool(
     if (!activeSession.connected) {
       return 'Error: Terminal session exists but device is not connected.';
     }
+    const sid = activeSession.sessionId;
     try {
-      await invoke('send_data', {
-        sessionId: activeSession.sessionId,
-        data: command + '\r',
-      });
-      return `Sent command: \`${command}\` — output is now visible in the terminal window.`;
+      // Capture-then-send-then-read so the model sees actual device output.
+      const before = (await invoke<string>('get_terminal_output', { sessionId: sid })).length;
+      await invoke('send_data', { sessionId: sid, data: command + '\r' });
+
+      // Poll until the buffer stops growing (output settled) or ~6s timeout.
+      let lastLen = before;
+      let stable = 0;
+      let buf = '';
+      for (let i = 0; i < 15; i++) {
+        await sleep(400);
+        buf = await invoke<string>('get_terminal_output', { sessionId: sid });
+        if (buf.length === lastLen) {
+          if (++stable >= 2) break;
+        } else {
+          stable = 0;
+          lastLen = buf.length;
+        }
+      }
+
+      const cleaned = stripAnsiSeq(buf.slice(before)).trim();
+      if (!cleaned) {
+        return `Command \`${command}\` was sent, but no output was captured (it may be interactive, paged, or still running).`;
+      }
+      // Cap to keep token usage sane; keep the tail (most relevant) output.
+      return cleaned.length > 12000 ? '…(truncated)…\n' + cleaned.slice(-12000) : cleaned;
     } catch (e) {
-      return `Failed to send command: ${e}`;
+      return `Failed to run command: ${e}`;
     }
   }
   return `Unknown tool: ${name}`;
