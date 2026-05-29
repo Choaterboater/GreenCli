@@ -40,6 +40,9 @@ pub struct SshConnection {
     pub data_sender: Option<Sender<Vec<u8>>>,
     pub data_receiver: Option<tokio::sync::mpsc::Receiver<Vec<u8>>>,
     pub connected: bool,
+    /// Held open for the session's lifetime when connecting via a jump host;
+    /// dropping it tears down the tunnel.
+    pub jump_handle: Option<Arc<Mutex<client::Handle<ClientHandler>>>>,
 }
 
 #[derive(Clone, Debug)]
@@ -56,6 +59,11 @@ pub struct ConnectionConfig {
     pub keep_alive_interval: Option<u64>,
     /// Path to the TOFU known_hosts store. `None` disables host-key checking.
     pub known_hosts_path: Option<PathBuf>,
+    /// Optional jump host (bastion / ProxyJump) — connect to the target through it.
+    pub jump_host: Option<String>,
+    pub jump_port: Option<u16>,
+    pub jump_username: Option<String>,
+    pub jump_password: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -142,6 +150,7 @@ impl SshConnection {
             data_sender: None,
             data_receiver: None,
             connected: false,
+            jump_handle: None,
         }
     }
 
@@ -173,13 +182,69 @@ impl SshConnection {
             host_port: format!("{}:{}", self.config.host, self.config.port),
             known_hosts_path: self.config.known_hosts_path.clone(),
         };
-        let mut handle = russh::client::connect(
-            client_config,
-            (self.config.host.clone(), self.config.port),
-            handler,
-        )
-        .await
-        .map_err(|e| AppError::SshError(format!("Connection failed: {}", e)))?;
+
+        // Connect directly, or tunnel through a jump host (ProxyJump) when set.
+        let mut handle = if let Some(ref jump_host) = self.config.jump_host {
+            let jump_port = self.config.jump_port.unwrap_or(22);
+            // The jump session's own data is irrelevant (we only open a tunnel),
+            // so its handler discards data but still verifies the jump host key.
+            let (jdtx, _jdrx) = channel::<Vec<u8>>(16);
+            let jump_handler = ClientHandler {
+                sender: jdtx,
+                host_port: format!("{}:{}", jump_host, jump_port),
+                known_hosts_path: self.config.known_hosts_path.clone(),
+            };
+            let mut jump = russh::client::connect(
+                client_config.clone(),
+                (jump_host.clone(), jump_port),
+                jump_handler,
+            )
+            .await
+            .map_err(|e| AppError::SshError(format!("Jump host connect failed: {}", e)))?;
+
+            let jump_user = self.config.jump_username.clone().unwrap_or_default();
+            let jump_pass = self.config.jump_password.clone().unwrap_or_default();
+            let jump_ok = jump
+                .authenticate_password(&jump_user, jump_pass)
+                .await
+                .map_err(|e| AppError::SshError(format!("Jump host auth failed: {}", e)))?;
+            if !jump_ok {
+                return Err(AppError::AuthError(
+                    "Jump host authentication failed".into(),
+                ));
+            }
+
+            // Open a tunnel from the jump host to the target and run SSH over it.
+            let tunnel = jump
+                .channel_open_direct_tcpip(
+                    self.config.host.clone(),
+                    self.config.port as u32,
+                    "127.0.0.1",
+                    0,
+                )
+                .await
+                .map_err(|e| AppError::SshError(format!("Tunnel to target failed: {}", e)))?;
+
+            let target = russh::client::connect_stream(
+                client_config.clone(),
+                tunnel.into_stream(),
+                handler,
+            )
+            .await
+            .map_err(|e| AppError::SshError(format!("Connect via jump host failed: {}", e)))?;
+
+            // Keep the jump session alive for the lifetime of this connection.
+            self.jump_handle = Some(Arc::new(Mutex::new(jump)));
+            target
+        } else {
+            russh::client::connect(
+                client_config.clone(),
+                (self.config.host.clone(), self.config.port),
+                handler,
+            )
+            .await
+            .map_err(|e| AppError::SshError(format!("Connection failed: {}", e)))?
+        };
 
         // Authenticate
         match self.config.auth_type {
@@ -271,6 +336,7 @@ impl SshConnection {
         self.handle = None;
         self.channel = None;
         self.data_sender = None;
+        self.jump_handle = None;
         Ok(())
     }
 

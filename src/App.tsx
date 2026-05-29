@@ -249,6 +249,10 @@ function App() {
             command: fullConfig.command,
             args: fullConfig.args,
             cwd: fullConfig.cwd,
+            jump_host: fullConfig.jumpHost,
+            jump_port: fullConfig.jumpPort,
+            jump_username: fullConfig.jumpUsername,
+            jump_password: fullConfig.jumpPassword,
           },
         });
 
@@ -313,6 +317,10 @@ function App() {
             device_type: pending.deviceType,
             keep_alive_interval: useSettingsStore.getState().keepAliveInterval,
             auto_reconnect: useSettingsStore.getState().autoReconnect,
+            jump_host: pending.jumpHost,
+            jump_port: pending.jumpPort,
+            jump_username: pending.jumpUsername,
+            jump_password: pending.jumpPassword,
           },
         });
 

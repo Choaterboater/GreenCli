@@ -28,6 +28,11 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
   const [baudRate, setBaudRate] = useState(9600);
   const [cliPresetId, setCliPresetId] = useState('shell');
   const [customCommand, setCustomCommand] = useState('');
+  const [showJump, setShowJump] = useState(false);
+  const [jumpHost, setJumpHost] = useState('');
+  const [jumpPort, setJumpPort] = useState(22);
+  const [jumpUsername, setJumpUsername] = useState('');
+  const [jumpPassword, setJumpPassword] = useState('');
   const [saveSession, setSaveSession] = useState(false);
   const [connecting, setConnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -64,6 +69,10 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
         deviceType: protocol === 'local' ? 'generic' : deviceType,
         command: localCommand,
         args: protocol === 'local' ? preset?.args : undefined,
+        jumpHost: protocol === 'ssh' && jumpHost ? jumpHost : undefined,
+        jumpPort: protocol === 'ssh' && jumpHost ? jumpPort : undefined,
+        jumpUsername: protocol === 'ssh' && jumpHost ? jumpUsername : undefined,
+        jumpPassword: protocol === 'ssh' && jumpHost ? jumpPassword : undefined,
       };
 
       if (saveSession) {
@@ -268,6 +277,56 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
                 placeholder="admin"
                 className="w-full h-9 px-3 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[#58a6ff]"
               />
+            </div>
+          )}
+
+          {/* Jump host / bastion (SSH only, optional) */}
+          {protocol === 'ssh' && (
+            <div>
+              <button
+                type="button"
+                onClick={() => setShowJump((v) => !v)}
+                className="text-xs font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+              >
+                {showJump ? '▾' : '▸'} Jump host / bastion (optional)
+              </button>
+              {showJump && (
+                <div className="mt-2 space-y-2 p-2 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg">
+                  <div className="grid grid-cols-3 gap-2">
+                    <input
+                      value={jumpHost}
+                      onChange={(e) => setJumpHost(e.target.value)}
+                      placeholder="Jump host"
+                      className="col-span-2 h-8 px-2 bg-[var(--bg-secondary)] border border-[var(--border)] rounded text-xs text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[#58a6ff]"
+                    />
+                    <input
+                      type="number"
+                      value={jumpPort}
+                      onChange={(e) => setJumpPort(Number(e.target.value))}
+                      placeholder="22"
+                      className="h-8 px-2 bg-[var(--bg-secondary)] border border-[var(--border)] rounded text-xs text-[var(--text-primary)] focus:outline-none focus:border-[#58a6ff]"
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <input
+                      value={jumpUsername}
+                      onChange={(e) => setJumpUsername(e.target.value)}
+                      placeholder="Jump username"
+                      className="h-8 px-2 bg-[var(--bg-secondary)] border border-[var(--border)] rounded text-xs text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[#58a6ff]"
+                    />
+                    <input
+                      type="password"
+                      value={jumpPassword}
+                      onChange={(e) => setJumpPassword(e.target.value)}
+                      placeholder="Jump password"
+                      className="h-8 px-2 bg-[var(--bg-secondary)] border border-[var(--border)] rounded text-xs text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[#58a6ff]"
+                    />
+                  </div>
+                  <p className="text-[10px] text-[var(--text-muted)]">
+                    Connect to the target through this bastion (ProxyJump). Password auth.
+                  </p>
+                </div>
+              )}
             </div>
           )}
 
