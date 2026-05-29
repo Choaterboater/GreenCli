@@ -78,10 +78,12 @@ pub struct LldpNeighbor {
 }
 
 impl ArubaCxClient {
-    /// Create a new Aruba CX API client
-    pub fn new(host: String) -> Self {
+    /// Create a new Aruba CX API client. `accept_invalid_certs` allows
+    /// self-signed switch certificates (common in the field); pass `false` to
+    /// enforce TLS validation.
+    pub fn new(host: String, accept_invalid_certs: bool) -> Self {
         let client = reqwest::Client::builder()
-            .danger_accept_invalid_certs(true)
+            .danger_accept_invalid_certs(accept_invalid_certs)
             .cookie_store(true)
             .timeout(std::time::Duration::from_secs(30))
             .build()

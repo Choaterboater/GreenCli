@@ -57,17 +57,7 @@ export default function SearchOverlay() {
     adapter.findNext(query, { incremental: true, regex: useRegex, caseSensitive });
   }, [useRegex, caseSensitive]);
 
-  // Global Ctrl+F to open
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
-        e.preventDefault();
-        setShowSearch(true);
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [setShowSearch]);
+  // (Ctrl+F is handled globally in App.tsx; no duplicate listener here.)
 
   const runSearch = (term: string, opts?: { regex?: boolean; caseSensitive?: boolean }) => {
     if (!adapter) return;

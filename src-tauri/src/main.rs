@@ -101,6 +101,13 @@ pub struct ApiLoginRequest {
     pub host: String,
     pub username: String,
     pub password: String,
+    /// Allow self-signed certs (default true for field gear). Set false to verify.
+    #[serde(default = "default_true")]
+    pub accept_invalid_certs: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 // ─── Helpers ───
@@ -783,7 +790,7 @@ async fn api_login(
     request: ApiLoginRequest,
     state: State<'_, AppState>,
 ) -> Result<bool, String> {
-    let mut client = ArubaCxClient::new(request.host.clone());
+    let mut client = ArubaCxClient::new(request.host.clone(), request.accept_invalid_certs);
     client
         .login(&request.username, &request.password)
         .await
