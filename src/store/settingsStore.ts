@@ -20,6 +20,8 @@ interface SettingsState extends TerminalSettings {
   setAiProvider: (provider: AiProvider) => void;
   setOllamaUrl: (url: string) => void;
   setOllamaModel: (model: string) => void;
+  setOpenrouterModel: (model: string) => void;
+  setMoonshotModel: (model: string) => void;
   setLocalCliCommand: (command: string) => void;
   resetToDefaults: () => void;
   updateSettings: (partial: Partial<TerminalSettings>) => void;
@@ -46,6 +48,8 @@ export const useSettingsStore = create<SettingsState>()(
       setAiProvider: (aiProvider) => set({ aiProvider }),
       setOllamaUrl: (ollamaUrl) => set({ ollamaUrl }),
       setOllamaModel: (ollamaModel) => set({ ollamaModel }),
+      setOpenrouterModel: (openrouterModel) => set({ openrouterModel }),
+      setMoonshotModel: (moonshotModel) => set({ moonshotModel }),
       setLocalCliCommand: (localCliCommand) => set({ localCliCommand }),
 
       resetToDefaults: () => set({ ...DEFAULT_SETTINGS }),

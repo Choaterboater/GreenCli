@@ -12,6 +12,7 @@ import {
   BookOpen,
   FileX,
   Code2,
+  Eraser,
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/tauri';
 import { useSessionStore } from '../store/sessionStore';
@@ -40,14 +41,36 @@ async function tauriSave(defaultName: string): Promise<string | null> {
   return result ?? null;
 }
 
+// Read/write via Rust commands rather than the webview `fs` API, which is
+// scope-limited (it refuses arbitrary paths like ~/Downloads/...) and chokes on
+// non-UTF8 bytes common in terminal-capture logs.
 async function tauriReadText(path: string): Promise<string> {
-  const { readTextFile } = await import('@tauri-apps/api/fs');
-  return readTextFile(path);
+  return invoke<string>('read_file_text', { path });
 }
 
 async function tauriWriteText(path: string, data: string): Promise<void> {
-  const { writeTextFile } = await import('@tauri-apps/api/fs');
-  return writeTextFile(path, data);
+  await invoke('write_file_text', { path, contents: data });
+}
+
+// Strip terminal/ANSI control sequences so captured logs (PuTTY/`show tech`,
+// console dumps) are readable instead of full of cursor-movement garbage.
+function stripTerminalSequences(text: string): string {
+  return text
+    // OSC sequences: ESC ] ... (BEL | ST)
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
+    // CSI sequences: ESC [ ... final-byte  (cursor moves, colours, erase, etc.)
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
+    // Other two-byte ESC sequences
+    .replace(/\x1b[@-Z\\-_]/g, '')
+    // Remaining control chars except tab/newline
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '')
+    // Normalise bare CRs
+    .replace(/\r\n?/g, '\n');
+}
+
+function looksLikeTerminalCapture(text: string): boolean {
+  // Sample the first chunk; flag if it contains ESC sequences.
+  return /\x1b\[/.test(text.slice(0, 20000));
 }
 
 function browserOpen(): Promise<{ name: string; content: string } | null> {
@@ -267,6 +290,11 @@ export default function ConfigEditor() {
   const [sending, setSending] = useState(false);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
 
+  // Holds the original (uncleaned) text when an opened file had terminal escapes,
+  // so the user can toggle back to the raw capture.
+  const rawCaptureRef = useRef<string | null>(null);
+  const [viewingRaw, setViewingRaw] = useState(false);
+
   const editorRef = useRef<MonacoEditor.IStandaloneCodeEditor | null>(null);
   const saveFileRef = useRef<(forcePicker?: boolean) => Promise<void>>();
   const openFileRef = useRef<() => Promise<void>>();
@@ -282,31 +310,63 @@ export default function ConfigEditor() {
 
   // ─── File open ───
 
+  // Apply terminal-capture cleaning if needed; returns the text to display.
+  const ingest = (name: string, text: string) => {
+    if (looksLikeTerminalCapture(text)) {
+      rawCaptureRef.current = text;
+      setViewingRaw(false);
+      const cleaned = stripTerminalSequences(text);
+      setContent(cleaned);
+      showStatus(`Opened ${name} — cleaned terminal escapes (toggle Raw to see original)`);
+    } else {
+      rawCaptureRef.current = null;
+      setViewingRaw(false);
+      setContent(text);
+      showStatus(`Opened ${name}`);
+    }
+  };
+
   const openFile = useCallback(async () => {
     try {
       if (isTauri) {
         const path = await tauriOpen();
         if (!path) return;
         const text = await tauriReadText(path);
-        const lang = detectLanguage(path);
-        setContent(text);
-        setLanguage(lang);
+        setLanguage(detectLanguage(path));
         setCurrentFilePath(path);
         setIsDirty(false);
-        showStatus(`Opened ${basename(path)}`);
+        ingest(basename(path), text);
       } else {
         const result = await browserOpen();
         if (!result) return;
-        const lang = detectLanguage(result.name);
-        setContent(result.content);
-        setLanguage(lang);
+        setLanguage(detectLanguage(result.name));
         setCurrentFilePath(result.name);
         setIsDirty(false);
-        showStatus(`Opened ${result.name}`);
+        ingest(result.name, result.content);
       }
     } catch (e) {
       showStatus(`Open failed: ${e}`);
     }
+  }, []);
+
+  // Toggle between the cleaned view and the raw capture.
+  const toggleRaw = useCallback(() => {
+    const raw = rawCaptureRef.current;
+    if (raw == null) return;
+    if (viewingRaw) {
+      setContent(stripTerminalSequences(raw));
+      setViewingRaw(false);
+    } else {
+      setContent(raw);
+      setViewingRaw(true);
+    }
+  }, [viewingRaw]);
+
+  // Manually strip escapes from whatever is currently in the editor.
+  const cleanCurrent = useCallback(() => {
+    setContent((c) => stripTerminalSequences(c));
+    setIsDirty(true);
+    showStatus('Stripped terminal escapes');
   }, []);
 
   // ─── File save ───
@@ -550,6 +610,29 @@ export default function ConfigEditor() {
           <Download size={12} />
           {currentFilePath ? 'Save' : 'Save As'}
         </button>
+
+        {/* Clean terminal escapes */}
+        <button
+          onClick={cleanCurrent}
+          className="flex items-center gap-1.5 px-2 py-1 text-xs text-[#8b949e] hover:text-[#c9d1d9] hover:bg-[#21262d] rounded transition-colors"
+          title="Strip ANSI / terminal control codes from the current text"
+        >
+          <Eraser size={12} />
+          Clean
+        </button>
+
+        {/* Raw/cleaned toggle — only when an opened capture had escapes */}
+        {rawCaptureRef.current != null && (
+          <button
+            onClick={toggleRaw}
+            className={`px-2 py-1 text-xs rounded transition-colors ${
+              viewingRaw ? 'text-[#e5c07b] bg-[#e5c07b20]' : 'text-[#8b949e] hover:text-[#c9d1d9] hover:bg-[#21262d]'
+            }`}
+            title="Toggle between cleaned and raw capture"
+          >
+            {viewingRaw ? 'Raw' : 'Cleaned'}
+          </button>
+        )}
 
         <div className="w-px h-4 bg-[#30363d] mx-0.5" />
 

@@ -515,11 +515,13 @@ export default function AiAssistant() {
           systemPrompt
         );
       } else {
-        // OpenAI-compatible: openrouter | moonshot | ollama
+        // OpenAI-compatible: openrouter | moonshot | ollama — each has its own model.
         const model =
           provider === 'ollama'
             ? settings.ollamaModel || 'llama3.2'
-            : settings.aiModel || 'anthropic/claude-3.5-sonnet';
+            : provider === 'openrouter'
+              ? settings.openrouterModel || 'anthropic/claude-3.5-sonnet'
+              : settings.moonshotModel || 'kimi-k2-0905-preview';
         text = await callOpenAiCompatWithTools(
           provider,
           settings.ollamaUrl || 'http://localhost:11434',

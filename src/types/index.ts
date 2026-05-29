@@ -51,17 +51,30 @@ export interface TerminalSettings {
   aiProvider: AiProvider;
   ollamaUrl: string;
   ollamaModel: string;
+  openrouterModel: string;
+  moonshotModel: string;
   localCliCommand: string;
 }
 
 export type AiProvider = 'anthropic' | 'openrouter' | 'moonshot' | 'ollama' | 'local-cli';
 
+// `needsKey` providers are HTTP APIs that require an API key. The CLI/local
+// providers drive a locally-installed tool that handles its own auth/login, so
+// they must never prompt for a key.
 export const AI_PROVIDERS: { value: AiProvider; label: string; needsKey: boolean }[] = [
-  { value: 'anthropic', label: 'Anthropic (Claude)', needsKey: true },
-  { value: 'openrouter', label: 'OpenRouter', needsKey: true },
-  { value: 'moonshot', label: 'Moonshot / Kimi', needsKey: true },
+  { value: 'anthropic', label: 'Anthropic API', needsKey: true },
+  { value: 'openrouter', label: 'OpenRouter API', needsKey: true },
+  { value: 'moonshot', label: 'Moonshot API (Kimi)', needsKey: true },
   { value: 'ollama', label: 'Ollama (local)', needsKey: false },
-  { value: 'local-cli', label: 'Local CLI', needsKey: false },
+  { value: 'local-cli', label: 'Local CLI (no key)', needsKey: false },
+];
+
+// Quick presets for the Local CLI provider — locally-installed agent CLIs that
+// authenticate themselves (no API key needed).
+export const AI_CLI_PRESETS: { label: string; command: string }[] = [
+  { label: 'Claude', command: 'claude -p' },
+  { label: 'Kimi', command: 'kimi' },
+  { label: 'Copilot', command: 'copilot -p' },
 ];
 
 export const DEFAULT_SETTINGS: TerminalSettings = {
@@ -81,6 +94,8 @@ export const DEFAULT_SETTINGS: TerminalSettings = {
   aiProvider: 'ollama',
   ollamaUrl: 'http://localhost:11434',
   ollamaModel: 'llama3.2',
+  openrouterModel: 'anthropic/claude-3.5-sonnet',
+  moonshotModel: 'kimi-k2-0905-preview',
   localCliCommand: 'claude -p',
 };
 

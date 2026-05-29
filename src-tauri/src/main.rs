@@ -499,6 +499,22 @@ fn vault_is_unlocked(state: State<'_, AppState>) -> Result<bool, String> {
 
 // ─── Utility Commands ───
 
+/// Read any user-selected file as text. Uses std::fs (not the webview `fs`
+/// allowlist, which is scope-limited), and decodes lossily so large terminal
+/// logs / captures with stray non-UTF8 bytes still open.
+#[tauri::command]
+fn read_file_text(path: String) -> Result<String, String> {
+    std::fs::read(&path)
+        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+        .map_err(|e| format!("Failed to read {}: {}", path, e))
+}
+
+/// Write text to any user-selected path (companion to read_file_text).
+#[tauri::command]
+fn write_file_text(path: String, contents: String) -> Result<(), String> {
+    std::fs::write(&path, contents).map_err(|e| format!("Failed to write {}: {}", path, e))
+}
+
 #[tauri::command]
 fn list_serial_ports() -> Vec<String> {
     SessionStore::list_serial_ports()
@@ -701,6 +717,8 @@ fn main() {
             vault_delete,
             vault_is_unlocked,
             list_serial_ports,
+            read_file_text,
+            write_file_text,
             generate_keypair,
             mcp_initialize,
             mcp_tools_list,
