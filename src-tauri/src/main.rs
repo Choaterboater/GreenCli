@@ -108,6 +108,44 @@ pub struct ApiLoginRequest {
 /// Forward a connection's incoming data to the frontend (`terminal_data`),
 /// mirror it into the per-session output buffer (for AI read-back), and emit a
 /// `disconnected` status when the stream ends.
+/// Mirror one output chunk into the per-session buffer + log file and emit it
+/// to the frontend. Shared by the plain forwarder and the SSH supervisor.
+async fn write_and_emit(
+    app: &AppHandle,
+    buffers: &Arc<AsyncMutex<HashMap<String, String>>>,
+    logs: &Arc<AsyncMutex<HashMap<String, std::fs::File>>>,
+    session_id: &str,
+    data: Vec<u8>,
+) {
+    {
+        let mut map = buffers.lock().await;
+        let buf = map.entry(session_id.to_string()).or_default();
+        buf.push_str(&String::from_utf8_lossy(&data));
+        // Keep a bounded tail (~150KB) on a char boundary.
+        if buf.len() > 200_000 {
+            let mut cut = buf.len() - 150_000;
+            while cut < buf.len() && !buf.is_char_boundary(cut) {
+                cut += 1;
+            }
+            *buf = buf[cut..].to_string();
+        }
+    }
+    {
+        let mut logs = logs.lock().await;
+        if let Some(file) = logs.get_mut(session_id) {
+            use std::io::Write;
+            let _ = file.write_all(&data);
+        }
+    }
+    let _ = app.emit_all(
+        "terminal_data",
+        TerminalDataEvent {
+            session_id: session_id.to_string(),
+            data,
+        },
+    );
+}
+
 fn spawn_forwarder(
     app: AppHandle,
     buffers: Arc<AsyncMutex<HashMap<String, String>>>,
@@ -118,34 +156,7 @@ fn spawn_forwarder(
 ) {
     tokio::spawn(async move {
         while let Some(data) = rx.recv().await {
-            {
-                let mut map = buffers.lock().await;
-                let buf = map.entry(session_id.clone()).or_default();
-                buf.push_str(&String::from_utf8_lossy(&data));
-                // Keep a bounded tail (~150KB) on a char boundary.
-                if buf.len() > 200_000 {
-                    let mut cut = buf.len() - 150_000;
-                    while cut < buf.len() && !buf.is_char_boundary(cut) {
-                        cut += 1;
-                    }
-                    *buf = buf[cut..].to_string();
-                }
-            }
-            // Stream raw output to the session log file if one is open.
-            {
-                let mut logs = logs.lock().await;
-                if let Some(file) = logs.get_mut(&session_id) {
-                    use std::io::Write;
-                    let _ = file.write_all(&data);
-                }
-            }
-            let _ = app.emit_all(
-                "terminal_data",
-                TerminalDataEvent {
-                    session_id: session_id.clone(),
-                    data,
-                },
-            );
+            write_and_emit(&app, &buffers, &logs, &session_id, data).await;
         }
         let _ = app.emit_all(
             "connection_status",
@@ -155,6 +166,98 @@ fn spawn_forwarder(
                 message: Some(close_msg.to_string()),
             },
         );
+    });
+}
+
+/// SSH forwarder with auto-reconnect. Forwards output like `spawn_forwarder`,
+/// but when the stream closes it reconnects with exponential backoff — unless
+/// the session was removed from the manager (a user-initiated disconnect) or
+/// `auto_reconnect` is off.
+#[allow(clippy::too_many_arguments)]
+fn spawn_ssh_supervisor(
+    app: AppHandle,
+    buffers: Arc<AsyncMutex<HashMap<String, String>>>,
+    logs: Arc<AsyncMutex<HashMap<String, std::fs::File>>>,
+    session_manager: Arc<AsyncMutex<SessionManager>>,
+    ssh_config: ConnectionConfig,
+    session_id: String,
+    first_rx: tokio::sync::mpsc::Receiver<Vec<u8>>,
+    auto_reconnect: bool,
+) {
+    tokio::spawn(async move {
+        let mut rx = first_rx;
+        let mut first = true;
+        let mut backoff = 1u64;
+
+        loop {
+            if !first {
+                // Reconnect path (the initial connection is made by the caller).
+                let _ = app.emit_all(
+                    "connection_status",
+                    ConnectionStatusEvent {
+                        session_id: session_id.clone(),
+                        status: "reconnecting".to_string(),
+                        message: Some(format!("Reconnecting in {}s…", backoff)),
+                    },
+                );
+                for _ in 0..backoff {
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    if !session_manager.lock().await.contains(&session_id).await {
+                        return; // user disconnected during backoff
+                    }
+                }
+                let mut conn = SshConnection::new(session_id.clone(), ssh_config.clone());
+                match conn.connect().await {
+                    Ok(_) => match conn.take_data_receiver() {
+                        Some(nrx) => {
+                            backoff = 1;
+                            let _ = session_manager
+                                .lock()
+                                .await
+                                .add_session(session_id.clone(), Box::new(conn))
+                                .await;
+                            rx = nrx;
+                            let _ = app.emit_all(
+                                "connection_status",
+                                ConnectionStatusEvent {
+                                    session_id: session_id.clone(),
+                                    status: "connected".to_string(),
+                                    message: Some("Reconnected".to_string()),
+                                },
+                            );
+                        }
+                        None => return,
+                    },
+                    Err(_) => {
+                        backoff = (backoff * 2).min(30);
+                        if !session_manager.lock().await.contains(&session_id).await {
+                            return;
+                        }
+                        continue; // retry (backoff sleep happens at top)
+                    }
+                }
+            }
+            first = false;
+
+            // Forward until the stream closes.
+            while let Some(data) = rx.recv().await {
+                write_and_emit(&app, &buffers, &logs, &session_id, data).await;
+            }
+
+            // Stream closed — reconnect only if still wanted.
+            let still_present = session_manager.lock().await.contains(&session_id).await;
+            if !still_present || !auto_reconnect {
+                let _ = app.emit_all(
+                    "connection_status",
+                    ConnectionStatusEvent {
+                        session_id: session_id.clone(),
+                        status: "disconnected".to_string(),
+                        message: Some("SSH connection closed".to_string()),
+                    },
+                );
+                return;
+            }
+        }
     });
 }
 
@@ -190,20 +293,10 @@ async fn connect(
                 known_hosts_path: Some(state.app_dir.join("known_hosts.json")),
             };
 
-            let mut connection = SshConnection::new(session_id.clone(), ssh_config);
+            let auto_reconnect = config.auto_reconnect.unwrap_or(false);
+            let mut connection = SshConnection::new(session_id.clone(), ssh_config.clone());
             let response = connection.connect().await.map_err(|e| e.to_string())?;
-
-            // Forward SSH data + capture output for AI read-back.
-            if let Some(rx) = connection.take_data_receiver() {
-                spawn_forwarder(
-                    app.clone(),
-                    state.terminal_buffers.clone(),
-                    state.session_logs.clone(),
-                    session_id.clone(),
-                    rx,
-                    "SSH connection closed",
-                );
-            }
+            let rx_opt = connection.take_data_receiver();
 
             state
                 .session_manager
@@ -221,6 +314,21 @@ async fn connect(
                     message: Some(format!("SSH connected to {}", host)),
                 },
             );
+
+            // Forward output (+ capture for AI read-back/logging) with
+            // auto-reconnect when enabled.
+            if let Some(rx) = rx_opt {
+                spawn_ssh_supervisor(
+                    app.clone(),
+                    state.terminal_buffers.clone(),
+                    state.session_logs.clone(),
+                    state.session_manager.clone(),
+                    ssh_config,
+                    session_id.clone(),
+                    rx,
+                    auto_reconnect,
+                );
+            }
 
             Ok(response)
         }

@@ -58,6 +58,13 @@ impl SessionManager {
         connection.resize(cols, rows).await
     }
 
+    /// Whether a session is currently registered (used by the reconnect
+    /// supervisor — a user-initiated disconnect removes the session, which
+    /// naturally signals the supervisor to stop retrying).
+    pub async fn contains(&self, session_id: &str) -> bool {
+        self.sessions.lock().await.contains_key(session_id)
+    }
+
     pub async fn is_session_connected(&self, session_id: &str) -> bool {
         let sessions = self.sessions.lock().await;
         sessions
