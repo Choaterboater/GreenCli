@@ -5,6 +5,7 @@ use russh::client::Handler;
 use russh::{client, Channel, ChannelId, Disconnect};
 use russh_keys::key;
 use serde::Serialize;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::mpsc::{channel, Sender};
 use tokio::sync::Mutex;
@@ -53,6 +54,8 @@ pub struct ConnectionConfig {
     pub key_passphrase: Option<String>,
     /// Seconds between SSH keepalive probes. `None`/`0` disables keepalives.
     pub keep_alive_interval: Option<u64>,
+    /// Path to the TOFU known_hosts store. `None` disables host-key checking.
+    pub known_hosts_path: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug)]
@@ -75,6 +78,8 @@ impl std::fmt::Display for AuthType {
 #[derive(Clone)]
 pub struct ClientHandler {
     sender: Sender<Vec<u8>>,
+    host_port: String,
+    known_hosts_path: Option<PathBuf>,
 }
 
 #[async_trait]
@@ -83,9 +88,26 @@ impl Handler for ClientHandler {
 
     async fn check_server_key(
         &mut self,
-        _server_public_key: &key::PublicKey,
+        server_public_key: &key::PublicKey,
     ) -> Result<bool, Self::Error> {
-        Ok(true)
+        match &self.known_hosts_path {
+            Some(path) => {
+                let fingerprint = server_public_key.fingerprint();
+                match crate::ssh::known_hosts::verify_or_record(
+                    path,
+                    &self.host_port,
+                    &fingerprint,
+                ) {
+                    Ok(accepted) => Ok(accepted),
+                    Err(reason) => {
+                        log::warn!("Rejected SSH host key: {}", reason);
+                        Ok(false)
+                    }
+                }
+            }
+            // No store configured → preserve legacy accept-all behaviour.
+            None => Ok(true),
+        }
     }
 
     async fn data(
@@ -146,7 +168,11 @@ impl SshConnection {
         let (data_tx, data_rx) = channel::<Vec<u8>>(1024);
         self.data_sender = Some(data_tx.clone());
 
-        let handler = ClientHandler { sender: data_tx };
+        let handler = ClientHandler {
+            sender: data_tx,
+            host_port: format!("{}:{}", self.config.host, self.config.port),
+            known_hosts_path: self.config.known_hosts_path.clone(),
+        };
         let mut handle = russh::client::connect(
             client_config,
             (self.config.host.clone(), self.config.port),

@@ -125,6 +125,7 @@ async fn connect(
                 private_key: config.private_key,
                 key_passphrase: config.key_passphrase,
                 keep_alive_interval: config.keep_alive_interval,
+                known_hosts_path: Some(state.app_dir.join("known_hosts.json")),
             };
 
             let mut connection = SshConnection::new(session_id.clone(), ssh_config);

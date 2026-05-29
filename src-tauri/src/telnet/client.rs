@@ -8,36 +8,18 @@ use tokio::net::TcpStream;
 use tokio::sync::mpsc::{channel, Sender};
 use tokio::sync::Mutex;
 
-// Telnet command codes (RFC 854)
+// Telnet command codes (RFC 854) — only those actually handled below.
 const IAC: u8 = 255;
 const DONT: u8 = 254;
 const DO: u8 = 253;
 const WONT: u8 = 252;
 const WILL: u8 = 251;
 const SB: u8 = 250;
-const GA: u8 = 249;
-const EL: u8 = 248;
-const EC: u8 = 247;
-const AYT: u8 = 246;
-const AO: u8 = 245;
-const IP: u8 = 244;
-const BREAK: u8 = 243;
-const DM: u8 = 242;
-const NOP: u8 = 241;
 const SE: u8 = 240;
-const EOR: u8 = 239;
 
 // Telnet options
 const OPT_ECHO: u8 = 1;
 const OPT_SUPPRESS_GO_AHEAD: u8 = 3;
-const OPT_STATUS: u8 = 5;
-const OPT_TIMING_MARK: u8 = 6;
-const OPT_TERMINAL_TYPE: u8 = 24;
-const OPT_WINDOW_SIZE: u8 = 31;
-const OPT_TERMINAL_SPEED: u8 = 32;
-const OPT_REMOTE_FLOW_CONTROL: u8 = 33;
-const OPT_LINEMODE: u8 = 34;
-const OPT_ENVIRONMENT: u8 = 36;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct TelnetConfig {
