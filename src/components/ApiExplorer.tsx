@@ -29,26 +29,34 @@ import {
   ApiEndpoint,
   ApiResponse,
   DEFAULT_ENDPOINTS,
+  CENTRAL_ENDPOINTS,
+  CENTRAL_DOCS,
 } from '../types';
 
 const IS_TAURI = typeof window !== 'undefined' && '__TAURI_IPC__' in window;
 
 const CATEGORY_ICONS: Record<string, React.ReactNode> = {
+  // On-box (CX REST)
   System: <Server size={14} className="text-[#58a6ff]" />,
   Interfaces: <Network size={14} className="text-[#3fb950]" />,
   VLANs: <Tag size={14} className="text-[#d29922]" />,
   LLDP: <Radio size={14} className="text-[#d2a8ff]" />,
   Configuration: <FileCode size={14} className="text-[#e3b341]" />,
   CLI: <TerminalSquare size={14} className="text-[#56d4dd]" />,
+  // Aruba Central
+  Monitoring: <Globe size={14} className="text-[#58a6ff]" />,
+  Clients: <Network size={14} className="text-[#3fb950]" />,
+  Sites: <Tag size={14} className="text-[#d29922]" />,
+  'Config Groups': <FileCode size={14} className="text-[#e3b341]" />,
+  Firmware: <Server size={14} className="text-[#d2a8ff]" />,
+  Alerts: <Radio size={14} className="text-[#ff7b72]" />,
 };
 
 const CATEGORY_COLORS: Record<string, string> = {
-  System: '#58a6ff',
-  Interfaces: '#3fb950',
-  VLANs: '#d29922',
-  LLDP: '#d2a8ff',
-  Configuration: '#e3b341',
-  CLI: '#56d4dd',
+  System: '#58a6ff', Interfaces: '#3fb950', VLANs: '#d29922',
+  LLDP: '#d2a8ff', Configuration: '#e3b341', CLI: '#56d4dd',
+  Monitoring: '#58a6ff', Clients: '#3fb950', Sites: '#d29922',
+  'Config Groups': '#e3b341', Firmware: '#d2a8ff', Alerts: '#ff7b72',
 };
 
 const METHOD_COLORS: Record<string, string> = {
@@ -125,8 +133,9 @@ export default function ApiExplorer() {
     }
   };
 
-  // Group endpoints by category
-  const groupedEndpoints = DEFAULT_ENDPOINTS.reduce((acc, ep) => {
+  // Group endpoints by category (switches catalog based on target)
+  const activeEndpoints = target === 'central' ? CENTRAL_ENDPOINTS : DEFAULT_ENDPOINTS;
+  const groupedEndpoints = activeEndpoints.reduce((acc, ep) => {
     if (!acc[ep.category]) acc[ep.category] = [];
     acc[ep.category].push(ep);
     return acc;
@@ -322,6 +331,18 @@ export default function ApiExplorer() {
       {/* Connection Selector (device target only) */}
       {target === 'device' && (
       <div className="px-3 py-2 border-b border-[var(--bg-tertiary)] bg-[var(--bg-secondary)]">
+        {/* One-click use the active SSH session as the API target */}
+        {activeSession?.config.host && !activeConnectionId && (
+          <button
+            onClick={() => {
+              handleAutofillSession();
+              setShowNewConnection(true);
+            }}
+            className="w-full mb-2 px-2 py-1 text-xs bg-[#1f6feb22] border border-[#58a6ff] text-[#58a6ff] rounded hover:bg-[#1f6feb44] transition-colors"
+          >
+            ⚡ Use active session — {activeSession.config.host}
+          </button>
+        )}
         <div className="flex items-center gap-2 mb-2">
           <Link2 size={12} className="text-[var(--text-secondary)]" />
           <span className="text-xs text-[var(--text-secondary)]">Connection</span>
@@ -419,8 +440,24 @@ export default function ApiExplorer() {
 
       {/* Endpoint Tree */}
       <div className="flex-1 overflow-y-auto border-b border-[var(--bg-tertiary)]">
-        <div className="px-3 py-1.5 text-xs font-semibold text-[var(--text-secondary)] uppercase tracking-wider bg-[var(--bg-secondary)]">
-          Endpoints
+        <div className="px-3 py-1.5 text-xs font-semibold text-[var(--text-secondary)] uppercase tracking-wider bg-[var(--bg-secondary)] flex items-center justify-between">
+          <span>Endpoints</span>
+          {target === 'central' && (
+            <span className="flex items-center gap-1.5">
+              {CENTRAL_DOCS.map((d) => (
+                <a
+                  key={d.url}
+                  href={d.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-[10px] text-[#58a6ff] hover:underline"
+                  title={d.label}
+                >
+                  {d.label.split(' ').slice(-2).join(' ')}
+                </a>
+              ))}
+            </span>
+          )}
         </div>
         {Object.entries(groupedEndpoints).map(([category, endpoints]) => (
           <div key={category}>
