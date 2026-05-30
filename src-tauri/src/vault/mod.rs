@@ -66,6 +66,10 @@ impl CredentialVault {
         self.cipher.lock().map(|c| c.is_some()).unwrap_or(false)
     }
 
+    pub fn is_initialized(&self) -> bool {
+        self.storage.exists()
+    }
+
     fn with_cipher<T>(
         &self,
         f: impl FnOnce(&VaultCipher) -> Result<T, AppError>,

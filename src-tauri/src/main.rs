@@ -673,6 +673,12 @@ fn vault_is_unlocked(state: State<'_, AppState>) -> Result<bool, String> {
     Ok(vault.is_unlocked())
 }
 
+#[tauri::command]
+fn vault_is_initialized(state: State<'_, AppState>) -> Result<bool, String> {
+    let vault = state.vault.lock().map_err(|e| e.to_string())?;
+    Ok(vault.is_initialized())
+}
+
 // ─── Utility Commands ───
 
 /// Read any user-selected file as text. Uses std::fs (not the webview `fs`
@@ -1144,6 +1150,7 @@ fn main() {
             vault_retrieve,
             vault_delete,
             vault_is_unlocked,
+            vault_is_initialized,
             list_serial_ports,
             get_terminal_output,
             start_session_log,
