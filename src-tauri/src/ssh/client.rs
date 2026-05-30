@@ -388,6 +388,10 @@ pub trait Connection: Send + Sync {
     async fn resize(&self, cols: u16, rows: u16) -> Result<(), AppError>;
     fn is_connected(&self) -> bool;
     fn get_session_id(&self) -> String;
+    /// Return the SSH handle if this is an SSH connection (for SFTP).
+    fn ssh_handle(&self) -> Option<Arc<Mutex<client::Handle<ClientHandler>>>> {
+        None
+    }
 }
 
 #[async_trait]
@@ -414,5 +418,9 @@ impl Connection for SshConnection {
 
     fn get_session_id(&self) -> String {
         self.session_id.clone()
+    }
+
+    fn ssh_handle(&self) -> Option<Arc<Mutex<client::Handle<ClientHandler>>>> {
+        self.handle.clone()
     }
 }

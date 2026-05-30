@@ -34,6 +34,7 @@ import SnippetsMenu from './components/SnippetsMenu';
 import CommandPalette from './components/CommandPalette';
 import VaultUnlock from './components/VaultUnlock';
 import BulkRunner from './components/BulkRunner';
+import SftpBrowser from './components/SftpBrowser';
 
 function App() {
   const { theme } = useTheme();
@@ -63,6 +64,8 @@ function App() {
     setVaultUnlocked,
     setShowVaultUnlock,
     setFolders,
+    showSftp,
+    setShowSftp,
   } = useSessionStore();
 
   // Credential save deferred until the vault is unlocked.
@@ -691,6 +694,9 @@ function App() {
 
       {/* Modals & Overlays */}
       <BulkRunner />
+      {showSftp && activeSessionId && (
+        <SftpBrowser sessionId={activeSessionId} onClose={() => setShowSftp(false)} />
+      )}
       <VaultUnlock onUnlocked={flushPendingCredSave} />
       <CommandPalette onConnect={handleConnect} onLocalShell={openLocalShell} />
       <QuickConnect onConnect={handleConnect} />

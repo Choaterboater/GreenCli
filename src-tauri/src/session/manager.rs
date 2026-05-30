@@ -88,6 +88,15 @@ impl SessionManager {
         }
         Ok(())
     }
+
+    /// Get the SSH handle for SFTP operations (returns None for non-SSH sessions).
+    pub async fn get_ssh_handle(
+        &self,
+        session_id: &str,
+    ) -> Option<Arc<Mutex<russh::client::Handle<crate::ssh::client::ClientHandler>>>> {
+        let sessions = self.sessions.lock().await;
+        sessions.get(session_id).and_then(|c| c.ssh_handle())
+    }
 }
 
 impl Default for SessionManager {
