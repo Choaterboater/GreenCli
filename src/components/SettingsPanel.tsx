@@ -3,7 +3,7 @@ import { X, RotateCcw, Moon, Sun, Eye, EyeOff, CheckCircle2 } from 'lucide-react
 import { invoke } from '@tauri-apps/api/tauri';
 import { useSessionStore } from '../store/sessionStore';
 import { useSettingsStore } from '../store/settingsStore';
-import { AI_PROVIDERS, AI_CLI_PRESETS } from '../types';
+import { AI_PROVIDERS, AI_CLI_PRESETS, CENTRAL_REGIONS } from '../types';
 
 export default function SettingsPanel() {
   const { showSettings, setShowSettings } = useSessionStore();
@@ -500,6 +500,53 @@ export default function SettingsPanel() {
                   this same field later.
                 </p>
               </div>
+            </div>
+          </section>
+
+          {/* Aruba Central (cloud API) */}
+          <section>
+            <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-3">Aruba Central</h3>
+            <div className="space-y-3">
+              <div>
+                <label className="block text-xs text-[var(--text-secondary)] mb-1.5">Base URL (region)</label>
+                <input
+                  list="central-regions"
+                  value={settings.centralBaseUrl}
+                  onChange={(e) => settings.updateSettings({ centralBaseUrl: e.target.value })}
+                  placeholder="https://us4.api.central.arubanetworks.com"
+                  className="w-full h-8 px-2 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[#58a6ff] font-mono"
+                />
+                <datalist id="central-regions">
+                  {CENTRAL_REGIONS.map((r) => (
+                    <option key={r} value={r} />
+                  ))}
+                </datalist>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block text-xs text-[var(--text-secondary)] mb-1.5">Client ID</label>
+                  <input
+                    value={settings.centralClientId}
+                    onChange={(e) => settings.updateSettings({ centralClientId: e.target.value })}
+                    placeholder="client id"
+                    className="w-full h-8 px-2 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[#58a6ff] font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-[var(--text-secondary)] mb-1.5">Client Secret</label>
+                  <input
+                    type="password"
+                    value={settings.centralClientSecret}
+                    onChange={(e) => settings.updateSettings({ centralClientSecret: e.target.value })}
+                    placeholder="client secret"
+                    className="w-full h-8 px-2 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[#58a6ff] font-mono"
+                  />
+                </div>
+              </div>
+              <p className="text-[10px] text-[var(--text-muted)]">
+                OAuth client-credentials. Pick your region's API gateway (us1–us6/eu/apac).
+                Used by the API Explorer's "Aruba Central" target.
+              </p>
             </div>
           </section>
         </div>

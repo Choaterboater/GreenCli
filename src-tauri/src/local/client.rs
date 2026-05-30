@@ -69,11 +69,34 @@ impl Connection for LocalConnection {
             })
             .map_err(|e| AppError::LocalError(format!("openpty: {}", e)))?;
 
-        let program = self.config.command.clone().unwrap_or_else(default_shell);
-        let mut cmd = CommandBuilder::new(&program);
-        for arg in &self.config.args {
-            cmd.arg(arg);
-        }
+        // Launch through a LOGIN shell so the process inherits the user's full
+        // PATH. GUI-launched apps (macOS especially) otherwise get a minimal
+        // PATH and can't find Homebrew/npm CLIs like `claude`/`kimi`/`copilot`.
+        let shell = default_shell();
+        let mut cmd = if let Some(ref command) = self.config.command {
+            let full = if self.config.args.is_empty() {
+                command.clone()
+            } else {
+                format!("{} {}", command, self.config.args.join(" "))
+            };
+            if cfg!(windows) {
+                let mut c = CommandBuilder::new("cmd.exe");
+                c.arg("/C");
+                c.arg(full);
+                c
+            } else {
+                let mut c = CommandBuilder::new(&shell);
+                c.arg("-lc");
+                c.arg(full);
+                c
+            }
+        } else {
+            let mut c = CommandBuilder::new(&shell);
+            if !cfg!(windows) {
+                c.arg("-l"); // interactive login shell → loads profile/PATH
+            }
+            c
+        };
         if let Some(cwd) = &self.config.cwd {
             cmd.cwd(cwd);
         }
@@ -83,7 +106,10 @@ impl Connection for LocalConnection {
         let child = pair
             .slave
             .spawn_command(cmd)
-            .map_err(|e| AppError::LocalError(format!("spawn '{}': {}", program, e)))?;
+            .map_err(|e| {
+                let what = self.config.command.as_deref().unwrap_or("shell");
+                AppError::LocalError(format!("spawn '{}': {}", what, e))
+            })?;
 
         let mut reader = pair
             .master

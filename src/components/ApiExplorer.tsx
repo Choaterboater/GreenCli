@@ -77,6 +77,7 @@ export default function ApiExplorer() {
   const [newConnUser, setNewConnUser] = useState('');
   const [newConnPass, setNewConnPass] = useState('');
   const [verifyTls, setVerifyTls] = useState(false);
+  const [target, setTarget] = useState<'device' | 'central'>('device');
   const bodyRef = useRef<HTMLTextAreaElement>(null);
 
   // Collapsible / Resizable panel state
@@ -161,17 +162,27 @@ export default function ApiExplorer() {
       if (!IS_TAURI) {
         throw new Error('The API Explorer runs through the desktop backend — launch the app (not a browser tab).');
       }
-      if (!activeConnection) {
-        throw new Error('Connect to a device first (use the Connect button above).');
-      }
 
-      // Route through Rust: handles self-signed certs + cookie auth, no CORS.
-      const data = await invoke<{ status: number; body: unknown }>('api_request', {
-        host: activeConnection.host,
-        method,
-        path: endpointPath,
-        body: (method === 'POST' || method === 'PUT') && requestBody ? requestBody : null,
-      });
+      // Route through Rust: handles self-signed certs + cookie/OAuth, no CORS.
+      const body = (method === 'POST' || method === 'PUT') && requestBody ? requestBody : null;
+      const data =
+        target === 'central'
+          ? await invoke<{ status: number; body: unknown }>('central_request', {
+              method,
+              path: endpointPath,
+              body,
+            })
+          : await (async () => {
+              if (!activeConnection) {
+                throw new Error('Connect to a device first (use the Connect button above).');
+              }
+              return invoke<{ status: number; body: unknown }>('api_request', {
+                host: activeConnection.host,
+                method,
+                path: endpointPath,
+                body,
+              });
+            })();
 
       setResponse({
         status: data.status,
@@ -291,7 +302,25 @@ export default function ApiExplorer() {
         </div>
       </div>
 
-      {/* Connection Selector */}
+      {/* Target toggle: on-box CX REST vs Aruba Central */}
+      <div className="flex gap-1 px-3 py-2 border-b border-[var(--bg-tertiary)] bg-[var(--bg-secondary)]">
+        {(['device', 'central'] as const).map((t) => (
+          <button
+            key={t}
+            onClick={() => setTarget(t)}
+            className={`flex-1 py-1 text-[11px] rounded border transition-colors ${
+              target === t
+                ? 'bg-[var(--bg-tertiary)] border-[#58a6ff] text-[var(--text-primary)]'
+                : 'bg-[var(--bg-primary)] border-[var(--border)] text-[var(--text-secondary)]'
+            }`}
+          >
+            {t === 'device' ? 'Device (CX REST)' : 'Aruba Central'}
+          </button>
+        ))}
+      </div>
+
+      {/* Connection Selector (device target only) */}
+      {target === 'device' && (
       <div className="px-3 py-2 border-b border-[var(--bg-tertiary)] bg-[var(--bg-secondary)]">
         <div className="flex items-center gap-2 mb-2">
           <Link2 size={12} className="text-[var(--text-secondary)]" />
@@ -386,6 +415,7 @@ export default function ApiExplorer() {
           </div>
         )}
       </div>
+      )}
 
       {/* Endpoint Tree */}
       <div className="flex-1 overflow-y-auto border-b border-[var(--bg-tertiary)]">
