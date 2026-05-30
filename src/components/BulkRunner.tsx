@@ -1,18 +1,7 @@
 import { useState, useEffect } from 'react';
 import { X, Play, Download, Loader2, CheckCircle2, AlertCircle, Square, CheckSquare } from 'lucide-react';
-import { invoke } from '@tauri-apps/api/tauri';
 import { useSessionStore } from '../store/sessionStore';
-
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-function strip(t: string): string {
-  return t
-    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
-    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
-    .replace(/\x1b[@-Z\\-_]/g, '')
-    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '')
-    .replace(/\r\n?/g, '\n');
-}
+import { sendAndCapture } from '../utils/terminal';
 
 interface RunResult {
   sessionId: string;
@@ -69,22 +58,7 @@ export default function BulkRunner() {
         prev.map((r) => (r.sessionId === s.sessionId ? { ...r, status: 'running' } : r))
       );
       try {
-        const before = (await invoke<string>('get_terminal_output', { sessionId: s.sessionId })).length;
-        await invoke('send_data', { sessionId: s.sessionId, data: command + '\r' });
-        let last = before;
-        let stable = 0;
-        let buf = '';
-        for (let i = 0; i < 15; i++) {
-          await sleep(400);
-          buf = await invoke<string>('get_terminal_output', { sessionId: s.sessionId });
-          if (buf.length === last) {
-            if (++stable >= 2) break;
-          } else {
-            stable = 0;
-            last = buf.length;
-          }
-        }
-        const out = strip(buf.length >= before ? buf.slice(before) : buf).trim();
+        const out = await sendAndCapture(s.sessionId, command);
         setResults((prev) =>
           prev.map((r) =>
             r.sessionId === s.sessionId ? { ...r, output: out || '(no output)', status: 'done' } : r

@@ -1,4 +1,5 @@
-import { useState, useRef, useCallback, useEffect } from 'react';
+import { useState, useRef, useCallback } from 'react';
+import { useResizablePanel } from '../hooks/useResizablePanel';
 import {
   X,
   Send,
@@ -90,33 +91,8 @@ export default function ApiExplorer() {
 
   // Collapsible / Resizable panel state
   const [collapsed, setCollapsed] = useState(false);
-  const [panelWidth, setPanelWidth] = useState(420);
-  const [isDragging, setIsDragging] = useState(false);
-  const dragStartX = useRef(0);
-  const dragStartWidth = useRef(0);
-
-  // Drag handle for resizing
-  const handleDragStart = (e: React.MouseEvent) => {
-    setIsDragging(true);
-    dragStartX.current = e.clientX;
-    dragStartWidth.current = panelWidth;
-    e.preventDefault();
-  };
-
-  useEffect(() => {
-    if (!isDragging) return;
-    const handleMouseMove = (e: MouseEvent) => {
-      const delta = dragStartX.current - e.clientX;
-      setPanelWidth(Math.max(200, Math.min(800, dragStartWidth.current + delta)));
-    };
-    const handleMouseUp = () => setIsDragging(false);
-    window.addEventListener('mousemove', handleMouseMove);
-    window.addEventListener('mouseup', handleMouseUp);
-    return () => {
-      window.removeEventListener('mousemove', handleMouseMove);
-      window.removeEventListener('mouseup', handleMouseUp);
-    };
-  }, [isDragging]);
+  const { width: panelWidth, onDragStart: handleDragStart, handleClass: dragHandleClass } =
+    useResizablePanel(420, 200, 800);
 
   const activeConnection = connections.find((c) => c.id === activeConnectionId);
   const activeSession = sessions.find((s) => s.sessionId === activeSessionId);
@@ -289,7 +265,7 @@ export default function ApiExplorer() {
   return (
     <div className="flex-shrink-0 flex flex-col bg-[var(--bg-primary)] border-l border-[var(--bg-tertiary)] overflow-hidden relative" style={{ width: panelWidth }}>
       {/* Drag Handle */}
-      <div className={`absolute left-0 top-0 bottom-0 w-1 cursor-col-resize z-10 ${isDragging ? 'bg-[#58a6ff]' : 'bg-transparent hover:bg-[#58a6ff60]'} transition-colors`} onMouseDown={handleDragStart} />
+      <div className={dragHandleClass} onMouseDown={handleDragStart} />
       {/* Header */}
       <div className="flex items-center justify-between h-10 px-3 pl-4 border-b border-[var(--bg-tertiary)] bg-[var(--bg-secondary)]">
         <div className="flex items-center gap-2">

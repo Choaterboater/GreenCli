@@ -19,6 +19,8 @@ import { invoke } from '@tauri-apps/api/tauri';
 import { useSessionStore } from '../store/sessionStore';
 import { useSettingsStore } from '../store/settingsStore';
 import { ChatMessage, Session, AiProvider, AI_PROVIDERS } from '../types';
+import { sleep, stripAnsi, sendAndCapture } from '../utils/terminal';
+import { useResizablePanel } from '../hooks/useResizablePanel';
 
 // ─── Anthropic API types (local) ───
 
@@ -169,19 +171,6 @@ const TOOLS = [
 
 // ─── Execute a tool ───
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-// Strip ANSI/terminal control sequences from captured device output before
-// handing it to the model.
-function stripAnsiSeq(text: string): string {
-  return text
-    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
-    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
-    .replace(/\x1b[@-Z\\-_]/g, '')
-    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '')
-    .replace(/\r\n?/g, '\n');
-}
-
 async function executeTool(
   name: string,
   args: Record<string, unknown>,
@@ -195,35 +184,12 @@ async function executeTool(
     if (!activeSession.connected) {
       return 'Error: Terminal session exists but device is not connected.';
     }
-    const sid = activeSession.sessionId;
     try {
-      // Capture-then-send-then-read so the model sees actual device output.
-      const before = (await invoke<string>('get_terminal_output', { sessionId: sid })).length;
-      await invoke('send_data', { sessionId: sid, data: command + '\r' });
-
-      // Poll until the buffer stops growing (output settled) or ~6s timeout.
-      let lastLen = before;
-      let stable = 0;
-      let buf = '';
-      for (let i = 0; i < 15; i++) {
-        await sleep(400);
-        buf = await invoke<string>('get_terminal_output', { sessionId: sid });
-        if (buf.length === lastLen) {
-          if (++stable >= 2) break;
-        } else {
-          stable = 0;
-          lastLen = buf.length;
-        }
-      }
-
-      // If output exceeded the backend's tail cap, `before` is past the start
-      // of the (trimmed) buffer — fall back to the whole tail in that case.
-      const delta = buf.length >= before ? buf.slice(before) : buf;
-      const cleaned = stripAnsiSeq(delta).trim();
+      const cleaned = await sendAndCapture(activeSession.sessionId, command);
       if (!cleaned) {
-        return `Command \`${command}\` was sent, but no output was captured (it may be interactive, paged, or still running).`;
+        return `Command \`${command}\` sent — no output captured (may be interactive, paged, or still running).`;
       }
-      // Cap to keep token usage sane; keep the tail (most relevant) output.
+      // Cap to keep token usage sane; keep the tail (most relevant).
       return cleaned.length > 12000 ? '…(truncated)…\n' + cleaned.slice(-12000) : cleaned;
     } catch (e) {
       return `Failed to run command: ${e}`;
@@ -486,10 +452,8 @@ export default function AiAssistant() {
   const { showAiAssistant, toggleAiAssistant, activeSessionId, sessions } = useSessionStore();
   const settings = useSettingsStore();
 
-  const [panelWidth, setPanelWidth] = useState(420);
-  const [isDragging, setIsDragging] = useState(false);
-  const dragStartX = useRef(0);
-  const dragStartWidth = useRef(0);
+  const { width: panelWidth, onDragStart: handleDragStart, handleClass: dragHandleClass } =
+    useResizablePanel(420, 300, 800);
 
   const [messages, setMessages] = useState<DisplayMessage[]>([]);
   const [input, setInput] = useState('');
@@ -653,28 +617,6 @@ export default function AiAssistant() {
     });
   };
 
-  // Drag resize
-  const handleDragStart = (e: React.MouseEvent) => {
-    setIsDragging(true);
-    dragStartX.current = e.clientX;
-    dragStartWidth.current = panelWidth;
-    e.preventDefault();
-  };
-
-  useEffect(() => {
-    if (!isDragging) return;
-    const move = (e: MouseEvent) => {
-      const delta = dragStartX.current - e.clientX;
-      setPanelWidth(Math.max(300, Math.min(800, dragStartWidth.current + delta)));
-    };
-    const up = () => setIsDragging(false);
-    window.addEventListener('mousemove', move);
-    window.addEventListener('mouseup', up);
-    return () => {
-      window.removeEventListener('mousemove', move);
-      window.removeEventListener('mouseup', up);
-    };
-  }, [isDragging]);
 
   if (!showAiAssistant) return null;
 
@@ -697,12 +639,7 @@ export default function AiAssistant() {
       style={{ width: panelWidth }}
     >
       {/* Drag handle */}
-      <div
-        className={`absolute left-0 top-0 bottom-0 w-1 cursor-col-resize z-10 ${
-          isDragging ? 'bg-[#58a6ff]' : 'bg-transparent hover:bg-[#58a6ff60]'
-        } transition-colors`}
-        onMouseDown={handleDragStart}
-      />
+      <div className={dragHandleClass} onMouseDown={handleDragStart} />
 
       {/* Header */}
       <div className="flex items-center justify-between h-10 px-3 pl-4 border-b border-[var(--bg-tertiary)] bg-[var(--bg-secondary)]">
