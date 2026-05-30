@@ -94,7 +94,7 @@ export const AI_PROVIDERS: { value: AiProvider; label: string; needsKey: boolean
 // authenticate themselves (no API key needed).
 export const AI_CLI_PRESETS: { label: string; command: string }[] = [
   { label: 'Claude', command: 'claude -p' },
-  { label: 'Kimi', command: 'kimi' },
+  { label: 'Kimi', command: 'kimi -p' },
   { label: 'Copilot', command: 'copilot -p' },
 ];
 

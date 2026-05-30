@@ -151,6 +151,23 @@ pub async fn cli_passthrough(command: &str, prompt: &str) -> Result<String, AppE
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
         let mut c = Command::new(shell);
         c.arg("-lc").arg(command);
+        // Ensure user-local bin dirs are on PATH (GUI apps get minimal PATH).
+        if let Ok(home) = std::env::var("HOME") {
+            let extra = [
+                format!("{home}/.local/bin"),
+                format!("{home}/.cargo/bin"),
+                "/usr/local/bin".to_string(),
+                "/opt/homebrew/bin".to_string(),
+            ];
+            let current = std::env::var("PATH").unwrap_or_default();
+            let mut parts: Vec<&str> = current.split(':').collect();
+            for p in &extra {
+                if !parts.contains(&p.as_str()) {
+                    parts.push(p.as_str());
+                }
+            }
+            c.env("PATH", parts.join(":"));
+        }
         c
     };
 
