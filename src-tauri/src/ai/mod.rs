@@ -198,5 +198,11 @@ pub async fn cli_passthrough(command: &str, prompt: &str) -> Result<String, AppE
             out.push_str(&format!("\n[stderr] {}", err));
         }
     }
-    Ok(out)
+    // Strip CLI session-resume noise (e.g. kimi's "To resume this session: ...")
+    let lines: Vec<&str> = out.lines().collect();
+    let cleaned: Vec<&str> = lines
+        .into_iter()
+        .filter(|l| !l.starts_with("To resume this session"))
+        .collect();
+    Ok(cleaned.join("\n").trim().to_string())
 }

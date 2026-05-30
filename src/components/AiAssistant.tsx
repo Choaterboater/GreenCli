@@ -331,7 +331,7 @@ async function callLocalCli(
   _systemPrompt: string,
   activeSession?: Session
 ): Promise<string> {
-  // For local CLI, include recent terminal output so the AI has device context
+  // Fetch recent terminal output so the CLI AI has device context
   let terminalContext = '';
   if (activeSession?.connected) {
     try {
@@ -340,48 +340,31 @@ async function callLocalCli(
       });
       if (output && output.trim()) {
         const tail = output.length > 3000 ? output.slice(-3000) : output;
-        terminalContext = `\n\nRecent device output:\n${tail}`;
+        terminalContext = `\nRecent terminal output:\n${tail}\n`;
       }
     } catch { /* ignore */ }
   }
 
-  // Only send the last few messages — local CLIs have limited context
-  const lastMessages = conversationHistory.slice(-4);
-  const transcript = lastMessages
-    .map((m) => {
-      const text =
-        typeof m.content === 'string'
-          ? m.content
-          : (m.content as AnthropicContentBlock[])
-              .filter((b): b is AnthropicTextBlock => b.type === 'text')
-              .map((b) => b.text)
-              .join('\n');
-      return `${m.role.toUpperCase()}: ${text}`;
-    })
-    .join('\n');
+  // Only the last user message matters for a one-shot CLI call
+  const lastUser = [...conversationHistory]
+    .reverse()
+    .find((m) => m.role === 'user');
+  const question = lastUser
+    ? typeof lastUser.content === 'string'
+      ? lastUser.content
+      : (lastUser.content as AnthropicContentBlock[])
+          .filter((b): b is AnthropicTextBlock => b.type === 'text')
+          .map((b) => b.text)
+          .join('\n')
+    : '';
 
   const device = activeSession
     ? `Connected to: ${activeSession.config.name} (${activeSession.config.host}, ${activeSession.config.deviceType})`
     : 'No device connected.';
 
-  // Keep prompt SHORT — local CLIs choke on huge stdin
-  const prompt = `You are a network engineer assistant. ${device}\nIf you need to run a command, respond ONLY with: [RUN] command\nExample: [RUN] show interface brief${terminalContext}\n\n${transcript}`;
+  const prompt = `${device}${terminalContext}\n${question}`;
 
-  let response = await invoke<string>('ai_cli', { command, prompt });
-
-  // Auto-execute [RUN] commands (up to 3)
-  for (let i = 0; i < 3; i++) {
-    const match = response.match(/\[RUN\]\s*(.+)/);
-    if (!match || !activeSession?.connected) break;
-
-    const cmd = match[1].trim();
-    const output = await executeTool('send_terminal_command', { command: cmd }, activeSession);
-
-    const followUp = `${device}\nCommand output from "${cmd}":\n${output}\n\nAnswer the user's question based on this output. Be concise.\n\n${transcript}`;
-    response = await invoke<string>('ai_cli', { command, prompt: followUp });
-  }
-
-  return response.replace(/\[RUN\]\s*.+/g, '').trim() || '(No response from CLI)';
+  return await invoke<string>('ai_cli', { command, prompt });
 }
 
 // ─── Build device context string ───
@@ -501,7 +484,17 @@ export default function AiAssistant() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
-  const activeSession = sessions.find((s) => s.sessionId === activeSessionId);
+  // For AI tool execution, prefer an SSH session over the active tab (which
+  // might be a local PTY like kimi/claude). Falls back to active if no SSH.
+  const activeSession = (() => {
+    const active = sessions.find((s) => s.sessionId === activeSessionId);
+    if (active && active.config.protocol !== 'local' && active.connected) return active;
+    // Find any connected SSH session
+    const sshSession = sessions.find(
+      (s) => s.config.protocol !== 'local' && s.connected
+    );
+    return sshSession || active;
+  })();
 
   useEffect(() => {
     if (scrollRef.current) {
