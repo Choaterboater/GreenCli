@@ -3,6 +3,7 @@
 
 mod ai;
 mod api;
+mod central;
 mod error;
 mod local;
 mod mcp;
@@ -19,6 +20,7 @@ use mcp::{
 };
 use serde::{Deserialize, Serialize};
 use ai::{AiChatRequest, AiKeyStore};
+use central::CentralClient;
 use local::{LocalConfig, LocalConnection};
 use serial::{client::SerialConfig, SerialConnection};
 use session::{SessionManager, SessionStore, SessionFolder, StoredSession};
@@ -40,6 +42,7 @@ struct AppState {
     vault: Arc<Mutex<CredentialVault>>,
     mcp_server: Arc<AsyncMutex<McpServer>>,
     api_clients: Arc<AsyncMutex<HashMap<String, ArubaCxClient>>>,
+    central: Arc<AsyncMutex<CentralClient>>,
     ai_keys: AiKeyStore,
     /// Recent terminal output per session, so the AI assistant can read back
     /// command results (bounded tail, plain bytes lossily decoded).
@@ -58,6 +61,7 @@ impl AppState {
             vault: Arc::new(Mutex::new(CredentialVault::new(vault_dir)?)),
             mcp_server: Arc::new(AsyncMutex::new(McpServer::new())),
             api_clients: Arc::new(AsyncMutex::new(HashMap::new())),
+            central: Arc::new(AsyncMutex::new(CentralClient::new())),
             ai_keys: AiKeyStore::new(app_dir.clone()),
             terminal_buffers: Arc::new(AsyncMutex::new(HashMap::new())),
             session_logs: Arc::new(AsyncMutex::new(HashMap::new())),
@@ -894,6 +898,47 @@ async fn api_execute_cli(
     client.execute_cli(&command).await.map_err(|e| e.to_string())
 }
 
+// ─── Aruba Central Commands ───
+
+#[tauri::command]
+async fn central_configure(
+    base_url: String,
+    client_id: String,
+    client_secret: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    state
+        .central
+        .lock()
+        .await
+        .configure(base_url, client_id, client_secret);
+    Ok(())
+}
+
+#[tauri::command]
+async fn central_is_configured(state: State<'_, AppState>) -> Result<bool, String> {
+    Ok(state.central.lock().await.is_configured())
+}
+
+#[tauri::command]
+async fn central_request(
+    method: String,
+    path: String,
+    body: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    let (status, text) = state
+        .central
+        .lock()
+        .await
+        .request(&method, &path, body.as_deref())
+        .await
+        .map_err(|e| e.to_string())?;
+    let parsed: serde_json::Value =
+        serde_json::from_str(&text).unwrap_or(serde_json::Value::String(text));
+    Ok(serde_json::json!({ "status": status, "body": parsed }))
+}
+
 // ─── AI Commands ───
 
 #[tauri::command]
@@ -980,6 +1025,9 @@ fn main() {
             api_get_system,
             api_execute_cli,
             api_request,
+            central_configure,
+            central_is_configured,
+            central_request,
             ai_set_key,
             ai_has_key,
             ai_chat,

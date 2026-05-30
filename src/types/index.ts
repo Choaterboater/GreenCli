@@ -61,7 +61,21 @@ export interface TerminalSettings {
   localCliCommand: string;
   /** References / standards injected into the AI context (lightweight RAG). */
   aiReferences: string;
+  // Aruba Central (cloud) API
+  centralBaseUrl: string;
+  centralClientId: string;
+  centralClientSecret: string;
 }
+
+// Aruba Central regional API base URLs.
+export const CENTRAL_REGIONS = [
+  'https://internal.api.central.arubanetworks.com',
+  'https://us1.api.central.arubanetworks.com',
+  'https://us2.api.central.arubanetworks.com',
+  'https://us4.api.central.arubanetworks.com',
+  'https://eu1.api.central.arubanetworks.com',
+  'https://apac1.api.central.arubanetworks.com',
+];
 
 export type AiProvider = 'anthropic' | 'openrouter' | 'moonshot' | 'ollama' | 'local-cli';
 
@@ -117,6 +131,9 @@ export const DEFAULT_SETTINGS: TerminalSettings = {
 - NTP configured + correct timezone; remote syslog/logging enabled.
 - Strong secrets; no plaintext community/keys in config where avoidable.
 `,
+  centralBaseUrl: '',
+  centralClientId: '',
+  centralClientSecret: '',
 };
 
 export interface Token {

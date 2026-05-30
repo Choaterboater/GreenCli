@@ -131,6 +131,20 @@ function App() {
       .catch(() => setVaultUnlocked(false));
   }, [setVaultUnlocked]);
 
+  // Push Aruba Central credentials to the backend whenever they change.
+  const centralBaseUrl = useSettingsStore((s) => s.centralBaseUrl);
+  const centralClientId = useSettingsStore((s) => s.centralClientId);
+  const centralClientSecret = useSettingsStore((s) => s.centralClientSecret);
+  useEffect(() => {
+    if (centralBaseUrl && centralClientId && centralClientSecret) {
+      invoke('central_configure', {
+        baseUrl: centralBaseUrl,
+        clientId: centralClientId,
+        clientSecret: centralClientSecret,
+      }).catch(() => {});
+    }
+  }, [centralBaseUrl, centralClientId, centralClientSecret]);
+
   const activeSession = sessions.find((s) => s.sessionId === activeSessionId);
 
   // Second pane for split view: the chosen secondary session, or any other open

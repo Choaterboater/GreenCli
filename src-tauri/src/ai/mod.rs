@@ -134,22 +134,32 @@ pub async fn chat_request(store: &AiKeyStore, req: AiChatRequest) -> Result<Valu
 /// with the prompt supplied on stdin, and return captured stdout (+stderr).
 /// Useful for driving an installed agent CLI as the assistant backend.
 pub async fn cli_passthrough(command: &str, prompt: &str) -> Result<String, AppError> {
-    let mut parts = command.split_whitespace();
-    let program = parts
-        .next()
-        .ok_or_else(|| AppError::ApiError("Empty CLI command".into()))?;
-    let args: Vec<&str> = parts.collect();
+    if command.trim().is_empty() {
+        return Err(AppError::ApiError("Empty CLI command".into()));
+    }
 
     use tokio::io::AsyncWriteExt;
     use tokio::process::Command;
 
-    let mut child = Command::new(program)
-        .args(&args)
+    // Run through a LOGIN shell so the CLI inherits the user's full PATH
+    // (GUI apps get a minimal PATH and can't find brew/npm-installed CLIs).
+    let mut builder = if cfg!(windows) {
+        let mut c = Command::new("cmd");
+        c.arg("/C").arg(command);
+        c
+    } else {
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
+        let mut c = Command::new(shell);
+        c.arg("-lc").arg(command);
+        c
+    };
+
+    let mut child = builder
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
-        .map_err(|e| AppError::ApiError(format!("Failed to launch '{}': {}", program, e)))?;
+        .map_err(|e| AppError::ApiError(format!("Failed to launch '{}': {}", command, e)))?;
 
     if let Some(mut stdin) = child.stdin.take() {
         let _ = stdin.write_all(prompt.as_bytes()).await;
