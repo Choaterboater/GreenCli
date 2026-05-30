@@ -33,6 +33,7 @@ import ConfigEditor from './components/ConfigEditor';
 import SnippetsMenu from './components/SnippetsMenu';
 import CommandPalette from './components/CommandPalette';
 import VaultUnlock from './components/VaultUnlock';
+import BulkRunner from './components/BulkRunner';
 
 function App() {
   const { theme } = useTheme();
@@ -675,6 +676,7 @@ function App() {
       </div>
 
       {/* Modals & Overlays */}
+      <BulkRunner />
       <VaultUnlock onUnlocked={flushPendingCredSave} />
       <CommandPalette onConnect={handleConnect} onLocalShell={openLocalShell} />
       <QuickConnect onConnect={handleConnect} />
