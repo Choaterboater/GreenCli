@@ -5,6 +5,7 @@ mod ai;
 mod api;
 mod central;
 mod error;
+mod sftp;
 mod local;
 mod mcp;
 mod serial;
@@ -939,6 +940,143 @@ async fn central_request(
     Ok(serde_json::json!({ "status": status, "body": parsed }))
 }
 
+// ─── SFTP Commands ───
+
+#[derive(serde::Serialize)]
+struct SftpEntry {
+    name: String,
+    is_dir: bool,
+    size: u64,
+}
+
+#[tauri::command]
+async fn sftp_list_dir(
+    session_id: String,
+    path: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<SftpEntry>, String> {
+    let handle = state
+        .session_manager
+        .lock().await
+        .get_ssh_handle(&session_id)
+        .await
+        .ok_or_else(|| "No SSH handle for this session".to_string())?;
+    let h = handle.lock().await;
+    let channel = h
+        .channel_open_session()
+        .await
+        .map_err(|e| format!("Failed to open SFTP channel: {e}"))?;
+    drop(h);
+
+    // Request sftp subsystem
+    channel
+        .request_subsystem(true, "sftp")
+        .await
+        .map_err(|e| format!("SFTP subsystem request failed: {e}"))?;
+
+    let sftp = russh_sftp::client::SftpSession::new(channel.into_stream())
+        .await
+        .map_err(|e| format!("SFTP session init failed: {e}"))?;
+
+    let entries = sftp
+        .read_dir(&path)
+        .await
+        .map_err(|e| format!("SFTP readdir failed: {e}"))?;
+
+    let result: Vec<SftpEntry> = entries
+        .into_iter()
+        .filter(|e| e.file_name() != "." && e.file_name() != "..")
+        .map(|e| SftpEntry {
+            name: e.file_name().to_string(),
+            is_dir: e.file_type().is_dir(),
+            size: e.metadata().len(),
+        })
+        .collect();
+
+    Ok(result)
+}
+
+#[tauri::command]
+async fn sftp_download(
+    session_id: String,
+    remote_path: String,
+    local_path: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let handle = state
+        .session_manager
+        .lock().await
+        .get_ssh_handle(&session_id)
+        .await
+        .ok_or_else(|| "No SSH handle for this session".to_string())?;
+    let h = handle.lock().await;
+    let channel = h
+        .channel_open_session()
+        .await
+        .map_err(|e| format!("Failed to open SFTP channel: {e}"))?;
+    drop(h);
+
+    channel
+        .request_subsystem(true, "sftp")
+        .await
+        .map_err(|e| format!("SFTP subsystem request failed: {e}"))?;
+
+    let sftp = russh_sftp::client::SftpSession::new(channel.into_stream())
+        .await
+        .map_err(|e| format!("SFTP session init failed: {e}"))?;
+
+    let data = sftp
+        .read(&remote_path)
+        .await
+        .map_err(|e| format!("SFTP read failed: {e}"))?;
+
+    tokio::fs::write(&local_path, &data)
+        .await
+        .map_err(|e| format!("Failed to write local file: {e}"))?;
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn sftp_upload(
+    session_id: String,
+    local_path: String,
+    remote_path: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let handle = state
+        .session_manager
+        .lock().await
+        .get_ssh_handle(&session_id)
+        .await
+        .ok_or_else(|| "No SSH handle for this session".to_string())?;
+    let h = handle.lock().await;
+    let channel = h
+        .channel_open_session()
+        .await
+        .map_err(|e| format!("Failed to open SFTP channel: {e}"))?;
+    drop(h);
+
+    channel
+        .request_subsystem(true, "sftp")
+        .await
+        .map_err(|e| format!("SFTP subsystem request failed: {e}"))?;
+
+    let sftp = russh_sftp::client::SftpSession::new(channel.into_stream())
+        .await
+        .map_err(|e| format!("SFTP session init failed: {e}"))?;
+
+    let data = tokio::fs::read(&local_path)
+        .await
+        .map_err(|e| format!("Failed to read local file: {e}"))?;
+
+    sftp.write(&remote_path, &data)
+        .await
+        .map_err(|e| format!("SFTP write failed: {e}"))?;
+
+    Ok(())
+}
+
 // ─── AI Commands ───
 
 #[tauri::command]
@@ -1028,6 +1166,9 @@ fn main() {
             central_configure,
             central_is_configured,
             central_request,
+            sftp_list_dir,
+            sftp_download,
+            sftp_upload,
             ai_set_key,
             ai_has_key,
             ai_chat,
