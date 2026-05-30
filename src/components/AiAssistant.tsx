@@ -323,14 +323,31 @@ async function callOpenAiCompatWithTools(
   throw new Error('Exceeded tool call limit');
 }
 
-// ─── Local CLI passthrough (no tool loop — one-shot prompt) ───
+// ─── Local CLI passthrough with auto-command execution ───
 
 async function callLocalCli(
   command: string,
   conversationHistory: AnthropicMessage[],
-  systemPrompt: string
+  _systemPrompt: string,
+  activeSession?: Session
 ): Promise<string> {
-  const transcript = conversationHistory
+  // For local CLI, include recent terminal output so the AI has device context
+  let terminalContext = '';
+  if (activeSession?.connected) {
+    try {
+      const output = await invoke<string>('get_terminal_output', {
+        sessionId: activeSession.sessionId,
+      });
+      if (output && output.trim()) {
+        const tail = output.length > 3000 ? output.slice(-3000) : output;
+        terminalContext = `\n\nRecent device output:\n${tail}`;
+      }
+    } catch { /* ignore */ }
+  }
+
+  // Only send the last few messages — local CLIs have limited context
+  const lastMessages = conversationHistory.slice(-4);
+  const transcript = lastMessages
     .map((m) => {
       const text =
         typeof m.content === 'string'
@@ -341,9 +358,30 @@ async function callLocalCli(
               .join('\n');
       return `${m.role.toUpperCase()}: ${text}`;
     })
-    .join('\n\n');
-  const prompt = `${systemPrompt}\n\n${transcript}`;
-  return await invoke<string>('ai_cli', { command, prompt });
+    .join('\n');
+
+  const device = activeSession
+    ? `Connected to: ${activeSession.config.name} (${activeSession.config.host}, ${activeSession.config.deviceType})`
+    : 'No device connected.';
+
+  // Keep prompt SHORT — local CLIs choke on huge stdin
+  const prompt = `You are a network engineer assistant. ${device}\nIf you need to run a command, respond ONLY with: [RUN] command\nExample: [RUN] show interface brief${terminalContext}\n\n${transcript}`;
+
+  let response = await invoke<string>('ai_cli', { command, prompt });
+
+  // Auto-execute [RUN] commands (up to 3)
+  for (let i = 0; i < 3; i++) {
+    const match = response.match(/\[RUN\]\s*(.+)/);
+    if (!match || !activeSession?.connected) break;
+
+    const cmd = match[1].trim();
+    const output = await executeTool('send_terminal_command', { command: cmd }, activeSession);
+
+    const followUp = `${device}\nCommand output from "${cmd}":\n${output}\n\nAnswer the user's question based on this output. Be concise.\n\n${transcript}`;
+    response = await invoke<string>('ai_cli', { command, prompt: followUp });
+  }
+
+  return response.replace(/\[RUN\]\s*.+/g, '').trim() || '(No response from CLI)';
 }
 
 // ─── Build device context string ───
@@ -555,7 +593,8 @@ export default function AiAssistant() {
         text = await callLocalCli(
           settings.localCliCommand || 'claude -p',
           apiMessages,
-          systemPrompt
+          systemPrompt,
+          activeSession
         );
       } else {
         // OpenAI-compatible: openrouter | moonshot | ollama — each has its own model.
