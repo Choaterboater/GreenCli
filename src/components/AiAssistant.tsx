@@ -127,6 +127,18 @@ ${ARUBA_KNOWLEDGE}
 // ─── Prebuilt prompts ───
 
 const PREBUILT_PROMPTS = [
+  {
+    label: '🛡️ Best-practices audit',
+    prompt:
+      'Run "show running-config" on the device, then audit it against Aruba best practices. ' +
+      'Check at least: management/console security (AAA, local fallback, idle timeout, banner), ' +
+      'SNMP (no v1/v2c public/private community, prefer v3), ' +
+      'spanning-tree protections (bpdu-guard/root-guard/loop-protect on edge ports, admin-edge), ' +
+      'unused/shutdown ports parked in an isolated VLAN, native-VLAN hygiene on trunks, ' +
+      'NTP + timezone, syslog/logging configured, password/secret strength, ' +
+      'and any default/unsecured services. Report findings as a prioritized list ' +
+      '(Critical / Warning / Info), each with the offending config line and the recommended fix command.',
+  },
   { label: 'Interface status', prompt: 'Show me all interfaces — which are up/down, speeds, and descriptions.' },
   { label: 'VLAN config', prompt: 'Show the current VLAN configuration including names and port assignments.' },
   { label: 'Troubleshoot connectivity', prompt: 'Walk me through troubleshooting a connectivity issue step by step. Run diagnostic commands on the device.' },
