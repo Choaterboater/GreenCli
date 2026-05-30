@@ -278,7 +278,8 @@ export interface ApiEndpoint {
   path: string;
   description: string;
   body?: object;
-  category: 'System' | 'Interfaces' | 'VLANs' | 'LLDP' | 'Configuration' | 'CLI';
+  category: 'System' | 'Interfaces' | 'VLANs' | 'LLDP' | 'Configuration' | 'CLI'
+    | 'Monitoring' | 'Clients' | 'Sites' | 'Config Groups' | 'Firmware' | 'Alerts';
 }
 
 export interface ApiConnection {
@@ -313,6 +314,50 @@ export const DEFAULT_ENDPOINTS: ApiEndpoint[] = [
   { name: 'Configuration', method: 'GET', path: '/system/fullconfigs', description: 'Get running configuration', category: 'Configuration' },
   { name: 'Execute CLI', method: 'POST', path: '/cli', description: 'Execute CLI command', body: { command: [] }, category: 'CLI' },
   { name: 'Show CLI Command', method: 'POST', path: '/cli', description: 'Run show command', body: { command: ['show running-config'] }, category: 'CLI' },
+];
+
+// Aruba Central API endpoint catalog.
+// Reference:
+//   https://developer.arubanetworks.com/new-central/reference/
+//   https://developer.arubanetworks.com/new-central-config/reference/
+//   https://developer.arubanetworks.com/new-central/docs/about
+export const CENTRAL_ENDPOINTS: ApiEndpoint[] = [
+  // Monitoring — devices
+  { name: 'List All APs',          method: 'GET', path: '/monitoring/v2/aps',           description: 'List all access points with status/stats', category: 'Monitoring' },
+  { name: 'AP Details',            method: 'GET', path: '/monitoring/v1/aps/{serial}',  description: 'Get a single AP by serial number', category: 'Monitoring' },
+  { name: 'List Switches',         method: 'GET', path: '/monitoring/v2/switches',      description: 'List all switches (AOS-S / AOS-CX)', category: 'Monitoring' },
+  { name: 'Switch Details',        method: 'GET', path: '/monitoring/v1/switches/{serial}', description: 'Single switch details', category: 'Monitoring' },
+  { name: 'List Gateways',         method: 'GET', path: '/monitoring/v2/gateways',      description: 'List all gateways / controllers', category: 'Monitoring' },
+  { name: 'Gateway Details',       method: 'GET', path: '/monitoring/v1/gateways/{serial}', description: 'Single gateway details', category: 'Monitoring' },
+  { name: 'Device Stats',          method: 'GET', path: '/monitoring/v1/devices/{serial}/stats', description: 'CPU/memory/uptime for a device', category: 'Monitoring' },
+  // Monitoring — clients
+  { name: 'List Clients',          method: 'GET', path: '/monitoring/v2/clients',        description: 'All connected clients', category: 'Clients' },
+  { name: 'Wired Clients',         method: 'GET', path: '/monitoring/v1/clients/wired',  description: 'Wired client list', category: 'Clients' },
+  { name: 'Wireless Clients',      method: 'GET', path: '/monitoring/v1/clients/wireless', description: 'Wireless client list', category: 'Clients' },
+  { name: 'Client Details',        method: 'GET', path: '/monitoring/v1/clients/{macaddr}', description: 'Details for one client by MAC', category: 'Clients' },
+  // Sites
+  { name: 'List Sites',            method: 'GET', path: '/central/v2/sites',             description: 'All configured sites', category: 'Sites' },
+  { name: 'Site Details',          method: 'GET', path: '/central/v2/sites/{site_id}',   description: 'Single site details + devices', category: 'Sites' },
+  // Configuration groups (New Central Config API)
+  { name: 'List Groups',           method: 'GET', path: '/configuration/v2/groups',      description: 'All config groups', category: 'Config Groups' },
+  { name: 'Group Config',          method: 'GET', path: '/configuration/v2/groups/{group}', description: 'Group-level config', category: 'Config Groups' },
+  { name: 'Device Config',         method: 'GET', path: '/configuration/v1/devices/{serial}/config', description: 'Device effective config (AOS-CX)', category: 'Config Groups' },
+  { name: 'Template List',         method: 'GET', path: '/configuration/v1/groups/{group}/templates', description: 'Config templates in a group', category: 'Config Groups' },
+  { name: 'AP Settings',           method: 'GET', path: '/configuration/v2/ap_settings', description: 'AP radio/SSID settings', category: 'Config Groups' },
+  { name: 'WLAN List',             method: 'GET', path: '/configuration/v2/wlan_ssids',  description: 'All configured SSIDs', category: 'Config Groups' },
+  // Firmware
+  { name: 'Firmware Status',       method: 'GET', path: '/firmware/v1/status',            description: 'Firmware compliance for all devices', category: 'Firmware' },
+  { name: 'Firmware Upgrades',     method: 'GET', path: '/firmware/v2/upgrades',           description: 'Pending/in-progress firmware upgrades', category: 'Firmware' },
+  { name: 'Available Versions',    method: 'GET', path: '/firmware/v1/versions',           description: 'Available firmware versions', category: 'Firmware' },
+  // Alerts
+  { name: 'Active Alerts',         method: 'GET', path: '/central/v1/alerts',              description: 'Current unresolved alerts', category: 'Alerts' },
+  { name: 'Alert Count',           method: 'GET', path: '/central/v1/alerts/count',        description: 'Count of active alerts by severity', category: 'Alerts' },
+];
+
+export const CENTRAL_DOCS = [
+  { label: 'Central Monitoring API', url: 'https://developer.arubanetworks.com/new-central/reference/' },
+  { label: 'Central Config API',     url: 'https://developer.arubanetworks.com/new-central-config/reference/' },
+  { label: 'Getting Started',        url: 'https://developer.arubanetworks.com/new-central/docs/about' },
 ];
 
 // ============================
