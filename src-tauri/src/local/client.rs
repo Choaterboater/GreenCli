@@ -102,6 +102,26 @@ impl Connection for LocalConnection {
         }
         // Advertise a capable terminal so CLIs enable colour/TUI rendering.
         cmd.env("TERM", "xterm-256color");
+        // On macOS GUI-launched apps, ensure common user-local bin dirs are
+        // on PATH even if the login shell's dotfiles don't fully run.
+        if !cfg!(windows) {
+            if let Ok(home) = std::env::var("HOME") {
+                let extra_paths = [
+                    format!("{home}/.local/bin"),
+                    format!("{home}/.cargo/bin"),
+                    "/usr/local/bin".to_string(),
+                    "/opt/homebrew/bin".to_string(),
+                ];
+                let current = std::env::var("PATH").unwrap_or_default();
+                let mut parts: Vec<&str> = current.split(':').collect();
+                for p in &extra_paths {
+                    if !parts.contains(&p.as_str()) {
+                        parts.push(p.as_str());
+                    }
+                }
+                cmd.env("PATH", parts.join(":"));
+            }
+        }
 
         let child = pair
             .slave
