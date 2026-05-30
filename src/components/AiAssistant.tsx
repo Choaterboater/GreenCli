@@ -331,20 +331,6 @@ async function callLocalCli(
   _systemPrompt: string,
   activeSession?: Session
 ): Promise<string> {
-  // Fetch recent terminal output so the CLI AI has device context
-  let terminalContext = '';
-  if (activeSession?.connected) {
-    try {
-      const output = await invoke<string>('get_terminal_output', {
-        sessionId: activeSession.sessionId,
-      });
-      if (output && output.trim()) {
-        const tail = output.length > 3000 ? output.slice(-3000) : output;
-        terminalContext = `\nRecent terminal output:\n${tail}\n`;
-      }
-    } catch { /* ignore */ }
-  }
-
   // Only the last user message matters for a one-shot CLI call
   const lastUser = [...conversationHistory]
     .reverse()
@@ -362,7 +348,8 @@ async function callLocalCli(
     ? `Connected to: ${activeSession.config.name} (${activeSession.config.host}, ${activeSession.config.deviceType})`
     : 'No device connected.';
 
-  const prompt = `${device}${terminalContext}\n${question}`;
+  // Keep it minimal for local CLIs — large terminal output floods their stdin
+  const prompt = `${device}\n${question}`;
 
   return await invoke<string>('ai_cli', { command, prompt });
 }
