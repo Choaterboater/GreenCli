@@ -23,6 +23,7 @@ interface SettingsState extends TerminalSettings {
   setOpenrouterModel: (model: string) => void;
   setMoonshotModel: (model: string) => void;
   setLocalCliCommand: (command: string) => void;
+  setAiReferences: (refs: string) => void;
   resetToDefaults: () => void;
   updateSettings: (partial: Partial<TerminalSettings>) => void;
 }
@@ -51,6 +52,7 @@ export const useSettingsStore = create<SettingsState>()(
       setOpenrouterModel: (openrouterModel) => set({ openrouterModel }),
       setMoonshotModel: (moonshotModel) => set({ moonshotModel }),
       setLocalCliCommand: (localCliCommand) => set({ localCliCommand }),
+      setAiReferences: (aiReferences) => set({ aiReferences }),
 
       resetToDefaults: () => set({ ...DEFAULT_SETTINGS }),
 

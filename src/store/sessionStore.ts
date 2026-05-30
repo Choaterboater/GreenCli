@@ -24,6 +24,7 @@ interface SessionState {
   secondarySessionId: string | null;
   showVaultUnlock: boolean;
   vaultUnlocked: boolean;
+  showBulkRunner: boolean;
 
   // Actions
   addSession: (config: ConnectionConfig, sessionId: string) => void;
@@ -44,6 +45,7 @@ interface SessionState {
   setShowCommandPalette: (show: boolean) => void;
   setShowVaultUnlock: (show: boolean) => void;
   setVaultUnlocked: (unlocked: boolean) => void;
+  setShowBulkRunner: (show: boolean) => void;
   showConfigEditor: boolean;
   toggleConfigEditor: () => void;
   toggleApiExplorer: () => void;
@@ -86,6 +88,7 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
   secondarySessionId: null,
   showVaultUnlock: false,
   vaultUnlocked: false,
+  showBulkRunner: false,
 
   addSession: (config, sessionId) =>
     set((state) => {
@@ -147,6 +150,7 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
   setShowCommandPalette: (show) => set({ showCommandPalette: show }),
   setShowVaultUnlock: (show) => set({ showVaultUnlock: show }),
   setVaultUnlocked: (unlocked) => set({ vaultUnlocked: unlocked }),
+  setShowBulkRunner: (show) => set({ showBulkRunner: show }),
   toggleConfigEditor: () => set((state) => ({ showConfigEditor: !state.showConfigEditor })),
   // Panels coexist — Editor, API, and AI can all be open side-by-side (each is
   // independently resizable), with the terminal always present.

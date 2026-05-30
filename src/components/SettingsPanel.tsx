@@ -481,6 +481,25 @@ export default function SettingsPanel() {
                   </div>
                 </>
               )}
+
+              {/* References / standards — lightweight grounding for the AI */}
+              <div>
+                <label className="block text-xs text-[var(--text-secondary)] mb-1.5">
+                  Best-practice references / standards
+                </label>
+                <textarea
+                  value={settings.aiReferences}
+                  onChange={(e) => settings.setAiReferences(e.target.value)}
+                  rows={6}
+                  placeholder="Add your org standards, golden-config rules, or doc links the AI should apply…"
+                  className="w-full px-2 py-1.5 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-xs text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[#58a6ff] font-mono resize-y"
+                />
+                <p className="text-[10px] text-[var(--text-muted)] mt-1">
+                  Injected into the AI's context (used by the Best-practices audit). Lightweight
+                  alternative to RAG — paste rules or links here; a hosted RAG endpoint can feed
+                  this same field later.
+                </p>
+              </div>
             </div>
           </section>
         </div>

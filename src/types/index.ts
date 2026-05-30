@@ -59,6 +59,8 @@ export interface TerminalSettings {
   openrouterModel: string;
   moonshotModel: string;
   localCliCommand: string;
+  /** References / standards injected into the AI context (lightweight RAG). */
+  aiReferences: string;
 }
 
 export type AiProvider = 'anthropic' | 'openrouter' | 'moonshot' | 'ollama' | 'local-cli';
@@ -102,6 +104,19 @@ export const DEFAULT_SETTINGS: TerminalSettings = {
   openrouterModel: 'anthropic/claude-3.5-sonnet',
   moonshotModel: 'kimi-k2-0905-preview',
   localCliCommand: 'claude -p',
+  aiReferences: `# Best-practice references the AI should apply (edit/extend freely)
+# Add your org's standards, golden-config rules, or doc links here.
+
+- Aruba AOS-CX Hardening: secure mgmt plane (AAA + local fallback, exec timeout,
+  login banner), disable unused services, SSHv2 only.
+- SNMP: no v1/v2c with public/private communities; prefer SNMPv3 auth+priv.
+- Spanning tree: bpdu-guard + (root-guard or loop-protect) and admin-edge on
+  access/edge ports; never run edge ports without a guard.
+- Trunks: set an unused native VLAN; prune allowed VLANs explicitly.
+- Park unused/shutdown ports in an isolated/black-hole VLAN.
+- NTP configured + correct timezone; remote syslog/logging enabled.
+- Strong secrets; no plaintext community/keys in config where avoidable.
+`,
 };
 
 export interface Token {
