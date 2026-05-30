@@ -493,12 +493,15 @@ export default function AiAssistant() {
   }, [messages, isLoading]);
 
   // Track whether the selected provider has a key stored in the Rust key store.
+  // Re-check on provider change AND when the Settings modal closes (a key may
+  // have just been added there).
+  const showSettings = useSessionStore((s) => s.showSettings);
   useEffect(() => {
     const provider = settings.aiProvider || 'ollama';
     invoke<boolean>('ai_has_key', { provider })
       .then(setHasKey)
       .catch(() => setHasKey(false));
-  }, [settings.aiProvider]);
+  }, [settings.aiProvider, showSettings]);
 
   const sendMessage = useCallback(async (content: string) => {
     if (!content.trim() || isLoading) return;
@@ -529,19 +532,25 @@ export default function AiAssistant() {
     const provider: AiProvider = settings.aiProvider || 'ollama';
     const providerMeta = AI_PROVIDERS.find((p) => p.value === provider);
 
-    // Guard: key-based providers need a key stored in the Rust key store.
-    if (providerMeta?.needsKey && !hasKey) {
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: 'assistant',
-          content: `No API key configured for **${providerMeta.label}**. Open **Settings** (Ctrl+,) → AI Assistant and add your key, or switch provider.`,
-          timestamp: Date.now(),
-          isError: true,
-        },
-      ]);
-      setIsLoading(false);
-      return;
+    // Guard: key-based providers need a key in the Rust key store. Query it
+    // FRESH (not the cached `hasKey`) — adding a key in Settings doesn't trigger
+    // a re-render here, so a stale cache would wrongly block sending.
+    if (providerMeta?.needsKey) {
+      const keyPresent = await invoke<boolean>('ai_has_key', { provider }).catch(() => false);
+      setHasKey(keyPresent);
+      if (!keyPresent) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: 'assistant',
+            content: `No API key configured for **${providerMeta.label}**. Open **Settings** (Ctrl+,) → AI Assistant and add your key, or switch provider.`,
+            timestamp: Date.now(),
+            isError: true,
+          },
+        ]);
+        setIsLoading(false);
+        return;
+      }
     }
 
     // Build conversation history for the API (user/assistant only)
