@@ -1,22 +1,41 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { X, ShieldCheck, Eye, EyeOff } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/tauri';
 import { useSessionStore } from '../store/sessionStore';
 
-// Master-password prompt for the credential vault. First unlock initializes the
-// vault with the entered password; later unlocks must match it.
+// Master-password prompt for the credential vault.
+// First time: requires typing password twice to confirm.
+// Subsequent: just enter the password.
 export default function VaultUnlock({ onUnlocked }: { onUnlocked?: () => void }) {
   const { showVaultUnlock, setShowVaultUnlock, setVaultUnlocked } = useSessionStore();
   const [pw, setPw] = useState('');
+  const [confirm, setConfirm] = useState('');
   const [show, setShow] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [isNew, setIsNew] = useState(false);
+
+  useEffect(() => {
+    if (showVaultUnlock) {
+      invoke<boolean>('vault_is_initialized')
+        .then((init) => setIsNew(!init))
+        .catch(() => setIsNew(false));
+    }
+  }, [showVaultUnlock]);
 
   if (!showVaultUnlock) return null;
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!pw) return;
+    if (isNew && pw !== confirm) {
+      setErr('Passwords do not match.');
+      return;
+    }
+    if (isNew && pw.length < 4) {
+      setErr('Password must be at least 4 characters.');
+      return;
+    }
     setBusy(true);
     setErr(null);
     try {
@@ -24,6 +43,7 @@ export default function VaultUnlock({ onUnlocked }: { onUnlocked?: () => void })
       setVaultUnlocked(true);
       setShowVaultUnlock(false);
       setPw('');
+      setConfirm('');
       onUnlocked?.();
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
@@ -38,7 +58,9 @@ export default function VaultUnlock({ onUnlocked }: { onUnlocked?: () => void })
         <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--bg-tertiary)]">
           <div className="flex items-center gap-2">
             <ShieldCheck size={18} className="text-[#3fb950]" />
-            <h2 className="text-lg font-semibold text-[var(--text-primary)]">Credential Vault</h2>
+            <h2 className="text-lg font-semibold text-[var(--text-primary)]">
+              {isNew ? 'Create Vault Password' : 'Credential Vault'}
+            </h2>
           </div>
           <button
             onClick={() => setShowVaultUnlock(false)}
@@ -49,8 +71,9 @@ export default function VaultUnlock({ onUnlocked }: { onUnlocked?: () => void })
         </div>
         <form onSubmit={submit} className="px-5 py-4 space-y-3">
           <p className="text-xs text-[var(--text-secondary)]">
-            Enter your vault master password to unlock saved credentials. The first time you
-            unlock, this sets the password.
+            {isNew
+              ? 'Choose a master password for your credential vault. You\u2019ll need this to access saved passwords.'
+              : 'Enter your vault master password to unlock saved credentials.'}
           </p>
           <div className="relative">
             <input
@@ -58,7 +81,7 @@ export default function VaultUnlock({ onUnlocked }: { onUnlocked?: () => void })
               type={show ? 'text' : 'password'}
               value={pw}
               onChange={(e) => setPw(e.target.value)}
-              placeholder="Master password"
+              placeholder={isNew ? 'New master password' : 'Master password'}
               className="w-full h-9 pl-3 pr-10 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] focus:outline-none focus:border-[#58a6ff]"
             />
             <button
@@ -69,6 +92,15 @@ export default function VaultUnlock({ onUnlocked }: { onUnlocked?: () => void })
               {show ? <EyeOff size={14} /> : <Eye size={14} />}
             </button>
           </div>
+          {isNew && (
+            <input
+              type={show ? 'text' : 'password'}
+              value={confirm}
+              onChange={(e) => setConfirm(e.target.value)}
+              placeholder="Confirm password"
+              className="w-full h-9 pl-3 pr-10 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] focus:outline-none focus:border-[#58a6ff]"
+            />
+          )}
           {err && (
             <div className="px-3 py-2 bg-[#3d1518] border border-[#ff7b72]/30 rounded-lg text-xs text-[#ff7b72]">
               {err}
@@ -76,10 +108,10 @@ export default function VaultUnlock({ onUnlocked }: { onUnlocked?: () => void })
           )}
           <button
             type="submit"
-            disabled={busy || !pw}
+            disabled={busy || !pw || (isNew && !confirm)}
             className="w-full h-9 text-sm bg-[#238636] hover:bg-[#2ea043] disabled:opacity-50 text-white rounded-lg transition-colors"
           >
-            {busy ? 'Unlocking…' : 'Unlock'}
+            {busy ? 'Unlocking…' : isNew ? 'Create & Unlock' : 'Unlock'}
           </button>
         </form>
       </div>
