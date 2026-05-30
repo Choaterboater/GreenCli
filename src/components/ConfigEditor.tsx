@@ -18,6 +18,8 @@ import {
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/tauri';
 import { useSessionStore } from '../store/sessionStore';
+import { sleep, stripAnsi as stripAnsiUtil, hasAnsi, sendAndCapture } from '../utils/terminal';
+import { useResizablePanel } from '../hooks/useResizablePanel';
 
 // ─── Tauri / browser file I/O ───
 
@@ -55,27 +57,9 @@ async function tauriWriteText(path: string, data: string): Promise<void> {
 }
 
 // Strip terminal/ANSI control sequences so captured logs (PuTTY/`show tech`,
-// console dumps) are readable instead of full of cursor-movement garbage.
-function stripTerminalSequences(text: string): string {
-  return text
-    // OSC sequences: ESC ] ... (BEL | ST)
-    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
-    // CSI sequences: ESC [ ... final-byte  (cursor moves, colours, erase, etc.)
-    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
-    // Other two-byte ESC sequences
-    .replace(/\x1b[@-Z\\-_]/g, '')
-    // Remaining control chars except tab/newline
-    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '')
-    // Normalise bare CRs
-    .replace(/\r\n?/g, '\n');
-}
-
-function looksLikeTerminalCapture(text: string): boolean {
-  // Sample the first chunk; flag if it contains ESC sequences.
-  return /\x1b\[/.test(text.slice(0, 20000));
-}
-
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+// shared utils
+const stripTerminalSequences = stripAnsiUtil;
+const looksLikeTerminalCapture = hasAnsi;
 
 function browserOpen(): Promise<{ name: string; content: string } | null> {
   return new Promise((resolve) => {
@@ -273,10 +257,8 @@ export default function ConfigEditor() {
   const { showConfigEditor, toggleConfigEditor, activeSessionId, sessions } =
     useSessionStore();
 
-  const [panelWidth, setPanelWidth] = useState(520);
-  const [isDragging, setIsDragging] = useState(false);
-  const dragStartX = useRef(0);
-  const dragStartWidth = useRef(0);
+  const { width: panelWidth, onDragStart: handleDragStart, handleClass: dragHandleClass } =
+    useResizablePanel(520, 300, 900);
 
   const [content, setContent] = useState<string>(
     '! Aruba CX Configuration\n! Start typing, open a file, or pick a template\n\n'
@@ -391,22 +373,7 @@ export default function ConfigEditor() {
         await invoke('send_data', { sessionId: sid, data: 'no paging\r' });
         await sleep(300);
       }
-      const before = (await invoke<string>('get_terminal_output', { sessionId: sid })).length;
-      await invoke('send_data', { sessionId: sid, data: 'show running-config\r' });
-      let last = before;
-      let stable = 0;
-      let buf = '';
-      for (let i = 0; i < 30; i++) {
-        await sleep(400);
-        buf = await invoke<string>('get_terminal_output', { sessionId: sid });
-        if (buf.length === last) {
-          if (++stable >= 2) break;
-        } else {
-          stable = 0;
-          last = buf.length;
-        }
-      }
-      const out = stripTerminalSequences(buf.length >= before ? buf.slice(before) : buf).trim();
+      const out = await sendAndCapture(sid, 'show running-config');
       if (!out) {
         showStatus('No output captured');
         return;
@@ -588,29 +555,6 @@ export default function ConfigEditor() {
     setShowTemplates(false);
   };
 
-  // ─── Resize drag ───
-
-  const handleDragStart = (e: React.MouseEvent) => {
-    setIsDragging(true);
-    dragStartX.current = e.clientX;
-    dragStartWidth.current = panelWidth;
-    e.preventDefault();
-  };
-
-  useEffect(() => {
-    if (!isDragging) return;
-    const move = (e: MouseEvent) => {
-      const delta = dragStartX.current - e.clientX;
-      setPanelWidth(Math.max(300, Math.min(900, dragStartWidth.current + delta)));
-    };
-    const up = () => setIsDragging(false);
-    window.addEventListener('mousemove', move);
-    window.addEventListener('mouseup', up);
-    return () => {
-      window.removeEventListener('mousemove', move);
-      window.removeEventListener('mouseup', up);
-    };
-  }, [isDragging]);
 
   if (!showConfigEditor) return null;
 
@@ -628,9 +572,7 @@ export default function ConfigEditor() {
     >
       {/* Drag handle */}
       <div
-        className={`absolute left-0 top-0 bottom-0 w-1 cursor-col-resize z-10 ${
-          isDragging ? 'bg-[#58a6ff]' : 'bg-transparent hover:bg-[#58a6ff60]'
-        } transition-colors`}
+        className={dragHandleClass}
         onMouseDown={handleDragStart}
       />
 
