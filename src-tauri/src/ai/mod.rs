@@ -141,16 +141,33 @@ pub async fn cli_passthrough(command: &str, prompt: &str) -> Result<String, AppE
     use tokio::io::AsyncWriteExt;
     use tokio::process::Command;
 
+    // Normalize the command: kimi needs --quiet for non-interactive piped stdin.
+    let command = {
+        let cmd = command.trim();
+        if cmd.contains("kimi") && !cmd.contains("--quiet") && !cmd.contains("--print") {
+            format!("{} --quiet", cmd)
+        } else {
+            cmd.to_string()
+        }
+    };
+
+    // Cap prompt to prevent flooding CLIs with huge stdin
+    let prompt = if prompt.len() > 4000 {
+        &prompt[..4000]
+    } else {
+        prompt
+    };
+
     // Run through a LOGIN shell so the CLI inherits the user's full PATH
     // (GUI apps get a minimal PATH and can't find brew/npm-installed CLIs).
     let mut builder = if cfg!(windows) {
         let mut c = Command::new("cmd");
-        c.arg("/C").arg(command);
+        c.arg("/C").arg(&command);
         c
     } else {
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
         let mut c = Command::new(shell);
-        c.arg("-lc").arg(command);
+        c.arg("-lc").arg(&command);
         // Ensure user-local bin dirs are on PATH (GUI apps get minimal PATH).
         if let Ok(home) = std::env::var("HOME") {
             let extra = [
