@@ -148,8 +148,10 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
   setShowVaultUnlock: (show) => set({ showVaultUnlock: show }),
   setVaultUnlocked: (unlocked) => set({ vaultUnlocked: unlocked }),
   toggleConfigEditor: () => set((state) => ({ showConfigEditor: !state.showConfigEditor })),
-  toggleApiExplorer: () => set((state) => ({ showApiExplorer: !state.showApiExplorer, showAiAssistant: false })),
-  toggleAiAssistant: () => set((state) => ({ showAiAssistant: !state.showAiAssistant, showApiExplorer: false })),
+  // Panels coexist — Editor, API, and AI can all be open side-by-side (each is
+  // independently resizable), with the terminal always present.
+  toggleApiExplorer: () => set((state) => ({ showApiExplorer: !state.showApiExplorer })),
+  toggleAiAssistant: () => set((state) => ({ showAiAssistant: !state.showAiAssistant })),
   toggleBroadcast: () => set((state) => ({ broadcastMode: !state.broadcastMode })),
   toggleSplitView: () =>
     set((state) => {
