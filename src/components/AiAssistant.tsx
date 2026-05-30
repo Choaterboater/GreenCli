@@ -110,11 +110,14 @@ const ARUBA_KNOWLEDGE = `
 - show tech-support — collect full diagnostics
 `;
 
-const SYSTEM_PROMPT = (deviceContext: string) => `You are Aruba AI, an expert network engineering assistant specializing in Aruba Networks equipment. You help network engineers configure, troubleshoot, and automate Aruba CX switches, Aruba Instant APs, and Aruba Mobility Controllers.
+const SYSTEM_PROMPT = (deviceContext: string, references: string) => `You are Aruba AI, an expert network engineering assistant specializing in Aruba Networks equipment. You help network engineers configure, troubleshoot, and automate Aruba CX switches, Aruba Instant APs, and Aruba Mobility Controllers.
 
 ${deviceContext}
 
 ${ARUBA_KNOWLEDGE}
+${references && references.trim()
+  ? `\n## Reference standards (authoritative — apply these and cite them when auditing)\n${references.trim()}\n`
+  : ''}
 
 ## Guidelines
 - Be concise and technical — your users are network engineers
@@ -570,7 +573,7 @@ export default function AiAssistant() {
       .map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content }));
 
     const deviceContext = buildDeviceContext(activeSession);
-    const systemPrompt = SYSTEM_PROMPT(deviceContext);
+    const systemPrompt = SYSTEM_PROMPT(deviceContext, settings.aiReferences || '');
     const collectedTools: ToolExecution[] = [];
 
     try {
