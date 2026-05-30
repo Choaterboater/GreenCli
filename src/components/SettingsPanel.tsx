@@ -29,8 +29,11 @@ export default function SettingsPanel() {
   }, [aiProvider, providerMeta?.needsKey]);
 
   const saveKey = () => {
+    // Don't overwrite a stored key when the (always-empty-on-open) field is
+    // blurred without typing — that would silently wipe a saved key.
+    if (!keyInput) return;
     invoke('ai_set_key', { provider: aiProvider, key: keyInput })
-      .then(() => setKeySaved(!!keyInput))
+      .then(() => setKeySaved(true))
       .catch(() => {});
   };
 
@@ -328,9 +331,25 @@ export default function SettingsPanel() {
                   <label className="block text-xs text-[var(--text-secondary)] mb-1.5 flex items-center gap-1.5">
                     API Key
                     {keySaved && (
-                      <span className="flex items-center gap-1 text-[#3fb950]">
-                        <CheckCircle2 size={11} /> saved
-                      </span>
+                      <>
+                        <span className="flex items-center gap-1 text-[#3fb950]">
+                          <CheckCircle2 size={11} /> saved
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            invoke('ai_set_key', { provider: aiProvider, key: '' })
+                              .then(() => {
+                                setKeySaved(false);
+                                setKeyInput('');
+                              })
+                              .catch(() => {});
+                          }}
+                          className="ml-auto text-[10px] text-[var(--text-muted)] hover:text-[#ff7b72]"
+                        >
+                          remove
+                        </button>
+                      </>
                     )}
                   </label>
                   <div className="relative">
