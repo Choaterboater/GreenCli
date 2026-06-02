@@ -44,6 +44,19 @@ import VaultUnlock from './components/VaultUnlock';
 import BulkRunner from './components/BulkRunner';
 import SftpBrowser from './components/SftpBrowser';
 
+// Run a session's per-host startup commands once the shell is ready. Shared by the
+// direct-connect path and the auth-dialog retry path so behaviour is consistent.
+function runStartupCommands(sessionId: string, startupCommands?: string) {
+  const startup = startupCommands?.trim();
+  if (!startup) return;
+  const cmds = startup.split('\n').map((c) => c.trim()).filter(Boolean);
+  setTimeout(() => {
+    cmds.forEach((c, i) =>
+      setTimeout(() => invoke('send_data', { sessionId, data: c + '\r' }).catch(() => {}), i * 250)
+    );
+  }, 700);
+}
+
 function App() {
   const { theme } = useTheme();
   const {
@@ -194,8 +207,11 @@ function App() {
         host: apstraHost,
         username: apstraUsername,
         password: apstraPassword,
-        accept_invalid_certs: true,
-      }).catch(() => {});
+        // Top-level command args use camelCase (Tauri maps to the snake_case Rust
+        // param). The old snake_case key silently failed deserialization, so Apstra
+        // was never configured.
+        acceptInvalidCerts: true,
+      }).catch((e) => notify.error('Apstra configuration failed', String(e)));
     }
   }, [apstraHost, apstraUsername, apstraPassword]);
 
@@ -283,6 +299,15 @@ function App() {
       const sessionId = config.id || generateId();
       const fullConfig = { ...config, id: sessionId };
 
+      // A saved host carries a stable id. If its tab is already open AND connected,
+      // just focus it — don't run a second backend connect against the live session
+      // id (which orphans the first connection and duplicates terminal output).
+      const existing = useSessionStore.getState().sessions.find((s) => s.sessionId === sessionId);
+      if (existing?.connected) {
+        useSessionStore.getState().setActiveSession(sessionId);
+        return;
+      }
+
       addSession(fullConfig, sessionId);
 
       // For SSH with no inline password, try a saved vault credential.
@@ -360,18 +385,7 @@ function App() {
           notify.success('Connected', `${fullConfig.name || where} is online.`);
 
           // Per-host startup commands: run them once the shell is ready.
-          const startup = fullConfig.startupCommands?.trim();
-          if (startup) {
-            const cmds = startup.split('\n').map((c) => c.trim()).filter(Boolean);
-            setTimeout(() => {
-              cmds.forEach((c, i) =>
-                setTimeout(
-                  () => invoke('send_data', { sessionId, data: c + '\r' }).catch(() => {}),
-                  i * 250
-                )
-              );
-            }, 700);
-          }
+          runStartupCommands(sessionId, fullConfig.startupCommands);
         }
       } catch (err) {
         console.error('Connection error:', err);
@@ -439,6 +453,11 @@ function App() {
         if (result.success) {
           useSessionStore.getState().updateSessionConnection(pending.id, true);
           setShowAuthDialog(false);
+
+          // Run per-host startup commands here too — this is the common SSH path
+          // (no inline/vault password, so the first connect fails and the user
+          // types the password into the dialog). Previously they were skipped.
+          runStartupCommands(pending.id, pending.startupCommands);
 
           // Save the password to the vault if requested (passwords only).
           if (saveCredential && creds.authType === 'password' && creds.password) {
