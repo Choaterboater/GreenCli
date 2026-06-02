@@ -123,6 +123,30 @@ export const HELP_TOPICS: HelpTopic[] = [
     action: { label: 'Set up AI provider', id: 'open-settings', focus: 'ai' },
   },
   {
+    id: 'agents',
+    title: 'AI agents (per-session)',
+    icon: Bot,
+    summary: 'Attach a saved persona — instructions + provider/model — to a session.',
+    keywords: ['agent', 'agents', 'persona', 'per session', 'read only', 'auditor', 'instructions', 'system prompt', 'model', 'sidebar'],
+    blocks: [
+      { kind: 'p', text: 'An **agent** is a saved persona: custom instructions plus an optional provider/model override. Attach one to a session and the AI assistant uses it whenever that session is active.' },
+      {
+        kind: 'steps',
+        items: [
+          'Settings → **AI Agents** → **New agent**: name it, write instructions, and (optionally) pick a provider + model.',
+          'In the **sidebar**, right-click a host → **AI Agent…** and choose the agent (or pick the chip under the host).',
+          'Open the AI assistant on that session — its header shows the active agent, and the instructions/model are applied.',
+        ],
+      },
+      { kind: 'bullets', items: [
+        'Starter agents ship ready: **Read-only Auditor** (never runs config), **Junos Expert**, **Aruba CX Expert**.',
+        'Provider/model are optional — leave on **Default** to inherit the global AI settings.',
+      ] },
+      { kind: 'note', text: 'The agent’s instructions are appended to the system prompt for that session only — different tabs can run different agents.' },
+    ],
+    action: { label: 'Manage AI agents', id: 'open-settings', focus: 'agents' },
+  },
+  {
     id: 'mcp',
     title: 'MCP servers',
     icon: Server,

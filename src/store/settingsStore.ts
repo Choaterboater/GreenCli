@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import { TerminalSettings, DEFAULT_SETTINGS, AiProvider, CentralAccount } from '../types';
+import { TerminalSettings, DEFAULT_SETTINGS, AiProvider, CentralAccount, AiAgent } from '../types';
 
 interface SettingsState extends TerminalSettings {
   // Actions
@@ -24,6 +24,11 @@ interface SettingsState extends TerminalSettings {
   setMoonshotModel: (model: string) => void;
   setLocalCliCommand: (command: string) => void;
   setAiReferences: (refs: string) => void;
+  // AI agents (per-session personas)
+  addAiAgent: (agent: AiAgent) => void;
+  updateAiAgent: (id: string, patch: Partial<AiAgent>) => void;
+  removeAiAgent: (id: string) => void;
+  setSessionAgent: (sessionId: string, agentId: string | null) => void;
   resetToDefaults: () => void;
   updateSettings: (partial: Partial<TerminalSettings>) => void;
 }
@@ -53,6 +58,28 @@ export const useSettingsStore = create<SettingsState>()(
       setMoonshotModel: (moonshotModel) => set({ moonshotModel }),
       setLocalCliCommand: (localCliCommand) => set({ localCliCommand }),
       setAiReferences: (aiReferences) => set({ aiReferences }),
+
+      addAiAgent: (agent) => set((s) => ({ aiAgents: [...(s.aiAgents ?? []), agent] })),
+      updateAiAgent: (id, patch) =>
+        set((s) => ({
+          aiAgents: (s.aiAgents ?? []).map((a) => (a.id === id ? { ...a, ...patch } : a)),
+        })),
+      removeAiAgent: (id) =>
+        set((s) => {
+          // Detach the deleted agent from any session it was assigned to.
+          const sessionAgents = { ...(s.sessionAgents ?? {}) };
+          for (const key of Object.keys(sessionAgents)) {
+            if (sessionAgents[key] === id) delete sessionAgents[key];
+          }
+          return { aiAgents: (s.aiAgents ?? []).filter((a) => a.id !== id), sessionAgents };
+        }),
+      setSessionAgent: (sessionId, agentId) =>
+        set((s) => {
+          const sessionAgents = { ...(s.sessionAgents ?? {}) };
+          if (agentId) sessionAgents[sessionId] = agentId;
+          else delete sessionAgents[sessionId];
+          return { sessionAgents };
+        }),
 
       resetToDefaults: () => set({ ...DEFAULT_SETTINGS }),
 

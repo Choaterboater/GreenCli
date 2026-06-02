@@ -18,9 +18,13 @@ import {
   PanelLeftClose,
   FolderPlus,
   Tag,
+  Bot,
+  Check,
+  Settings2,
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/tauri';
 import { useSessionStore } from '../store/sessionStore';
+import { useSettingsStore } from '../store/settingsStore';
 import { ConnectionConfig, deviceMeta, vendorColor } from '../types';
 import { fuzzyMatch } from '../utils';
 import { askPrompt, askConfirm } from '../store/dialogStore';
@@ -56,6 +60,11 @@ export default function Sidebar({ onConnect }: SidebarProps) {
     removeSessionFromFolder,
     moveSessionToFolder,
   } = useSessionStore();
+  const aiAgents = useSettingsStore((s) => s.aiAgents) ?? [];
+  const sessionAgents = useSettingsStore((s) => s.sessionAgents) ?? {};
+  const setSessionAgent = useSettingsStore((s) => s.setSessionAgent);
+  const agentFor = (sessionId: string) => aiAgents.find((a) => a.id === sessionAgents[sessionId]);
+
   const [query, setQuery] = useState('');
   const [contextMenu, setContextMenu] = useState<{
     x: number;
@@ -63,6 +72,8 @@ export default function Sidebar({ onConnect }: SidebarProps) {
     sessionId: string;
     folderId: string;
   } | null>(null);
+  // Agent picker popover (opened from the context menu's "Agent…" item).
+  const [agentMenu, setAgentMenu] = useState<{ x: number; y: number; sessionId: string } | null>(null);
   // Folder currently hovered while dragging a session (for the drop highlight).
   const [dragOverFolder, setDragOverFolder] = useState<string | null>(null);
 
@@ -173,6 +184,21 @@ export default function Sidebar({ onConnect }: SidebarProps) {
       });
     }
     invoke('set_session_tags', { id: item.id, tags }).catch(() => {});
+  };
+
+  const handleCtxAgent = () => {
+    const ctx = contextMenu;
+    if (!ctx) return;
+    setContextMenu(null);
+    // Open the agent picker anchored near the context-menu position.
+    setAgentMenu({ x: ctx.x, y: ctx.y, sessionId: ctx.sessionId });
+  };
+
+  const openManageAgents = () => {
+    setAgentMenu(null);
+    const s = useSessionStore.getState();
+    s.setSettingsFocus('agents');
+    s.setShowSettings(true);
   };
 
   const handleCtxDelete = async () => {
@@ -368,6 +394,28 @@ export default function Sidebar({ onConnect }: SidebarProps) {
                               ))}
                             </span>
                           )}
+                          {(() => {
+                            const ag = agentFor(session.id);
+                            if (!ag) return null;
+                            return (
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setAgentMenu({ x: e.clientX, y: e.clientY, sessionId: session.id });
+                                }}
+                                className="flex items-center gap-1 mt-0.5 max-w-full"
+                                title={`AI agent: ${ag.name} · click to change`}
+                              >
+                                <Bot size={10} style={{ color: ag.color }} className="flex-shrink-0" />
+                                <span
+                                  className="px-1 py-px rounded text-[9px] leading-none truncate"
+                                  style={{ background: 'var(--bg-tertiary)', color: ag.color }}
+                                >
+                                  {ag.name}
+                                </span>
+                              </button>
+                            );
+                          })()}
                         </div>
                         {isConnected && (
                           <span
@@ -436,6 +484,13 @@ export default function Sidebar({ onConnect }: SidebarProps) {
               <Tag size={14} />
               Tags…
             </button>
+            <button
+              onClick={handleCtxAgent}
+              className="flex items-center gap-2.5 w-full px-3 py-1.5 text-[13px] text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]"
+            >
+              <Bot size={14} className="text-[var(--accent)]" />
+              AI Agent…
+            </button>
             <div className="my-1 h-px bg-[var(--border)]" />
             <button
               onClick={handleCtxDelete}
@@ -443,6 +498,70 @@ export default function Sidebar({ onConnect }: SidebarProps) {
             >
               <Trash2 size={14} />
               Delete
+            </button>
+          </div>
+        </>
+      )}
+
+      {/* Agent picker */}
+      {agentMenu && (
+        <>
+          <div
+            className="fixed inset-0 z-40"
+            onClick={() => setAgentMenu(null)}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              setAgentMenu(null);
+            }}
+          />
+          <div
+            className="surface-elevated fixed z-50 min-w-[180px] max-w-[240px] py-1 animate-scale-in"
+            style={{ top: agentMenu.y, left: agentMenu.x }}
+          >
+            <div className="px-3 py-1 text-[10px] uppercase tracking-wider text-[var(--text-muted)]">
+              AI agent for this session
+            </div>
+            <button
+              onClick={() => {
+                setSessionAgent(agentMenu.sessionId, null);
+                setAgentMenu(null);
+              }}
+              className="flex items-center gap-2.5 w-full px-3 py-1.5 text-[13px] text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]"
+            >
+              <span className="w-3.5 flex-shrink-0 flex justify-center">
+                {!sessionAgents[agentMenu.sessionId] && <Check size={13} className="text-[var(--accent)]" />}
+              </span>
+              None (default assistant)
+            </button>
+            {aiAgents.length > 0 && <div className="my-1 h-px bg-[var(--border)]" />}
+            <div className="max-h-[260px] overflow-y-auto">
+              {aiAgents.map((a) => {
+                const selected = sessionAgents[agentMenu.sessionId] === a.id;
+                return (
+                  <button
+                    key={a.id}
+                    onClick={() => {
+                      setSessionAgent(agentMenu.sessionId, a.id);
+                      setAgentMenu(null);
+                    }}
+                    className="flex items-center gap-2 w-full px-3 py-1.5 text-[13px] text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]"
+                  >
+                    <span className="w-3.5 flex-shrink-0 flex justify-center">
+                      {selected && <Check size={13} className="text-[var(--accent)]" />}
+                    </span>
+                    <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: a.color }} />
+                    <span className="truncate">{a.name}</span>
+                  </button>
+                );
+              })}
+            </div>
+            <div className="my-1 h-px bg-[var(--border)]" />
+            <button
+              onClick={openManageAgents}
+              className="flex items-center gap-2.5 w-full px-3 py-1.5 text-[12px] text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]"
+            >
+              <Settings2 size={13} />
+              Manage agents…
             </button>
           </div>
         </>
