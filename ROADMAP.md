@@ -131,6 +131,22 @@ The headline assurance feature — declare desired state, evaluate live complian
 - **Intent panel** (`IntentPanel.tsx`, Target icon in the title bar): define/list intents, "Evaluate all", per-intent run, status badges (ok/violation/unknown) with per-device breakdown.
 - **AI hook**: `evaluate_network_intents` tool — "check the network against our intent and explain the failures."
 
+## ✅ Done — Pass 11 (app-wide adversarial bug scrub + fixes, 2026-06-02)
+
+14-subsystem adversarial scrub (97 agents): 83 candidates → **71 confirmed** (1 critical, 16 high, 29 medium, 25 low), 9 refuted, 3 uncertain. **67 fixed** across backend + frontend (git: `30d577c`, `c9674ef`, `3b3b810`, `314b082`).
+- **Critical**: corrupt/wrong-version `vault.enc` was silently re-initialized to EMPTY on next unlock, wiping every saved secret → load() now errors + refuses to overwrite, atomic temp+rename writes, corrupt file preserved.
+- **Security**: plaintext secrets removed from localStorage (Central token/secret, Apstra password, API key, per-account secrets via `partialize`); `ai_keys.json` + vault + MCP creds now 0600 (atomic create); vault plaintext zeroized.
+- **Backend correctness**: SSH port-forward channel leak (JoinSet); `want_reply=true` PTY/shell; jump-host key/agent auth; known_hosts locked+atomic; keyboard-interactive no longer blasts the password into OTP prompts; MCP reader busy-spin + server-request id collision + collision-free creds filenames; telnet `IAC IAC`; SFTP streaming + overwrite guard; AI SSE byte-buffered UTF-8 + idle timeout + real cancel + no-content error; buffer-leak / ghost-session / double-disconnect.
+- **Frontend correctness**: destructive-action confirms (Reset, MCP delete, SFTP drop/overwrite, ConfigEditor discard); dialog FIFO queue; toast cap; BulkRunner command-snapshot + empty=error; ApiExplorer version + render caps; Terminal decoder-reset-on-reconnect + trigger cross-chunk + add-time regex validation; AI Stop kills the bubble + backend stream; **Apstra now actually works** (camelCase arg + `/api/api` path); startup-commands on auth-dialog retry; re-open-connected-host focuses tab.
+
+**Deferred (deliberate, with rationale):**
+- **onprem-1** — TLS verify default: kept permissive for on-prem device REST (self-signed field gear is the norm; flipping to verify-on would break logins by default). ApiExplorer has a per-login toggle and the Apstra failure is no longer swallowed. Proper follow-up: a global "verify device TLS" setting (product decision).
+- **onprem-5** — AOS-8 UIDARUBA-in-URL + 401 re-login: token-in-query is the documented AOS-8 mechanism; changing it / adding re-login needs real hardware to validate.
+- **term-5** — redundant global resize dispatch: cosmetic RPC churn; removing risks a missed refit.
+- **aw-4** — unreachable `!result.success` branch: dead-code cleanup only, no behavior change.
+
+_Still not exercised against real hardware (no gear/keys here): AOS-8/AOS-S/Apstra REST, ssh-agent, keyboard-interactive, MCP, CX REST, and the new concurrency/capture paths — reasoned, not runtime-proven._
+
 ## ⏭️ Next — remaining backlog
 
 1. **SSH config import (`~/.ssh/config`) + host-key management UI** — impact HIGH, effort M. Parse user's SSH config into saved sessions; a UI to view/approve/pin/remove known_hosts fingerprints (TOFU store already exists in `ssh/known_hosts.rs`).
