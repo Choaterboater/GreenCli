@@ -499,7 +499,7 @@ export default function SettingsPanel() {
                     className="w-full h-8 px-2 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)] font-mono"
                   />
                   <p className="text-[10px] text-[var(--text-muted)] mt-1">
-                    Runs a locally-installed CLI one-shot with the prompt on stdin — <span className="text-[var(--accent-success)]">no API key needed</span> (the CLI uses its own login). E.g. <code className="text-[var(--text-primary)]">claude -p</code>, <code className="text-[var(--text-primary)]">kimi</code>, <code className="text-[var(--text-primary)]">copilot -p</code>.
+                    Runs a locally-installed CLI one-shot with the prompt on stdin — <span className="text-[var(--accent-success)]">no API key needed</span> (the CLI uses its own login). E.g. <code className="text-[var(--text-primary)]">claude -p</code> or <code className="text-[var(--text-primary)]">kimi</code>.
                   </p>
                 </div>
               )}
