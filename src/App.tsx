@@ -201,6 +201,7 @@ function App() {
   const apstraHost = useSettingsStore((s) => s.apstraHost);
   const apstraUsername = useSettingsStore((s) => s.apstraUsername);
   const apstraPassword = useSettingsStore((s) => s.apstraPassword);
+  const verifyDeviceTls = useSettingsStore((s) => s.verifyDeviceTls);
   useEffect(() => {
     if (apstraHost && apstraUsername && apstraPassword) {
       invoke('apstra_configure', {
@@ -208,12 +209,11 @@ function App() {
         username: apstraUsername,
         password: apstraPassword,
         // Top-level command args use camelCase (Tauri maps to the snake_case Rust
-        // param). The old snake_case key silently failed deserialization, so Apstra
-        // was never configured.
-        acceptInvalidCerts: true,
+        // param). Honour the user's TLS-verification setting.
+        acceptInvalidCerts: !verifyDeviceTls,
       }).catch((e) => notify.error('Apstra configuration failed', String(e)));
     }
-  }, [apstraHost, apstraUsername, apstraPassword]);
+  }, [apstraHost, apstraUsername, apstraPassword, verifyDeviceTls]);
 
   const activeSession = sessions.find((s) => s.sessionId === activeSessionId);
 

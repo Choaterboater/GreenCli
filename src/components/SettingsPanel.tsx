@@ -609,6 +609,31 @@ export default function SettingsPanel() {
               </p>
             </div>
           </section>
+
+          {/* Device REST security */}
+          <section>
+            <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-3">Device REST security</h3>
+            <label className="flex items-center justify-between cursor-pointer gap-3">
+              <span className="min-w-0">
+                <span className="text-sm text-[var(--text-primary)]">Verify device TLS certificates</span>
+                <span className="block text-[10px] text-[var(--text-muted)]">
+                  Reject untrusted/self-signed certs on AOS-CX / AOS-8 / AOS-S / Apstra REST. Most
+                  field gear ships a self-signed cert, so this is off by default — turn it on to
+                  enforce verification.
+                </span>
+              </span>
+              <div
+                onClick={() => settings.updateSettings({ verifyDeviceTls: !settings.verifyDeviceTls })}
+                className="w-9 h-5 rounded-full relative cursor-pointer transition-colors flex-shrink-0"
+                style={{ background: settings.verifyDeviceTls ? 'var(--accent)' : 'var(--border-strong)' }}
+              >
+                <div
+                  className="absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform"
+                  style={{ transform: settings.verifyDeviceTls ? 'translateX(16px)' : 'translateX(0)' }}
+                />
+              </div>
+            </label>
+          </section>
         </div>
       </div>
     </div>
