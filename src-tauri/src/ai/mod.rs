@@ -135,7 +135,7 @@ pub async fn chat_request(store: &AiKeyStore, req: AiChatRequest) -> Result<Valu
         "openrouter" => client
             .post("https://openrouter.ai/api/v1/chat/completions")
             .header("HTTP-Referer", "https://hpe.com")
-            .header("X-Title", "HPE Network Terminal")
+            .header("X-Title", "GreenCLI")
             .bearer_auth(key),
         "moonshot" => client
             .post("https://api.moonshot.ai/v1/chat/completions")
@@ -198,7 +198,7 @@ fn build_request(
         "openrouter" => client
             .post("https://openrouter.ai/api/v1/chat/completions")
             .header("HTTP-Referer", "https://hpe.com")
-            .header("X-Title", "HPE Network Terminal")
+            .header("X-Title", "GreenCLI")
             .bearer_auth(key),
         "moonshot" => client
             .post("https://api.moonshot.ai/v1/chat/completions")

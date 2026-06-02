@@ -299,7 +299,7 @@ impl McpClient {
                 json!({
                     "protocolVersion": "2024-11-05",
                     "capabilities": {},
-                    "clientInfo": { "name": "hpe-network-terminal", "version": env!("CARGO_PKG_VERSION") }
+                    "clientInfo": { "name": "greencli", "version": env!("CARGO_PKG_VERSION") }
                 }),
             )
             .await?;

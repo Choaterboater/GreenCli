@@ -1,5 +1,5 @@
 /**
- * Utility functions for HPE Network Terminal
+ * Utility functions for GreenCLI
  */
 
 import { deviceMeta } from './types';

@@ -56,7 +56,7 @@ export const HELP_TOPICS: HelpTopic[] = [
     blocks: [
       {
         kind: 'p',
-        text: 'One cockpit for HPE Networking — **Aruba · Juniper · Mist**: a terminal/SSH client, config editor, REST API explorer, an MCP-powered AI assistant, and a network-intent (desired-state) layer.',
+        text: 'One cockpit for **Aruba · Juniper · Mist**: a terminal/SSH client, config editor, REST API explorer, an MCP-powered AI assistant, and a network-intent (desired-state) layer.',
       },
       {
         kind: 'steps',
@@ -232,7 +232,7 @@ export const HELP_TOPICS: HelpTopic[] = [
           'No secrets in browser storage; no telemetry — only the providers and devices you configure.',
         ],
       },
-      { kind: 'p', text: 'Data lives in the OS app-data dir for `com.arubaterminalpro.app` (sessions.json, vault.enc, ai_keys.json, mcp_servers.json, known_hosts.json, intents.json).' },
+      { kind: 'p', text: 'Data lives in the OS app-data dir for `com.greencli.app` (sessions.json, vault.enc, ai_keys.json, mcp_servers.json, known_hosts.json, intents.json).' },
     ],
   },
   {

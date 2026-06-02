@@ -372,6 +372,8 @@ export default function ConfigEditor() {
   const { width: panelWidth, onDragStart: handleDragStart, handleClass: dragHandleClass } =
     useResizablePanel(520, 300, 900);
   const [maximized, setMaximized] = useState(false);
+  // With no sessions open, fill the whole area so it works as a plain text editor.
+  const fullWidth = sessions.length === 0;
 
   const [content, setContent] = useState<string>(
     '! Aruba CX Configuration\n! Start typing, open a file, or pick a template\n\n'
@@ -728,12 +730,14 @@ export default function ConfigEditor() {
       className={
         maximized
           ? 'fixed left-0 right-0 bottom-0 top-11 z-40 flex flex-col bg-[var(--bg-primary)] overflow-hidden animate-fade-in'
+          : fullWidth
+          ? 'flex-1 min-w-0 flex flex-col bg-[var(--bg-primary)] overflow-hidden relative'
           : 'flex-shrink-0 flex flex-col bg-[var(--bg-primary)] border-l border-[var(--bg-tertiary)] overflow-hidden relative'
       }
-      style={maximized ? undefined : { width: panelWidth }}
+      style={maximized || fullWidth ? undefined : { width: panelWidth }}
     >
-      {/* Drag handle (hidden when maximized) */}
-      {!maximized && <div className={dragHandleClass} onMouseDown={handleDragStart} />}
+      {/* Drag handle (hidden when maximized or filling the area) */}
+      {!maximized && !fullWidth && <div className={dragHandleClass} onMouseDown={handleDragStart} />}
 
       {/* Header */}
       <div className="flex items-center justify-between h-10 px-3 pl-4 border-b border-[var(--bg-tertiary)] bg-[var(--bg-secondary)]">

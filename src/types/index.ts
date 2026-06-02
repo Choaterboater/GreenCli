@@ -1,6 +1,6 @@
 export type Protocol = 'ssh' | 'telnet' | 'serial' | 'local';
 
-// ── Multi-vendor model (HPE Networking: Aruba · Juniper · Mist) ──
+// ── Multi-vendor model (Aruba · Juniper · Mist) ──
 export type Vendor = 'aruba' | 'juniper' | 'mist' | 'hpe' | 'generic';
 
 export type DeviceType =

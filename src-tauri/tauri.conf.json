@@ -6,7 +6,7 @@
     "distDir": "../dist"
   },
   "package": {
-    "productName": "HPE Network Terminal"
+    "productName": "GreenCLI"
   },
   "tauri": {
     "allowlist": {
@@ -51,8 +51,8 @@
         "icons/icon.icns",
         "icons/icon.ico"
       ],
-      "identifier": "com.arubaterminalpro.app",
-      "longDescription": "One cockpit for HPE Networking — Aruba, Juniper, and Mist. A premium SSH/Telnet/Serial terminal with multi-vendor syntax highlighting, config tooling, REST API explorer, and an AI assistant for network engineers.",
+      "identifier": "com.greencli.app",
+      "longDescription": "One cockpit for Aruba, Juniper, and Mist. A premium SSH/Telnet/Serial terminal with multi-vendor syntax highlighting, config tooling, REST API explorer, and an AI assistant for network engineers.",
       "macOS": {
         "entitlements": null,
         "exceptionDomain": "",
@@ -61,7 +61,7 @@
         "signingIdentity": null
       },
       "resources": [],
-      "shortDescription": "HPE Network Terminal",
+      "shortDescription": "GreenCLI",
       "targets": "all",
       "windows": {
         "certificateThumbprint": null,
@@ -80,7 +80,7 @@
         "fullscreen": false,
         "height": 800,
         "resizable": true,
-        "title": "HPE Network Terminal",
+        "title": "GreenCLI",
         "width": 1320,
         "minWidth": 880,
         "minHeight": 560,

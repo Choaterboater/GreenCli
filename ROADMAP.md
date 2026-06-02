@@ -1,6 +1,6 @@
-# HPE Network Terminal — Roadmap
+# GreenCLI — Roadmap
 
-> One cockpit for HPE Networking: **Aruba · Juniper · Mist**.
+> One cockpit for **Aruba · Juniper · Mist**.
 > (formerly "Aruba Terminal Pro" — rebranded June 2026 to span the full HPE portfolio.)
 
 This file tracks the redesign + hardening effort. It's seeded from a 14-agent
@@ -12,7 +12,7 @@ issues**, and **105 missing features**. Items are grouped Done / Next / Backlog.
 ## ✅ Done — Pass 1 (HPE rebrand + premium redesign + correctness)
 
 ### Brand & design system
-- Rebranded to **HPE Network Terminal** (window title, bundle metadata, in-app brand, `index.html`).
+- Rebranded to **GreenCLI** (window title, bundle metadata, in-app brand, `index.html`).
 - New design system in `src/styles/index.css`: deep-slate base, **HPE green `#01A982`** primary, **Aruba orange `#FF8300`** secondary, real elevation/shadows, radius scale, glass surfaces, ambient gradient. All existing CSS-var names preserved → app-wide re-theme.
 - Tailwind tokens (`accent`, vendor colors, elevation shadows, Inter font).
 - macOS overlay title bar (`titleBarStyle: Overlay`) → fixes the double-title-bar bug.

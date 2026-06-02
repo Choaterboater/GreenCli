@@ -65,7 +65,7 @@ interface DisplayMessage extends ChatMessage {
   isError?: boolean;
 }
 
-// ─── HPE Networking CLI Knowledge Base (Aruba · Juniper · Mist) ───
+// ─── Multi-vendor CLI Knowledge Base (Aruba · Juniper · Mist) ───
 
 const NET_KNOWLEDGE = `
 ## Aruba AOS-CX (switches)
@@ -99,7 +99,7 @@ const NET_KNOWLEDGE = `
 - Always disable paging before capturing long output
 `;
 
-const SYSTEM_PROMPT = (deviceContext: string, references: string) => `You are HPE Networking AI, an expert network engineering assistant for the full HPE Networking portfolio: **Aruba** (AOS-CX, AOS-S, InstantOS APs, ArubaOS controllers), **Juniper** (Junos: EX/QFX/SRX/MX), and **Juniper Mist** (cloud-managed wired/wireless). You help engineers configure, troubleshoot, and automate across all of them.
+const SYSTEM_PROMPT = (deviceContext: string, references: string) => `You are GreenCLI, an expert network engineering assistant covering Aruba, Juniper, and Mist: **Aruba** (AOS-CX, AOS-S, InstantOS APs, ArubaOS controllers), **Juniper** (Junos: EX/QFX/SRX/MX), and **Juniper Mist** (cloud-managed wired/wireless). You help engineers configure, troubleshoot, and automate across all of them.
 
 ${deviceContext}
 
@@ -977,7 +977,7 @@ export default function AiAssistant() {
         {
           role: 'assistant',
           content:
-            'The AI assistant runs through the desktop backend. Launch **HPE Network Terminal** (the installed app, or `npm run tauri dev`) — it can\'t reach AI providers or the terminal from a regular browser tab.',
+            'The AI assistant runs through the desktop backend. Launch **GreenCLI** (the installed app, or `npm run tauri dev`) — it can\'t reach AI providers or the terminal from a regular browser tab.',
           timestamp: Date.now(),
           isError: true,
         },

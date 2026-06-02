@@ -565,7 +565,7 @@ function App() {
               <TerminalSquare size={15} style={{ color: 'var(--accent-fg)' }} />
             </div>
             <span className="text-[13px] font-semibold text-[var(--text-primary)] tracking-tight whitespace-nowrap">
-              HPE Network Terminal
+              GreenCLI
             </span>
           </div>
           {!sidebarVisible && (
@@ -733,8 +733,9 @@ function App() {
 
           {/* Terminal Container + Side Panels */}
           <div className="flex flex-1 overflow-hidden">
-            {/* Terminal */}
-            <div className="flex-1 flex flex-col min-w-0">
+            {/* Terminal — hidden with no sessions + editor open, so the editor fills
+                the area and works as a standalone text editor. */}
+            <div className={`flex-1 flex flex-col min-w-0 ${!activeSession && showConfigEditor ? 'hidden' : ''}`}>
               <div className="flex-1 relative overflow-hidden">
                 {activeSession ? (
                   // Every session's terminal stays MOUNTED — we only show/hide it via
@@ -806,10 +807,10 @@ function App() {
                       <TerminalSquare size={30} style={{ color: 'var(--accent-fg)' }} />
                     </div>
                     <h1 className="text-[22px] font-semibold text-[var(--text-primary)] tracking-tight">
-                      HPE Network Terminal
+                      GreenCLI
                     </h1>
                     <p className="mt-1.5 text-[13px] text-[var(--text-secondary)]">
-                      One cockpit for HPE Networking — Aruba, Juniper &amp; Mist.
+                      One cockpit for Aruba, Juniper &amp; Mist.
                     </p>
 
                     {/* Vendor chips */}

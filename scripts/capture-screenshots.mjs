@@ -1,4 +1,4 @@
-// Capture documentation screenshots of the HPE Network Terminal UI.
+// Capture documentation screenshots of the GreenCLI UI.
 //
 // Usage:
 //   1. Start the UI dev server:   npm run dev        (serves http://localhost:1420)
