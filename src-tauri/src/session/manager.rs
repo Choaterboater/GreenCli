@@ -21,11 +21,15 @@ impl SessionManager {
         session_id: String,
         connection: Box<dyn Connection>,
     ) -> Result<(), AppError> {
-        let mut sessions = self
-            .sessions
-            .lock()
-            .await;
-        sessions.insert(session_id, connection);
+        let connection_id = connection.get_session_id();
+        if session_id != connection_id {
+            return Err(AppError::ConfigError(format!(
+                "Session ID mismatch: expected {}, got {}",
+                session_id, connection_id
+            )));
+        }
+        let mut sessions = self.sessions.lock().await;
+        sessions.insert(connection_id, connection);
         Ok(())
     }
 
@@ -42,6 +46,9 @@ impl SessionManager {
         let connection = sessions
             .get(session_id)
             .ok_or_else(|| AppError::SessionNotFound(session_id.to_string()))?;
+        if !connection.is_connected() {
+            return Err(AppError::SessionNotFound(session_id.to_string()));
+        }
         connection.send(data).await
     }
 
@@ -55,6 +62,9 @@ impl SessionManager {
         let connection = sessions
             .get(session_id)
             .ok_or_else(|| AppError::SessionNotFound(session_id.to_string()))?;
+        if !connection.is_connected() {
+            return Err(AppError::SessionNotFound(session_id.to_string()));
+        }
         connection.resize(cols, rows).await
     }
 
@@ -63,30 +73,6 @@ impl SessionManager {
     /// naturally signals the supervisor to stop retrying).
     pub async fn contains(&self, session_id: &str) -> bool {
         self.sessions.lock().await.contains_key(session_id)
-    }
-
-    pub async fn is_session_connected(&self, session_id: &str) -> bool {
-        let sessions = self.sessions.lock().await;
-        sessions
-            .get(session_id)
-            .map(|c| c.is_connected())
-            .unwrap_or(false)
-    }
-
-    pub async fn list_active_sessions(&self) -> Vec<String> {
-        let sessions = self.sessions.lock().await;
-        sessions
-            .keys()
-            .cloned()
-            .collect()
-    }
-
-    pub async fn disconnect_all(&self) -> Result<(), AppError> {
-        let mut sessions = self.sessions.lock().await;
-        for (_, mut connection) in sessions.drain() {
-            let _ = connection.disconnect().await;
-        }
-        Ok(())
     }
 
     /// Get the SSH handle for SFTP operations (returns None for non-SSH sessions).

@@ -13,7 +13,6 @@ pub enum AppError {
     ConfigError(String),
     AuthError(String),
     ApiError(String),
-    McpError(String),
 }
 
 impl fmt::Display for AppError {
@@ -29,7 +28,6 @@ impl fmt::Display for AppError {
             AppError::ConfigError(msg) => write!(f, "Config Error: {}", msg),
             AppError::AuthError(msg) => write!(f, "Auth Error: {}", msg),
             AppError::ApiError(msg) => write!(f, "API Error: {}", msg),
-            AppError::McpError(msg) => write!(f, "MCP Error: {}", msg),
         }
     }
 }

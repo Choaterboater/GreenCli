@@ -21,9 +21,45 @@ export default function SearchOverlay() {
   const [caseSensitive, setCaseSensitive] = useState(false);
   const [resultIndex, setResultIndex] = useState(-1);
   const [resultCount, setResultCount] = useState(0);
+  const [regexError, setRegexError] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const adapter = activeSessionId ? getSearchAdapter(activeSessionId) : undefined;
+
+  // A malformed pattern makes xterm-addon-search's `new RegExp(term)` throw
+  // synchronously inside the handler, corrupting state. Guard every find call.
+  const safeFind = (
+    dir: 'next' | 'prev',
+    term: string,
+    opts?: { regex?: boolean; caseSensitive?: boolean }
+  ): boolean => {
+    if (!adapter) return false;
+    if (!term) {
+      adapter.clearDecorations();
+      setResultIndex(-1);
+      setResultCount(0);
+      setRegexError(false);
+      return false;
+    }
+    const regex = opts?.regex ?? useRegex;
+    const cs = opts?.caseSensitive ?? caseSensitive;
+    if (regex) {
+      try {
+        // eslint-disable-next-line no-new
+        new RegExp(term);
+      } catch {
+        setRegexError(true);
+        adapter.clearDecorations();
+        setResultIndex(-1);
+        setResultCount(0);
+        return false;
+      }
+    }
+    setRegexError(false);
+    return dir === 'next'
+      ? adapter.findNext(term, { incremental: true, regex, caseSensitive: cs })
+      : adapter.findPrevious(term, { incremental: true, regex, caseSensitive: cs });
+  };
 
   // Subscribe to result count updates
   useEffect(() => {
@@ -32,7 +68,7 @@ export default function SearchOverlay() {
       setResultIndex(ri);
       setResultCount(rc);
     });
-  }, [showSearch, activeSessionId]);
+  }, [showSearch, activeSessionId, adapter]);
 
   // Focus input on open; clear state and decorations on close
   useEffect(() => {
@@ -46,37 +82,22 @@ export default function SearchOverlay() {
       setQuery('');
       setResultIndex(-1);
       setResultCount(0);
+      setRegexError(false);
       setUseRegex(false);
       setCaseSensitive(false);
     }
-  }, [showSearch]);
+  }, [showSearch, adapter]);
 
   // Re-run search when regex/case toggles change
   useEffect(() => {
     if (!query || !adapter) return;
-    adapter.findNext(query, { incremental: true, regex: useRegex, caseSensitive });
-  }, [useRegex, caseSensitive]);
-
-  // (Ctrl+F is handled globally in App.tsx; no duplicate listener here.)
-
-  const runSearch = (term: string, opts?: { regex?: boolean; caseSensitive?: boolean }) => {
-    if (!adapter) return;
-    if (!term) {
-      adapter.clearDecorations();
-      setResultIndex(-1);
-      setResultCount(0);
-      return;
-    }
-    adapter.findNext(term, {
-      incremental: true,
-      regex: opts?.regex ?? useRegex,
-      caseSensitive: opts?.caseSensitive ?? caseSensitive,
-    });
-  };
+    safeFind('next', query, { regex: useRegex, caseSensitive });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [useRegex, caseSensitive, adapter, query]);
 
   const handleChange = (val: string) => {
     setQuery(val);
-    runSearch(val);
+    safeFind('next', val);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -84,34 +105,38 @@ export default function SearchOverlay() {
       setShowSearch(false);
     } else if (e.key === 'Enter' && query) {
       e.preventDefault();
-      if (e.shiftKey) {
-        adapter?.findPrevious(query, { regex: useRegex, caseSensitive });
-      } else {
-        adapter?.findNext(query, { regex: useRegex, caseSensitive });
-      }
+      safeFind(e.shiftKey ? 'prev' : 'next', query);
     }
   };
 
   const handleChip = (pattern: string) => {
     setUseRegex(true);
     setQuery(pattern);
-    runSearch(pattern, { regex: true });
+    safeFind('next', pattern, { regex: true });
     inputRef.current?.focus();
   };
 
-  const notFound = query.length > 0 && resultCount === 0;
+  const danger = regexError || (query.length > 0 && resultCount === 0);
 
   const resultLabel = () => {
     if (!query) return '';
-    if (notFound) return 'No results';
+    if (regexError) return 'Invalid regex';
+    if (query.length > 0 && resultCount === 0) return 'No results';
     if (resultIndex === -1) return `${resultCount}+`;
     return `${resultIndex + 1} / ${resultCount}`;
   };
 
   if (!showSearch) return null;
 
+  const toggleCls = (active: boolean, mono = false) =>
+    `px-1.5 py-0.5 text-[10px] ${mono ? 'font-mono' : 'font-semibold'} rounded border transition-colors ${
+      active
+        ? 'border-[var(--accent)] text-[var(--accent)] bg-[var(--accent-soft)]'
+        : 'bg-transparent border-[var(--border)] text-[var(--text-secondary)] hover:border-[var(--border-strong)]'
+    }`;
+
   return (
-    <div className="absolute top-10 right-4 z-40 w-[440px] bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg shadow-xl">
+    <div className="glass absolute top-12 right-4 z-40 w-[440px] rounded-lg shadow-elevation-3 animate-scale-in">
       {/* Search row */}
       <div className="flex items-center gap-1.5 px-3 py-2">
         <input
@@ -120,22 +145,20 @@ export default function SearchOverlay() {
           value={query}
           onChange={(e) => handleChange(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder="Find in terminal..."
-          className={`flex-1 h-7 bg-transparent text-sm placeholder-[var(--text-muted)] focus:outline-none ${
-            notFound ? 'text-[#f85149]' : 'text-[var(--text-primary)]'
-          }`}
+          placeholder="Find in terminal…"
+          className="flex-1 h-7 bg-transparent text-sm placeholder-[var(--text-muted)] focus:outline-none"
+          style={{ color: danger ? 'var(--accent-danger)' : 'var(--text-primary)' }}
         />
 
         <span
-          className={`text-xs whitespace-nowrap min-w-[60px] text-right tabular-nums ${
-            notFound ? 'text-[#f85149]' : 'text-[var(--text-secondary)]'
-          }`}
+          className="text-xs whitespace-nowrap min-w-[64px] text-right tabular-nums"
+          style={{ color: danger ? 'var(--accent-danger)' : 'var(--text-secondary)' }}
         >
           {resultLabel()}
         </span>
 
         <button
-          onClick={() => adapter?.findPrevious(query, { regex: useRegex, caseSensitive })}
+          onClick={() => safeFind('prev', query)}
           disabled={!query}
           title="Previous match (Shift+Enter)"
           className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] disabled:opacity-40"
@@ -143,7 +166,7 @@ export default function SearchOverlay() {
           <ChevronUp size={14} />
         </button>
         <button
-          onClick={() => adapter?.findNext(query, { regex: useRegex, caseSensitive })}
+          onClick={() => safeFind('next', query)}
           disabled={!query}
           title="Next match (Enter)"
           className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] disabled:opacity-40"
@@ -151,26 +174,10 @@ export default function SearchOverlay() {
           <ChevronDown size={14} />
         </button>
 
-        <button
-          onClick={() => setCaseSensitive((v) => !v)}
-          title="Case sensitive"
-          className={`px-1.5 py-0.5 text-[10px] font-semibold rounded border transition-colors ${
-            caseSensitive
-              ? 'bg-[#238636] border-[#238636] text-white'
-              : 'bg-transparent border-[var(--border)] text-[var(--text-secondary)] hover:border-[var(--text-muted)]'
-          }`}
-        >
+        <button onClick={() => setCaseSensitive((v) => !v)} title="Case sensitive" className={toggleCls(caseSensitive)}>
           Aa
         </button>
-        <button
-          onClick={() => setUseRegex((v) => !v)}
-          title="Use regular expression"
-          className={`px-1.5 py-0.5 text-[10px] font-mono rounded border transition-colors ${
-            useRegex
-              ? 'bg-[#238636] border-[#238636] text-white'
-              : 'bg-transparent border-[var(--border)] text-[var(--text-secondary)] hover:border-[var(--text-muted)]'
-          }`}
-        >
+        <button onClick={() => setUseRegex((v) => !v)} title="Use regular expression" className={toggleCls(useRegex, true)}>
           .*
         </button>
 
@@ -183,7 +190,7 @@ export default function SearchOverlay() {
       </div>
 
       {/* Section chips */}
-      <div className="px-3 pb-2 pt-1.5 flex flex-wrap gap-1 border-t border-[var(--bg-tertiary)]">
+      <div className="px-3 pb-2 pt-1.5 flex flex-wrap gap-1 border-t border-[var(--border)]">
         <span className="text-[10px] text-[var(--text-muted)] self-center mr-0.5">Jump to:</span>
         {SECTION_CHIPS.map(({ label, pattern }) => (
           <button
@@ -191,8 +198,8 @@ export default function SearchOverlay() {
             onClick={() => handleChip(pattern)}
             className={`px-2 py-0.5 text-[10px] rounded border transition-colors whitespace-nowrap ${
               query === pattern && useRegex
-                ? 'bg-[#1f6feb] border-[#388bfd] text-[var(--text-primary)]'
-                : 'bg-[var(--bg-primary)] border-[var(--border)] text-[var(--text-secondary)] hover:border-[var(--text-muted)] hover:text-[var(--text-primary)]'
+                ? 'border-[var(--accent)] text-[var(--accent)] bg-[var(--accent-soft)]'
+                : 'bg-[var(--bg-inset)] border-[var(--border)] text-[var(--text-secondary)] hover:border-[var(--border-strong)] hover:text-[var(--text-primary)]'
             }`}
           >
             {label}

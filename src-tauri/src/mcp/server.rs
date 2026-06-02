@@ -117,19 +117,8 @@ impl TerminalSessionState {
         }
     }
 
-    pub fn update_buffer(&mut self, session_id: &str, data: &str) {
-        self.buffers
-            .entry(session_id.to_string())
-            .and_modify(|b| b.push_str(data))
-            .or_insert_with(|| data.to_string());
-    }
-
     pub fn get_buffer(&self, session_id: &str) -> Option<&String> {
         self.buffers.get(session_id)
-    }
-
-    pub fn set_device_info(&mut self, session_id: &str, info: Value) {
-        self.device_info.insert(session_id.to_string(), info);
     }
 
     pub fn get_device_info(&self, session_id: &str) -> Option<&Value> {
@@ -162,7 +151,7 @@ impl McpServer {
                 "resources": { "subscribe": false, "listChanged": false }
             }),
             server_info: McpServerInfo {
-                name: "aruba-terminal-pro-mcp".to_string(),
+                name: "hpe-network-terminal-mcp".to_string(),
                 version: env!("CARGO_PKG_VERSION").to_string(),
             },
         }
@@ -223,7 +212,9 @@ impl McpServer {
                 },
                 McpTool {
                     name: "configure_interface".to_string(),
-                    description: "Helper to generate interface configuration commands for Aruba switches".to_string(),
+                    description:
+                        "Helper to generate interface configuration commands for Aruba switches"
+                            .to_string(),
                     input_schema: json!({
                         "type": "object",
                         "properties": {
@@ -359,7 +350,11 @@ impl McpServer {
 
     pub fn read_resource(&self, request: McpResourceReadRequest) -> McpResourceReadResponse {
         let uri = request.uri;
-        let parts: Vec<&str> = uri.strip_prefix("terminal://").unwrap_or("").split('/').collect();
+        let parts: Vec<&str> = uri
+            .strip_prefix("terminal://")
+            .unwrap_or("")
+            .split('/')
+            .collect();
         let session_id = parts.first().unwrap_or(&"").to_string();
         let resource_type = parts.get(1).unwrap_or(&"buffer").to_string();
 
@@ -382,14 +377,6 @@ impl McpServer {
                 text,
             }],
         }
-    }
-
-    pub fn get_state_mut(&mut self) -> &mut TerminalSessionState {
-        &mut self.state
-    }
-
-    pub fn get_state(&self) -> &TerminalSessionState {
-        &self.state
     }
 }
 

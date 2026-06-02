@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import {
   ChevronRight,
   ChevronDown,
@@ -7,23 +7,38 @@ import {
   Monitor,
   Server,
   Wifi,
-  Router,
+  RadioTower,
+  Cloud,
+  Network,
   Plus,
   Trash2,
   Play,
   Edit3,
+  Search,
   PanelLeftClose,
+  FolderPlus,
+  Tag,
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/tauri';
 import { useSessionStore } from '../store/sessionStore';
-import { ConnectionConfig } from '../types';
+import { ConnectionConfig, deviceMeta, vendorColor } from '../types';
+import { fuzzyMatch } from '../utils';
+import { askPrompt, askConfirm } from '../store/dialogStore';
+import { notify } from '../store/toastStore';
 
-const deviceIcons: Record<string, React.ReactNode> = {
-  'aruba-cx': <Server size={14} className="text-[#58a6ff]" />,
-  'aruba-ap': <Wifi size={14} className="text-[#3fb950]" />,
-  'aruba-controller': <Router size={14} className="text-[#d29922]" />,
-  generic: <Monitor size={14} className="text-[var(--text-secondary)]" />,
+const LUCIDE: Record<string, typeof Monitor> = {
+  Network,
+  Wifi,
+  RadioTower,
+  Server,
+  Cloud,
+  Monitor,
 };
+
+function DeviceIcon({ deviceType, size = 15 }: { deviceType: string; size?: number }) {
+  const Ico = LUCIDE[deviceMeta(deviceType).icon] ?? Monitor;
+  return <Ico size={size} style={{ color: vendorColor(deviceType) }} className="flex-shrink-0" />;
+}
 
 interface SidebarProps {
   onConnect: (config: ConnectionConfig) => void;
@@ -33,11 +48,14 @@ export default function Sidebar({ onConnect }: SidebarProps) {
   const {
     folders,
     sidebarVisible,
+    sessions,
     toggleSidebar,
     updateFolder,
     addFolder,
+    removeFolder,
     removeSessionFromFolder,
   } = useSessionStore();
+  const [query, setQuery] = useState('');
   const [contextMenu, setContextMenu] = useState<{
     x: number;
     y: number;
@@ -45,16 +63,54 @@ export default function Sidebar({ onConnect }: SidebarProps) {
     folderId: string;
   } | null>(null);
 
-  // Add a folder (persisted via the backend when available).
-  const handleAddFolder = () => {
-    const name = window.prompt('Folder name:', 'New Folder');
+  // Live connection state: a saved session whose id matches a connected tab.
+  const connectedIds = useMemo(
+    () => new Set(sessions.filter((s) => s.connected).map((s) => s.sessionId)),
+    [sessions]
+  );
+
+  const q = query.trim();
+  // Fuzzy match across name / host / user / tags (cencli-style, ignores -_ and case).
+  const matches = (s: ConnectionConfig) =>
+    !q || fuzzyMatch(q, `${s.name} ${s.host ?? ''} ${s.username ?? ''} ${(s.tags ?? []).join(' ')}`);
+
+  // ── Folder actions (persisted to backend) ──
+  const handleAddFolder = async () => {
+    const name = await askPrompt({ title: 'New folder', placeholder: 'Folder name', defaultValue: 'New Folder' });
     if (!name) return;
-    invoke<string>('create_folder', { name })
-      .then((id) => addFolder({ id, name, items: [], expanded: true }))
-      .catch(() => addFolder({ id: `folder-${Date.now()}`, name, items: [], expanded: true }));
+    try {
+      const id = await invoke<string>('create_folder', { name });
+      addFolder({ id, name, items: [], expanded: true });
+    } catch {
+      addFolder({ id: `folder-${Date.now()}`, name, items: [], expanded: true });
+    }
   };
 
-  // Resolve the session a context-menu action targets.
+  const toggleExpand = (folderId: string, expanded: boolean) => {
+    updateFolder(folderId, { expanded });
+    invoke('update_folder', { id: folderId, expanded }).catch(() => {});
+  };
+
+  const renameFolder = async (folderId: string, current: string) => {
+    const name = await askPrompt({ title: 'Rename folder', defaultValue: current });
+    if (!name) return;
+    updateFolder(folderId, { name });
+    invoke('update_folder', { id: folderId, name }).catch(() => {});
+  };
+
+  const deleteFolder = async (folderId: string, name: string, count: number) => {
+    const ok = await askConfirm({
+      title: `Delete "${name}"?`,
+      message: count > 0 ? `This removes ${count} saved session${count > 1 ? 's' : ''}.` : undefined,
+      danger: true,
+    });
+    if (!ok) return;
+    removeFolder(folderId);
+    invoke('delete_folder', { id: folderId }).catch(() => {});
+    notify.success('Folder deleted', name);
+  };
+
+  // ── Session actions ──
   const ctxItem = () => {
     if (!contextMenu) return undefined;
     return folders
@@ -68,174 +124,279 @@ export default function Sidebar({ onConnect }: SidebarProps) {
     if (item) onConnect(item);
   };
 
-  const handleCtxEdit = () => {
+  const handleCtxEdit = async () => {
     const item = ctxItem();
-    if (!item || !contextMenu) return;
-    const name = window.prompt('Rename session:', item.name);
-    if (name) {
-      const folder = folders.find((f) => f.id === contextMenu.folderId);
-      if (folder) {
-        updateFolder(folder.id, {
-          items: folder.items.map((s) => (s.id === item.id ? { ...s, name } : s)),
-        });
-      }
-    }
+    const ctx = contextMenu;
     setContextMenu(null);
+    if (!item || !ctx) return;
+    const name = await askPrompt({ title: 'Rename session', defaultValue: item.name });
+    if (!name) return;
+    const folder = folders.find((f) => f.id === ctx.folderId);
+    if (folder) {
+      updateFolder(folder.id, {
+        items: folder.items.map((s) => (s.id === item.id ? { ...s, name } : s)),
+      });
+    }
+    invoke('rename_session', { id: item.id, name }).catch(() => {});
+  };
+
+  const handleCtxTags = async () => {
+    const item = ctxItem();
+    const ctx = contextMenu;
+    setContextMenu(null);
+    if (!item || !ctx) return;
+    const entered = await askPrompt({
+      title: 'Tags',
+      message: 'Comma-separated labels for filtering (e.g. core, site-a, prod).',
+      defaultValue: (item.tags ?? []).join(', '),
+      placeholder: 'core, site-a',
+    });
+    if (entered === null) return;
+    const tags = entered
+      .split(',')
+      .map((t) => t.trim())
+      .filter(Boolean);
+    const folder = folders.find((f) => f.id === ctx.folderId);
+    if (folder) {
+      updateFolder(folder.id, {
+        items: folder.items.map((s) => (s.id === item.id ? { ...s, tags } : s)),
+      });
+    }
+    invoke('set_session_tags', { id: item.id, tags }).catch(() => {});
+  };
+
+  const handleCtxDelete = async () => {
+    const item = ctxItem();
+    const ctx = contextMenu;
+    setContextMenu(null);
+    if (!item || !ctx) return;
+    const ok = await askConfirm({ title: `Delete "${item.name}"?`, danger: true });
+    if (!ok) return;
+    removeSessionFromFolder(ctx.folderId, ctx.sessionId);
+    invoke('delete_session', { id: ctx.sessionId }).catch(() => {});
+    notify.success('Session deleted', item.name);
   };
 
   if (!sidebarVisible) {
     return (
       <button
         onClick={toggleSidebar}
-        className="fixed left-0 top-[40px] z-10 p-1.5 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-r hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
+        className="fixed left-0 top-[48px] z-10 p-1.5 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-r-md hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
+        title="Show sidebar (Ctrl+B)"
       >
         <PanelLeftClose size={16} />
       </button>
     );
   }
 
-  const handleContextMenu = (
-    e: React.MouseEvent,
-    sessionId: string,
-    folderId: string
-  ) => {
+  const handleContextMenu = (e: React.MouseEvent, sessionId: string, folderId: string) => {
     e.preventDefault();
     setContextMenu({ x: e.clientX, y: e.clientY, sessionId, folderId });
   };
 
   return (
-    <div className="w-64 flex-shrink-0 flex flex-col bg-[var(--bg-secondary)] border-r border-[var(--bg-tertiary)] overflow-hidden">
+    <div className="w-64 flex-shrink-0 flex flex-col bg-[var(--bg-secondary)] border-r border-[var(--border)] overflow-hidden">
       {/* Header */}
-      <div className="flex items-center justify-between h-10 px-3 border-b border-[var(--bg-tertiary)]">
-        <span className="text-xs font-semibold text-[var(--text-secondary)] uppercase tracking-wider">
+      <div className="flex items-center justify-between h-10 px-3 border-b border-[var(--border)]">
+        <span className="text-[11px] font-semibold text-[var(--text-secondary)] uppercase tracking-wider">
           Sessions
         </span>
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-0.5">
           <button
             onClick={handleAddFolder}
-            className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
-            title="Add folder"
+            className="p-1.5 rounded-md hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
+            title="New folder"
           >
-            <Plus size={14} />
+            <FolderPlus size={15} />
           </button>
           <button
             onClick={toggleSidebar}
-            className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+            className="p-1.5 rounded-md hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
+            title="Hide sidebar (Ctrl+B)"
           >
-            <PanelLeftClose size={14} />
+            <PanelLeftClose size={15} />
           </button>
         </div>
       </div>
 
-      {/* Folders */}
-      <div className="flex-1 overflow-y-auto py-1">
-        {folders.map((folder) => (
-          <div key={folder.id}>
-            {/* Folder Header */}
-            <button
-              onClick={() =>
-                updateFolder(folder.id, { expanded: !folder.expanded })
-              }
-              className="flex items-center gap-1.5 w-full px-3 py-1.5 text-left hover:bg-[var(--bg-tertiary)] transition-colors"
-            >
-              {folder.expanded ? (
-                <ChevronDown size={14} className="text-[var(--text-secondary)]" />
-              ) : (
-                <ChevronRight size={14} className="text-[var(--text-secondary)]" />
-              )}
-              {folder.expanded ? (
-                <FolderOpen size={14} className="text-[#d29922]" />
-              ) : (
-                <Folder size={14} className="text-[var(--text-secondary)]" />
-              )}
-              <span className="text-sm text-[var(--text-primary)]">{folder.name}</span>
-              <span className="ml-auto text-xs text-[var(--text-muted)]">
-                {folder.items.length}
-              </span>
-            </button>
-
-            {/* Folder Items */}
-            {folder.expanded && (
-              <div className="ml-2">
-                {folder.items.length === 0 && (
-                  <div className="px-6 py-2 text-xs text-[var(--text-muted)]">
-                    No sessions
-                  </div>
-                )}
-                {folder.items.map((session) => (
-                  <div
-                    key={session.id}
-                    onContextMenu={(e) =>
-                      handleContextMenu(e, session.id, folder.id)
-                    }
-                    className="group flex items-center gap-2 px-6 py-1.5 cursor-pointer hover:bg-[var(--bg-tertiary)] transition-colors"
-                  >
-                    {deviceIcons[session.deviceType] || deviceIcons.generic}
-                    <span
-                      className="flex-1 text-sm text-[var(--text-secondary)] group-hover:text-[var(--text-primary)] truncate"
-                      onClick={() => onConnect(session)}
-                    >
-                      {session.name}
-                    </span>
-                    <button
-                      onClick={() => onConnect(session)}
-                      className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-[var(--border)] text-[#3fb950]"
-                    >
-                      <Play size={12} />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        ))}
+      {/* Search */}
+      <div className="px-2.5 py-2 border-b border-[var(--border)]">
+        <div className="relative">
+          <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--text-muted)]" />
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search hosts…"
+            className="input-field w-full h-8 pl-8 pr-2 text-[12px]"
+          />
+        </div>
       </div>
 
-      {/* Quick Connect Bar */}
-      <div className="px-3 py-2 border-t border-[var(--bg-tertiary)]">
+      {/* Folders */}
+      <div className="flex-1 overflow-y-auto py-1.5">
+        {folders.map((folder) => {
+          const visibleItems = folder.items.filter(matches);
+          if (q && visibleItems.length === 0) return null;
+          const expanded = folder.expanded || !!q;
+          return (
+            <div key={folder.id} className="px-1.5">
+              {/* Folder header */}
+              <div
+                className="group/folder flex items-center gap-1.5 w-full px-1.5 py-1.5 rounded-md text-left hover:bg-[var(--bg-tertiary)] transition-colors cursor-pointer"
+                onClick={() => toggleExpand(folder.id, !expanded)}
+              >
+                {expanded ? (
+                  <ChevronDown size={14} className="text-[var(--text-muted)] flex-shrink-0" />
+                ) : (
+                  <ChevronRight size={14} className="text-[var(--text-muted)] flex-shrink-0" />
+                )}
+                {expanded ? (
+                  <FolderOpen size={15} className="text-[var(--accent-2)] flex-shrink-0" />
+                ) : (
+                  <Folder size={15} className="text-[var(--text-secondary)] flex-shrink-0" />
+                )}
+                <span className="flex-1 text-[13px] font-medium text-[var(--text-primary)] truncate">
+                  {folder.name}
+                </span>
+                <span className="text-[11px] text-[var(--text-muted)] tabular-nums group-hover/folder:hidden">
+                  {folder.items.length}
+                </span>
+                <div className="hidden group-hover/folder:flex items-center gap-0.5">
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      renameFolder(folder.id, folder.name);
+                    }}
+                    className="p-0.5 rounded hover:bg-[var(--border-strong)] text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                    title="Rename folder"
+                  >
+                    <Edit3 size={12} />
+                  </button>
+                  {folder.id !== 'default' && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        deleteFolder(folder.id, folder.name, folder.items.length);
+                      }}
+                      className="p-0.5 rounded hover:bg-[var(--border-strong)] text-[var(--text-muted)] hover:text-[var(--accent-danger)]"
+                      title="Delete folder"
+                    >
+                      <Trash2 size={12} />
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Items */}
+              {expanded && (
+                <div className="ml-3.5 border-l border-[var(--border)] pl-1.5">
+                  {visibleItems.length === 0 && (
+                    <div className="px-2 py-1.5 text-[11px] text-[var(--text-muted)]">No sessions</div>
+                  )}
+                  {visibleItems.map((session) => {
+                    const isConnected = connectedIds.has(session.id);
+                    return (
+                      <div
+                        key={session.id}
+                        onContextMenu={(e) => handleContextMenu(e, session.id, folder.id)}
+                        onDoubleClick={() => onConnect(session)}
+                        className="group flex items-center gap-2 px-2 py-1.5 rounded-md cursor-pointer hover:bg-[var(--bg-tertiary)] transition-colors"
+                        title={`${deviceMeta(session.deviceType).label} · double-click to connect`}
+                      >
+                        <DeviceIcon deviceType={session.deviceType} />
+                        <div className="flex-1 min-w-0">
+                          <span className="block text-[13px] text-[var(--text-secondary)] group-hover:text-[var(--text-primary)] truncate">
+                            {session.name}
+                          </span>
+                          {(session.tags?.length ?? 0) > 0 && (
+                            <span className="flex flex-wrap gap-1 mt-0.5">
+                              {session.tags!.slice(0, 4).map((t) => (
+                                <button
+                                  key={t}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setQuery(t);
+                                  }}
+                                  className="px-1 py-px rounded text-[9px] leading-none bg-[var(--bg-tertiary)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:bg-[var(--accent-soft)]"
+                                  title={`Filter by "${t}"`}
+                                >
+                                  {t}
+                                </button>
+                              ))}
+                            </span>
+                          )}
+                        </div>
+                        {isConnected && (
+                          <span
+                            className="w-1.5 h-1.5 rounded-full flex-shrink-0"
+                            style={{ background: 'var(--accent-success)' }}
+                            title="Connected"
+                          />
+                        )}
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onConnect(session);
+                          }}
+                          className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-[var(--border-strong)] text-[var(--accent-success)] flex-shrink-0"
+                          title="Connect"
+                        >
+                          <Play size={12} />
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Quick Connect */}
+      <div className="px-2.5 py-2.5 border-t border-[var(--border)]">
         <button
           onClick={() => useSessionStore.getState().setShowQuickConnect(true)}
-          className="flex items-center justify-center gap-2 w-full h-8 text-sm bg-[#238636] hover:bg-[#2ea043] text-white rounded transition-colors"
+          className="btn-accent flex items-center justify-center gap-2 w-full h-9 text-sm"
         >
-          <Plus size={14} />
+          <Plus size={15} />
           Quick Connect
         </button>
       </div>
 
-      {/* Context Menu */}
+      {/* Context menu */}
       {contextMenu && (
         <>
+          <div className="fixed inset-0 z-40" onClick={() => setContextMenu(null)} onContextMenu={(e) => { e.preventDefault(); setContextMenu(null); }} />
           <div
-            className="fixed inset-0 z-40"
-            onClick={() => setContextMenu(null)}
-          />
-          <div
-            className="fixed z-50 min-w-[140px] bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg shadow-lg py-1"
+            className="surface-elevated fixed z-50 min-w-[150px] py-1 animate-scale-in"
             style={{ top: contextMenu.y, left: contextMenu.x }}
           >
             <button
               onClick={handleCtxConnect}
-              className="flex items-center gap-2 w-full px-3 py-1.5 text-sm text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]"
+              className="flex items-center gap-2.5 w-full px-3 py-1.5 text-[13px] text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]"
             >
-              <Play size={14} />
+              <Play size={14} className="text-[var(--accent-success)]" />
               Connect
             </button>
             <button
               onClick={handleCtxEdit}
-              className="flex items-center gap-2 w-full px-3 py-1.5 text-sm text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]"
+              className="flex items-center gap-2.5 w-full px-3 py-1.5 text-[13px] text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]"
             >
               <Edit3 size={14} />
               Rename
             </button>
             <button
-              onClick={() => {
-                removeSessionFromFolder(
-                  contextMenu.folderId,
-                  contextMenu.sessionId
-                );
-                setContextMenu(null);
-              }}
-              className="flex items-center gap-2 w-full px-3 py-1.5 text-sm text-[#ff7b72] hover:bg-[var(--bg-tertiary)]"
+              onClick={handleCtxTags}
+              className="flex items-center gap-2.5 w-full px-3 py-1.5 text-[13px] text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]"
+            >
+              <Tag size={14} />
+              Tags…
+            </button>
+            <div className="my-1 h-px bg-[var(--border)]" />
+            <button
+              onClick={handleCtxDelete}
+              className="flex items-center gap-2.5 w-full px-3 py-1.5 text-[13px] text-[var(--accent-danger)] hover:bg-[var(--bg-tertiary)]"
             >
               <Trash2 size={14} />
               Delete

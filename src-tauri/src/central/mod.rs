@@ -22,7 +22,7 @@ impl CentralClient {
             client: reqwest::Client::builder()
                 .timeout(Duration::from_secs(30))
                 .build()
-                .unwrap_or_default(),
+                .expect("Failed to build reqwest client — TLS stack unavailable"),
             base_url: String::new(),
             client_id: String::new(),
             client_secret: String::new(),
@@ -39,11 +39,29 @@ impl CentralClient {
         self.token_expiry = None;
     }
 
+    /// Configure with a pasted access token (SSO accounts that can't use the
+    /// client-credentials grant). No client id/secret → the token is used as-is
+    /// and never refreshed (re-paste when it expires).
+    pub fn configure_token(&mut self, base_url: String, token: String) {
+        self.base_url = base_url.trim_end_matches('/').to_string();
+        self.client_id = String::new();
+        self.client_secret = String::new();
+        self.token = Some(token);
+        self.token_expiry = None;
+    }
+
     pub fn is_configured(&self) -> bool {
-        !self.base_url.is_empty() && !self.client_id.is_empty() && !self.client_secret.is_empty()
+        !self.base_url.is_empty()
+            && (self.token.is_some() || (!self.client_id.is_empty() && !self.client_secret.is_empty()))
     }
 
     async fn ensure_token(&mut self) -> Result<String, AppError> {
+        // Pasted token (no client-credentials to refresh with): use as-is.
+        if self.client_id.is_empty() {
+            if let Some(token) = &self.token {
+                return Ok(token.clone());
+            }
+        }
         if let (Some(token), Some(exp)) = (&self.token, self.token_expiry) {
             if Instant::now() < exp {
                 return Ok(token.clone());
@@ -51,7 +69,8 @@ impl CentralClient {
         }
         if !self.is_configured() {
             return Err(AppError::ApiError(
-                "Aruba Central is not configured (set base URL + client id/secret in Settings)".into(),
+                "Aruba Central is not configured (set base URL + client id/secret in Settings)"
+                    .into(),
             ));
         }
         let url = format!("{}/oauth2/token", self.base_url);
@@ -83,7 +102,10 @@ impl CentralClient {
             .and_then(|v| v.as_str())
             .ok_or_else(|| AppError::ApiError("no access_token in token response".into()))?
             .to_string();
-        let expires = json.get("expires_in").and_then(|v| v.as_u64()).unwrap_or(7200);
+        let expires = json
+            .get("expires_in")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(7200);
         self.token = Some(token.clone());
         self.token_expiry = Some(Instant::now() + Duration::from_secs(expires.saturating_sub(60)));
         Ok(token)
@@ -114,7 +136,9 @@ impl CentralClient {
         rb = rb.bearer_auth(token);
         if let Some(b) = body {
             if !b.trim().is_empty() {
-                rb = rb.header("Content-Type", "application/json").body(b.to_string());
+                rb = rb
+                    .header("Content-Type", "application/json")
+                    .body(b.to_string());
             }
         }
         let resp = rb.send().await.map_err(AppError::from)?;

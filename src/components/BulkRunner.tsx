@@ -119,7 +119,7 @@ export default function BulkRunner() {
                       onClick={() => toggle(s.sessionId)}
                       className={`flex items-center gap-1.5 px-2 py-1 text-xs rounded border transition-colors ${
                         on
-                          ? 'bg-[#1f6feb22] border-[#58a6ff] text-[var(--text-primary)]'
+                          ? 'bg-[#1f6feb22] border-[var(--accent)] text-[var(--text-primary)]'
                           : 'bg-[var(--bg-primary)] border-[var(--border)] text-[var(--text-secondary)]'
                       }`}
                     >
@@ -139,12 +139,12 @@ export default function BulkRunner() {
               onChange={(e) => setCommand(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && run()}
               placeholder="Command to run on all selected (e.g. show version)"
-              className="flex-1 h-9 px-3 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[#58a6ff] font-mono"
+              className="flex-1 h-9 px-3 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)] font-mono"
             />
             <button
               onClick={run}
               disabled={running || !command.trim() || selected.size === 0}
-              className="flex items-center gap-1.5 px-3 h-9 text-sm bg-[#238636] hover:bg-[#2ea043] disabled:opacity-40 text-white rounded-lg transition-colors"
+              className="flex items-center gap-1.5 px-3 h-9 text-sm bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-40 text-white rounded-lg transition-colors"
             >
               {running ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
               Run
@@ -166,11 +166,11 @@ export default function BulkRunner() {
             <div key={r.sessionId} className="border border-[var(--border)] rounded-lg overflow-hidden">
               <div className="flex items-center gap-2 px-3 py-1.5 bg-[var(--bg-primary)]">
                 {r.status === 'running' ? (
-                  <Loader2 size={12} className="animate-spin text-[#58a6ff]" />
+                  <Loader2 size={12} className="animate-spin text-[var(--accent)]" />
                 ) : r.status === 'error' ? (
-                  <AlertCircle size={12} className="text-[#ff7b72]" />
+                  <AlertCircle size={12} className="text-[var(--accent-danger)]" />
                 ) : r.status === 'done' ? (
-                  <CheckCircle2 size={12} className="text-[#3fb950]" />
+                  <CheckCircle2 size={12} className="text-[var(--accent-success)]" />
                 ) : (
                   <Square size={12} className="text-[var(--text-muted)]" />
                 )}

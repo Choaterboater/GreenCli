@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/tauri';
+import { fuzzyScore } from '../utils';
 import {
   Search,
   Plug,
@@ -147,11 +148,14 @@ export default function CommandPalette({ onConnect, onLocalShell }: CommandPalet
   }, [folders, sessions, activeSessionId, theme, store.vaultUnlocked]);
 
   const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
+    const q = query.trim();
     if (!q) return actions;
-    return actions.filter((a) =>
-      `${a.label} ${a.keywords ?? ''} ${a.hint ?? ''}`.toLowerCase().includes(q)
-    );
+    // Fuzzy, ranked (handles multi-word + abbreviations, not just substrings).
+    return actions
+      .map((a) => ({ a, score: fuzzyScore(q, `${a.label} ${a.keywords ?? ''} ${a.hint ?? ''}`) }))
+      .filter((x) => x.score >= 0)
+      .sort((x, y) => y.score - x.score)
+      .map((x) => x.a);
   }, [actions, query]);
 
   useEffect(() => setSelected(0), [query]);

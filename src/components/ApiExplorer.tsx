@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useMemo } from 'react';
 import { useResizablePanel } from '../hooks/useResizablePanel';
 import {
   X,
@@ -22,6 +22,9 @@ import {
   Save,
   Trash2,
   Play,
+  Table2,
+  Braces,
+  FileSpreadsheet,
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/tauri';
 import { useSessionStore } from '../store/sessionStore';
@@ -31,26 +34,62 @@ import {
   ApiResponse,
   DEFAULT_ENDPOINTS,
   CENTRAL_ENDPOINTS,
+  APSTRA_ENDPOINTS,
   CENTRAL_DOCS,
 } from '../types';
 
 const IS_TAURI = typeof window !== 'undefined' && '__TAURI_IPC__' in window;
 
+// ── Tabular view of a response body (cencli-style) ──
+type Row = Record<string, unknown>;
+const isObj = (x: unknown): x is Row => !!x && typeof x === 'object' && !Array.isArray(x);
+
+// Pull a table out of common shapes: a top-level array of objects, a property
+// that is an array of objects (e.g. {result:[…]}), or a map name→object
+// (AOS-CX depth=2) which becomes rows with a `name` column.
+function extractRows(body: unknown): Row[] | null {
+  if (Array.isArray(body)) {
+    return body.length && body.every(isObj) ? (body as Row[]) : null;
+  }
+  if (!isObj(body)) return null;
+  for (const v of Object.values(body)) {
+    if (Array.isArray(v) && v.length && v.every(isObj)) return v as Row[];
+  }
+  const entries = Object.entries(body);
+  if (entries.length && entries.every(([, v]) => isObj(v))) {
+    return entries.map(([k, v]) => ({ name: k, ...(v as Row) }));
+  }
+  return null;
+}
+function rowColumns(rows: Row[]): string[] {
+  const cols: string[] = [];
+  for (const r of rows.slice(0, 50)) for (const k of Object.keys(r)) if (!cols.includes(k)) cols.push(k);
+  return cols.slice(0, 12);
+}
+function cellText(v: unknown): string {
+  if (v == null) return '';
+  return typeof v === 'object' ? JSON.stringify(v) : String(v);
+}
+function toCsv(rows: Row[], cols: string[]): string {
+  const esc = (s: string) => (/[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s);
+  return [cols.map(esc).join(','), ...rows.map((r) => cols.map((c) => esc(cellText(r[c]))).join(','))].join('\n');
+}
+
 const CATEGORY_ICONS: Record<string, React.ReactNode> = {
   // On-box (CX REST)
-  System: <Server size={14} className="text-[#58a6ff]" />,
-  Interfaces: <Network size={14} className="text-[#3fb950]" />,
-  VLANs: <Tag size={14} className="text-[#d29922]" />,
+  System: <Server size={14} className="text-[var(--accent)]" />,
+  Interfaces: <Network size={14} className="text-[var(--accent-success)]" />,
+  VLANs: <Tag size={14} className="text-[var(--accent-warning)]" />,
   LLDP: <Radio size={14} className="text-[#d2a8ff]" />,
   Configuration: <FileCode size={14} className="text-[#e3b341]" />,
-  CLI: <TerminalSquare size={14} className="text-[#56d4dd]" />,
+  CLI: <TerminalSquare size={14} className="text-[var(--accent-info)]" />,
   // Aruba Central
-  Monitoring: <Globe size={14} className="text-[#58a6ff]" />,
-  Clients: <Network size={14} className="text-[#3fb950]" />,
-  Sites: <Tag size={14} className="text-[#d29922]" />,
+  Monitoring: <Globe size={14} className="text-[var(--accent)]" />,
+  Clients: <Network size={14} className="text-[var(--accent-success)]" />,
+  Sites: <Tag size={14} className="text-[var(--accent-warning)]" />,
   'Config Groups': <FileCode size={14} className="text-[#e3b341]" />,
   Firmware: <Server size={14} className="text-[#d2a8ff]" />,
-  Alerts: <Radio size={14} className="text-[#ff7b72]" />,
+  Alerts: <Radio size={14} className="text-[var(--accent-danger)]" />,
 };
 
 const CATEGORY_COLORS: Record<string, string> = {
@@ -80,13 +119,14 @@ export default function ApiExplorer() {
   const [error, setError] = useState<string | null>(null);
   const [expandedCategories, setExpandedCategories] = useState<Set<string>>(new Set(['System', 'Interfaces', 'VLANs', 'CLI']));
   const [copied, setCopied] = useState(false);
+  const [viewMode, setViewMode] = useState<'table' | 'json'>('table');
   const [showNewConnection, setShowNewConnection] = useState(false);
   const [newConnHost, setNewConnHost] = useState('');
   const [newConnName, setNewConnName] = useState('');
   const [newConnUser, setNewConnUser] = useState('');
   const [newConnPass, setNewConnPass] = useState('');
   const [verifyTls, setVerifyTls] = useState(false);
-  const [target, setTarget] = useState<'device' | 'central'>('device');
+  const [target, setTarget] = useState<'device' | 'central' | 'apstra'>('device');
   const bodyRef = useRef<HTMLTextAreaElement>(null);
 
   // Collapsible / Resizable panel state
@@ -110,7 +150,8 @@ export default function ApiExplorer() {
   };
 
   // Group endpoints by category (switches catalog based on target)
-  const activeEndpoints = target === 'central' ? CENTRAL_ENDPOINTS : DEFAULT_ENDPOINTS;
+  const activeEndpoints =
+    target === 'central' ? CENTRAL_ENDPOINTS : target === 'apstra' ? APSTRA_ENDPOINTS : DEFAULT_ENDPOINTS;
   const groupedEndpoints = activeEndpoints.reduce((acc, ep) => {
     if (!acc[ep.category]) acc[ep.category] = [];
     acc[ep.category].push(ep);
@@ -157,14 +198,26 @@ export default function ApiExplorer() {
               path: endpointPath,
               body,
             })
+          : target === 'apstra'
+          ? await invoke<{ status: number; body: unknown }>('apstra_request', {
+              method,
+              path: endpointPath,
+              body,
+            })
           : await (async () => {
               if (!activeConnection) {
                 throw new Error('Connect to a device first (use the Connect button above).');
               }
+              // Honour the editable Base URL: when it's a full URL, send the
+              // absolute endpoint so the REST version / port the user typed is
+              // actually used (the Rust client treats an http(s) path as absolute,
+              // and the session cookie still applies to the same host).
+              const base = url.trim().replace(/\/+$/, '');
+              const reqPath = /^https?:\/\//i.test(base) ? base + endpointPath : endpointPath;
               return invoke<{ status: number; body: unknown }>('api_request', {
                 host: activeConnection.host,
                 method,
-                path: endpointPath,
+                path: reqPath,
                 body,
               });
             })();
@@ -187,7 +240,7 @@ export default function ApiExplorer() {
     } finally {
       setLoading(false);
     }
-  }, [endpointPath, method, requestBody, activeConnection]);
+  }, [endpointPath, method, requestBody, activeConnection, target, url]);
 
   const handleLogin = async () => {
     if (!newConnHost || !newConnUser) return;
@@ -239,9 +292,14 @@ export default function ApiExplorer() {
     }
   };
 
+  const tableRows = useMemo(() => (response ? extractRows(response.body) : null), [response]);
+  const tableCols = useMemo(() => (tableRows ? rowColumns(tableRows) : []), [tableRows]);
+  const showTable = viewMode === 'table' && !!tableRows;
+
   const copyResponse = () => {
     if (!response) return;
-    navigator.clipboard.writeText(JSON.stringify(response.body, null, 2));
+    const text = showTable && tableRows ? toCsv(tableRows, tableCols) : JSON.stringify(response.body, null, 2);
+    navigator.clipboard.writeText(text);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
@@ -252,10 +310,10 @@ export default function ApiExplorer() {
   if (collapsed) {
     return (
       <div className="w-10 flex-shrink-0 flex flex-col items-center py-3 bg-[var(--bg-primary)] border-l border-[var(--bg-tertiary)] gap-3">
-        <button onClick={() => setCollapsed(false)} className="p-2 rounded-lg hover:bg-[var(--bg-tertiary)] text-[#58a6ff] transition-colors" title="Expand API Explorer">
+        <button onClick={() => setCollapsed(false)} className="p-2 rounded-lg hover:bg-[var(--bg-tertiary)] text-[var(--accent)] transition-colors" title="Expand API Explorer">
           <Globe size={18} />
         </button>
-        <button onClick={toggleApiExplorer} className="p-2 rounded-lg hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[#ff7b72] transition-colors" title="Close">
+        <button onClick={toggleApiExplorer} className="p-2 rounded-lg hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--accent-danger)] transition-colors" title="Close">
           <X size={16} />
         </button>
       </div>
@@ -269,40 +327,48 @@ export default function ApiExplorer() {
       {/* Header */}
       <div className="flex items-center justify-between h-10 px-3 pl-4 border-b border-[var(--bg-tertiary)] bg-[var(--bg-secondary)]">
         <div className="flex items-center gap-2">
-          <Globe size={14} className="text-[#58a6ff]" />
+          <Globe size={14} className="text-[var(--accent)]" />
           <span className="text-xs font-semibold text-[var(--text-primary)] uppercase tracking-wider">
             API Explorer
           </span>
           {loading && (
-            <Loader2 size={14} className="animate-spin text-[#58a6ff]" />
+            <Loader2 size={14} className="animate-spin text-[var(--accent)]" />
           )}
         </div>
         <div className="flex items-center gap-1">
           <button onClick={() => setCollapsed(true)} className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]" title="Collapse">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M15 3v18"/></svg>
           </button>
-          <button onClick={toggleApiExplorer} className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[#ff7b72]" title="Close">
+          <button onClick={toggleApiExplorer} className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--accent-danger)]" title="Close">
             <X size={14} />
           </button>
         </div>
       </div>
 
-      {/* Target toggle: on-box CX REST vs Aruba Central */}
+      {/* Target toggle: on-box REST · Aruba Central · Juniper Apstra */}
       <div className="flex gap-1 px-3 py-2 border-b border-[var(--bg-tertiary)] bg-[var(--bg-secondary)]">
-        {(['device', 'central'] as const).map((t) => (
+        {(['device', 'central', 'apstra'] as const).map((t) => (
           <button
             key={t}
             onClick={() => setTarget(t)}
             className={`flex-1 py-1 text-[11px] rounded border transition-colors ${
               target === t
-                ? 'bg-[var(--bg-tertiary)] border-[#58a6ff] text-[var(--text-primary)]'
+                ? 'bg-[var(--bg-tertiary)] border-[var(--accent)] text-[var(--text-primary)]'
                 : 'bg-[var(--bg-primary)] border-[var(--border)] text-[var(--text-secondary)]'
             }`}
           >
-            {t === 'device' ? 'Device (CX REST)' : 'Aruba Central'}
+            {t === 'device' ? 'Device REST' : t === 'central' ? 'Aruba Central' : 'Apstra'}
           </button>
         ))}
       </div>
+
+      {/* Apstra hint */}
+      {target === 'apstra' && (
+        <div className="px-3 py-2 border-b border-[var(--bg-tertiary)] bg-[var(--bg-secondary)] text-[10px] text-[var(--text-muted)]">
+          Uses the controller configured in <span className="text-[var(--text-secondary)]">Settings → Juniper Apstra</span>. Replace
+          <code className="text-[var(--accent)] mx-1">{'{blueprint_id}'}</code>in paths with a real id (run "Blueprints" first).
+        </div>
+      )}
 
       {/* Connection Selector (device target only) */}
       {target === 'device' && (
@@ -314,7 +380,7 @@ export default function ApiExplorer() {
               handleAutofillSession();
               setShowNewConnection(true);
             }}
-            className="w-full mb-2 px-2 py-1 text-xs bg-[#1f6feb22] border border-[#58a6ff] text-[#58a6ff] rounded hover:bg-[#1f6feb44] transition-colors"
+            className="w-full mb-2 px-2 py-1 text-xs bg-[#1f6feb22] border border-[var(--accent)] text-[var(--accent)] rounded hover:bg-[#1f6feb44] transition-colors"
           >
             ⚡ Use active session — {activeSession.config.host}
           </button>
@@ -331,7 +397,7 @@ export default function ApiExplorer() {
                 const conn = connections.find((c) => c.id === id);
                 if (conn) setUrl(conn.baseUrl);
               }}
-              className="flex-1 text-xs bg-[var(--bg-primary)] border border-[var(--border)] rounded px-2 py-1 text-[var(--text-primary)] focus:outline-none focus:border-[#58a6ff]"
+              className="flex-1 text-xs bg-[var(--bg-primary)] border border-[var(--border)] rounded px-2 py-1 text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)]"
             >
               <option value="">-- Select --</option>
               {connections.map((c) => (
@@ -343,14 +409,14 @@ export default function ApiExplorer() {
           )}
           <button
             onClick={() => setShowNewConnection(!showNewConnection)}
-            className="px-2 py-1 text-xs bg-[#238636] hover:bg-[#2ea043] text-white rounded transition-colors"
+            className="px-2 py-1 text-xs bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white rounded transition-colors"
           >
             {showNewConnection ? 'Cancel' : 'Connect'}
           </button>
           {activeConnection && (
             <button
               onClick={() => removeConnection(activeConnection.id)}
-              className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[#ff7b72]"
+              className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--accent-danger)]"
             >
               <Trash2 size={12} />
             </button>
@@ -362,7 +428,7 @@ export default function ApiExplorer() {
             {activeSession && (
               <button
                 onClick={handleAutofillSession}
-                className="w-full px-2 py-1 text-xs bg-[var(--bg-tertiary)] hover:bg-[var(--border)] text-[#58a6ff] rounded transition-colors"
+                className="w-full px-2 py-1 text-xs bg-[var(--bg-tertiary)] hover:bg-[var(--border)] text-[var(--accent)] rounded transition-colors"
               >
                 Autofill from active session ({activeSession.config.host})
               </button>
@@ -371,33 +437,33 @@ export default function ApiExplorer() {
               placeholder="Host (e.g. 192.168.1.10)"
               value={newConnHost}
               onChange={(e) => setNewConnHost(e.target.value)}
-              className="w-full text-xs bg-[var(--bg-secondary)] border border-[var(--border)] rounded px-2 py-1.5 text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[#58a6ff]"
+              className="w-full text-xs bg-[var(--bg-secondary)] border border-[var(--border)] rounded px-2 py-1.5 text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)]"
             />
             <input
               placeholder="Name (optional)"
               value={newConnName}
               onChange={(e) => setNewConnName(e.target.value)}
-              className="w-full text-xs bg-[var(--bg-secondary)] border border-[var(--border)] rounded px-2 py-1.5 text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[#58a6ff]"
+              className="w-full text-xs bg-[var(--bg-secondary)] border border-[var(--border)] rounded px-2 py-1.5 text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)]"
             />
             <input
               placeholder="Username"
               value={newConnUser}
               onChange={(e) => setNewConnUser(e.target.value)}
-              className="w-full text-xs bg-[var(--bg-secondary)] border border-[var(--border)] rounded px-2 py-1.5 text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[#58a6ff]"
+              className="w-full text-xs bg-[var(--bg-secondary)] border border-[var(--border)] rounded px-2 py-1.5 text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)]"
             />
             <input
               type="password"
               placeholder="Password"
               value={newConnPass}
               onChange={(e) => setNewConnPass(e.target.value)}
-              className="w-full text-xs bg-[var(--bg-secondary)] border border-[var(--border)] rounded px-2 py-1.5 text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[#58a6ff]"
+              className="w-full text-xs bg-[var(--bg-secondary)] border border-[var(--border)] rounded px-2 py-1.5 text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)]"
             />
             <label className="flex items-center gap-2 cursor-pointer select-none">
               <input
                 type="checkbox"
                 checked={verifyTls}
                 onChange={(e) => setVerifyTls(e.target.checked)}
-                className="w-3.5 h-3.5 rounded accent-[#238636]"
+                className="w-3.5 h-3.5 rounded accent-[var(--accent)]"
               />
               <span className="text-[11px] text-[var(--text-secondary)]">
                 Verify TLS certificate (off = allow self-signed, default for switches)
@@ -405,7 +471,7 @@ export default function ApiExplorer() {
             </label>
             <button
               onClick={handleLogin}
-              className="w-full px-2 py-1.5 text-xs bg-[#238636] hover:bg-[#2ea043] text-white rounded transition-colors"
+              className="w-full px-2 py-1.5 text-xs bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white rounded transition-colors"
             >
               Login & Save
             </button>
@@ -426,7 +492,7 @@ export default function ApiExplorer() {
                   href={d.url}
                   target="_blank"
                   rel="noreferrer"
-                  className="text-[10px] text-[#58a6ff] hover:underline"
+                  className="text-[10px] text-[var(--accent)] hover:underline"
                   title={d.label}
                 >
                   {d.label.split(' ').slice(-2).join(' ')}
@@ -496,7 +562,7 @@ export default function ApiExplorer() {
             onChange={(e) =>
               setMethod(e.target.value as 'GET' | 'POST' | 'PUT' | 'DELETE')
             }
-            className="text-xs bg-[var(--bg-secondary)] border border-[var(--border)] rounded px-2 py-1.5 text-[var(--text-primary)] focus:outline-none focus:border-[#58a6ff]"
+            className="text-xs bg-[var(--bg-secondary)] border border-[var(--border)] rounded px-2 py-1.5 text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)]"
           >
             <option value="GET">GET</option>
             <option value="POST">POST</option>
@@ -507,14 +573,14 @@ export default function ApiExplorer() {
             value={url}
             onChange={(e) => setUrl(e.target.value)}
             placeholder="Base URL (e.g. https://192.168.1.10/rest/v10.09)"
-            className="flex-1 text-xs bg-[var(--bg-secondary)] border border-[var(--border)] rounded px-2 py-1.5 text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[#58a6ff]"
+            className="flex-1 text-xs bg-[var(--bg-secondary)] border border-[var(--border)] rounded px-2 py-1.5 text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)]"
           />
         </div>
         <input
           value={endpointPath}
           onChange={(e) => setEndpointPath(e.target.value)}
           placeholder="Endpoint path (e.g. /system/interfaces)"
-          className="w-full text-xs bg-[var(--bg-secondary)] border border-[var(--border)] rounded px-2 py-1.5 text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[#58a6ff]"
+          className="w-full text-xs bg-[var(--bg-secondary)] border border-[var(--border)] rounded px-2 py-1.5 text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)]"
         />
         {(method === 'POST' || method === 'PUT') && (
           <textarea
@@ -523,13 +589,13 @@ export default function ApiExplorer() {
             onChange={(e) => setRequestBody(e.target.value)}
             placeholder='Request body (JSON)...'
             rows={3}
-            className="w-full text-xs bg-[var(--bg-secondary)] border border-[var(--border)] rounded px-2 py-1.5 text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[#58a6ff] font-mono resize-none"
+            className="w-full text-xs bg-[var(--bg-secondary)] border border-[var(--border)] rounded px-2 py-1.5 text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)] font-mono resize-none"
           />
         )}
         <button
           onClick={executeRequest}
           disabled={loading || !endpointPath}
-          className="flex items-center justify-center gap-2 w-full h-8 text-xs bg-[#238636] hover:bg-[#2ea043] disabled:opacity-50 disabled:hover:bg-[#238636] text-white rounded transition-colors"
+          className="flex items-center justify-center gap-2 w-full h-8 text-xs bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-50 disabled:hover:bg-[var(--accent)] text-white rounded transition-colors"
         >
           {loading ? (
             <>
@@ -552,11 +618,11 @@ export default function ApiExplorer() {
             <div className="flex items-center justify-between px-3 py-1.5 border-b border-[var(--bg-tertiary)] bg-[var(--bg-secondary)]">
               <div className="flex items-center gap-2">
                 {response.status >= 200 && response.status < 300 ? (
-                  <CheckCircle2 size={12} className="text-[#3fb950]" />
+                  <CheckCircle2 size={12} className="text-[var(--accent-success)]" />
                 ) : response.status >= 400 ? (
-                  <AlertCircle size={12} className="text-[#ff7b72]" />
+                  <AlertCircle size={12} className="text-[var(--accent-danger)]" />
                 ) : (
-                  <AlertCircle size={12} className="text-[#d29922]" />
+                  <AlertCircle size={12} className="text-[var(--accent-warning)]" />
                 )}
                 <span
                   className="text-xs font-semibold"
@@ -576,27 +642,77 @@ export default function ApiExplorer() {
                   {response.duration}ms
                 </span>
               </div>
-              <button
-                onClick={copyResponse}
-                className="flex items-center gap-1 px-2 py-0.5 text-[10px] text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] rounded transition-colors"
-              >
-                {copied ? (
-                  <>
-                    <Check size={10} />
-                    Copied
-                  </>
-                ) : (
-                  <>
-                    <Copy size={10} />
-                    Copy
-                  </>
+              <div className="flex items-center gap-1">
+                {tableRows && (
+                  <div className="flex items-center rounded-md overflow-hidden border border-[var(--border)]">
+                    <button
+                      onClick={() => setViewMode('table')}
+                      title="Table view"
+                      className={`flex items-center px-1.5 py-0.5 ${showTable ? 'bg-[var(--accent-soft)] text-[var(--accent)]' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'}`}
+                    >
+                      <Table2 size={11} />
+                    </button>
+                    <button
+                      onClick={() => setViewMode('json')}
+                      title="JSON view"
+                      className={`flex items-center px-1.5 py-0.5 ${!showTable ? 'bg-[var(--accent-soft)] text-[var(--accent)]' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'}`}
+                    >
+                      <Braces size={11} />
+                    </button>
+                  </div>
                 )}
-              </button>
+                <button
+                  onClick={copyResponse}
+                  title={showTable ? 'Copy as CSV' : 'Copy JSON'}
+                  className="flex items-center gap-1 px-2 py-0.5 text-[10px] text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] rounded transition-colors"
+                >
+                  {copied ? (
+                    <>
+                      <Check size={10} />
+                      Copied
+                    </>
+                  ) : (
+                    <>
+                      {showTable ? <FileSpreadsheet size={10} /> : <Copy size={10} />}
+                      {showTable ? 'CSV' : 'Copy'}
+                    </>
+                  )}
+                </button>
+              </div>
             </div>
-            <div className="flex-1 overflow-auto p-3 bg-[var(--bg-primary)]">
-              <pre className="text-[11px] font-mono text-[var(--text-primary)] whitespace-pre-wrap break-all">
-                <code>{JSON.stringify(response.body, null, 2)}</code>
-              </pre>
+            <div className="flex-1 overflow-auto bg-[var(--bg-primary)]">
+              {showTable && tableRows ? (
+                <table className="w-full text-[11px] border-collapse">
+                  <thead className="sticky top-0 bg-[var(--bg-secondary)]">
+                    <tr>
+                      {tableCols.map((c) => (
+                        <th key={c} className="text-left font-semibold text-[var(--text-secondary)] px-2.5 py-1.5 border-b border-[var(--border)] whitespace-nowrap">
+                          {c}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {tableRows.map((r, i) => (
+                      <tr key={i} className="hover:bg-[var(--bg-tertiary)]">
+                        {tableCols.map((c) => (
+                          <td
+                            key={c}
+                            className="px-2.5 py-1 border-b border-[var(--border)] text-[var(--text-primary)] font-mono align-top max-w-[240px] truncate"
+                            title={cellText(r[c])}
+                          >
+                            {cellText(r[c])}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : (
+                <pre className="text-[11px] font-mono text-[var(--text-primary)] whitespace-pre-wrap break-all p-3">
+                  <code>{JSON.stringify(response.body, null, 2)}</code>
+                </pre>
+              )}
             </div>
           </>
         )}

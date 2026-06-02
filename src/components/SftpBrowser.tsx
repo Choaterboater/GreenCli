@@ -1,6 +1,22 @@
 import { useState, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/tauri';
 import { save, open } from '@tauri-apps/api/dialog';
+import { listen } from '@tauri-apps/api/event';
+import {
+  X,
+  Upload,
+  CornerLeftUp,
+  RotateCw,
+  FolderPlus,
+  Download,
+  Trash2,
+  PencilLine,
+  Folder,
+  File as FileIcon,
+  Loader2,
+} from 'lucide-react';
+import { askPrompt, askConfirm } from '../store/dialogStore';
+import { notify } from '../store/toastStore';
 
 interface SftpEntry {
   name: string;
@@ -20,38 +36,74 @@ function formatSize(bytes: number): string {
   return `${(bytes / 1048576).toFixed(1)} MB`;
 }
 
+const basename = (p: string) => p.split(/[\\/]/).pop() || 'file';
+
 export default function SftpBrowser({ sessionId, onClose }: Props) {
   const [cwd, setCwd] = useState('/');
   const [entries, setEntries] = useState<SftpEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [status, setStatus] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [dragging, setDragging] = useState(false);
 
-  const listDir = useCallback(async (path: string) => {
-    setLoading(true);
-    setError('');
-    try {
-      const result = await invoke<SftpEntry[]>('sftp_list_dir', {
-        sessionId,
-        path,
-      });
-      setEntries(result);
-      setCwd(path);
-    } catch (e: any) {
-      setError(String(e));
-    } finally {
-      setLoading(false);
-    }
-  }, [sessionId]);
+  const join = (path: string, name: string) => (path === '/' ? `/${name}` : `${path}/${name}`);
+
+  const listDir = useCallback(
+    async (path: string) => {
+      setLoading(true);
+      setError('');
+      try {
+        const result = await invoke<SftpEntry[]>('sftp_list_dir', { sessionId, path });
+        setEntries(result);
+        setCwd(path);
+      } catch (e) {
+        setError(String(e));
+      } finally {
+        setLoading(false);
+      }
+    },
+    [sessionId]
+  );
 
   useEffect(() => {
     listDir('/');
   }, [listDir]);
 
+  const uploadPath = useCallback(
+    async (localPath: string) => {
+      const fileName = basename(localPath);
+      setBusy(true);
+      try {
+        await invoke('sftp_upload', { sessionId, localPath, remotePath: join(cwd, fileName) });
+        notify.success('Uploaded', fileName);
+        listDir(cwd);
+      } catch (e) {
+        notify.error('Upload failed', String(e));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [cwd, sessionId, listDir]
+  );
+
+  // Native (Tauri) file-drop → upload to the current directory.
+  useEffect(() => {
+    const unlisteners: Array<() => void> = [];
+    Promise.all([
+      listen<string[]>('tauri://file-drop', async (e) => {
+        setDragging(false);
+        for (const p of e.payload || []) await uploadPath(p);
+      }),
+      listen('tauri://file-drop-hover', () => setDragging(true)),
+      listen('tauri://file-drop-cancelled', () => setDragging(false)),
+    ])
+      .then((uns) => uns.forEach((u) => unlisteners.push(u)))
+      .catch(() => {});
+    return () => unlisteners.forEach((u) => u());
+  }, [uploadPath]);
+
   const navigate = (entry: SftpEntry) => {
-    if (!entry.is_dir) return;
-    const next = cwd === '/' ? `/${entry.name}` : `${cwd}/${entry.name}`;
-    listDir(next);
+    if (entry.is_dir) listDir(join(cwd, entry.name));
   };
 
   const goUp = () => {
@@ -64,99 +116,149 @@ export default function SftpBrowser({ sessionId, onClose }: Props) {
   const handleDownload = async (entry: SftpEntry) => {
     const localPath = await save({ defaultPath: entry.name });
     if (!localPath) return;
-    setStatus(`Downloading ${entry.name}...`);
+    setBusy(true);
     try {
-      const remotePath = cwd === '/' ? `/${entry.name}` : `${cwd}/${entry.name}`;
-      await invoke('sftp_download', { sessionId, remotePath, localPath });
-      setStatus(`Downloaded ${entry.name} ✓`);
-    } catch (e: any) {
-      setStatus(`Error: ${e}`);
+      await invoke('sftp_download', { sessionId, remotePath: join(cwd, entry.name), localPath });
+      notify.success('Downloaded', entry.name);
+    } catch (e) {
+      notify.error('Download failed', String(e));
+    } finally {
+      setBusy(false);
     }
   };
 
-  const handleUpload = async () => {
+  const handleUploadPick = async () => {
     const localPath = await open({ multiple: false });
     if (!localPath || Array.isArray(localPath)) return;
-    const fileName = localPath.split('/').pop() || 'file';
-    const remotePath = cwd === '/' ? `/${fileName}` : `${cwd}/${fileName}`;
-    setStatus(`Uploading ${fileName}...`);
+    uploadPath(localPath);
+  };
+
+  const handleMkdir = async () => {
+    const name = await askPrompt({ title: 'New folder', placeholder: 'folder name' });
+    if (!name) return;
     try {
-      await invoke('sftp_upload', { sessionId, localPath, remotePath });
-      setStatus(`Uploaded ${fileName} ✓`);
+      await invoke('sftp_mkdir_cmd', { sessionId, path: join(cwd, name) });
       listDir(cwd);
-    } catch (e: any) {
-      setStatus(`Error: ${e}`);
+    } catch (e) {
+      notify.error('Could not create folder', String(e));
     }
   };
 
+  const handleRename = async (entry: SftpEntry) => {
+    const name = await askPrompt({ title: `Rename "${entry.name}"`, defaultValue: entry.name });
+    if (!name || name === entry.name) return;
+    try {
+      await invoke('sftp_rename_cmd', { sessionId, from: join(cwd, entry.name), to: join(cwd, name) });
+      listDir(cwd);
+    } catch (e) {
+      notify.error('Rename failed', String(e));
+    }
+  };
+
+  const handleDelete = async (entry: SftpEntry) => {
+    const ok = await askConfirm({
+      title: `Delete "${entry.name}"?`,
+      message: entry.is_dir ? 'The directory must be empty.' : undefined,
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await invoke('sftp_delete', { sessionId, path: join(cwd, entry.name), isDir: entry.is_dir });
+      listDir(cwd);
+    } catch (e) {
+      notify.error('Delete failed', String(e));
+    }
+  };
+
+  const iconBtn =
+    'p-1 rounded text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] transition-colors';
+
   return (
-    <div style={{
-      position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)',
-      display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9000,
-    }} onClick={onClose}>
-      <div onClick={e => e.stopPropagation()} style={{
-        background: 'var(--bg-secondary)', border: '1px solid var(--border)',
-        borderRadius: 8, width: 560, maxHeight: '70vh', display: 'flex', flexDirection: 'column',
-      }}>
+    <div
+      className="fixed inset-0 z-[90] flex items-center justify-center modal-backdrop animate-fade-in"
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div className="surface-elevated w-[620px] max-w-[94vw] h-[72vh] flex flex-col animate-scale-in relative">
         {/* Header */}
-        <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 8 }}>
-          <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>SFTP — {sessionId}</span>
-          <span style={{ flex: 1 }} />
-          <button onClick={handleUpload} style={btnStyle}>⬆ Upload</button>
-          <button onClick={onClose} style={btnStyle}>✕</button>
+        <div className="flex items-center gap-2 px-4 py-3 border-b border-[var(--border)]">
+          <Upload size={15} style={{ color: 'var(--accent)' }} />
+          <span className="text-[14px] font-semibold text-[var(--text-primary)]">SFTP</span>
+          <span className="flex-1" />
+          <button onClick={handleMkdir} className="flex items-center gap-1.5 px-2.5 h-8 text-[12px] rounded-md bg-[var(--bg-tertiary)] hover:bg-[var(--border-strong)] text-[var(--text-primary)]">
+            <FolderPlus size={13} /> New folder
+          </button>
+          <button onClick={handleUploadPick} className="btn-accent flex items-center gap-1.5 px-2.5 h-8 text-[12px]">
+            <Upload size={13} /> Upload
+          </button>
+          <button onClick={onClose} className={iconBtn}>
+            <X size={16} />
+          </button>
         </div>
 
         {/* Path bar */}
-        <div style={{ padding: '8px 16px', display: 'flex', alignItems: 'center', gap: 8, borderBottom: '1px solid var(--border)' }}>
-          <button onClick={goUp} disabled={cwd === '/'} style={btnStyle}>⬆ Up</button>
-          <code style={{ color: 'var(--text-secondary)', fontSize: 13 }}>{cwd}</code>
-          <button onClick={() => listDir(cwd)} style={btnStyle}>⟳</button>
+        <div className="flex items-center gap-2 px-4 py-2 border-b border-[var(--border)]">
+          <button onClick={goUp} disabled={cwd === '/'} className={`${iconBtn} disabled:opacity-40`} title="Up">
+            <CornerLeftUp size={15} />
+          </button>
+          <code className="flex-1 text-[12px] text-[var(--text-secondary)] truncate font-mono">{cwd}</code>
+          {busy && <Loader2 size={13} className="animate-spin text-[var(--accent)]" />}
+          <button onClick={() => listDir(cwd)} className={iconBtn} title="Refresh">
+            <RotateCw size={14} />
+          </button>
         </div>
 
         {/* File list */}
-        <div style={{ flex: 1, overflowY: 'auto', padding: '4px 0' }}>
-          {loading && <div style={{ padding: 16, color: 'var(--text-muted)' }}>Loading...</div>}
-          {error && <div style={{ padding: 16, color: '#f87171' }}>{error}</div>}
+        <div className="flex-1 overflow-y-auto">
+          {loading && <div className="px-4 py-4 text-[12px] text-[var(--text-muted)]">Loading…</div>}
+          {error && <div className="px-4 py-4 text-[12px] text-[var(--accent-danger)]">{error}</div>}
           {!loading && !error && entries.length === 0 && (
-            <div style={{ padding: 16, color: 'var(--text-muted)' }}>Empty directory</div>
+            <div className="px-4 py-4 text-[12px] text-[var(--text-muted)]">Empty directory</div>
           )}
-          {entries.map(entry => (
+          {entries.map((entry) => (
             <div
               key={entry.name}
               onDoubleClick={() => navigate(entry)}
-              style={{
-                display: 'flex', alignItems: 'center', padding: '6px 16px', gap: 10,
-                cursor: entry.is_dir ? 'pointer' : 'default',
-                borderBottom: '1px solid var(--border)',
-              }}
-              onMouseEnter={e => (e.currentTarget.style.background = 'var(--bg-tertiary)')}
-              onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+              className="group flex items-center gap-2.5 px-4 py-1.5 border-b border-[var(--border)] hover:bg-[var(--bg-tertiary)] transition-colors"
+              style={{ cursor: entry.is_dir ? 'pointer' : 'default' }}
             >
-              <span style={{ width: 20, textAlign: 'center' }}>{entry.is_dir ? '📁' : '📄'}</span>
-              <span style={{ flex: 1, color: 'var(--text-primary)', fontSize: 13 }}>{entry.name}</span>
-              <span style={{ color: 'var(--text-muted)', fontSize: 12, width: 70, textAlign: 'right' }}>
+              {entry.is_dir ? (
+                <Folder size={15} className="text-[var(--accent-2)] flex-shrink-0" />
+              ) : (
+                <FileIcon size={15} className="text-[var(--text-muted)] flex-shrink-0" />
+              )}
+              <span className="flex-1 text-[13px] text-[var(--text-primary)] truncate">{entry.name}</span>
+              <span className="text-[11px] text-[var(--text-muted)] w-16 text-right tabular-nums">
                 {entry.is_dir ? '' : formatSize(entry.size)}
               </span>
-              {!entry.is_dir && (
-                <button onClick={() => handleDownload(entry)} style={{ ...btnStyle, fontSize: 11 }}>⬇</button>
-              )}
+              <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100">
+                {!entry.is_dir && (
+                  <button onClick={() => handleDownload(entry)} className={iconBtn} title="Download">
+                    <Download size={13} />
+                  </button>
+                )}
+                <button onClick={() => handleRename(entry)} className={iconBtn} title="Rename">
+                  <PencilLine size={13} />
+                </button>
+                <button onClick={() => handleDelete(entry)} className={`${iconBtn} hover:!text-[var(--accent-danger)]`} title="Delete">
+                  <Trash2 size={13} />
+                </button>
+              </div>
             </div>
           ))}
         </div>
 
-        {/* Status */}
-        {status && (
-          <div style={{ padding: '8px 16px', borderTop: '1px solid var(--border)', color: 'var(--text-muted)', fontSize: 12 }}>
-            {status}
+        {/* Drag-drop overlay */}
+        {dragging && (
+          <div className="absolute inset-0 z-10 flex items-center justify-center rounded-[var(--radius-lg)] border-2 border-dashed border-[var(--accent)] bg-[var(--accent-soft)] backdrop-blur-sm pointer-events-none">
+            <div className="flex flex-col items-center gap-2 text-[var(--accent)]">
+              <Upload size={28} />
+              <span className="text-sm font-medium">Drop to upload to {cwd}</span>
+            </div>
           </div>
         )}
       </div>
     </div>
   );
 }
-
-const btnStyle: React.CSSProperties = {
-  background: 'var(--bg-tertiary)', border: '1px solid var(--border)',
-  borderRadius: 4, padding: '4px 10px', color: 'var(--text-primary)',
-  cursor: 'pointer', fontSize: 12,
-};

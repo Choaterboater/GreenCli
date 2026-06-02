@@ -123,13 +123,10 @@ impl Connection for LocalConnection {
             }
         }
 
-        let child = pair
-            .slave
-            .spawn_command(cmd)
-            .map_err(|e| {
-                let what = self.config.command.as_deref().unwrap_or("shell");
-                AppError::LocalError(format!("spawn '{}': {}", what, e))
-            })?;
+        let child = pair.slave.spawn_command(cmd).map_err(|e| {
+            let what = self.config.command.as_deref().unwrap_or("shell");
+            AppError::LocalError(format!("spawn '{}': {}", what, e))
+        })?;
 
         let mut reader = pair
             .master

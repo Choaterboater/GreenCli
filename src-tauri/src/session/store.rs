@@ -1,6 +1,5 @@
 use crate::error::AppError;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
@@ -21,6 +20,33 @@ pub struct StoredSession {
     pub notes: Option<String>,
     pub serial_port: Option<String>,
     pub baud_rate: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_bits: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parity: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop_bits: Option<u8>,
+    /// Commands run automatically on connect (newline-separated).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub startup_commands: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keep_alive_interval: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_reconnect: Option<bool>,
+    /// For protocol "local": PTY command + args + working dir.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub args: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    /// SSH jump host (ProxyJump) routing only; jump_password lives in the vault.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jump_host: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jump_port: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jump_username: Option<String>,
 }
 
 /// A folder containing sessions
@@ -67,14 +93,12 @@ impl SessionStore {
         if !self.store_path.exists() {
             let default = SessionData {
                 version: "1.0".to_string(),
-                folders: vec![
-                    SessionFolder {
-                        id: "default".to_string(),
-                        name: "Default".to_string(),
-                        items: vec![],
-                        expanded: true,
-                    }
-                ],
+                folders: vec![SessionFolder {
+                    id: "default".to_string(),
+                    name: "Sessions".to_string(),
+                    items: vec![],
+                    expanded: true,
+                }],
                 sessions: vec![],
             };
             self.cache = Some(default.clone());
@@ -97,12 +121,6 @@ impl SessionStore {
     pub fn add_folder(&mut self, folder: SessionFolder) -> Result<(), AppError> {
         let mut data = self.load()?;
         data.folders.push(folder);
-        self.save(&data)
-    }
-
-    pub fn remove_folder(&mut self, folder_id: &str) -> Result<(), AppError> {
-        let mut data = self.load()?;
-        data.folders.retain(|f| f.id != folder_id);
         self.save(&data)
     }
 
@@ -130,30 +148,68 @@ impl SessionStore {
         self.save(&data)
     }
 
-    pub fn update_session(
-        &mut self,
-        session_id: &str,
-        session: StoredSession,
-    ) -> Result<(), AppError> {
+    /// Rename a stored session by id (searches every folder + the loose list).
+    pub fn rename_session(&mut self, id: &str, name: &str) -> Result<(), AppError> {
         let mut data = self.load()?;
         for folder in &mut data.folders {
-            for item in &mut folder.items {
-                if item.id == session_id {
-                    *item = session;
-                    return self.save(&data);
+            for s in &mut folder.items {
+                if s.id == id {
+                    s.name = name.to_string();
                 }
             }
         }
-        for item in &mut data.sessions {
-            if item.id == session_id {
-                *item = session;
-                return self.save(&data);
+        for s in &mut data.sessions {
+            if s.id == id {
+                s.name = name.to_string();
             }
         }
-        Err(AppError::ConfigError(format!(
-            "Session {} not found",
-            session_id
-        )))
+        self.save(&data)
+    }
+
+    /// Replace the tags on a stored session.
+    pub fn set_tags(&mut self, id: &str, tags: Vec<String>) -> Result<(), AppError> {
+        let mut data = self.load()?;
+        for folder in &mut data.folders {
+            for s in &mut folder.items {
+                if s.id == id {
+                    s.tags = tags.clone();
+                }
+            }
+        }
+        for s in &mut data.sessions {
+            if s.id == id {
+                s.tags = tags.clone();
+            }
+        }
+        self.save(&data)
+    }
+
+    /// Update a folder's name and/or expanded state.
+    pub fn update_folder(
+        &mut self,
+        id: &str,
+        name: Option<&str>,
+        expanded: Option<bool>,
+    ) -> Result<(), AppError> {
+        let mut data = self.load()?;
+        for folder in &mut data.folders {
+            if folder.id == id {
+                if let Some(n) = name {
+                    folder.name = n.to_string();
+                }
+                if let Some(e) = expanded {
+                    folder.expanded = e;
+                }
+            }
+        }
+        self.save(&data)
+    }
+
+    /// Remove a folder and everything in it.
+    pub fn remove_folder(&mut self, id: &str) -> Result<(), AppError> {
+        let mut data = self.load()?;
+        data.folders.retain(|f| f.id != id);
+        self.save(&data)
     }
 
     pub fn list_serial_ports() -> Vec<String> {

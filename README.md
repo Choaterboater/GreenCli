@@ -1,14 +1,14 @@
-# Aruba Terminal Pro
+# HPE Network Terminal
 
-A modern, cross-platform terminal emulator and SSH client built as a SecureCRT replacement, featuring Aruba-specific syntax highlighting for network engineers.
+One cockpit for **HPE Networking — Aruba · Juniper · Mist**. A modern, cross-platform terminal, SSH client, config editor, REST API explorer, and AI assistant built as a SecureCRT/Termius replacement, with multi-vendor syntax highlighting for network engineers.
 
 ## Features
 
-- **SSH, Telnet & Serial** connections
-- **Aruba CX Switch** syntax highlighting
-- **Aruba Wireless AP** syntax highlighting
-- **Aruba Mobility Controller** syntax highlighting
-- **Auto device detection** - automatically identifies Aruba device types from prompts
+- **SSH, Telnet, Serial & Local PTY** connections (with jump-host / ProxyJump)
+- **Aruba** AOS-CX / AOS-S / InstantOS / ArubaOS syntax highlighting
+- **Juniper Junos** (EX/QFX/SRX/MX) syntax highlighting
+- **Juniper Mist** cloud awareness (API Explorer integration)
+- **Auto device detection** - identifies vendor/OS from the prompt
 - **Tabbed sessions** with drag-and-drop
 - **Session manager** with folders and organization
 - **Encrypted credential vault** (AES-256-GCM + Argon2)

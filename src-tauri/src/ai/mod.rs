@@ -75,10 +75,38 @@ pub struct AiChatRequest {
     pub body: Value,
 }
 
+/// Providers that authenticate with an API key (must have one stored).
+fn provider_needs_key(provider: &str) -> bool {
+    matches!(provider, "anthropic" | "openrouter" | "moonshot")
+}
+
 /// Perform one provider request and return the parsed JSON response.
 pub async fn chat_request(store: &AiKeyStore, req: AiChatRequest) -> Result<Value, AppError> {
-    let client = reqwest::Client::new();
-    let key = store.get(&req.provider).unwrap_or_default();
+    // Short connect timeout everywhere (unreachable host fails fast), but a long
+    // overall read timeout for local generations — Ollama on CPU / large models
+    // can legitimately take minutes, and aborting that mislabels it "unreachable".
+    let overall = if req.provider == "ollama" {
+        std::time::Duration::from_secs(600)
+    } else {
+        std::time::Duration::from_secs(120)
+    };
+    let client = reqwest::Client::builder()
+        .timeout(overall)
+        .connect_timeout(std::time::Duration::from_secs(12))
+        .build()
+        .map_err(AppError::from)?;
+    // Trim once and use the trimmed key for BOTH the guard and the auth header
+    // (a stray trailing newline from a copy-paste must not slip into the header).
+    let key = store.get(&req.provider).unwrap_or_default().trim().to_string();
+
+    // Fail with an actionable message rather than sending an empty auth header
+    // (which providers answer with an opaque 401).
+    if provider_needs_key(&req.provider) && key.is_empty() {
+        return Err(AppError::ApiError(format!(
+            "No API key set for '{}'. Open Settings → AI Assistant and add your key (or switch to Ollama / Local CLI).",
+            req.provider
+        )));
+    }
 
     let rb = match req.provider.as_str() {
         "anthropic" => client
@@ -87,8 +115,8 @@ pub async fn chat_request(store: &AiKeyStore, req: AiChatRequest) -> Result<Valu
             .header("x-api-key", key),
         "openrouter" => client
             .post("https://openrouter.ai/api/v1/chat/completions")
-            .header("HTTP-Referer", "https://arubaterminalpro.app")
-            .header("X-Title", "Aruba Terminal Pro")
+            .header("HTTP-Referer", "https://hpe.com")
+            .header("X-Title", "HPE Network Terminal")
             .bearer_auth(key),
         "moonshot" => client
             .post("https://api.moonshot.ai/v1/chat/completions")
@@ -98,7 +126,10 @@ pub async fn chat_request(store: &AiKeyStore, req: AiChatRequest) -> Result<Valu
                 .base_url
                 .clone()
                 .unwrap_or_else(|| "http://localhost:11434".to_string());
-            client.post(format!("{}/v1/chat/completions", base.trim_end_matches('/')))
+            client.post(format!(
+                "{}/v1/chat/completions",
+                base.trim_end_matches('/')
+            ))
         }
         other => {
             return Err(AppError::ApiError(format!(
@@ -108,11 +139,14 @@ pub async fn chat_request(store: &AiKeyStore, req: AiChatRequest) -> Result<Valu
         }
     };
 
-    let resp = rb
-        .json(&req.body)
-        .send()
-        .await
-        .map_err(AppError::from)?;
+    let resp = rb.json(&req.body).send().await.map_err(|e| {
+        let hint = if req.provider == "ollama" {
+            " — is Ollama running? Start it with `ollama serve` and check the URL in Settings."
+        } else {
+            ""
+        };
+        AppError::ApiError(format!("Could not reach '{}': {}{}", req.provider, e, hint))
+    })?;
     let status = resp.status();
     let text = resp.text().await.map_err(AppError::from)?;
     let json: Value = serde_json::from_str(&text).unwrap_or_else(|_| Value::String(text.clone()));
@@ -128,6 +162,103 @@ pub async fn chat_request(store: &AiKeyStore, req: AiChatRequest) -> Result<Valu
     }
 
     Ok(json)
+}
+
+/// Build the provider RequestBuilder (URL + auth headers) for a chat request.
+fn build_request(
+    client: &reqwest::Client,
+    provider: &str,
+    key: &str,
+    base_url: &Option<String>,
+) -> Result<reqwest::RequestBuilder, AppError> {
+    Ok(match provider {
+        "anthropic" => client
+            .post("https://api.anthropic.com/v1/messages")
+            .header("anthropic-version", "2023-06-01")
+            .header("x-api-key", key),
+        "openrouter" => client
+            .post("https://openrouter.ai/api/v1/chat/completions")
+            .header("HTTP-Referer", "https://hpe.com")
+            .header("X-Title", "HPE Network Terminal")
+            .bearer_auth(key),
+        "moonshot" => client
+            .post("https://api.moonshot.ai/v1/chat/completions")
+            .bearer_auth(key),
+        "ollama" => {
+            let base = base_url
+                .clone()
+                .unwrap_or_else(|| "http://localhost:11434".to_string());
+            client.post(format!("{}/v1/chat/completions", base.trim_end_matches('/')))
+        }
+        other => return Err(AppError::ApiError(format!("Unknown AI provider: {}", other))),
+    })
+}
+
+/// Streaming chat: pumps the provider's SSE `data:` lines to the frontend as
+/// `ai_chunk` events (the frontend parses the provider-specific deltas), then
+/// `ai_done`. Provider-agnostic — Rust just forwards the raw SSE payloads.
+pub async fn chat_stream(
+    store: &AiKeyStore,
+    req: AiChatRequest,
+    app: &tauri::AppHandle,
+    stream_id: &str,
+) -> Result<(), AppError> {
+    use tauri::Manager;
+
+    let overall = if req.provider == "ollama" { 600 } else { 300 };
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(overall))
+        .connect_timeout(std::time::Duration::from_secs(12))
+        .build()
+        .map_err(AppError::from)?;
+    let key = store.get(&req.provider).unwrap_or_default().trim().to_string();
+    if provider_needs_key(&req.provider) && key.is_empty() {
+        return Err(AppError::ApiError(format!(
+            "No API key set for '{}'. Open Settings → AI Assistant and add your key.",
+            req.provider
+        )));
+    }
+
+    let rb = build_request(&client, &req.provider, &key, &req.base_url)?;
+    let mut resp = rb
+        .json(&req.body)
+        .send()
+        .await
+        .map_err(|e| AppError::ApiError(format!("Could not reach '{}': {}", req.provider, e)))?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        let text = resp.text().await.unwrap_or_default();
+        let json: Value = serde_json::from_str(&text).unwrap_or(Value::String(text.clone()));
+        let msg = json
+            .get("error")
+            .and_then(|e| e.get("message"))
+            .and_then(|m| m.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| format!("HTTP {}: {}", status.as_u16(), text));
+        return Err(AppError::ApiError(msg));
+    }
+
+    let mut buf = String::new();
+    while let Some(bytes) = resp.chunk().await.map_err(|e| AppError::ApiError(e.to_string()))? {
+        buf.push_str(&String::from_utf8_lossy(&bytes));
+        while let Some(idx) = buf.find('\n') {
+            let line: String = buf.drain(..=idx).collect();
+            let line = line.trim_end();
+            if let Some(data) = line.strip_prefix("data:") {
+                let data = data.trim();
+                if data.is_empty() || data == "[DONE]" {
+                    continue;
+                }
+                let _ = app.emit_all(
+                    "ai_chunk",
+                    serde_json::json!({ "streamId": stream_id, "data": data }),
+                );
+            }
+        }
+    }
+    let _ = app.emit_all("ai_done", serde_json::json!({ "streamId": stream_id }));
+    Ok(())
 }
 
 /// Local CLI passthrough: run `command` (whitespace-split into program + args)
@@ -151,9 +282,17 @@ pub async fn cli_passthrough(command: &str, prompt: &str) -> Result<String, AppE
         }
     };
 
-    // Cap prompt to prevent flooding CLIs with huge stdin
+    // Cap prompt to prevent flooding CLIs with huge stdin.
+    // Walk back from byte 4000 to the nearest UTF-8 char boundary so we never
+    // slice inside a multi-byte character (which would panic at runtime).
+    let truncated;
     let prompt = if prompt.len() > 4000 {
-        &prompt[..4000]
+        let mut cut = 4000;
+        while cut > 0 && !prompt.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        truncated = &prompt[..cut];
+        truncated
     } else {
         prompt
     };

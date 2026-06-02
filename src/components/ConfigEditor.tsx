@@ -15,8 +15,11 @@ import {
   Eraser,
   DownloadCloud,
   GitCompare,
+  Maximize2,
+  Minimize2,
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/tauri';
+import { open as openDialog, save as saveDialog } from '@tauri-apps/api/dialog';
 import { useSessionStore } from '../store/sessionStore';
 import { sleep, stripAnsi as stripAnsiUtil, hasAnsi, sendAndCapture } from '../utils/terminal';
 import { useResizablePanel } from '../hooks/useResizablePanel';
@@ -26,8 +29,7 @@ import { useResizablePanel } from '../hooks/useResizablePanel';
 const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
 
 async function tauriOpen(): Promise<string | null> {
-  const { open } = await import('@tauri-apps/api/dialog');
-  const result = await open({
+  const result = await openDialog({
     title: 'Open File',
     filters: [{ name: 'All Files', extensions: ['*'] }],
     multiple: false,
@@ -36,8 +38,7 @@ async function tauriOpen(): Promise<string | null> {
 }
 
 async function tauriSave(defaultName: string): Promise<string | null> {
-  const { save } = await import('@tauri-apps/api/dialog');
-  const result = await save({
+  const result = await saveDialog({
     title: 'Save File',
     defaultPath: defaultName,
     filters: [{ name: 'All Files', extensions: ['*'] }],
@@ -190,10 +191,10 @@ const LANGUAGE_LIST = [
   { id: 'proto',            label: 'Protobuf' },
 ];
 
-// ─── Aruba config templates ───
+// ─── Config templates (multi-vendor: Aruba AOS-CX + Juniper Junos) ───
 
 const TEMPLATES: Record<string, string> = {
-  'VLAN Config': `! VLAN Configuration
+  'Aruba: VLANs': `! VLAN Configuration
 vlan 10
   name MGMT
 vlan 20
@@ -203,19 +204,19 @@ vlan 30
 vlan 100
   name VOICE
 `,
-  'Interface Trunk': `! Uplink trunk port
+  'Aruba: Trunk port': `! Uplink trunk port
 interface 1/1/1
   no shutdown
   description Uplink-Core
   vlan trunk native 10
   vlan trunk allowed 10,20,30,100
 `,
-  'Interface Access': `! Access port (users)
+  'Aruba: Access port': `! Access port (users)
 interface 1/1/3-1/1/48
   no shutdown
   vlan access 20
 `,
-  'BGP Peer': `! BGP configuration
+  'Aruba: BGP peer': `! BGP configuration
 router bgp 65001
   bgp router-id 10.0.0.1
   neighbor 10.0.0.2 remote-as 65002
@@ -223,7 +224,7 @@ router bgp 65001
   address-family ipv4 unicast
     neighbor 10.0.0.2 activate
 `,
-  'OSPF Basic': `! OSPF configuration
+  'Aruba: OSPF': `! OSPF configuration
 router ospf 1
   router-id 10.0.0.1
   area 0.0.0.0
@@ -231,7 +232,7 @@ interface vlan 10
   ip ospf 1 area 0.0.0.0
   ip ospf network point-to-point
 `,
-  'AAA RADIUS': `! RADIUS / AAA
+  'Aruba: AAA / RADIUS': `! RADIUS / AAA
 radius-server host 10.0.0.100
   key plaintext MySecret123
   authentication port 1812
@@ -239,9 +240,53 @@ radius-server host 10.0.0.100
 aaa authentication login default group radius local
 aaa authorization commands default group radius local
 `,
+  'Junos: VLANs': `/* Juniper Junos — VLANs (set-style) */
+set vlans MGMT vlan-id 10
+set vlans USERS vlan-id 20
+set vlans GUEST vlan-id 30
+set vlans VOICE vlan-id 100
+`,
+  'Junos: Trunk port': `/* Junos — trunk uplink */
+set interfaces ge-0/0/0 description Uplink-Core
+set interfaces ge-0/0/0 unit 0 family ethernet-switching interface-mode trunk
+set interfaces ge-0/0/0 unit 0 family ethernet-switching vlan members [ MGMT USERS GUEST VOICE ]
+set interfaces ge-0/0/0 native-vlan-id 10
+`,
+  'Junos: Access port': `/* Junos — access port */
+set interfaces ge-0/0/3 unit 0 family ethernet-switching interface-mode access
+set interfaces ge-0/0/3 unit 0 family ethernet-switching vlan members USERS
+`,
+  'Junos: BGP peer': `/* Junos — BGP */
+set routing-options autonomous-system 65001
+set protocols bgp group EBGP type external
+set protocols bgp group EBGP neighbor 10.0.0.2 peer-as 65002
+set protocols bgp group EBGP neighbor 10.0.0.2 description Core-Peer
+`,
+  'Junos: OSPF': `/* Junos — OSPF */
+set protocols ospf area 0.0.0.0 interface ge-0/0/0.0 interface-type p2p
+set protocols ospf area 0.0.0.0 interface irb.10
+`,
+  'Apstra configlet: NTP': `/* Apstra configlet (Junos) — NTP. Paste the body into an Apstra
+   configlet (style "junos", section "system"); assign by role/tag. */
+set system ntp server 10.0.0.1 prefer
+set system ntp server 10.0.0.2
+set system time-zone UTC
+`,
+  'Apstra configlet: SNMPv3': `/* Apstra configlet (Junos) — SNMPv3 */
+set snmp v3 usm local-engine user netops authentication-sha authentication-key "<sha>"
+set snmp v3 usm local-engine user netops privacy-aes128 privacy-key "<aes>"
+set snmp v3 vacm security-to-group security-model usm security-name netops group ro
+set snmp v3 vacm access group ro default-context-prefix security-model usm security-level privacy read-view all
+set snmp view all oid .1
+`,
+  'Apstra configlet: Syslog': `/* Apstra configlet (Junos) — remote syslog */
+set system syslog host 10.0.0.10 any info
+set system syslog host 10.0.0.10 source-address 10.10.10.1
+`,
 };
 
 const ARUBA_KEYWORDS = [
+  // Aruba AOS-CX / AOS-S
   'show', 'configure', 'interface', 'vlan', 'router', 'ip', 'aaa',
   'ntp', 'snmp', 'logging', 'spanning-tree', 'lacp', 'bgp', 'ospf',
   'no', 'shutdown', 'description', 'access', 'trunk', 'native',
@@ -249,6 +294,11 @@ const ARUBA_KEYWORDS = [
   'write', 'copy', 'ping', 'traceroute', 'end', 'hostname', 'username',
   'password', 'enable', 'disable', 'default', 'address-family',
   'unicast', 'activate', 'route-map', 'prefix-list', 'permit', 'deny',
+  // Juniper Junos (set-style + hierarchy)
+  'set', 'delete', 'commit', 'rollback', 'family', 'ethernet-switching',
+  'interface-mode', 'members', 'vlan-id', 'vlans', 'protocols',
+  'routing-options', 'autonomous-system', 'group', 'peer-as', 'unit',
+  'inet', 'native-vlan-id', 'irb', 'p2p',
 ];
 
 // ─── Component ───
@@ -259,6 +309,7 @@ export default function ConfigEditor() {
 
   const { width: panelWidth, onDragStart: handleDragStart, handleClass: dragHandleClass } =
     useResizablePanel(520, 300, 900);
+  const [maximized, setMaximized] = useState(false);
 
   const [content, setContent] = useState<string>(
     '! Aruba CX Configuration\n! Start typing, open a file, or pick a template\n\n'
@@ -368,12 +419,29 @@ export default function ConfigEditor() {
     const sid = activeSession.sessionId;
     showStatus('Pulling running-config…');
     try {
-      // Best-effort: disable paging on controllers so output isn't truncated.
-      if (activeSession.config.deviceType === 'aruba-controller') {
-        await invoke('send_data', { sessionId: sid, data: 'no paging\r' });
+      // Per-vendor paging control + running-config command. AOS-CX/AOS-S use
+      // `no page` (NOT `no paging`); ArubaOS controllers use `no paging`; Junos
+      // pipes `| no-more`. Paging is restored afterward so the live session
+      // isn't left changed.
+      const PAGING: Record<string, { disable?: string; restore?: string; show: string }> = {
+        'aruba-cx': { disable: 'no page', restore: 'page', show: 'show running-config' },
+        'aruba-aos-s': { disable: 'no page', restore: 'page', show: 'show running-config' },
+        'aruba-controller': { disable: 'no paging', restore: 'paging', show: 'show running-config' },
+        'aruba-ap': { show: 'show running-config' },
+        'juniper-junos': { show: 'show configuration | no-more' },
+        mist: { show: 'show configuration | no-more' },
+        generic: { show: 'show running-config' },
+      };
+      const vp = PAGING[activeSession.config.deviceType] ?? PAGING.generic;
+      if (vp.disable) {
+        await invoke('send_data', { sessionId: sid, data: vp.disable + '\r' });
         await sleep(300);
       }
-      const out = await sendAndCapture(sid, 'show running-config');
+      const out = await sendAndCapture(sid, vp.show);
+      if (vp.restore) {
+        await invoke('send_data', { sessionId: sid, data: vp.restore + '\r' });
+        await sleep(150);
+      }
       if (!out) {
         showStatus('No output captured');
         return;
@@ -522,16 +590,22 @@ export default function ConfigEditor() {
 
   const sendToTerminal = async () => {
     if (!activeSession || !content.trim()) return;
+    if (!activeSession.connected) {
+      showStatus('Not connected — connect the session first');
+      return;
+    }
     setSending(true);
 
     const lines = content
       .split('\n')
       .map((l) => l.trim())
-      .filter((l) => l && !l.startsWith('!') && !l.startsWith('#'));
+      // Drop comment lines for every supported vendor: Aruba/Cisco '!' '#',
+      // and Junos block comments '/* ... */'.
+      .filter((l) => l && !l.startsWith('!') && !l.startsWith('#') && !l.startsWith('/*') && !l.startsWith('*/'));
 
     try {
       for (const line of lines) {
-        await invoke('send_data', { sessionId: activeSession.sessionId, data: line + '\n' });
+        await invoke('send_data', { sessionId: activeSession.sessionId, data: line + '\r' });
         await new Promise((r) => setTimeout(r, 80));
       }
       showStatus(`Sent ${lines.length} lines`);
@@ -567,51 +641,59 @@ export default function ConfigEditor() {
 
   return (
     <div
-      className="flex-shrink-0 flex flex-col bg-[#0d1117] border-l border-[#21262d] overflow-hidden relative"
-      style={{ width: panelWidth }}
+      className={
+        maximized
+          ? 'fixed left-0 right-0 bottom-0 top-11 z-40 flex flex-col bg-[var(--bg-primary)] overflow-hidden animate-fade-in'
+          : 'flex-shrink-0 flex flex-col bg-[var(--bg-primary)] border-l border-[var(--bg-tertiary)] overflow-hidden relative'
+      }
+      style={maximized ? undefined : { width: panelWidth }}
     >
-      {/* Drag handle */}
-      <div
-        className={dragHandleClass}
-        onMouseDown={handleDragStart}
-      />
+      {/* Drag handle (hidden when maximized) */}
+      {!maximized && <div className={dragHandleClass} onMouseDown={handleDragStart} />}
 
       {/* Header */}
-      <div className="flex items-center justify-between h-10 px-3 pl-4 border-b border-[#21262d] bg-[#161b22]">
+      <div className="flex items-center justify-between h-10 px-3 pl-4 border-b border-[var(--bg-tertiary)] bg-[var(--bg-secondary)]">
         <div className="flex items-center gap-2 min-w-0">
-          <FileCode size={14} className="text-[#e5c07b] flex-shrink-0" />
-          <span className="text-xs font-semibold text-[#c9d1d9] uppercase tracking-wider flex-shrink-0">
+          <FileCode size={14} className="text-[var(--accent-warning)] flex-shrink-0" />
+          <span className="text-xs font-semibold text-[var(--text-primary)] uppercase tracking-wider flex-shrink-0">
             Editor
           </span>
           {displayName ? (
-            <span className="text-[10px] text-[#8b949e] truncate max-w-[160px]" title={currentFilePath ?? ''}>
-              {isDirty && <span className="text-[#e5c07b]">● </span>}{displayName}
+            <span className="text-[10px] text-[var(--text-secondary)] truncate max-w-[160px]" title={currentFilePath ?? ''}>
+              {isDirty && <span className="text-[var(--accent-warning)]">● </span>}{displayName}
             </span>
           ) : (
-            <span className="text-[10px] text-[#484f58]">untitled</span>
+            <span className="text-[10px] text-[var(--text-muted)]">untitled</span>
           )}
         </div>
         <div className="flex items-center gap-1 flex-shrink-0">
-          <button onClick={copyToClipboard} className="p-1 rounded hover:bg-[#21262d] text-[#8b949e] hover:text-[#c9d1d9]" title="Copy all">
+          <button onClick={copyToClipboard} className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]" title="Copy all">
             <Copy size={13} />
           </button>
-          <button onClick={() => { setContent(''); setCurrentFilePath(null); setIsDirty(false); }} className="p-1 rounded hover:bg-[#21262d] text-[#8b949e] hover:text-[#ff7b72]" title="Clear">
+          <button onClick={() => { setContent(''); setCurrentFilePath(null); setIsDirty(false); }} className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--accent-danger)]" title="Clear">
             <FileX size={13} />
           </button>
-          <button onClick={toggleConfigEditor} className="p-1 rounded hover:bg-[#21262d] text-[#8b949e] hover:text-[#ff7b72]" title="Close">
+          <button
+            onClick={() => setMaximized((m) => !m)}
+            className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+            title={maximized ? 'Restore to side panel' : 'Maximize editor'}
+          >
+            {maximized ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
+          </button>
+          <button onClick={toggleConfigEditor} className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--accent-danger)]" title="Close">
             <X size={14} />
           </button>
         </div>
       </div>
 
       {/* Toolbar */}
-      <div className="flex items-center gap-1 px-2 py-1 border-b border-[#21262d] bg-[#161b22]">
+      <div className="flex items-center gap-1 px-2 py-1 border-b border-[var(--bg-tertiary)] bg-[var(--bg-secondary)]">
 
         {/* File actions — icon-only group with tooltips */}
         <div className="flex items-center gap-0.5">
           <button
             onClick={openFile}
-            className="p-1.5 rounded text-[#8b949e] hover:text-[#c9d1d9] hover:bg-[#21262d] transition-colors"
+            className="p-1.5 rounded text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] transition-colors"
             title="Open file (Ctrl+O)"
           >
             <FolderOpen size={13} />
@@ -619,7 +701,7 @@ export default function ConfigEditor() {
           <button
             onClick={() => saveFile(false)}
             className={`p-1.5 rounded transition-colors ${
-              isDirty ? 'text-[#e5c07b] hover:bg-[#e5c07b20]' : 'text-[#8b949e] hover:text-[#c9d1d9] hover:bg-[#21262d]'
+              isDirty ? 'text-[var(--accent-warning)] hover:bg-[#e5c07b20]' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
             }`}
             title={currentFilePath ? 'Save (Ctrl+S)' : 'Save As… (Ctrl+S)'}
           >
@@ -627,7 +709,7 @@ export default function ConfigEditor() {
           </button>
           <button
             onClick={cleanCurrent}
-            className="p-1.5 rounded text-[#8b949e] hover:text-[#c9d1d9] hover:bg-[#21262d] transition-colors"
+            className="p-1.5 rounded text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] transition-colors"
             title="Strip ANSI / terminal control codes"
           >
             <Eraser size={13} />
@@ -636,7 +718,7 @@ export default function ConfigEditor() {
             <button
               onClick={toggleRaw}
               className={`px-1.5 py-1 text-[10px] rounded transition-colors ${
-                viewingRaw ? 'text-[#e5c07b] bg-[#e5c07b20]' : 'text-[#8b949e] hover:text-[#c9d1d9] hover:bg-[#21262d]'
+                viewingRaw ? 'text-[var(--accent-warning)] bg-[#e5c07b20]' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
               }`}
               title="Toggle cleaned / raw capture"
             >
@@ -645,13 +727,13 @@ export default function ConfigEditor() {
           )}
         </div>
 
-        <div className="w-px h-4 bg-[#30363d] mx-1" />
+        <div className="w-px h-4 bg-[var(--border)] mx-1" />
 
         {/* Language picker */}
         <div className="relative">
           <button
             onClick={() => { setShowLangPicker(!showLangPicker); setLangSearch(''); setShowTemplates(false); }}
-            className="flex items-center gap-1.5 px-2 py-1 text-xs text-[#8b949e] hover:text-[#c9d1d9] hover:bg-[#21262d] rounded transition-colors"
+            className="flex items-center gap-1.5 px-2 py-1 text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] rounded transition-colors"
             title="Change language mode"
           >
             <Code2 size={12} />
@@ -661,14 +743,14 @@ export default function ConfigEditor() {
           {showLangPicker && (
             <>
               <div className="fixed inset-0 z-20" onClick={() => setShowLangPicker(false)} />
-              <div className="absolute top-full left-0 mt-1 z-30 w-48 bg-[#161b22] border border-[#30363d] rounded-lg shadow-xl flex flex-col">
-                <div className="p-1.5 border-b border-[#21262d]">
+              <div className="absolute top-full left-0 mt-1 z-30 w-48 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg shadow-xl flex flex-col">
+                <div className="p-1.5 border-b border-[var(--bg-tertiary)]">
                   <input
                     autoFocus
                     value={langSearch}
                     onChange={(e) => setLangSearch(e.target.value)}
                     placeholder="Filter…"
-                    className="w-full text-xs bg-[#0d1117] border border-[#30363d] rounded px-2 py-1 text-[#c9d1d9] placeholder-[#484f58] focus:outline-none focus:border-[#58a6ff]"
+                    className="w-full text-xs bg-[var(--bg-primary)] border border-[var(--border)] rounded px-2 py-1 text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)]"
                   />
                 </div>
                 <div className="overflow-y-auto max-h-56 py-1">
@@ -678,15 +760,15 @@ export default function ConfigEditor() {
                       onClick={() => { setLanguage(l.id); setShowLangPicker(false); }}
                       className={`flex items-center w-full px-3 py-1.5 text-xs text-left transition-colors ${
                         language === l.id
-                          ? 'text-[#58a6ff] bg-[#58a6ff15]'
-                          : 'text-[#c9d1d9] hover:bg-[#21262d]'
+                          ? 'text-[var(--accent)] bg-[#58a6ff15]'
+                          : 'text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
                       }`}
                     >
                       {l.label}
                     </button>
                   ))}
                   {filteredLangs.length === 0 && (
-                    <p className="px-3 py-2 text-xs text-[#484f58]">No match</p>
+                    <p className="px-3 py-2 text-xs text-[var(--text-muted)]">No match</p>
                   )}
                 </div>
               </div>
@@ -694,13 +776,13 @@ export default function ConfigEditor() {
           )}
         </div>
 
-        <div className="w-px h-4 bg-[#30363d] mx-0.5" />
+        <div className="w-px h-4 bg-[var(--border)] mx-0.5" />
 
-        {/* Templates (Aruba only) */}
+        {/* Templates (Aruba + Junos) */}
         <div className="relative">
           <button
             onClick={() => { setShowTemplates(!showTemplates); setShowLangPicker(false); }}
-            className="flex items-center gap-1.5 px-2 py-1 text-xs text-[#8b949e] hover:text-[#c9d1d9] hover:bg-[#21262d] rounded transition-colors"
+            className="flex items-center gap-1.5 px-2 py-1 text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] rounded transition-colors"
           >
             <BookOpen size={12} />
             Templates
@@ -709,12 +791,12 @@ export default function ConfigEditor() {
           {showTemplates && (
             <>
               <div className="fixed inset-0 z-20" onClick={() => setShowTemplates(false)} />
-              <div className="absolute top-full left-0 mt-1 z-30 min-w-[160px] bg-[#161b22] border border-[#30363d] rounded-lg shadow-xl py-1">
+              <div className="absolute top-full left-0 mt-1 z-30 min-w-[160px] bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg shadow-xl py-1">
                 {Object.keys(TEMPLATES).map((name) => (
                   <button
                     key={name}
                     onClick={() => loadTemplate(name)}
-                    className="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-[#c9d1d9] hover:bg-[#21262d] text-left"
+                    className="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] text-left"
                   >
                     {name}
                   </button>
@@ -724,13 +806,13 @@ export default function ConfigEditor() {
           )}
         </div>
 
-        <div className="w-px h-4 bg-[#30363d] mx-0.5" />
+        <div className="w-px h-4 bg-[var(--border)] mx-0.5" />
 
         {/* Pull running-config from the active device */}
         <button
           onClick={pullRunningConfig}
           disabled={!activeSession?.connected}
-          className="flex items-center gap-1.5 px-2 py-1 text-xs rounded transition-colors disabled:opacity-40 text-[#8b949e] hover:text-[#c9d1d9] hover:bg-[#21262d]"
+          className="flex items-center gap-1.5 px-2 py-1 text-xs rounded transition-colors disabled:opacity-40 text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]"
           title="Pull running-config from the active device"
         >
           <DownloadCloud size={12} />
@@ -741,7 +823,7 @@ export default function ConfigEditor() {
         <button
           onClick={() => (diffMode ? setDiffMode(false) : openDiffAgainst())}
           className={`flex items-center gap-1.5 px-2 py-1 text-xs rounded transition-colors ${
-            diffMode ? 'text-[#58a6ff] bg-[#58a6ff20]' : 'text-[#8b949e] hover:text-[#c9d1d9] hover:bg-[#21262d]'
+            diffMode ? 'text-[var(--accent)] bg-[#58a6ff20]' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
           }`}
           title="Compare the editor against a file"
         >
@@ -751,14 +833,14 @@ export default function ConfigEditor() {
 
         <div className="flex-1" />
 
-        {statusMsg && <span className="text-[10px] text-[#8b949e] mr-1">{statusMsg}</span>}
+        {statusMsg && <span className="text-[10px] text-[var(--text-secondary)] mr-1">{statusMsg}</span>}
 
         {/* Send to terminal — only shown for aruba-cx */}
         {language === 'aruba-cx' && (
           <button
             onClick={sendToTerminal}
-            disabled={sending || !activeSession}
-            className="flex items-center gap-1.5 px-2.5 py-1 text-xs bg-[#238636] hover:bg-[#2ea043] disabled:opacity-40 text-white rounded transition-colors"
+            disabled={sending || !activeSession?.connected}
+            className="flex items-center gap-1.5 px-2.5 py-1 text-xs bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-40 text-white rounded transition-colors"
             title={activeSession ? 'Send lines to terminal' : 'No active session'}
           >
             <Send size={12} />
