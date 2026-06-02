@@ -187,7 +187,9 @@ export const AI_PROVIDERS: { value: AiProvider; label: string; needsKey: boolean
 export const AI_CLI_PRESETS: { label: string; command: string }[] = [
   { label: 'Claude', command: 'claude -p' },
   { label: 'Kimi', command: 'kimi --quiet' },
-  { label: 'Copilot', command: 'copilot -p' },
+  // NB: GitHub Copilot CLI isn't offered here — its `-p` takes the prompt as an
+  // inline arg (not stdin) and non-interactive mode requires --allow-all-tools,
+  // which makes it an autonomous agent. Not a safe one-shot default.
 ];
 
 /**
