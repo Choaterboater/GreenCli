@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, useMemo, memo } from 'react';
 import {
   X,
   Send,
@@ -61,9 +61,16 @@ interface ToolExecution {
 }
 
 interface DisplayMessage extends ChatMessage {
+  /** Stable id for React keys + memoization (assigned at creation). */
+  id: string;
   toolExecutions?: ToolExecution[];
   isError?: boolean;
 }
+
+// Monotonic id for chat bubbles — stable keys let React.memo skip unchanged
+// bubbles, so only the streaming message re-renders as tokens arrive.
+let msgSeq = 0;
+const nextMsgId = () => `m${++msgSeq}`;
 
 // ─── Multi-vendor CLI Knowledge Base (Aruba · Juniper · Mist) ───
 
@@ -898,6 +905,97 @@ function renderInline(text: string): (JSX.Element | string)[] {
   return parts;
 }
 
+// ─── Message bubble ───
+
+// One chat bubble, memoized. During streaming only the LAST message object is
+// replaced (updateLast), so every other bubble keeps its identity and React.memo
+// skips it — markdown is re-parsed (useMemo) only when this message's content
+// changes. Tool-expansion state is local, so toggling one message's tool output
+// never re-renders the rest of the conversation.
+const MessageItem = memo(function MessageItem({ msg }: { msg: DisplayMessage }) {
+  const [openTools, setOpenTools] = useState<Set<number>>(new Set());
+  const body = useMemo(() => renderMarkdown(msg.content), [msg.content]);
+
+  if (msg.role === 'user') {
+    return (
+      <div className="flex items-start gap-2 flex-row-reverse">
+        <div className="flex-shrink-0 w-6 h-6 rounded-full bg-[#58a6ff20] flex items-center justify-center">
+          <User size={12} className="text-[#58a6ff]" />
+        </div>
+        <div className="max-w-[88%] px-3 py-2 rounded-lg bg-[#58a6ff15] border border-[#58a6ff25] text-[var(--text-primary)]">
+          <p className="text-[11px] leading-relaxed whitespace-pre-wrap">{msg.content}</p>
+          <div className="text-[9px] text-[var(--text-muted)] mt-1 flex items-center gap-1 justify-end">
+            <Clock size={7} />
+            {new Date(msg.timestamp).toLocaleTimeString()}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex items-start gap-2">
+      <div className={`flex-shrink-0 w-6 h-6 rounded-full flex items-center justify-center ${msg.isError ? 'bg-[#ff7b7220]' : 'bg-[#d2a8ff20]'}`}>
+        {msg.isError ? (
+          <AlertCircle size={12} className="text-[#ff7b72]" />
+        ) : (
+          <Bot size={12} className="text-[#d2a8ff]" />
+        )}
+      </div>
+      <div className="flex-1 min-w-0">
+        {/* Tool executions */}
+        {msg.toolExecutions && msg.toolExecutions.length > 0 && (
+          <div className="mb-2 space-y-1">
+            {msg.toolExecutions.map((te, ti) => {
+              const open = openTools.has(ti);
+              return (
+                <div key={ti} className="border border-[var(--border)] rounded-lg overflow-hidden">
+                  <button
+                    onClick={() =>
+                      setOpenTools((prev) => {
+                        const next = new Set(prev);
+                        if (next.has(ti)) next.delete(ti);
+                        else next.add(ti);
+                        return next;
+                      })
+                    }
+                    className="w-full flex items-center gap-2 px-2.5 py-1.5 bg-[var(--bg-secondary)] hover:bg-[var(--bg-tertiary)] text-left transition-colors"
+                  >
+                    <Terminal size={10} className="text-[#58a6ff]" />
+                    <code className="text-[10px] text-[#58a6ff] font-mono flex-1 truncate">
+                      {(te.args.command as string) || te.name}
+                    </code>
+                    <CheckCircle2 size={9} className="text-[#3fb950] flex-shrink-0" />
+                    {open ? (
+                      <ChevronDown size={9} className="text-[var(--text-muted)]" />
+                    ) : (
+                      <ChevronRight size={9} className="text-[var(--text-muted)]" />
+                    )}
+                  </button>
+                  {open && (
+                    <div className="px-2.5 py-2 bg-[var(--bg-primary)] border-t border-[var(--border)] max-h-64 overflow-auto">
+                      <pre className="text-[10px] text-[var(--text-secondary)] font-mono whitespace-pre-wrap break-words">{te.result}</pre>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Message content */}
+        <div className={`px-3 py-2 rounded-lg ${msg.isError ? 'bg-[#ff7b7210] border border-[#ff7b7225] text-[#ff7b72]' : 'bg-[var(--bg-secondary)] border border-[var(--border)] text-[var(--text-primary)]'}`}>
+          <div className="space-y-0.5">{body}</div>
+          <div className="text-[9px] text-[var(--text-muted)] mt-1.5 flex items-center gap-1">
+            <Clock size={7} />
+            {new Date(msg.timestamp).toLocaleTimeString()}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+});
+
 // ─── Component ───
 
 export default function AiAssistant() {
@@ -910,7 +1008,6 @@ export default function AiAssistant() {
   const [messages, setMessages] = useState<DisplayMessage[]>([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set());
   const [hasKey, setHasKey] = useState(false);
   const [mcpToolCount, setMcpToolCount] = useState(0);
   const [maximized, setMaximized] = useState(false);
@@ -919,6 +1016,15 @@ export default function AiAssistant() {
   // Lets us abandon an in-flight request (the underlying invoke still resolves
   // in the background, but its result is ignored).
   const requestSeq = useRef(0);
+  // Coalesce streaming deltas to one DOM update per animation frame instead of
+  // one per token (providers emit dozens/sec). The cumulative text is parked in a
+  // ref and flushed at ~60fps max, so the streaming bubble repaints smoothly
+  // without flooding React's render loop.
+  const pendingTextRef = useRef<string | null>(null);
+  const rafRef = useRef<number>(0);
+  // Cache of MCP tool definitions so sends don't pay an IPC round-trip to refetch
+  // them every time (the data is already in-memory in the backend).
+  const mcpToolsRef = useRef<McpToolDef[]>([]);
 
   // For AI tool execution, prefer an SSH session over the active tab (which
   // might be a local PTY like kimi/claude). Falls back to active if no SSH.
@@ -968,10 +1074,27 @@ export default function AiAssistant() {
       .catch(() => setMcpToolCount(0));
   }, [showSettings, showAiAssistant]);
 
+  // Pre-fetch the full MCP tool list into a ref so sendMessage doesn't await it on
+  // the hot path. Refreshes when the panel opens, Settings close, or MCP is
+  // toggled — the same moments a server could have (dis)connected.
+  useEffect(() => {
+    if (!settings.aiUseMcp) {
+      mcpToolsRef.current = [];
+      return;
+    }
+    invoke<McpToolDef[]>('mcp_all_tools')
+      .then((t) => {
+        mcpToolsRef.current = t || [];
+      })
+      .catch(() => {
+        /* keep the last known list */
+      });
+  }, [settings.aiUseMcp, showSettings, showAiAssistant]);
+
   const sendMessage = useCallback(async (content: string) => {
     if (!content.trim() || isLoading) return;
 
-    const userMsg: DisplayMessage = { role: 'user', content: content.trim(), timestamp: Date.now() };
+    const userMsg: DisplayMessage = { id: nextMsgId(), role: 'user', content: content.trim(), timestamp: Date.now() };
     setMessages((prev) => [...prev, userMsg]);
     setInput('');
     setIsLoading(true);
@@ -984,6 +1107,7 @@ export default function AiAssistant() {
       setMessages((prev) => [
         ...prev,
         {
+          id: nextMsgId(),
           role: 'assistant',
           content:
             'The AI assistant runs through the desktop backend. Launch **GreenCLI** (the installed app, or `npm run tauri dev`) — it can\'t reach AI providers or the terminal from a regular browser tab.',
@@ -999,16 +1123,22 @@ export default function AiAssistant() {
     const provider: AiProvider = (activeAgent?.provider || settings.aiProvider || 'ollama') as AiProvider;
     const providerMeta = AI_PROVIDERS.find((p) => p.value === provider);
 
-    // Guard: key-based providers need a key in the Rust key store. Query it
-    // FRESH (not the cached `hasKey`) — adding a key in Settings doesn't trigger
-    // a re-render here, so a stale cache would wrongly block sending.
+    // Guard: key-based providers need a key in the Rust key store. Fast path: trust
+    // the cached `hasKey` (kept fresh by the effect on provider/agent change and
+    // when Settings close) so a send with a configured key costs ZERO pre-stream
+    // IPC. Only pay the round-trip when we think there's no key — the one case
+    // where a stale cache could wrongly block (a key just added in Settings).
     if (providerMeta?.needsKey) {
-      const keyPresent = await invoke<boolean>('ai_has_key', { provider }).catch(() => false);
-      setHasKey(keyPresent);
+      let keyPresent = hasKey;
+      if (!keyPresent) {
+        keyPresent = await invoke<boolean>('ai_has_key', { provider }).catch(() => false);
+        setHasKey(keyPresent);
+      }
       if (!keyPresent) {
         setMessages((prev) => [
           ...prev,
           {
+            id: nextMsgId(),
             role: 'assistant',
             content: `No API key configured for **${providerMeta.label}**. Open **Settings** (Ctrl+,) → AI Assistant and add your key, or switch provider.`,
             timestamp: Date.now(),
@@ -1057,10 +1187,15 @@ export default function AiAssistant() {
     // and the OpenAI-compatible ones alike), not just Claude.
     let mcpTools: McpToolDef[] = [];
     if (settings.aiUseMcp) {
-      try {
-        mcpTools = (await invoke<McpToolDef[]>('mcp_all_tools')) || [];
-      } catch {
-        mcpTools = [];
+      // Use the pre-fetched cache; only hit the backend if it's somehow empty.
+      mcpTools = mcpToolsRef.current;
+      if (mcpTools.length === 0) {
+        try {
+          mcpTools = (await invoke<McpToolDef[]>('mcp_all_tools')) || [];
+          mcpToolsRef.current = mcpTools;
+        } catch {
+          mcpTools = [];
+        }
       }
     }
     // Assign each MCP tool a UNIQUE provider-safe name (two servers can sanitize
@@ -1084,7 +1219,7 @@ export default function AiAssistant() {
 
     // Live streaming bubble: append an empty assistant message and update it as
     // tokens arrive (the last message is always the in-progress one).
-    setMessages((prev) => [...prev, { role: 'assistant', content: '', timestamp: Date.now() }]);
+    setMessages((prev) => [...prev, { id: nextMsgId(), role: 'assistant', content: '', timestamp: Date.now() }]);
     const updateLast = (patch: Partial<DisplayMessage>) =>
       setMessages((prev) => {
         const copy = [...prev];
@@ -1092,8 +1227,27 @@ export default function AiAssistant() {
         if (i >= 0 && copy[i].role === 'assistant') copy[i] = { ...copy[i], ...patch };
         return copy;
       });
+    // Cancel any scheduled flush and drop the parked text (used before writing the
+    // final/complete text, and on cancel, so a late frame can't overwrite it).
+    const stopFlush = () => {
+      if (rafRef.current) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = 0;
+      }
+      pendingTextRef.current = null;
+    };
+    // onText hands us the CUMULATIVE text each delta, so we just park the latest
+    // value and repaint once per frame — dropping intermediate frames is lossless.
     const onDelta = (t: string) => {
-      if (requestSeq.current === myReq) updateLast({ content: t });
+      pendingTextRef.current = t;
+      if (!rafRef.current) {
+        rafRef.current = requestAnimationFrame(() => {
+          rafRef.current = 0;
+          const pending = pendingTextRef.current;
+          pendingTextRef.current = null;
+          if (pending != null && requestSeq.current === myReq) updateLast({ content: pending });
+        });
+      }
     };
 
     try {
@@ -1146,12 +1300,14 @@ export default function AiAssistant() {
       }
 
       if (requestSeq.current !== myReq) return; // superseded or cancelled
+      stopFlush(); // beat any pending frame so it can't overwrite the final text
       updateLast({
         content: text,
         toolExecutions: collectedTools.length > 0 ? [...collectedTools] : undefined,
       });
     } catch (e: unknown) {
       if (requestSeq.current !== myReq) return; // cancelled — keep the partial bubble
+      stopFlush();
       const errMsg = e instanceof Error ? e.message : String(e);
       updateLast({
         content: `**AI Error:** ${errMsg}`,
@@ -1161,13 +1317,18 @@ export default function AiAssistant() {
     } finally {
       if (requestSeq.current === myReq) setIsLoading(false);
     }
-  }, [messages, isLoading, settings, activeSession, activeAgent]);
+  }, [messages, isLoading, settings, activeSession, activeAgent, hasKey]);
 
   // Abandon the in-flight request: bump the guard, abort the backend stream(s) so
   // the provider stops generating, and drop a trailing empty assistant bubble left
   // by a Stop pressed before any token streamed in.
   const cancelRequest = useCallback(() => {
     requestSeq.current++;
+    if (rafRef.current) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = 0;
+    }
+    pendingTextRef.current = null;
     setIsLoading(false);
     cancelActiveAiStreams();
     setMessages((prev) =>
@@ -1183,16 +1344,6 @@ export default function AiAssistant() {
       sendMessage(input);
     }
   };
-
-  const toggleTool = (idx: string) => {
-    setExpandedTools((prev) => {
-      const next = new Set(prev);
-      if (next.has(idx)) next.delete(idx);
-      else next.add(idx);
-      return next;
-    });
-  };
-
 
   if (!showAiAssistant) return null;
 
@@ -1339,73 +1490,8 @@ export default function AiAssistant() {
         )}
 
         {/* Messages */}
-        {messages.map((msg, i) => (
-          <div key={i}>
-            {msg.role === 'user' ? (
-              <div className="flex items-start gap-2 flex-row-reverse">
-                <div className="flex-shrink-0 w-6 h-6 rounded-full bg-[#58a6ff20] flex items-center justify-center">
-                  <User size={12} className="text-[#58a6ff]" />
-                </div>
-                <div className="max-w-[88%] px-3 py-2 rounded-lg bg-[#58a6ff15] border border-[#58a6ff25] text-[var(--text-primary)]">
-                  <p className="text-[11px] leading-relaxed whitespace-pre-wrap">{msg.content}</p>
-                  <div className="text-[9px] text-[var(--text-muted)] mt-1 flex items-center gap-1 justify-end">
-                    <Clock size={7} />
-                    {new Date(msg.timestamp).toLocaleTimeString()}
-                  </div>
-                </div>
-              </div>
-            ) : (
-              <div className="flex items-start gap-2">
-                <div className={`flex-shrink-0 w-6 h-6 rounded-full flex items-center justify-center ${msg.isError ? 'bg-[#ff7b7220]' : 'bg-[#d2a8ff20]'}`}>
-                  {msg.isError ? (
-                    <AlertCircle size={12} className="text-[#ff7b72]" />
-                  ) : (
-                    <Bot size={12} className="text-[#d2a8ff]" />
-                  )}
-                </div>
-                <div className="flex-1 min-w-0">
-                  {/* Tool executions */}
-                  {msg.toolExecutions && msg.toolExecutions.length > 0 && (
-                    <div className="mb-2 space-y-1">
-                      {msg.toolExecutions.map((te, ti) => (
-                        <div key={ti} className="border border-[var(--border)] rounded-lg overflow-hidden">
-                          <button
-                            onClick={() => toggleTool(`${i}:${ti}`)}
-                            className="w-full flex items-center gap-2 px-2.5 py-1.5 bg-[var(--bg-secondary)] hover:bg-[var(--bg-tertiary)] text-left transition-colors"
-                          >
-                            <Terminal size={10} className="text-[#58a6ff]" />
-                            <code className="text-[10px] text-[#58a6ff] font-mono flex-1 truncate">
-                              {(te.args.command as string) || te.name}
-                            </code>
-                            <CheckCircle2 size={9} className="text-[#3fb950] flex-shrink-0" />
-                            {expandedTools.has(`${i}:${ti}`) ? (
-                              <ChevronDown size={9} className="text-[var(--text-muted)]" />
-                            ) : (
-                              <ChevronRight size={9} className="text-[var(--text-muted)]" />
-                            )}
-                          </button>
-                          {expandedTools.has(`${i}:${ti}`) && (
-                            <div className="px-2.5 py-2 bg-[var(--bg-primary)] border-t border-[var(--border)] max-h-64 overflow-auto">
-                              <pre className="text-[10px] text-[var(--text-secondary)] font-mono whitespace-pre-wrap break-words">{te.result}</pre>
-                            </div>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-
-                  {/* Message content */}
-                  <div className={`px-3 py-2 rounded-lg ${msg.isError ? 'bg-[#ff7b7210] border border-[#ff7b7225] text-[#ff7b72]' : 'bg-[var(--bg-secondary)] border border-[var(--border)] text-[var(--text-primary)]'}`}>
-                    <div className="space-y-0.5">{renderMarkdown(msg.content)}</div>
-                    <div className="text-[9px] text-[var(--text-muted)] mt-1.5 flex items-center gap-1">
-                      <Clock size={7} />
-                      {new Date(msg.timestamp).toLocaleTimeString()}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
+        {messages.map((msg) => (
+          <MessageItem key={msg.id} msg={msg} />
         ))}
 
         {/* Loading */}
