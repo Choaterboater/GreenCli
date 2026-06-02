@@ -932,6 +932,13 @@ export default function AiAssistant() {
     return sshSession || active;
   })();
 
+  // Per-session AI agent: the persona attached to this session in the sidebar.
+  // Its instructions extend the system prompt; its provider/model override the
+  // global AI settings for this session only.
+  const activeAgent = (settings.aiAgents ?? []).find(
+    (a) => a.id === (activeSession ? settings.sessionAgents?.[activeSession.config.id] : undefined)
+  );
+
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
@@ -943,11 +950,13 @@ export default function AiAssistant() {
   // have just been added there).
   const showSettings = useSessionStore((s) => s.showSettings);
   useEffect(() => {
-    const provider = settings.aiProvider || 'ollama';
+    // Honour an agent's provider override so the header readiness reflects the
+    // key the next send will actually use.
+    const provider = activeAgent?.provider || settings.aiProvider || 'ollama';
     invoke<boolean>('ai_has_key', { provider })
       .then(setHasKey)
       .catch(() => setHasKey(false));
-  }, [settings.aiProvider, showSettings]);
+  }, [settings.aiProvider, activeAgent?.provider, showSettings]);
 
   // Count tools from connected MCP servers (refresh when Settings closes, since
   // servers may have just been connected there).
@@ -986,7 +995,8 @@ export default function AiAssistant() {
       return;
     }
 
-    const provider: AiProvider = settings.aiProvider || 'ollama';
+    // The attached agent may override the provider for this session.
+    const provider: AiProvider = (activeAgent?.provider || settings.aiProvider || 'ollama') as AiProvider;
     const providerMeta = AI_PROVIDERS.find((p) => p.value === provider);
 
     // Guard: key-based providers need a key in the Rust key store. Query it
@@ -1019,7 +1029,13 @@ export default function AiAssistant() {
       .map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content }));
 
     const deviceContext = buildDeviceContext(activeSession);
-    const systemPrompt = SYSTEM_PROMPT(deviceContext, settings.aiReferences || '');
+    let systemPrompt = SYSTEM_PROMPT(deviceContext, settings.aiReferences || '');
+    if (activeAgent?.instructions?.trim()) {
+      systemPrompt +=
+        `\n\n## Active agent: ${activeAgent.name}\n` +
+        `The user attached this agent persona to the current session — follow it carefully:\n` +
+        activeAgent.instructions.trim();
+    }
     const collectedTools: ToolExecution[] = [];
 
     // Which tool sources the assistant may use this turn (all opt-in beyond
@@ -1086,7 +1102,7 @@ export default function AiAssistant() {
       if (provider === 'anthropic') {
         text = await callAnthropicWithTools(
           apiMessages,
-          settings.aiModel || 'claude-sonnet-4-6',
+          activeAgent?.model || settings.aiModel || 'claude-sonnet-4-6',
           systemPrompt,
           activeSession,
           (tool) => collectedTools.push(tool),
@@ -1097,9 +1113,9 @@ export default function AiAssistant() {
           onDelta
         );
       } else if (provider === 'local-cli') {
-        // One-shot CLI — no token streaming.
+        // One-shot CLI — no token streaming. An agent may override the CLI command.
         text = await callLocalCli(
-          settings.localCliCommand || 'claude -p',
+          activeAgent?.model || settings.localCliCommand || 'claude -p',
           apiMessages,
           systemPrompt,
           activeSession
@@ -1107,11 +1123,12 @@ export default function AiAssistant() {
       } else {
         // OpenAI-compatible: openrouter | moonshot | ollama — each has its own model.
         const model =
-          provider === 'ollama'
+          activeAgent?.model ||
+          (provider === 'ollama'
             ? settings.ollamaModel || 'llama3.2'
             : provider === 'openrouter'
               ? settings.openrouterModel || 'anthropic/claude-3.5-sonnet'
-              : settings.moonshotModel || 'kimi-k2-0905-preview';
+              : settings.moonshotModel || 'kimi-k2-0905-preview');
         text = await callOpenAiCompatWithTools(
           provider,
           settings.ollamaUrl || 'http://localhost:11434',
@@ -1144,7 +1161,7 @@ export default function AiAssistant() {
     } finally {
       if (requestSeq.current === myReq) setIsLoading(false);
     }
-  }, [messages, isLoading, settings, activeSession]);
+  }, [messages, isLoading, settings, activeSession, activeAgent]);
 
   // Abandon the in-flight request: bump the guard, abort the backend stream(s) so
   // the provider stops generating, and drop a trailing empty assistant bubble left
@@ -1179,12 +1196,14 @@ export default function AiAssistant() {
 
   if (!showAiAssistant) return null;
 
-  const provider = settings.aiProvider || 'ollama';
+  // Effective provider/model for the header — an attached agent may override both.
+  const provider = (activeAgent?.provider || settings.aiProvider || 'ollama') as AiProvider;
   const providerMeta = AI_PROVIDERS.find((p) => p.value === provider);
   const isLocalProvider = provider === 'ollama' || provider === 'local-cli';
   const isReady = !providerMeta?.needsKey || hasKey;
   const providerLabel =
-    provider === 'ollama'
+    activeAgent?.model ||
+    (provider === 'ollama'
       ? settings.ollamaModel || 'llama3.2'
       : provider === 'local-cli'
         ? settings.localCliCommand || 'CLI'
@@ -1192,7 +1211,7 @@ export default function AiAssistant() {
           ? settings.aiModel?.split('-').slice(1, 3).join(' ') || 'Claude'
           : provider === 'openrouter'
             ? settings.openrouterModel || providerMeta?.label || provider
-            : settings.moonshotModel || providerMeta?.label || provider;
+            : settings.moonshotModel || providerMeta?.label || provider);
 
   return (
     <div
@@ -1261,6 +1280,21 @@ export default function AiAssistant() {
           </span>
         ) : (
           <span className="text-[10px] text-[var(--text-muted)]">No active session</span>
+        )}
+        {activeAgent && (
+          <button
+            onClick={() => {
+              const s = useSessionStore.getState();
+              s.setSettingsFocus('agents');
+              s.setShowSettings(true);
+            }}
+            className="flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full"
+            style={{ color: activeAgent.color, background: `${activeAgent.color}1f` }}
+            title={`AI agent "${activeAgent.name}" is active for this session — click to manage`}
+          >
+            <Bot size={10} />
+            {activeAgent.name}
+          </button>
         )}
         {mcpToolCount > 0 && (
           <span

@@ -6,6 +6,7 @@ import { useSettingsStore } from '../store/settingsStore';
 import { askConfirm } from '../store/dialogStore';
 import { AI_PROVIDERS, AI_CLI_PRESETS, TerminalSettings } from '../types';
 import McpServers from './McpServers';
+import AiAgents from './AiAgents';
 import HostsManager from './HostsManager';
 import TriggersSettings from './TriggersSettings';
 import CentralSettings from './CentralSettings';
@@ -602,6 +603,11 @@ export default function SettingsPanel() {
               </div>
             </div>
           </section>
+
+          <div className="border-t border-[var(--bg-tertiary)]" />
+
+          {/* AI agents (per-session personas) */}
+          <AiAgents />
 
           <div className="border-t border-[var(--bg-tertiary)]" />
 

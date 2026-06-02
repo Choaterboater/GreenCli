@@ -73,6 +73,25 @@ export interface SessionFolder {
   expanded: boolean;
 }
 
+/**
+ * A saved AI assistant persona. Attach one to a session (in the sidebar) to give
+ * that session its own instructions / provider / model. The agent's `instructions`
+ * are appended to the system prompt for that session; `provider`/`model` override
+ * the global AI settings when set.
+ */
+export interface AiAgent {
+  id: string;
+  name: string;
+  /** Persona / extra instructions appended to the system prompt for this session. */
+  instructions: string;
+  /** Optional provider override (empty = use the global provider). */
+  provider?: AiProvider | '';
+  /** Optional model override for that provider (empty = provider default). */
+  model?: string;
+  /** Accent colour for the sidebar chip. */
+  color: string;
+}
+
 export interface TerminalSettings {
   theme: 'dark' | 'light';
   fontSize: number;
@@ -124,6 +143,10 @@ export interface TerminalSettings {
   centralToken: string;
   /** Saved Central accounts/workspaces to switch between. */
   centralAccounts: CentralAccount[];
+  /** Saved AI agent personas the user can attach to sessions. */
+  aiAgents: AiAgent[];
+  /** Map of saved-session id → attached agent id. */
+  sessionAgents: Record<string, string>;
 }
 
 export interface CentralAccount {
@@ -165,6 +188,38 @@ export const AI_CLI_PRESETS: { label: string; command: string }[] = [
   { label: 'Claude', command: 'claude -p' },
   { label: 'Kimi', command: 'kimi --quiet' },
   { label: 'Copilot', command: 'copilot -p' },
+];
+
+/**
+ * Starter AI agents shipped with the app. Stable ids so a session→agent mapping
+ * survives across restarts. Users can edit/delete these or add their own.
+ */
+export const BUILTIN_AGENTS: AiAgent[] = [
+  {
+    id: 'agent-auditor',
+    name: 'Read-only Auditor',
+    instructions:
+      'You are in STRICT READ-ONLY mode. Only run show/diagnostic commands — never configuration, write, or state-changing commands. ' +
+      'If a change is needed, output the exact commands for the user to review but DO NOT execute them. ' +
+      'Prioritise security and best-practice findings, reported as Critical / Warning / Info.',
+    color: '#F59E0B',
+  },
+  {
+    id: 'agent-junos',
+    name: 'Junos Expert',
+    instructions:
+      'Assume the device runs Juniper Junos unless proven otherwise. Use set-style configuration, commit / commit confirmed / rollback, ' +
+      'and Junos operational commands (e.g. show interfaces terse, show route, "| display set", "| no-more"). Prefer Junos idioms over Aruba.',
+    color: '#3B82F6',
+  },
+  {
+    id: 'agent-cx',
+    name: 'Aruba CX Expert',
+    instructions:
+      'Assume the device is an Aruba AOS-CX switch. Use AOS-CX syntax (interface 1/1/1, vlan access/trunk, "write memory") ' +
+      'and prefer the on-box REST API (/rest/v10.09) over scraping CLI output when it is enabled.',
+    color: '#22C55E',
+  },
 ];
 
 export const DEFAULT_SETTINGS: TerminalSettings = {
@@ -216,6 +271,8 @@ export const DEFAULT_SETTINGS: TerminalSettings = {
   centralAuthMode: 'creds',
   centralToken: '',
   centralAccounts: [],
+  aiAgents: BUILTIN_AGENTS,
+  sessionAgents: {},
 };
 
 export interface Token {
