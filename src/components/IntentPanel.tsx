@@ -13,11 +13,13 @@ import {
   ChevronDown,
   ChevronRight,
   PencilLine,
+  LayoutTemplate,
 } from 'lucide-react';
 import { useSessionStore } from '../store/sessionStore';
 import { notify } from '../store/toastStore';
 import { generateId } from '../utils';
 import { Intent, IntentStatus, MatcherKind, evaluateIntent, evaluateAll } from '../utils/intent';
+import { INTENT_PACKS, IntentPack } from '../data/intentPacks';
 
 const blank = (): Intent => ({
   id: '',
@@ -43,6 +45,7 @@ export default function IntentPanel() {
   const [dtText, setDtText] = useState('');
   const [running, setRunning] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [showPacks, setShowPacks] = useState(false);
 
   const refresh = useCallback(() => {
     invoke<Intent[]>('intent_list')
@@ -113,6 +116,26 @@ export default function IntentPanel() {
     refresh();
   };
 
+  // Add a curated assurance pack (Juniper Validated Design / Aruba) as editable intents.
+  const addPack = async (pack: IntentPack) => {
+    for (const t of pack.templates) {
+      const intent: Intent = {
+        id: generateId(),
+        name: t.name,
+        kind: t.kind,
+        description: t.description,
+        command: t.command,
+        matcher: t.matcher,
+        severity: t.severity,
+        scope: { all: pack.deviceTypes.length === 0, tags: [], deviceTypes: [...pack.deviceTypes] },
+      };
+      await invoke('intent_save', { intent }).catch(() => {});
+    }
+    setShowPacks(false);
+    notify.success(`Added "${pack.name}"`, `${pack.templates.length} intents — review and adjust commands/matchers for your platform.`);
+    refresh();
+  };
+
   const runOne = async (intent: Intent) => {
     setRunning(intent.id);
     const result = await evaluateIntent(intent, sessions);
@@ -170,6 +193,9 @@ export default function IntentPanel() {
             {running === '*' ? <Loader2 size={13} className="animate-spin" /> : <Play size={13} />}
             Evaluate all
           </button>
+          <button onClick={() => setShowPacks((v) => !v)} className="flex items-center gap-1.5 h-8 px-2.5 text-[12px] rounded-md bg-[var(--bg-tertiary)] hover:bg-[var(--border-strong)] text-[var(--text-primary)]" title="Add a validated-design assurance pack">
+            <LayoutTemplate size={13} /> Templates
+          </button>
           <button onClick={startAdd} className="flex items-center gap-1.5 h-8 px-2.5 text-[12px] rounded-md bg-[var(--bg-tertiary)] hover:bg-[var(--border-strong)] text-[var(--text-primary)]">
             <Plus size={13} /> Add
           </button>
@@ -177,6 +203,27 @@ export default function IntentPanel() {
             <X size={18} />
           </button>
         </div>
+
+        {/* Assurance pack picker (Juniper Validated Designs + Aruba) */}
+        {showPacks && (
+          <div className="px-5 py-3 border-b border-[var(--border)] bg-[var(--bg-inset)]">
+            <p className="text-[11px] text-[var(--text-muted)] mb-2.5">
+              Add a starter set of checks from a validated design. They're editable — adjust commands/matchers for your platform + software.
+            </p>
+            <div className="space-y-2">
+              {INTENT_PACKS.map((pack) => (
+                <div key={pack.id} className="flex items-center gap-2.5 px-3 py-2 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)]">
+                  <span className="vendor-dot flex-shrink-0" style={{ background: pack.vendor === 'juniper' ? 'var(--vendor-juniper, #84B135)' : 'var(--accent-2, #FF8300)' }} />
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[13px] font-medium text-[var(--text-primary)] truncate">{pack.name}</div>
+                    <div className="text-[10px] text-[var(--text-muted)] truncate">{pack.description} · {pack.templates.length} checks</div>
+                  </div>
+                  <button onClick={() => addPack(pack)} className="btn-accent h-7 px-3 text-[11px] flex-shrink-0">Add pack</button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Add / edit form */}
         {form && (
