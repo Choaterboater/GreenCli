@@ -187,20 +187,17 @@ export default function Terminal({ sessionId, deviceType, onSend }: TerminalProp
 
     const setupListener = async () => {
       try {
-        const unlisten = await listen<{
-          sessionId: string;
-          data: number[];
-        }>('terminal_data', (event) => {
-          if (cancelled) return;
-          if (event.payload.sessionId !== sessionId) return;
+        // Coalesce incoming PTY chunks and process them in ~8ms batches (or sooner
+        // on a big burst). Heavy interactive TUIs (claude/kimi/copilot) emit many
+        // small events; running decode + trigger regex + device-detect + highlight
+        // per 4KB event pegs the main thread and can crash the WebKit renderer.
+        // Batching runs that work once per window instead.
+        const pending: Uint8Array[] = [];
+        let pendingSize = 0;
+        let flushTimer: ReturnType<typeof setTimeout> | null = null;
+
+        const processText = (text: string) => {
           if (!terminalRef.current) return;
-
-          const bytes = new Uint8Array(event.payload.data);
-          // Streaming decode keeps partial multibyte sequences buffered until
-          // the next chunk completes them.
-          const text = decoderRef.current.decode(bytes, { stream: true });
-          if (!text) return;
-
           bufferRef.current += text;
           if (bufferRef.current.length > 5000) {
             bufferRef.current = bufferRef.current.slice(-3000);
@@ -281,9 +278,51 @@ export default function Terminal({ sessionId, deviceType, onSend }: TerminalProp
           } else {
             term.write(text);
           }
-        });
+        };
 
-        unlistenFn = unlisten;
+        const flush = () => {
+          flushTimer = null;
+          if (!terminalRef.current || pending.length === 0) {
+            pending.length = 0;
+            pendingSize = 0;
+            return;
+          }
+          let total = 0;
+          for (const c of pending) total += c.length;
+          const merged = new Uint8Array(total);
+          let off = 0;
+          for (const c of pending) {
+            merged.set(c, off);
+            off += c.length;
+          }
+          pending.length = 0;
+          pendingSize = 0;
+          // Streaming decode keeps partial multibyte sequences buffered across batches.
+          const text = decoderRef.current.decode(merged, { stream: true });
+          if (text) processText(text);
+        };
+
+        const unlisten = await listen<{ sessionId: string; data: number[] }>(
+          'terminal_data',
+          (event) => {
+            if (cancelled) return;
+            if (event.payload.sessionId !== sessionId) return;
+            pending.push(new Uint8Array(event.payload.data));
+            pendingSize += event.payload.data.length;
+            // Flush immediately on a large burst, else batch ~8ms of chunks.
+            if (pendingSize > 256 * 1024) {
+              if (flushTimer != null) clearTimeout(flushTimer);
+              flush();
+            } else if (flushTimer == null) {
+              flushTimer = setTimeout(flush, 8);
+            }
+          }
+        );
+
+        unlistenFn = () => {
+          if (flushTimer != null) clearTimeout(flushTimer);
+          unlisten();
+        };
       } catch (err) {
         console.error('Failed to setup terminal data listener:', err);
       }
