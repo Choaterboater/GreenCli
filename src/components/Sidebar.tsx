@@ -54,6 +54,7 @@ export default function Sidebar({ onConnect }: SidebarProps) {
     addFolder,
     removeFolder,
     removeSessionFromFolder,
+    moveSessionToFolder,
   } = useSessionStore();
   const [query, setQuery] = useState('');
   const [contextMenu, setContextMenu] = useState<{
@@ -62,6 +63,15 @@ export default function Sidebar({ onConnect }: SidebarProps) {
     sessionId: string;
     folderId: string;
   } | null>(null);
+  // Folder currently hovered while dragging a session (for the drop highlight).
+  const [dragOverFolder, setDragOverFolder] = useState<string | null>(null);
+
+  // Move a saved session into another folder (drag-and-drop) + persist.
+  const handleMoveSession = (sessionId: string, fromFolderId: string, toFolderId: string) => {
+    if (fromFolderId === toFolderId) return;
+    moveSessionToFolder(sessionId, fromFolderId, toFolderId);
+    invoke('move_session', { id: sessionId, folderId: toFolderId }).catch(() => {});
+  };
 
   // Live connection state: a saved session whose id matches a connected tab.
   const connectedIds = useMemo(
@@ -239,7 +249,31 @@ export default function Sidebar({ onConnect }: SidebarProps) {
           if (q && visibleItems.length === 0) return null;
           const expanded = folder.expanded || !!q;
           return (
-            <div key={folder.id} className="px-1.5">
+            <div
+              key={folder.id}
+              className={`px-1.5 rounded-md transition-colors ${
+                dragOverFolder === folder.id ? 'bg-[var(--accent-soft)] ring-1 ring-[var(--accent)]' : ''
+              }`}
+              onDragOver={(e) => {
+                // Only react to a session drag.
+                if (!e.dataTransfer.types.includes('application/x-session')) return;
+                e.preventDefault();
+                e.dataTransfer.dropEffect = 'move';
+                if (dragOverFolder !== folder.id) setDragOverFolder(folder.id);
+              }}
+              onDrop={(e) => {
+                const raw = e.dataTransfer.getData('application/x-session');
+                setDragOverFolder(null);
+                if (!raw) return;
+                e.preventDefault();
+                try {
+                  const { sessionId, fromFolderId } = JSON.parse(raw);
+                  handleMoveSession(sessionId, fromFolderId, folder.id);
+                } catch {
+                  /* ignore malformed drag payload */
+                }
+              }}
+            >
               {/* Folder header */}
               <div
                 className="group/folder flex items-center gap-1.5 w-full px-1.5 py-1.5 rounded-md text-left hover:bg-[var(--bg-tertiary)] transition-colors cursor-pointer"
@@ -298,10 +332,19 @@ export default function Sidebar({ onConnect }: SidebarProps) {
                     return (
                       <div
                         key={session.id}
+                        draggable
+                        onDragStart={(e) => {
+                          e.dataTransfer.setData(
+                            'application/x-session',
+                            JSON.stringify({ sessionId: session.id, fromFolderId: folder.id })
+                          );
+                          e.dataTransfer.effectAllowed = 'move';
+                        }}
+                        onDragEnd={() => setDragOverFolder(null)}
                         onContextMenu={(e) => handleContextMenu(e, session.id, folder.id)}
                         onDoubleClick={() => onConnect(session)}
                         className="group flex items-center gap-2 px-2 py-1.5 rounded-md cursor-pointer hover:bg-[var(--bg-tertiary)] transition-colors"
-                        title={`${deviceMeta(session.deviceType).label} · double-click to connect`}
+                        title={`${deviceMeta(session.deviceType).label} · drag to a folder · double-click to connect`}
                       >
                         <DeviceIcon deviceType={session.deviceType} />
                         <div className="flex-1 min-w-0">

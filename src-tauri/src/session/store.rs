@@ -148,6 +148,28 @@ impl SessionStore {
         self.save(&data)
     }
 
+    /// Move a stored session into another folder (extract from wherever it is, then
+    /// push into the target folder), updating its folder_id.
+    pub fn move_session(&mut self, session_id: &str, folder_id: &str) -> Result<(), AppError> {
+        let mut data = self.load()?;
+        let mut moved: Option<StoredSession> = None;
+        for folder in &mut data.folders {
+            if let Some(pos) = folder.items.iter().position(|s| s.id == session_id) {
+                moved = Some(folder.items.remove(pos));
+                break;
+            }
+        }
+        if let Some(mut session) = moved {
+            session.folder_id = Some(folder_id.to_string());
+            if let Some(target) = data.folders.iter_mut().find(|f| f.id == folder_id) {
+                target.items.push(session);
+            } else if let Some(first) = data.folders.first_mut() {
+                first.items.push(session);
+            }
+        }
+        self.save(&data)
+    }
+
     /// Rename a stored session by id (searches every folder + the loose list).
     pub fn rename_session(&mut self, id: &str, name: &str) -> Result<(), AppError> {
         let mut data = self.load()?;

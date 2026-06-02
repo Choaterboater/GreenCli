@@ -734,6 +734,16 @@ async fn rename_session(id: String, name: String, state: State<'_, AppState>) ->
 }
 
 #[tauri::command]
+async fn move_session(
+    id: String,
+    folder_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let mut store = state.session_store.lock().await;
+    store.move_session(&id, &folder_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn set_session_tags(
     id: String,
     tags: Vec<String>,
@@ -1797,6 +1807,7 @@ fn main() {
             update_folder,
             delete_folder,
             create_folder,
+            move_session,
             vault_unlock,
             vault_lock,
             vault_store,
