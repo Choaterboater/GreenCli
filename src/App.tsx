@@ -15,6 +15,7 @@ import {
   Waypoints,
   Target,
   HelpCircle,
+  Network,
 } from 'lucide-react';
 
 import { useSessionStore } from './store/sessionStore';
@@ -43,6 +44,7 @@ import CommandPalette from './components/CommandPalette';
 import TunnelsManager from './components/TunnelsManager';
 import IntentPanel from './components/IntentPanel';
 import HelpPanel from './components/HelpPanel';
+import ApstraBrowser from './components/ApstraBrowser';
 import VaultUnlock from './components/VaultUnlock';
 import BulkRunner from './components/BulkRunner';
 import SftpBrowser from './components/SftpBrowser';
@@ -619,6 +621,13 @@ function App() {
               <Target size={15} />
             </button>
             <button
+              onClick={() => useSessionStore.getState().setShowApstra(true)}
+              className="flex items-center justify-center w-8 h-8 rounded-md text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] transition-colors"
+              title="Apstra blueprints (rendered configs)"
+            >
+              <Network size={15} />
+            </button>
+            <button
               onClick={() => useSessionStore.getState().setShowHelp(true)}
               className="flex items-center justify-center w-8 h-8 rounded-md text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] transition-colors"
               title="Help & documentation (F1)"
@@ -885,6 +894,7 @@ function App() {
       <TunnelsManager />
       <IntentPanel />
       <HelpPanel />
+      <ApstraBrowser />
       <QuickConnect onConnect={handleConnect} />
       <SshAuthDialog onAuthenticate={handleAuthenticate} />
       <SettingsPanel />
