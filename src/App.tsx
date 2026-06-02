@@ -19,6 +19,7 @@ import {
 
 import { useSessionStore } from './store/sessionStore';
 import { useSettingsStore } from './store/settingsStore';
+import { loadSecrets, persistSecrets } from './utils/secretVault';
 import { useTheme } from './hooks/useTheme';
 import { ConnectionConfig, Protocol, DeviceType } from './types';
 import { generateId } from './utils';
@@ -216,6 +217,36 @@ function App() {
       }).catch((e) => notify.error('Apstra configuration failed', String(e)));
     }
   }, [apstraHost, apstraUsername, apstraPassword, verifyDeviceTls]);
+
+  // ── Vault-backed persistence of Central / Apstra secrets ──
+  // These secrets are kept out of localStorage; when the vault is unlocked we load
+  // them from the encrypted vault into the in-memory settings (once), then persist
+  // any changes back to the vault. While the vault is locked they live in memory
+  // only for the session (same model as saved SSH passwords).
+  const centralAccounts = useSettingsStore((s) => s.centralAccounts);
+  const secretsLoadedRef = useRef(false);
+  const suppressSecretPersistRef = useRef(false);
+
+  useEffect(() => {
+    if (!vaultUnlocked || secretsLoadedRef.current) return;
+    secretsLoadedRef.current = true;
+    suppressSecretPersistRef.current = true;
+    (async () => {
+      const patch = await loadSecrets(useSettingsStore.getState());
+      useSettingsStore.getState().updateSettings(patch);
+      // Persist the merged result so a secret typed before unlock is saved too.
+      await persistSecrets(useSettingsStore.getState());
+      suppressSecretPersistRef.current = false;
+    })();
+  }, [vaultUnlocked]);
+
+  useEffect(() => {
+    if (!vaultUnlocked || suppressSecretPersistRef.current) return;
+    const t = setTimeout(() => {
+      persistSecrets(useSettingsStore.getState());
+    }, 400);
+    return () => clearTimeout(t);
+  }, [vaultUnlocked, centralClientSecret, centralToken, apstraPassword, centralAccounts]);
 
   const activeSession = sessions.find((s) => s.sessionId === activeSessionId);
 

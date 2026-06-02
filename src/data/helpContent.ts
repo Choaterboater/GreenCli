@@ -98,6 +98,7 @@ export const HELP_TOPICS: HelpTopic[] = [
     keywords: ['vault', 'password', 'master', 'encrypt', 'argon2', 'aes', 'credentials', 'secret'],
     blocks: [
       { kind: 'p', text: 'Unlock the vault with a master password; saved SSH passwords are encrypted (AES-256-GCM, Argon2id key) and offered automatically on the next connect.' },
+      { kind: 'p', text: 'Aruba Central / Apstra **secrets** are also stored in the vault (encrypted) once it is unlocked, so they survive a restart. While the vault is locked they live in memory for the session only.' },
       { kind: 'note', text: 'A corrupt/incompatible `vault.enc` is never auto-overwritten — it errors and is preserved so nothing is silently lost.' },
     ],
   },
