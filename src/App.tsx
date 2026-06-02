@@ -14,6 +14,7 @@ import {
   TerminalSquare,
   Waypoints,
   Target,
+  HelpCircle,
 } from 'lucide-react';
 
 import { useSessionStore } from './store/sessionStore';
@@ -40,6 +41,7 @@ import SnippetsMenu from './components/SnippetsMenu';
 import CommandPalette from './components/CommandPalette';
 import TunnelsManager from './components/TunnelsManager';
 import IntentPanel from './components/IntentPanel';
+import HelpPanel from './components/HelpPanel';
 import VaultUnlock from './components/VaultUnlock';
 import BulkRunner from './components/BulkRunner';
 import SftpBrowser from './components/SftpBrowser';
@@ -227,6 +229,12 @@ function App() {
   // Keyboard shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      // F1: Help & documentation
+      if (e.key === 'F1') {
+        e.preventDefault();
+        const s = useSessionStore.getState();
+        s.setShowHelp(!s.showHelp);
+      }
       // Ctrl+K: Command Palette
       if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
         e.preventDefault();
@@ -567,6 +575,13 @@ function App() {
               <Target size={15} />
             </button>
             <button
+              onClick={() => useSessionStore.getState().setShowHelp(true)}
+              className="flex items-center justify-center w-8 h-8 rounded-md text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] transition-colors"
+              title="Help & documentation (F1)"
+            >
+              <HelpCircle size={15} />
+            </button>
+            <button
               onClick={toggleBroadcast}
               className={`flex items-center justify-center w-8 h-8 rounded-md transition-colors ${
                 broadcastMode
@@ -825,6 +840,7 @@ function App() {
       <CommandPalette onConnect={handleConnect} onLocalShell={openLocalShell} />
       <TunnelsManager />
       <IntentPanel />
+      <HelpPanel />
       <QuickConnect onConnect={handleConnect} />
       <SshAuthDialog onAuthenticate={handleAuthenticate} />
       <SettingsPanel />

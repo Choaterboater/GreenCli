@@ -76,6 +76,7 @@ await capture('05-network-intent.png', clickTitle('Network intent / desired-stat
 await capture('06-settings.png', openSettingsAndScroll());
 await capture('07-settings-ai.png', openSettingsAndScroll('Assistant tools'));
 await capture('08-settings-device-rest.png', openSettingsAndScroll('Verify device TLS'));
+await capture('09-help.png', press('F1'));
 
 await browser.close();
 console.log('\nDone. See docs/screenshots/. Reference them in docs like:');

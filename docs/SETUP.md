@@ -8,6 +8,10 @@ This guide covers installing, running, and configuring **every** feature. For a
 feature overview see the top-level [`README.md`](../README.md); for the work log see
 [`ROADMAP.md`](../ROADMAP.md).
 
+> 💡 **In-app help:** the same documentation is built into the app — press **`F1`**
+> (or the **?** in the title bar, or `Ctrl+K` → "Help") to open a searchable Help panel
+> with per-topic quick actions and an "Ask the AI" button.
+
 ---
 
 ## 1. Prerequisites
@@ -251,6 +255,7 @@ live compliance:
 | `Ctrl+W` | Close active tab |
 | `Ctrl+F` | Search terminal |
 | `Ctrl+,` | Settings |
+| `F1` | Help & documentation |
 | `Ctrl+B` | Toggle sidebar |
 
 ---
@@ -315,3 +320,7 @@ window with your OS screenshot tool (macOS `⌘⇧4`, Windows `Win+Shift+S`).
 | AI tools (Settings) | Device REST + TLS (Settings) |
 |---------------------|------------------------------|
 | ![Assistant tools](screenshots/07-settings-ai.png) | ![Device REST security](screenshots/08-settings-device-rest.png) |
+
+| In-app Help (F1) | |
+|------------------|--|
+| ![Help & Documentation](screenshots/09-help.png) | |
