@@ -37,6 +37,8 @@ import {
   DEFAULT_ENDPOINTS,
   AOSS_ENDPOINTS,
   AOS8_ENDPOINTS,
+  JUNOS_ENDPOINTS,
+  MIST_ENDPOINTS,
   CENTRAL_ENDPOINTS,
   APSTRA_ENDPOINTS,
   CENTRAL_DOCS,
@@ -51,6 +53,7 @@ const DEVICE_KINDS: Record<
   cx: { label: 'AOS-CX', base: (h) => `https://${h}/rest/v10.09`, endpoints: DEFAULT_ENDPOINTS, loginCmd: 'api_login' },
   aoss: { label: 'AOS-S', base: (h) => `https://${h}/rest/v7`, endpoints: AOSS_ENDPOINTS, loginCmd: 'aoss_login' },
   aos8: { label: 'AOS-8', base: (h) => `https://${h}:4343`, endpoints: AOS8_ENDPOINTS, loginCmd: 'aos8_login' },
+  junos: { label: 'Junos', base: (h) => `https://${h}:3443`, endpoints: JUNOS_ENDPOINTS, loginCmd: 'junos_login' },
 };
 
 /** Map a connected session's device type to a device REST flavour (best effort). */
@@ -59,6 +62,7 @@ function kindForDeviceType(dt?: string): DeviceApiKind | null {
     case 'aruba-cx': return 'cx';
     case 'aruba-aos-s': return 'aoss';
     case 'aruba-controller': return 'aos8';
+    case 'juniper-junos': return 'junos';
     default: return null;
   }
 }
@@ -169,7 +173,7 @@ export default function ApiExplorer() {
   const [newConnPass, setNewConnPass] = useState('');
   // Default this per-login checkbox from the global "Verify device TLS" setting.
   const [verifyTls, setVerifyTls] = useState(verifyDeviceTls);
-  const [target, setTarget] = useState<'device' | 'central' | 'apstra'>('device');
+  const [target, setTarget] = useState<'device' | 'central' | 'apstra' | 'mist'>('device');
   // Which on-box device REST flavour the "Device REST" target speaks.
   const [deviceKind, setDeviceKind] = useState<DeviceApiKind>('cx');
   const bodyRef = useRef<HTMLTextAreaElement>(null);
@@ -204,6 +208,8 @@ export default function ApiExplorer() {
       ? CENTRAL_ENDPOINTS
       : target === 'apstra'
       ? APSTRA_ENDPOINTS
+      : target === 'mist'
+      ? MIST_ENDPOINTS
       : DEVICE_KINDS[deviceKind].endpoints;
   const groupedEndpoints = activeEndpoints.reduce((acc, ep) => {
     if (!acc[ep.category]) acc[ep.category] = [];
@@ -257,6 +263,12 @@ export default function ApiExplorer() {
               path: endpointPath,
               body,
             })
+          : target === 'mist'
+          ? await invoke<{ status: number; body: unknown }>('mist_request', {
+              method,
+              path: endpointPath,
+              body,
+            })
           : await (async () => {
               if (!activeConnection) {
                 throw new Error('Connect to a device first (use the Connect button above).');
@@ -273,6 +285,15 @@ export default function ApiExplorer() {
               if (kind === 'aoss') {
                 // AOS-S client prepends /rest/v7 to a relative path.
                 return invoke<{ status: number; body: unknown }>('aoss_request', {
+                  host: activeConnection.host,
+                  method,
+                  path: endpointPath,
+                  body,
+                });
+              }
+              if (kind === 'junos') {
+                // Junos REST: /rpc/<rpc-name>, HTTP Basic (handled in the backend client).
+                return invoke<{ status: number; body: unknown }>('junos_request', {
                   host: activeConnection.host,
                   method,
                   path: endpointPath,
@@ -427,7 +448,7 @@ export default function ApiExplorer() {
 
       {/* Target toggle: on-box REST · Aruba Central · Juniper Apstra */}
       <div className="flex gap-1 px-3 py-2 border-b border-[var(--bg-tertiary)] bg-[var(--bg-secondary)]">
-        {(['device', 'central', 'apstra'] as const).map((t) => (
+        {(['device', 'central', 'apstra', 'mist'] as const).map((t) => (
           <button
             key={t}
             onClick={() => setTarget(t)}
@@ -437,7 +458,7 @@ export default function ApiExplorer() {
                 : 'bg-[var(--bg-primary)] border-[var(--border)] text-[var(--text-secondary)]'
             }`}
           >
-            {t === 'device' ? 'Device REST' : t === 'central' ? 'Aruba Central' : 'Juniper (Apstra)'}
+            {t === 'device' ? 'Device REST' : t === 'central' ? 'Aruba Central' : t === 'apstra' ? 'Apstra' : 'Mist'}
           </button>
         ))}
       </div>
@@ -445,7 +466,7 @@ export default function ApiExplorer() {
       {/* Device REST flavour: AOS-CX (switch) · AOS-S (switch) · AOS-8 (controller) */}
       {target === 'device' && (
         <div className="flex gap-1 px-3 py-2 border-b border-[var(--bg-tertiary)] bg-[var(--bg-secondary)]">
-          {(['cx', 'aoss', 'aos8'] as const).map((k) => (
+          {(['cx', 'aoss', 'aos8', 'junos'] as const).map((k) => (
             <button
               key={k}
               onClick={() => {
@@ -469,6 +490,24 @@ export default function ApiExplorer() {
         <div className="px-3 py-2 border-b border-[var(--bg-tertiary)] bg-[var(--bg-secondary)] text-[10px] text-[var(--text-muted)]">
           AOS-8 controllers are queried by <span className="text-[var(--text-secondary)]">showcommand</span> — pick a
           <code className="text-[var(--accent)] mx-1">show …</code>command (or type your own in the endpoint field).
+        </div>
+      )}
+
+      {/* Junos hint */}
+      {target === 'device' && deviceKind === 'junos' && (
+        <div className="px-3 py-2 border-b border-[var(--bg-tertiary)] bg-[var(--bg-secondary)] text-[10px] text-[var(--text-muted)]">
+          Junos EX/QFX switches use the optional REST API on port 3443 — enable it with
+          <code className="text-[var(--accent)] mx-1">set system services rest https</code>. RPCs live at
+          <code className="text-[var(--accent)] mx-1">/rpc/…</code>. (Otherwise use the terminal / CLI.)
+        </div>
+      )}
+
+      {/* Mist hint */}
+      {target === 'mist' && (
+        <div className="px-3 py-2 border-b border-[var(--bg-tertiary)] bg-[var(--bg-secondary)] text-[10px] text-[var(--text-muted)]">
+          Uses the API token from <span className="text-[var(--text-secondary)]">Settings → Juniper Mist</span>. Replace
+          <code className="text-[var(--accent)] mx-1">{'{org_id}'}</code>/
+          <code className="text-[var(--accent)] mx-1">{'{site_id}'}</code>in paths (run "Whoami" first to find them).
         </div>
       )}
 

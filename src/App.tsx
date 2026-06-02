@@ -218,6 +218,19 @@ function App() {
     }
   }, [apstraHost, apstraUsername, apstraPassword, verifyDeviceTls]);
 
+  // Push Juniper Mist cloud config to the backend whenever it changes.
+  const mistBaseUrl = useSettingsStore((s) => s.mistBaseUrl);
+  const mistToken = useSettingsStore((s) => s.mistToken);
+  useEffect(() => {
+    if (mistToken) {
+      invoke('mist_configure', {
+        baseUrl: mistBaseUrl || 'https://api.mist.com',
+        token: mistToken,
+        acceptInvalidCerts: false,
+      }).catch(() => {});
+    }
+  }, [mistBaseUrl, mistToken]);
+
   // ── Vault-backed persistence of Central / Apstra secrets ──
   // These secrets are kept out of localStorage; when the vault is unlocked we load
   // them from the encrypted vault into the in-memory settings (once), then persist
@@ -246,7 +259,7 @@ function App() {
       persistSecrets(useSettingsStore.getState());
     }, 400);
     return () => clearTimeout(t);
-  }, [vaultUnlocked, centralClientSecret, centralToken, apstraPassword, centralAccounts]);
+  }, [vaultUnlocked, centralClientSecret, centralToken, apstraPassword, mistToken, centralAccounts]);
 
   const activeSession = sessions.find((s) => s.sessionId === activeSessionId);
 

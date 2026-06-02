@@ -12,6 +12,7 @@ import { TerminalSettings, CentralAccount } from '../types';
 const K_CLIENT_SECRET = 'set:central:clientSecret';
 const K_TOKEN = 'set:central:token';
 const K_APSTRA = 'set:apstra:password';
+const K_MIST = 'set:mist:token';
 const acctSecretKey = (id: string) => `set:central-acct:${id}:clientSecret`;
 const acctTokenKey = (id: string) => `set:central-acct:${id}:token`;
 
@@ -37,6 +38,7 @@ export async function persistSecrets(s: TerminalSettings): Promise<void> {
   await put(K_CLIENT_SECRET, s.centralClientSecret || '');
   await put(K_TOKEN, s.centralToken || '');
   await put(K_APSTRA, s.apstraPassword || '');
+  await put(K_MIST, s.mistToken || '');
   for (const a of s.centralAccounts || []) {
     await put(acctSecretKey(a.id), a.clientSecret || '');
     await put(acctTokenKey(a.id), a.token || '');
@@ -48,10 +50,11 @@ export async function persistSecrets(s: TerminalSettings): Promise<void> {
  *  A vault value wins only when present, so a secret typed BEFORE unlock isn't
  *  clobbered by an empty vault entry (it gets persisted right after, by the caller). */
 export async function loadSecrets(s: TerminalSettings): Promise<Partial<TerminalSettings>> {
-  const [vSecret, vToken, vApstra] = await Promise.all([
+  const [vSecret, vToken, vApstra, vMist] = await Promise.all([
     get(K_CLIENT_SECRET),
     get(K_TOKEN),
     get(K_APSTRA),
+    get(K_MIST),
   ]);
   const centralAccounts: CentralAccount[] = await Promise.all(
     (s.centralAccounts || []).map(async (a) => ({
@@ -64,6 +67,7 @@ export async function loadSecrets(s: TerminalSettings): Promise<Partial<Terminal
     centralClientSecret: vSecret || s.centralClientSecret,
     centralToken: vToken || s.centralToken,
     apstraPassword: vApstra || s.apstraPassword,
+    mistToken: vMist || s.mistToken,
     centralAccounts,
   };
 }

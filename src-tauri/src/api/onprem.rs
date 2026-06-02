@@ -317,3 +317,133 @@ impl AossClient {
         Ok((resp.status().as_u16(), resp.text().await.unwrap_or_default()))
     }
 }
+
+// ─── Juniper Mist Cloud ───
+//
+// Cloud REST API with token auth (`Authorization: Token <token>`). The base host
+// is region-specific (api.mist.com, api.eu.mist.com, api.gc1.mist.com, …).
+pub struct MistClient {
+    client: reqwest::Client,
+    base: String,
+    token: String,
+}
+
+impl MistClient {
+    pub fn new(base_url: String, token: String, accept_invalid_certs: bool) -> Self {
+        let trimmed = base_url.trim().trim_end_matches('/');
+        let base = if trimmed.starts_with("http") {
+            trimmed.to_string()
+        } else if trimmed.is_empty() {
+            "https://api.mist.com".to_string()
+        } else {
+            format!("https://{}", trimmed)
+        };
+        Self {
+            client: http(accept_invalid_certs),
+            base,
+            token,
+        }
+    }
+
+    pub async fn request(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<&str>,
+    ) -> Result<(u16, String), AppError> {
+        let url = if path.starts_with("http") {
+            path.to_string()
+        } else {
+            format!("{}{}", self.base, path)
+        };
+        let mut rb = match method.to_uppercase().as_str() {
+            "GET" => self.client.get(&url),
+            "POST" => self.client.post(&url),
+            "PUT" => self.client.put(&url),
+            "DELETE" => self.client.delete(&url),
+            other => return Err(AppError::ApiError(format!("Unsupported method: {}", other))),
+        };
+        rb = rb.header("Authorization", format!("Token {}", self.token));
+        if let Some(b) = body {
+            if !b.trim().is_empty() {
+                rb = rb.header("Content-Type", "application/json").body(b.to_string());
+            }
+        }
+        let resp = rb.send().await.map_err(|e| AppError::ApiError(e.to_string()))?;
+        Ok((resp.status().as_u16(), resp.text().await.unwrap_or_default()))
+    }
+}
+
+// ─── Juniper Junos REST API (jsd) ───
+//
+// OPTIONAL on-box REST, only active after `set system services rest http`/`https`
+// on the device. RPCs are reached at `/rpc/<rpc-name>`; HTTP Basic auth per
+// request; `Accept: application/json` yields JSON. Default https port 3443.
+pub struct JunosClient {
+    client: reqwest::Client,
+    base: String,
+    user: String,
+    pass: String,
+}
+
+impl JunosClient {
+    pub fn new(
+        host: String,
+        port: u16,
+        user: String,
+        pass: String,
+        accept_invalid_certs: bool,
+    ) -> Self {
+        Self {
+            client: http(accept_invalid_certs),
+            base: format!("https://{}:{}", host, port),
+            user,
+            pass,
+        }
+    }
+
+    /// Validate credentials + that REST is enabled, by fetching software-information.
+    pub async fn login(&self) -> Result<(), AppError> {
+        let (status, body) = self.request("GET", "/rpc/get-software-information", None).await?;
+        if (200..300).contains(&status) {
+            Ok(())
+        } else {
+            Err(AppError::AuthError(format!(
+                "Junos REST login failed (HTTP {}). Is `set system services rest` enabled on the device? {}",
+                status,
+                body.chars().take(120).collect::<String>()
+            )))
+        }
+    }
+
+    pub async fn request(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<&str>,
+    ) -> Result<(u16, String), AppError> {
+        let url = if path.starts_with("http") {
+            path.to_string()
+        } else {
+            format!("{}{}", self.base, path)
+        };
+        let mut rb = match method.to_uppercase().as_str() {
+            "GET" => self.client.get(&url),
+            "POST" => self.client.post(&url),
+            "PUT" => self.client.put(&url),
+            "DELETE" => self.client.delete(&url),
+            other => return Err(AppError::ApiError(format!("Unsupported method: {}", other))),
+        };
+        rb = rb
+            .basic_auth(&self.user, Some(&self.pass))
+            .header("Accept", "application/json");
+        if let Some(b) = body {
+            if !b.trim().is_empty() {
+                // RPC parameters are XML.
+                rb = rb.header("Content-Type", "application/xml").body(b.to_string());
+            }
+        }
+        let resp = rb.send().await.map_err(|e| AppError::ApiError(e.to_string()))?;
+        Ok((resp.status().as_u16(), resp.text().await.unwrap_or_default()))
+    }
+}

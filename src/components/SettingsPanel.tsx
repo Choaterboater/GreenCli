@@ -630,6 +630,36 @@ export default function SettingsPanel() {
             </div>
           </section>
 
+          {/* Juniper Mist (cloud) */}
+          <section id="set-mist">
+            <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-3">Juniper Mist</h3>
+            <div className="space-y-3">
+              <div>
+                <label className="block text-xs text-[var(--text-secondary)] mb-1.5">API base (region)</label>
+                <input
+                  value={settings.mistBaseUrl}
+                  onChange={(e) => settings.updateSettings({ mistBaseUrl: e.target.value })}
+                  placeholder="https://api.mist.com  (or api.eu.mist.com, api.gc1.mist.com …)"
+                  className="input-field w-full h-8 px-2 text-sm font-mono"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-[var(--text-secondary)] mb-1.5">API token</label>
+                <input
+                  type="password"
+                  value={settings.mistToken}
+                  onChange={(e) => settings.updateSettings({ mistToken: e.target.value })}
+                  placeholder="Mist API token"
+                  className="input-field w-full h-8 px-2 text-sm font-mono"
+                />
+              </div>
+              <p className="text-[10px] text-[var(--text-muted)]">
+                Mist cloud REST (token auth). Create a token in the Mist portal (My Account → API Tokens).
+                Use it from the <strong>API Explorer → Mist</strong> target.
+              </p>
+            </div>
+          </section>
+
           {/* Device REST security */}
           <section id="set-tls">
             <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-3">Device REST security</h3>
