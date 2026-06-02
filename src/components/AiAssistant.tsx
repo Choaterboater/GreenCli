@@ -278,6 +278,12 @@ function mcpSafeName(server: string, tool: string): string {
 
 // ─── Execute a tool ───
 
+// Cap a tool result and mark when it was truncated, so the model knows data was
+// cut rather than treating a sliced (now-invalid) JSON document as complete.
+function capToolResult(s: string, max = 12000): string {
+  return s.length > max ? `${s.slice(0, max)}\n…(truncated ${s.length - max} more chars)` : s;
+}
+
 async function executeTool(
   name: string,
   args: Record<string, unknown>,
@@ -285,6 +291,14 @@ async function executeTool(
   mcpResolve?: McpResolve,
   shouldCancel?: () => boolean
 ): Promise<string> {
+  // Re-resolve the live session: a multi-step run can outlast the user switching
+  // tabs or the device disconnecting, and the value captured at send time would
+  // otherwise keep targeting a stale/dead session id.
+  if (activeSession) {
+    activeSession =
+      useSessionStore.getState().sessions.find((s) => s.sessionId === activeSession!.sessionId) ??
+      activeSession;
+  }
   // Route MCP tools to the connected server.
   const mcp = mcpResolve?.get(name);
   if (mcp) {
@@ -303,12 +317,12 @@ async function executeTool(
     const body = (args.body as string) || undefined;
     const doReq = () => invoke('api_request', { host, method, path, body });
     try {
-      return JSON.stringify(await doReq(), null, 2).slice(0, 12000);
+      return capToolResult(JSON.stringify(await doReq(), null, 2));
     } catch (e) {
       // Probably not logged into the REST API yet — try once with SSH creds.
       if (activeSession && (await tryDeviceLogin(activeSession, 'api_login'))) {
         try {
-          return JSON.stringify(await doReq(), null, 2).slice(0, 12000);
+          return capToolResult(JSON.stringify(await doReq(), null, 2));
         } catch (e2) {
           return `Aruba CX REST error: ${e2}`;
         }
@@ -323,11 +337,11 @@ async function executeTool(
     const command = (args.command as string) || '';
     const doReq = () => invoke('aos8_show', { host, command });
     try {
-      return JSON.stringify(await doReq(), null, 2).slice(0, 12000);
+      return capToolResult(JSON.stringify(await doReq(), null, 2));
     } catch (e) {
       if (activeSession && (await tryDeviceLogin(activeSession, 'aos8_login'))) {
         try {
-          return JSON.stringify(await doReq(), null, 2).slice(0, 12000);
+          return capToolResult(JSON.stringify(await doReq(), null, 2));
         } catch (e2) {
           return `AOS-8 REST error: ${e2}`;
         }
@@ -344,11 +358,11 @@ async function executeTool(
     const body = (args.body as string) || undefined;
     const doReq = () => invoke('aoss_request', { host, method, path, body });
     try {
-      return JSON.stringify(await doReq(), null, 2).slice(0, 12000);
+      return capToolResult(JSON.stringify(await doReq(), null, 2));
     } catch (e) {
       if (activeSession && (await tryDeviceLogin(activeSession, 'aoss_login'))) {
         try {
-          return JSON.stringify(await doReq(), null, 2).slice(0, 12000);
+          return capToolResult(JSON.stringify(await doReq(), null, 2));
         } catch (e2) {
           return `AOS-S REST error: ${e2}`;
         }
@@ -362,7 +376,7 @@ async function executeTool(
     const path = (args.path as string) || '';
     const body = (args.body as string) || undefined;
     try {
-      return JSON.stringify(await invoke('apstra_request', { method, path, body }), null, 2).slice(0, 12000);
+      return capToolResult(JSON.stringify(await invoke('apstra_request', { method, path, body }), null, 2));
     } catch (e) {
       return `Apstra error: ${e}. Configure the controller in Settings → Juniper Apstra.`;
     }
@@ -407,6 +421,17 @@ async function executeTool(
 let streamCounter = 0;
 const nextStreamId = () => `aistream-${++streamCounter}`;
 
+// Stream ids currently in flight, so Stop can actually abort the backend egress
+// (ai_cancel_stream), which then emits ai_done and lets each stream clean up its
+// listeners. Without this, Stop only stopped the UI from reading while Rust kept
+// generating (and being billed) and the event listeners leaked.
+const activeStreamIds = new Set<string>();
+function cancelActiveAiStreams() {
+  for (const id of activeStreamIds) {
+    invoke('ai_cancel_stream', { streamId: id }).catch(() => {});
+  }
+}
+
 interface AnthropicStreamResult {
   text: string;
   toolUses: { id: string; name: string; input: Record<string, unknown> }[];
@@ -418,11 +443,15 @@ interface AnthropicStreamResult {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function streamAnthropicOnce(body: any, onText: (t: string) => void): Promise<AnthropicStreamResult> {
   const streamId = nextStreamId();
+  activeStreamIds.add(streamId);
   const blocks: Record<number, { type: string; text: string; id?: string; name?: string; json: string }> = {};
   let stopReason = 'end_turn';
   let textSoFar = '';
   const unlisteners: Array<() => void> = [];
-  const cleanup = () => unlisteners.forEach((u) => u());
+  const cleanup = () => {
+    activeStreamIds.delete(streamId);
+    unlisteners.forEach((u) => u());
+  };
 
   const finish = (): AnthropicStreamResult => {
     const text = Object.values(blocks).filter((b) => b.type === 'text').map((b) => b.text).join('');
@@ -505,11 +534,15 @@ interface OpenAiStreamResult {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function streamOpenAiOnce(provider: string, baseUrl: string | undefined, body: any, onText: (t: string) => void): Promise<OpenAiStreamResult> {
   const streamId = nextStreamId();
+  activeStreamIds.add(streamId);
   let content = '';
   let finishReason = 'stop';
   const toolCalls: Record<number, { id: string; name: string; args: string }> = {};
   const unlisteners: Array<() => void> = [];
-  const cleanup = () => unlisteners.forEach((u) => u());
+  const cleanup = () => {
+    activeStreamIds.delete(streamId);
+    unlisteners.forEach((u) => u());
+  };
 
   return new Promise<OpenAiStreamResult>((resolve, reject) => {
     Promise.all([
@@ -542,7 +575,15 @@ async function streamOpenAiOnce(provider: string, baseUrl: string | undefined, b
       listen<{ streamId: string }>('ai_done', (e) => {
         if (e.payload.streamId !== streamId) return;
         cleanup();
-        resolve({ content, toolCalls: Object.values(toolCalls), finishReason });
+        // Some OpenAI-compatible backends (Ollama, some OpenRouter models) stream
+        // tool calls with no `id`. Synthesize a stable one so the follow-up
+        // assistant tool_calls[].id and the tool result tool_call_id still match
+        // (an empty id is rejected as a malformed/unmatched tool call).
+        resolve({
+          content,
+          toolCalls: Object.values(toolCalls).map((tc, i) => ({ ...tc, id: tc.id || `call_${i}` })),
+          finishReason,
+        });
       }),
       listen<{ streamId: string; error: string }>('ai_error', (e) => {
         if (e.payload.streamId !== streamId) return;
@@ -862,7 +903,7 @@ export default function AiAssistant() {
   const [messages, setMessages] = useState<DisplayMessage[]>([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [expandedTools, setExpandedTools] = useState<Set<number>>(new Set());
+  const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set());
   const [hasKey, setHasKey] = useState(false);
   const [mcpToolCount, setMcpToolCount] = useState(0);
   const [maximized, setMaximized] = useState(false);
@@ -965,6 +1006,9 @@ export default function AiAssistant() {
     // Build conversation history for the API (user/assistant only; skip app-level error messages)
     const apiMessages: AnthropicMessage[] = [...messages, userMsg]
       .filter((m) => m.role === 'user' || (m.role === 'assistant' && !m.isError))
+      // Drop empty assistant turns (e.g. a bubble left by an early Stop) — some
+      // providers reject an assistant message with empty content.
+      .filter((m) => m.role === 'user' || m.content.trim() !== '')
       .map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content }));
 
     const deviceContext = buildDeviceContext(activeSession);
@@ -1095,10 +1139,18 @@ export default function AiAssistant() {
     }
   }, [messages, isLoading, settings, activeSession]);
 
-  // Abandon the in-flight request (its background result will be ignored).
+  // Abandon the in-flight request: bump the guard, abort the backend stream(s) so
+  // the provider stops generating, and drop a trailing empty assistant bubble left
+  // by a Stop pressed before any token streamed in.
   const cancelRequest = useCallback(() => {
     requestSeq.current++;
     setIsLoading(false);
+    cancelActiveAiStreams();
+    setMessages((prev) =>
+      prev.length && prev[prev.length - 1].role === 'assistant' && !prev[prev.length - 1].content
+        ? prev.slice(0, -1)
+        : prev
+    );
   }, []);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -1108,7 +1160,7 @@ export default function AiAssistant() {
     }
   };
 
-  const toggleTool = (idx: number) => {
+  const toggleTool = (idx: string) => {
     setExpandedTools((prev) => {
       const next = new Set(prev);
       if (next.has(idx)) next.delete(idx);
@@ -1277,7 +1329,7 @@ export default function AiAssistant() {
                       {msg.toolExecutions.map((te, ti) => (
                         <div key={ti} className="border border-[var(--border)] rounded-lg overflow-hidden">
                           <button
-                            onClick={() => toggleTool(i * 100 + ti)}
+                            onClick={() => toggleTool(`${i}:${ti}`)}
                             className="w-full flex items-center gap-2 px-2.5 py-1.5 bg-[var(--bg-secondary)] hover:bg-[var(--bg-tertiary)] text-left transition-colors"
                           >
                             <Terminal size={10} className="text-[#58a6ff]" />
@@ -1285,13 +1337,13 @@ export default function AiAssistant() {
                               {(te.args.command as string) || te.name}
                             </code>
                             <CheckCircle2 size={9} className="text-[#3fb950] flex-shrink-0" />
-                            {expandedTools.has(i * 100 + ti) ? (
+                            {expandedTools.has(`${i}:${ti}`) ? (
                               <ChevronDown size={9} className="text-[var(--text-muted)]" />
                             ) : (
                               <ChevronRight size={9} className="text-[var(--text-muted)]" />
                             )}
                           </button>
-                          {expandedTools.has(i * 100 + ti) && (
+                          {expandedTools.has(`${i}:${ti}`) && (
                             <div className="px-2.5 py-2 bg-[var(--bg-primary)] border-t border-[var(--border)] max-h-64 overflow-auto">
                               <pre className="text-[10px] text-[var(--text-secondary)] font-mono whitespace-pre-wrap break-words">{te.result}</pre>
                             </div>
