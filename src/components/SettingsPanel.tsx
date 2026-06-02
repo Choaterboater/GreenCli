@@ -3,6 +3,7 @@ import { X, RotateCcw, Moon, Sun, Eye, EyeOff, CheckCircle2 } from 'lucide-react
 import { invoke } from '@tauri-apps/api/tauri';
 import { useSessionStore } from '../store/sessionStore';
 import { useSettingsStore } from '../store/settingsStore';
+import { askConfirm } from '../store/dialogStore';
 import { AI_PROVIDERS, AI_CLI_PRESETS, TerminalSettings } from '../types';
 import McpServers from './McpServers';
 import HostsManager from './HostsManager';
@@ -51,7 +52,16 @@ export default function SettingsPanel() {
           <h2 className="text-lg font-semibold text-[var(--text-primary)]">Settings</h2>
           <div className="flex items-center gap-2">
             <button
-              onClick={() => settings.resetToDefaults()}
+              onClick={async () => {
+                const ok = await askConfirm({
+                  title: 'Reset all settings?',
+                  message:
+                    'This clears every saved Central account, the Apstra config, AI references, and all tool toggles back to defaults. This cannot be undone.',
+                  confirmLabel: 'Reset',
+                  danger: true,
+                });
+                if (ok) settings.resetToDefaults();
+              }}
               className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs bg-[var(--bg-tertiary)] hover:bg-[var(--border)] text-[var(--text-secondary)] rounded-lg transition-colors"
             >
               <RotateCcw size={12} />
