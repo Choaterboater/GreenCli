@@ -16,7 +16,7 @@ mod telnet;
 mod vault;
 
 use ai::{AiChatRequest, AiKeyStore};
-use api::{Aos8Client, ApstraClient, ArubaCxClient, AossClient};
+use api::{Aos8Client, ApstraClient, ArubaCxClient, AossClient, JunosClient, MistClient};
 use central::CentralClient;
 use error::AppError;
 use local::{LocalConfig, LocalConnection};
@@ -57,6 +57,10 @@ struct AppState {
     aoss_clients: Arc<AsyncMutex<HashMap<String, AossClient>>>,
     /// Juniper Apstra fabric controller (single configured target).
     apstra: Arc<AsyncMutex<Option<ApstraClient>>>,
+    /// Juniper Mist cloud (single configured target, token auth).
+    mist: Arc<AsyncMutex<Option<MistClient>>>,
+    /// Juniper Junos REST clients keyed by host (HTTP Basic, optional on-box REST).
+    junos_clients: Arc<AsyncMutex<HashMap<String, JunosClient>>>,
     central: Arc<AsyncMutex<CentralClient>>,
     ai_keys: AiKeyStore,
     /// Durable network-intent / desired-state store.
@@ -87,6 +91,8 @@ impl AppState {
             aos8_clients: Arc::new(AsyncMutex::new(HashMap::new())),
             aoss_clients: Arc::new(AsyncMutex::new(HashMap::new())),
             apstra: Arc::new(AsyncMutex::new(None)),
+            mist: Arc::new(AsyncMutex::new(None)),
+            junos_clients: Arc::new(AsyncMutex::new(HashMap::new())),
             central: Arc::new(AsyncMutex::new(CentralClient::new())),
             ai_keys: AiKeyStore::new(app_dir.clone()),
             intents: intent::IntentStore::new(app_dir.clone()),
@@ -162,6 +168,9 @@ pub struct ApiLoginRequest {
     /// "https://192.168.1.10/rest/v10.13". Absent => https://{host}/rest/v10.09.
     #[serde(default)]
     pub base_url: Option<String>,
+    /// Optional REST port (used by Junos REST, default 3443).
+    #[serde(default)]
+    pub port: Option<u16>,
 }
 
 // ─── Helpers ───
@@ -1410,6 +1419,77 @@ async fn apstra_request(
     Ok(serde_json::json!({ "status": status, "body": parsed }))
 }
 
+// ─── Juniper Mist Cloud ───
+
+#[tauri::command]
+async fn mist_configure(
+    base_url: String,
+    token: String,
+    accept_invalid_certs: Option<bool>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let client = MistClient::new(base_url, token, accept_invalid_certs.unwrap_or(false));
+    *state.mist.lock().await = Some(client);
+    Ok(())
+}
+
+#[tauri::command]
+async fn mist_request(
+    method: String,
+    path: String,
+    body: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    let guard = state.mist.lock().await;
+    let client = guard
+        .as_ref()
+        .ok_or("Mist not configured. Add a token in Settings → Juniper Mist.")?;
+    let (status, text) = client
+        .request(&method, &path, body.as_deref())
+        .await
+        .map_err(|e| e.to_string())?;
+    let parsed: serde_json::Value =
+        serde_json::from_str(&text).unwrap_or(serde_json::Value::String(text));
+    Ok(serde_json::json!({ "status": status, "body": parsed }))
+}
+
+// ─── Juniper Junos REST API ───
+
+#[tauri::command]
+async fn junos_login(request: ApiLoginRequest, state: State<'_, AppState>) -> Result<bool, String> {
+    let client = JunosClient::new(
+        request.host.clone(),
+        request.port.unwrap_or(3443),
+        request.username,
+        request.password,
+        request.accept_invalid_certs,
+    );
+    client.login().await.map_err(|e| e.to_string())?;
+    state.junos_clients.lock().await.insert(request.host, client);
+    Ok(true)
+}
+
+#[tauri::command]
+async fn junos_request(
+    host: String,
+    method: String,
+    path: String,
+    body: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    let clients = state.junos_clients.lock().await;
+    let client = clients
+        .get(&host)
+        .ok_or("Not logged in to this Junos device (Junos REST must be enabled).")?;
+    let (status, text) = client
+        .request(&method, &path, body.as_deref())
+        .await
+        .map_err(|e| e.to_string())?;
+    let parsed: serde_json::Value =
+        serde_json::from_str(&text).unwrap_or(serde_json::Value::String(text));
+    Ok(serde_json::json!({ "status": status, "body": parsed }))
+}
+
 #[tauri::command]
 async fn api_execute_cli(
     host: String,
@@ -1750,6 +1830,10 @@ fn main() {
             aoss_request,
             apstra_configure,
             apstra_request,
+            mist_configure,
+            mist_request,
+            junos_login,
+            junos_request,
             central_configure,
             central_set_token,
             central_is_configured,

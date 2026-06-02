@@ -70,6 +70,7 @@ export const useSettingsStore = create<SettingsState>()(
           centralToken: _t,
           centralClientSecret: _cs,
           apstraPassword: _ap,
+          mistToken: _mt,
           centralAccounts,
           ...rest
         } = state;

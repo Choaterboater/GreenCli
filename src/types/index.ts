@@ -112,6 +112,9 @@ export interface TerminalSettings {
   apstraHost: string;
   apstraUsername: string;
   apstraPassword: string;
+  // Juniper Mist cloud — region API base + API token.
+  mistBaseUrl: string;
+  mistToken: string;
   // Aruba Central (cloud) API — active account.
   centralBaseUrl: string;
   centralClientId: string;
@@ -192,6 +195,8 @@ export const DEFAULT_SETTINGS: TerminalSettings = {
   apstraHost: '',
   apstraUsername: '',
   apstraPassword: '',
+  mistBaseUrl: 'https://api.mist.com',
+  mistToken: '',
   aiReferences: `# Best-practice references the AI should apply (edit/extend freely)
 # Add your org's standards, golden-config rules, or doc links here.
 
@@ -385,7 +390,7 @@ export interface ApiEndpoint {
 }
 
 /** Which on-box device REST flavour a connection speaks. */
-export type DeviceApiKind = 'cx' | 'aoss' | 'aos8';
+export type DeviceApiKind = 'cx' | 'aoss' | 'aos8' | 'junos';
 
 export interface ApiConnection {
   id: string;
@@ -453,6 +458,37 @@ export const AOS8_ENDPOINTS: ApiEndpoint[] = [
   { name: 'show ip interface brief', method: 'GET', path: 'show ip interface brief', description: 'L3 interfaces', category: 'Interfaces' },
   { name: 'show datapath session', method: 'GET', path: 'show datapath session table', description: 'Datapath sessions', category: 'Show' },
   { name: 'show log all', method: 'GET', path: 'show log all 50', description: 'Recent log lines', category: 'Show' },
+];
+
+// Juniper Junos REST API (jsd). RPCs at /rpc/<rpc-name>. Requires
+// `set system services rest http`/`https` enabled on the device.
+export const JUNOS_ENDPOINTS: ApiEndpoint[] = [
+  { name: 'Software Info', method: 'GET', path: '/rpc/get-software-information', description: 'Version / model', category: 'System' },
+  { name: 'System Uptime', method: 'GET', path: '/rpc/get-system-uptime-information', description: 'Uptime', category: 'System' },
+  { name: 'Chassis Inventory', method: 'GET', path: '/rpc/get-chassis-inventory', description: 'Hardware inventory', category: 'System' },
+  { name: 'Interfaces', method: 'GET', path: '/rpc/get-interface-information', description: 'Interface state', category: 'Interfaces' },
+  { name: 'Interfaces (terse)', method: 'GET', path: '/rpc/get-interface-information?terse=', description: 'Terse interface list', category: 'Interfaces' },
+  { name: 'VLANs', method: 'GET', path: '/rpc/get-vlan-information', description: 'VLAN info', category: 'VLANs' },
+  { name: 'Ethernet Switching Table', method: 'GET', path: '/rpc/get-ethernet-switching-table-information', description: 'MAC/forwarding table', category: 'MAC' },
+  { name: 'ARP Table', method: 'GET', path: '/rpc/get-arp-table-information', description: 'ARP entries', category: 'Show' },
+  { name: 'LLDP Neighbors', method: 'GET', path: '/rpc/get-lldp-neighbors-information', description: 'LLDP neighbors', category: 'LLDP' },
+  { name: 'Route Table', method: 'GET', path: '/rpc/get-route-information', description: 'Routing table', category: 'Show' },
+  { name: 'Configuration', method: 'GET', path: '/rpc/get-configuration', description: 'Running configuration', category: 'Configuration' },
+];
+
+// Juniper Mist Cloud API. Token auth; replace {org_id}/{site_id} with real ids
+// (run "Whoami" first to find them).
+export const MIST_ENDPOINTS: ApiEndpoint[] = [
+  { name: 'Whoami (self)', method: 'GET', path: '/api/v1/self', description: 'Your account + org/site ids', category: 'System' },
+  { name: 'Org Info', method: 'GET', path: '/api/v1/orgs/{org_id}', description: 'Organization details', category: 'System' },
+  { name: 'Org Sites', method: 'GET', path: '/api/v1/orgs/{org_id}/sites', description: 'Sites in the org', category: 'Sites' },
+  { name: 'Org Inventory', method: 'GET', path: '/api/v1/orgs/{org_id}/inventory', description: 'Claimed devices', category: 'Monitoring' },
+  { name: 'Org Devices', method: 'GET', path: '/api/v1/orgs/{org_id}/devices', description: 'Devices in the org', category: 'Monitoring' },
+  { name: 'Site Devices', method: 'GET', path: '/api/v1/sites/{site_id}/devices', description: 'Devices at a site', category: 'Monitoring' },
+  { name: 'Site Device Stats', method: 'GET', path: '/api/v1/sites/{site_id}/stats/devices', description: 'Live device stats', category: 'Monitoring' },
+  { name: 'Site Clients', method: 'GET', path: '/api/v1/sites/{site_id}/stats/clients', description: 'Connected clients', category: 'Clients' },
+  { name: 'Site WLANs', method: 'GET', path: '/api/v1/sites/{site_id}/wlans', description: 'WLANs at a site', category: 'Config Groups' },
+  { name: 'Org Alarms', method: 'GET', path: '/api/v1/orgs/{org_id}/alarms/search', description: 'Recent alarms', category: 'Alerts' },
 ];
 
 // Aruba Central API endpoint catalog.
