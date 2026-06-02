@@ -113,27 +113,12 @@ export default function Terminal({ sessionId, deviceType, onSend }: TerminalProp
 
     term.open(containerRef.current);
 
-    // Load the WebGL renderer asynchronously (canvas fallback on failure).
-    // Doing it here — rather than in a separate effect keyed on the loaded
-    // addon — avoids disposing/recreating the whole terminal mid-session.
-    let disposed = false;
-    import('xterm-addon-webgl')
-      .then(({ WebglAddon }) => {
-        if (disposed || !terminalRef.current) return;
-        try {
-          const webgl = new WebglAddon();
-          // If the GPU context is lost (sleep/resume, driver reset), dispose the
-          // addon so xterm transparently falls back to the canvas/DOM renderer
-          // instead of going permanently blank.
-          webgl.onContextLoss(() => {
-            webgl.dispose();
-          });
-          term.loadAddon(webgl);
-        } catch {
-          /* WebGL unsupported — stay on canvas */
-        }
-      })
-      .catch(() => {});
+    // NOTE: the WebGL renderer (xterm-addon-webgl) is intentionally NOT loaded.
+    // On WKWebView it hard-crashes the GPU/content process under heavy terminal
+    // load, or when a terminal is disposed mid-render (e.g. switching away from a
+    // busy claude/kimi TUI to open another shell) — a hard crash the onContextLoss
+    // fallback can't catch. xterm's default renderer is stable and, combined with
+    // the output coalescing here + in the backend forwarder, fast enough.
 
     fitAddon.fit();
 
@@ -166,7 +151,6 @@ export default function Terminal({ sessionId, deviceType, onSend }: TerminalProp
     const initialFit = setTimeout(handleResize, 100);
 
     return () => {
-      disposed = true;
       clearTimeout(initialFit); // don't fit()/resize a disposed xterm after a fast unmount
       window.removeEventListener('resize', handleResize);
       ro.disconnect();
