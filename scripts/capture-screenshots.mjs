@@ -34,41 +34,49 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const browser = await chromium.launch();
 const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2 });
 
-try {
-  await page.goto(URL, { waitUntil: 'networkidle', timeout: 15000 });
-} catch (e) {
-  console.error(`Could not load ${URL} — is the dev server running? (npm run dev)`);
-  await browser.close();
-  process.exit(1);
-}
-await sleep(1200); // let fonts/animations settle
-
-const shot = async (name) => {
+// Reload before every shot so each screenshot starts from a clean state (no panel
+// focus / lingering modal leaking between captures), then run an optional setup.
+async function capture(name, setup) {
+  try {
+    await page.goto(URL, { waitUntil: 'networkidle', timeout: 15000 });
+  } catch {
+    console.error(`Could not load ${URL} — is the dev server running? (npm run dev)`);
+    await browser.close();
+    process.exit(1);
+  }
+  await sleep(1000); // fonts / mount / animations
+  if (setup) {
+    try {
+      await setup();
+    } catch (e) {
+      console.warn(`(${name}: setup failed — ${String(e).split('\n')[0]})`);
+    }
+  }
+  await sleep(600);
   const file = join(outDir, name);
   await page.screenshot({ path: file });
   console.log('saved', file);
+}
+
+const press = (key) => async () => { await page.keyboard.press(key); };
+const clickTitle = (title) => async () => {
+  await page.locator(`[title="${title}"]`).first().click({ timeout: 3000 });
+};
+const openSettingsAndScroll = (text) => async () => {
+  await page.keyboard.press('Control+Comma');
+  await sleep(500);
+  if (text) await page.getByText(text, { exact: false }).first().scrollIntoViewIfNeeded({ timeout: 2000 });
 };
 
-// 1. Home / empty state
-await shot('01-home.png');
-
-// 2. Quick Connect (Ctrl+T)
-await page.keyboard.press('Control+t');
-await sleep(600);
-await shot('02-quick-connect.png');
-await page.keyboard.press('Escape');
-await sleep(300);
-
-// 3. Settings (Ctrl+,)
-await page.keyboard.press('Control+Comma');
-await sleep(600);
-await shot('03-settings.png');
-await page.keyboard.press('Escape');
-await sleep(300);
-
-// Add more screens here as needed — e.g. click the title-bar AI / Intent / API
-// buttons by their title attribute, then call shot('04-....png').
+await capture('01-home.png');
+await capture('02-quick-connect.png', press('Control+t'));
+await capture('03-ai-assistant.png', press('Control+Shift+I'));
+await capture('04-api-explorer.png', press('Control+Shift+A'));
+await capture('05-network-intent.png', clickTitle('Network intent / desired-state assurance'));
+await capture('06-settings.png', openSettingsAndScroll());
+await capture('07-settings-ai.png', openSettingsAndScroll('Assistant tools'));
+await capture('08-settings-device-rest.png', openSettingsAndScroll('Verify device TLS'));
 
 await browser.close();
-console.log('\nDone. See docs/screenshots/. Reference them in docs with:');
+console.log('\nDone. See docs/screenshots/. Reference them in docs like:');
 console.log('  ![Home](screenshots/01-home.png)');
