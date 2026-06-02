@@ -112,6 +112,12 @@ function App() {
   const refitTerminals = () =>
     setTimeout(() => window.dispatchEvent(new Event('resize')), 60);
 
+  // When the visible terminal changes (tab switch / split toggle), refit it — the
+  // one that was hidden had its fit skipped while it had zero size.
+  useEffect(() => {
+    refitTerminals();
+  }, [activeSessionId, splitView, secondarySessionId]);
+
   const [broadcastInput, setBroadcastInput] = useState('');
 
   // Detect macOS desktop build so the title bar can clear the native traffic
@@ -731,65 +737,63 @@ function App() {
             <div className="flex-1 flex flex-col min-w-0">
               <div className="flex-1 relative overflow-hidden">
                 {activeSession ? (
-                  canSplit && secondarySession ? (
-                    <div className="flex h-full w-full">
-                      {/* Left pane: active session */}
-                      <div className="flex-1 min-w-0 border-r border-[var(--bg-tertiary)]">
-                        <Terminal
-                          key={activeSession.sessionId}
-                          sessionId={activeSession.sessionId}
-                          deviceType={activeSession.config.deviceType}
-                          onSend={(data) => {
-                            invoke('send_data', { sessionId: activeSession.sessionId, data }).catch(console.error);
+                  // Every session's terminal stays MOUNTED — we only show/hide it via
+                  // CSS — so switching tabs preserves each terminal's screen + scrollback
+                  // (and avoids disposing an xterm mid-render). Active = left/full,
+                  // secondary = right half in split, the rest are display:none.
+                  <div className="h-full w-full relative">
+                    {canSplit && secondarySession && (
+                      <div className="absolute top-0 right-0 w-1/2 z-10 flex items-center gap-2 h-7 px-2 bg-[var(--bg-secondary)] border-b border-l border-[var(--bg-tertiary)]">
+                        <span className="text-[10px] text-[var(--text-secondary)]">Pane 2</span>
+                        <select
+                          value={secondarySession.sessionId}
+                          onChange={(e) => {
+                            setSecondarySession(e.target.value);
+                            refitTerminals();
                           }}
-                        />
+                          className="flex-1 text-[11px] bg-[var(--bg-primary)] border border-[var(--border)] rounded px-1 py-0.5 text-[var(--text-primary)] focus:outline-none focus:border-[#58a6ff]"
+                        >
+                          {sessions
+                            .filter((s) => s.sessionId !== activeSessionId)
+                            .map((s) => (
+                              <option key={s.sessionId} value={s.sessionId}>
+                                {s.config.name || s.config.host || 'Session'}
+                              </option>
+                            ))}
+                        </select>
                       </div>
-                      {/* Right pane: selectable secondary session */}
-                      <div className="flex-1 min-w-0 flex flex-col">
-                        <div className="flex items-center gap-2 h-7 px-2 bg-[var(--bg-secondary)] border-b border-[var(--bg-tertiary)] flex-shrink-0">
-                          <span className="text-[10px] text-[var(--text-secondary)]">Pane 2</span>
-                          <select
-                            value={secondarySession.sessionId}
-                            onChange={(e) => {
-                              setSecondarySession(e.target.value);
-                              refitTerminals();
-                            }}
-                            className="flex-1 text-[11px] bg-[var(--bg-primary)] border border-[var(--border)] rounded px-1 py-0.5 text-[var(--text-primary)] focus:outline-none focus:border-[#58a6ff]"
-                          >
-                            {sessions
-                              .filter((s) => s.sessionId !== activeSessionId)
-                              .map((s) => (
-                                <option key={s.sessionId} value={s.sessionId}>
-                                  {s.config.name || s.config.host || 'Session'}
-                                </option>
-                              ))}
-                          </select>
-                        </div>
-                        <div className="flex-1 min-h-0">
+                    )}
+                    {sessions.map((s) => {
+                      const isActive = s.sessionId === activeSessionId;
+                      const isSecondary =
+                        canSplit && !isActive && secondarySession?.sessionId === s.sessionId;
+                      const visible = isActive || isSecondary;
+                      const style: React.CSSProperties = !visible
+                        ? { display: 'none' }
+                        : canSplit
+                        ? {
+                            position: 'absolute',
+                            top: isSecondary ? 28 : 0,
+                            bottom: 0,
+                            left: isActive ? 0 : 'auto',
+                            right: isSecondary ? 0 : 'auto',
+                            width: '50%',
+                            borderRight: isActive ? '1px solid var(--bg-tertiary)' : undefined,
+                          }
+                        : { position: 'absolute', inset: 0 };
+                      return (
+                        <div key={s.sessionId} style={style}>
                           <Terminal
-                            key={secondarySession.sessionId}
-                            sessionId={secondarySession.sessionId}
-                            deviceType={secondarySession.config.deviceType}
+                            sessionId={s.sessionId}
+                            deviceType={s.config.deviceType}
                             onSend={(data) => {
-                              invoke('send_data', { sessionId: secondarySession.sessionId, data }).catch(console.error);
+                              invoke('send_data', { sessionId: s.sessionId, data }).catch(console.error);
                             }}
                           />
                         </div>
-                      </div>
-                    </div>
-                  ) : (
-                    <Terminal
-                      key={activeSession.sessionId}
-                      sessionId={activeSession.sessionId}
-                      deviceType={activeSession.config.deviceType}
-                      onSend={(data) => {
-                        invoke('send_data', {
-                          sessionId: activeSession.sessionId,
-                          data,
-                        }).catch(console.error);
-                      }}
-                    />
-                  )
+                      );
+                    })}
+                  </div>
                 ) : (
                   <div className="flex flex-col items-center justify-center h-full px-6 text-center animate-fade-in">
                     <div

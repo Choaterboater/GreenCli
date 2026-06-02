@@ -138,6 +138,11 @@ export default function Terminal({ sessionId, deviceType, onSend }: TerminalProp
 
     // Handle resize
     const handleResize = () => {
+      // Skip when the terminal is hidden (a background tab) — fitting a 0-size
+      // container would corrupt cols/rows. The ResizeObserver re-fires (0→size)
+      // when it becomes visible again.
+      const el = containerRef.current;
+      if (!el || el.clientWidth === 0 || el.clientHeight === 0) return;
       fitAddon.fit();
       const { cols, rows } = term;
       // Notify backend of resize
