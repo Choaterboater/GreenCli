@@ -234,7 +234,18 @@ fn spawn_forwarder(
         // Pre-create the output buffer so write_and_emit (which only appends to an
         // existing entry) has somewhere to write, and so disconnect's remove() is final.
         buffers.lock().await.entry(session_id.clone()).or_default();
-        while let Some(data) = rx.recv().await {
+        while let Some(first) = rx.recv().await {
+            // Coalesce a burst of small PTY chunks into one event. Interactive TUIs
+            // (claude/kimi) emit many tiny writes; one big terminal_data event is far
+            // cheaper to serialize/parse than dozens, which keeps two heavy shells
+            // from overwhelming the webview.
+            let mut data = first;
+            while data.len() < 64 * 1024 {
+                match rx.try_recv() {
+                    Ok(more) => data.extend_from_slice(&more),
+                    Err(_) => break,
+                }
+            }
             write_and_emit(&app, &buffers, &logs, &session_id, data).await;
         }
         // The underlying stream (telnet/serial/local PTY) ended. If the session is
@@ -339,7 +350,15 @@ fn spawn_ssh_supervisor(
 
             // Forward until the stream closes.
             let started = std::time::Instant::now();
-            while let Some(data) = rx.recv().await {
+            while let Some(first) = rx.recv().await {
+                // Coalesce bursts (see spawn_forwarder) so heavy output doesn't flood IPC.
+                let mut data = first;
+                while data.len() < 64 * 1024 {
+                    match rx.try_recv() {
+                        Ok(more) => data.extend_from_slice(&more),
+                        Err(_) => break,
+                    }
+                }
                 write_and_emit(&app, &buffers, &logs, &session_id, data).await;
             }
 
