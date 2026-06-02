@@ -4,9 +4,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+/// One session's connection, individually lockable so per-session network I/O
+/// doesn't serialize behind the shared session-map lock.
+type Conn = Arc<Mutex<Box<dyn Connection>>>;
+
 /// Manages active terminal sessions
 pub struct SessionManager {
-    sessions: Arc<Mutex<HashMap<String, Box<dyn Connection>>>>,
+    sessions: Arc<Mutex<HashMap<String, Conn>>>,
 }
 
 impl SessionManager {
@@ -28,28 +32,41 @@ impl SessionManager {
                 session_id, connection_id
             )));
         }
-        let mut sessions = self.sessions.lock().await;
-        sessions.insert(connection_id, connection);
+        // Insert the new connection. If one already existed for this id (reconnect
+        // / replace), disconnect the OLD one cleanly — Drop alone never sends an
+        // SSH application-level disconnect, leaving the server session lingering.
+        let old = {
+            let mut sessions = self.sessions.lock().await;
+            sessions.insert(connection_id, Arc::new(Mutex::new(connection)))
+        };
+        if let Some(old) = old {
+            let _ = old.lock().await.disconnect().await;
+        }
         Ok(())
     }
 
     pub async fn remove_session(&self, session_id: &str) -> Result<(), AppError> {
-        let mut sessions = self.sessions.lock().await;
-        if let Some(mut connection) = sessions.remove(session_id) {
-            connection.disconnect().await?;
+        // Remove under the map lock, then disconnect with only the per-session lock.
+        let conn = self.sessions.lock().await.remove(session_id);
+        if let Some(conn) = conn {
+            conn.lock().await.disconnect().await?;
         }
         Ok(())
     }
 
     pub async fn send_to_session(&self, session_id: &str, data: &[u8]) -> Result<(), AppError> {
-        let sessions = self.sessions.lock().await;
-        let connection = sessions
-            .get(session_id)
-            .ok_or_else(|| AppError::SessionNotFound(session_id.to_string()))?;
-        if !connection.is_connected() {
+        // Clone the per-session handle and DROP the map lock before the network
+        // write, so a slow/half-dead peer can't block input to every other session.
+        let conn = {
+            let sessions = self.sessions.lock().await;
+            sessions.get(session_id).cloned()
+        }
+        .ok_or_else(|| AppError::SessionNotFound(session_id.to_string()))?;
+        let conn = conn.lock().await;
+        if !conn.is_connected() {
             return Err(AppError::SessionNotFound(session_id.to_string()));
         }
-        connection.send(data).await
+        conn.send(data).await
     }
 
     pub async fn resize_session(
@@ -58,14 +75,16 @@ impl SessionManager {
         cols: u16,
         rows: u16,
     ) -> Result<(), AppError> {
-        let sessions = self.sessions.lock().await;
-        let connection = sessions
-            .get(session_id)
-            .ok_or_else(|| AppError::SessionNotFound(session_id.to_string()))?;
-        if !connection.is_connected() {
+        let conn = {
+            let sessions = self.sessions.lock().await;
+            sessions.get(session_id).cloned()
+        }
+        .ok_or_else(|| AppError::SessionNotFound(session_id.to_string()))?;
+        let conn = conn.lock().await;
+        if !conn.is_connected() {
             return Err(AppError::SessionNotFound(session_id.to_string()));
         }
-        connection.resize(cols, rows).await
+        conn.resize(cols, rows).await
     }
 
     /// Whether a session is currently registered (used by the reconnect
@@ -80,8 +99,12 @@ impl SessionManager {
         &self,
         session_id: &str,
     ) -> Option<Arc<Mutex<russh::client::Handle<crate::ssh::client::ClientHandler>>>> {
-        let sessions = self.sessions.lock().await;
-        sessions.get(session_id).and_then(|c| c.ssh_handle())
+        let conn = {
+            let sessions = self.sessions.lock().await;
+            sessions.get(session_id).cloned()
+        }?;
+        let c = conn.lock().await;
+        c.ssh_handle()
     }
 }
 

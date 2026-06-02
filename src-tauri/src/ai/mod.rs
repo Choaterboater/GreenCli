@@ -16,19 +16,35 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+
+/// Restrict a file to owner-only read/write (0600) on Unix; no-op elsewhere.
+fn restrict_perms(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+}
 
 /// Simple on-disk key store kept in the app data dir (outside the webview, so
 /// not reachable from JS/localStorage). Not as strong as the password vault,
 /// but it avoids the vault's master-password unlock friction for AI keys.
 pub struct AiKeyStore {
     path: PathBuf,
+    /// Serializes the read-modify-write in `set` so concurrent saves don't clobber.
+    lock: Mutex<()>,
 }
 
 impl AiKeyStore {
     pub fn new(app_dir: PathBuf) -> Self {
         Self {
             path: app_dir.join("ai_keys.json"),
+            lock: Mutex::new(()),
         }
     }
 
@@ -41,10 +57,13 @@ impl AiKeyStore {
 
     fn save(&self, m: &HashMap<String, String>) -> Result<(), AppError> {
         fs::write(&self.path, serde_json::to_vec(m)?).map_err(AppError::from)?;
+        // Raw provider API keys — keep the file owner-only.
+        restrict_perms(&self.path);
         Ok(())
     }
 
     pub fn set(&self, provider: &str, key: &str) -> Result<(), AppError> {
+        let _g = self.lock.lock().unwrap_or_else(|e| e.into_inner());
         let mut m = self.load();
         if key.is_empty() {
             m.remove(provider);
@@ -202,12 +221,16 @@ pub async fn chat_stream(
     req: AiChatRequest,
     app: &tauri::AppHandle,
     stream_id: &str,
+    cancel: Arc<AtomicBool>,
 ) -> Result<(), AppError> {
     use tauri::Manager;
 
-    let overall = if req.provider == "ollama" { 600 } else { 300 };
+    // Use an IDLE (between-bytes) read timeout rather than an overall deadline:
+    // a stream that keeps producing tokens must never be cut off mid-response,
+    // but a genuinely stalled connection still fails. (reqwest 0.12 read_timeout.)
+    let idle = if req.provider == "ollama" { 600 } else { 300 };
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(overall))
+        .read_timeout(std::time::Duration::from_secs(idle))
         .connect_timeout(std::time::Duration::from_secs(12))
         .build()
         .map_err(AppError::from)?;
@@ -239,23 +262,70 @@ pub async fn chat_stream(
         return Err(AppError::ApiError(msg));
     }
 
-    let mut buf = String::new();
-    while let Some(bytes) = resp.chunk().await.map_err(|e| AppError::ApiError(e.to_string()))? {
-        buf.push_str(&String::from_utf8_lossy(&bytes));
-        while let Some(idx) = buf.find('\n') {
-            let line: String = buf.drain(..=idx).collect();
-            let line = line.trim_end();
-            if let Some(data) = line.strip_prefix("data:") {
-                let data = data.trim();
-                if data.is_empty() || data == "[DONE]" {
-                    continue;
-                }
-                let _ = app.emit_all(
-                    "ai_chunk",
-                    serde_json::json!({ "streamId": stream_id, "data": data }),
-                );
+    // Buffer raw BYTES across chunks and only decode COMPLETE lines: reqwest's
+    // .chunk() splits on arbitrary network frame boundaries, so a multi-byte UTF-8
+    // char (emoji/CJK/box-drawing/smart-quote — common in CLI output and tool JSON)
+    // can straddle two chunks. A '\n' byte (0x0A) never appears inside a multi-byte
+    // sequence, so a full line is always valid UTF-8 and decodes losslessly.
+    let mut buf: Vec<u8> = Vec::new();
+    let mut emitted_any = false;
+    let mut saw_done = false;
+
+    // Emit a single `data:` line if present; returns true if a content chunk went out.
+    let emit_line = |line_bytes: &[u8], saw_done: &mut bool| -> bool {
+        let line = String::from_utf8_lossy(line_bytes);
+        let line = line.trim_end();
+        if let Some(data) = line.strip_prefix("data:") {
+            let data = data.trim();
+            if data.is_empty() {
+                return false;
             }
+            if data == "[DONE]" {
+                *saw_done = true;
+                return false;
+            }
+            let _ = app.emit_all(
+                "ai_chunk",
+                serde_json::json!({ "streamId": stream_id, "data": data }),
+            );
+            return true;
         }
+        false
+    };
+
+    while let Some(bytes) = resp.chunk().await.map_err(|e| AppError::ApiError(e.to_string()))? {
+        if cancel.load(Ordering::Relaxed) {
+            break;
+        }
+        buf.extend_from_slice(&bytes);
+        while let Some(pos) = buf.iter().position(|&b| b == b'\n') {
+            let line_bytes: Vec<u8> = buf.drain(..=pos).collect();
+            emitted_any |= emit_line(&line_bytes, &mut saw_done);
+        }
+    }
+    // Flush a final `data:` line that arrived without a trailing newline (some
+    // servers/proxies omit it when the connection closes right after the last event).
+    if !cancel.load(Ordering::Relaxed) && !buf.is_empty() {
+        emitted_any |= emit_line(&buf, &mut saw_done);
+    }
+
+    if cancel.load(Ordering::Relaxed) {
+        // Cancelled: still emit done so the frontend tears down its listeners.
+        let _ = app.emit_all("ai_done", serde_json::json!({ "streamId": stream_id }));
+        return Ok(());
+    }
+    if !emitted_any && !saw_done {
+        // 200 OK but nothing streamable (captive portal/proxy HTML, a non-stream JSON
+        // body, or a provider that ignored stream:true) — surface it instead of a
+        // silent blank reply.
+        let _ = app.emit_all(
+            "ai_error",
+            serde_json::json!({
+                "streamId": stream_id,
+                "error": "Provider returned a 200 response with no streamable content. Check the model name and endpoint URL."
+            }),
+        );
+        return Ok(());
     }
     let _ = app.emit_all("ai_done", serde_json::json!({ "streamId": stream_id }));
     Ok(())

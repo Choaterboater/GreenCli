@@ -46,11 +46,11 @@ impl VaultStorage {
         self.vault_path.exists()
     }
 
-    /// Load the envelope. Returns `Ok(None)` for a missing/empty file (a vault
-    /// that has never been initialized). Returns `Ok(None)` as well if the file
-    /// fails to parse as a current-version envelope — pre-v1 vaults were written
-    /// by a broken KDF and contain undecryptable data, so they are treated as
-    /// uninitialized rather than erroring forever.
+    /// Load the envelope. Returns `Ok(None)` ONLY for a genuinely missing/empty
+    /// file (a vault that has never been initialized). A file that is present but
+    /// unparseable, or a future/unknown version, returns `Err` — the caller MUST
+    /// NOT treat that as "uninitialized" and overwrite it, or a truncated/corrupt
+    /// vault (e.g. from a crash mid-write) would silently destroy every secret.
     pub fn load(&self) -> Result<Option<Envelope>, AppError> {
         if !self.exists() {
             return Ok(None);
@@ -61,13 +61,29 @@ impl VaultStorage {
         }
         match serde_json::from_slice::<Envelope>(&raw) {
             Ok(env) if env.v == VERSION => Ok(Some(env)),
-            _ => Ok(None),
+            Ok(env) => Err(AppError::VaultError(format!(
+                "Vault file is version {} but this build supports version {}. \
+                 Refusing to overwrite it — back up and remove vault.enc to start fresh.",
+                env.v, VERSION
+            ))),
+            Err(e) => Err(AppError::VaultError(format!(
+                "Vault file is present but unreadable ({e}). Refusing to overwrite it — \
+                 your data may still be recoverable; back up vault.enc before removing it."
+            ))),
         }
     }
 
+    /// Persist the envelope atomically: write a sibling temp file (0600), then
+    /// rename it over the target. Rename is atomic on the same filesystem, so a
+    /// reader never sees a torn file and a crash mid-write leaves the previous
+    /// good vault intact.
     fn save(&self, env: &Envelope) -> Result<(), AppError> {
         let json = serde_json::to_vec(env).map_err(AppError::from)?;
-        fs::write(&self.vault_path, json).map_err(AppError::from)?;
+        let tmp = self.vault_path.with_extension("enc.tmp");
+        fs::write(&tmp, &json).map_err(AppError::from)?;
+        restrict_perms(&tmp);
+        fs::rename(&tmp, &self.vault_path).map_err(AppError::from)?;
+        restrict_perms(&self.vault_path);
         Ok(())
     }
 
@@ -117,9 +133,12 @@ impl VaultStorage {
         if data_ct.is_empty() {
             return Ok(HashMap::new());
         }
-        let decrypted = cipher.decrypt(&data_ct)?;
-        let json_str = String::from_utf8(decrypted)
-            .map_err(|e| AppError::VaultError(format!("UTF-8 decode: {}", e)))?;
+        // Wrap the decrypted plaintext + JSON so they are wiped from memory on drop
+        // rather than lingering as freed-but-unzeroed secret bytes.
+        let json_str = zeroize::Zeroizing::new(
+            String::from_utf8(cipher.decrypt(&data_ct)?)
+                .map_err(|e| AppError::VaultError(format!("UTF-8 decode: {}", e)))?,
+        );
         let data: HashMap<String, String> =
             serde_json::from_str(&json_str).map_err(AppError::from)?;
         Ok(data)
@@ -159,3 +178,14 @@ impl VaultStorage {
         self.save(&env)
     }
 }
+
+/// Restrict a file to owner-only read/write (0600) on Unix; no-op elsewhere.
+/// The vault holds encrypted secrets, but the salt/check token and the file's
+/// mere presence shouldn't be group/world-readable.
+#[cfg(unix)]
+fn restrict_perms(path: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+}
+#[cfg(not(unix))]
+fn restrict_perms(_path: &std::path::Path) {}

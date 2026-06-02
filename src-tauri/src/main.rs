@@ -68,6 +68,9 @@ struct AppState {
     session_logs: Arc<AsyncMutex<HashMap<String, std::fs::File>>>,
     /// Active SSH port-forwards keyed by forward id (meta + listener task).
     forwards: Arc<AsyncMutex<HashMap<String, (ssh::forward::ForwardMeta, tokio::task::JoinHandle<()>)>>>,
+    /// Cancellation flags for in-flight AI streams, keyed by stream id, so the
+    /// frontend Stop button can actually abort the backend request/egress.
+    ai_cancels: Arc<AsyncMutex<HashMap<String, Arc<std::sync::atomic::AtomicBool>>>>,
     app_dir: std::path::PathBuf,
 }
 
@@ -90,6 +93,7 @@ impl AppState {
             terminal_buffers: Arc::new(AsyncMutex::new(HashMap::new())),
             session_logs: Arc::new(AsyncMutex::new(HashMap::new())),
             forwards: Arc::new(AsyncMutex::new(HashMap::new())),
+            ai_cancels: Arc::new(AsyncMutex::new(HashMap::new())),
             app_dir,
         })
     }
@@ -178,15 +182,20 @@ async fn write_and_emit(
 ) {
     {
         let mut map = buffers.lock().await;
-        let buf = map.entry(session_id.to_string()).or_default();
-        buf.push_str(&String::from_utf8_lossy(&data));
-        // Keep a bounded tail (~150KB) on a char boundary.
-        if buf.len() > 200_000 {
-            let mut cut = buf.len() - 150_000;
-            while cut < buf.len() && !buf.is_char_boundary(cut) {
-                cut += 1;
+        // Only append to an EXISTING buffer. The entry is pre-created when the
+        // forwarder starts and removed by disconnect(); using get_mut (not
+        // or_default) means a chunk that drains AFTER disconnect can't resurrect
+        // a buffer entry that was just cleaned up (which would leak forever).
+        if let Some(buf) = map.get_mut(session_id) {
+            buf.push_str(&String::from_utf8_lossy(&data));
+            // Keep a bounded tail (~150KB) on a char boundary.
+            if buf.len() > 200_000 {
+                let mut cut = buf.len() - 150_000;
+                while cut < buf.len() && !buf.is_char_boundary(cut) {
+                    cut += 1;
+                }
+                *buf = buf[cut..].to_string();
             }
-            *buf = buf[cut..].to_string();
         }
     }
     {
@@ -215,22 +224,29 @@ fn spawn_forwarder(
     close_msg: &'static str,
 ) {
     tokio::spawn(async move {
+        // Pre-create the output buffer so write_and_emit (which only appends to an
+        // existing entry) has somewhere to write, and so disconnect's remove() is final.
+        buffers.lock().await.entry(session_id.clone()).or_default();
         while let Some(data) = rx.recv().await {
             write_and_emit(&app, &buffers, &logs, &session_id, data).await;
         }
-        // The underlying stream (telnet/serial/local PTY) ended. Drop the dead
-        // connection from the manager so `is_connected()` reflects reality and
-        // later send/resize calls return a clear error instead of silently
-        // succeeding into a closed stream.
+        // The underlying stream (telnet/serial/local PTY) ended. If the session is
+        // still present, this is a peer-initiated close — drop the dead connection
+        // and announce it. If it's already gone, the user called disconnect() (which
+        // removes the session and emits its own status), so stay silent to avoid a
+        // duplicate "disconnected" notice.
+        let user_closed = !session_manager.lock().await.contains(&session_id).await;
         let _ = session_manager.lock().await.remove_session(&session_id).await;
-        let _ = app.emit_all(
-            "connection_status",
-            ConnectionStatusEvent {
-                session_id,
-                status: "disconnected".to_string(),
-                message: Some(close_msg.to_string()),
-            },
-        );
+        if !user_closed {
+            let _ = app.emit_all(
+                "connection_status",
+                ConnectionStatusEvent {
+                    session_id,
+                    status: "disconnected".to_string(),
+                    message: Some(close_msg.to_string()),
+                },
+            );
+        }
     });
 }
 
@@ -250,6 +266,9 @@ fn spawn_ssh_supervisor(
     auto_reconnect: bool,
 ) {
     tokio::spawn(async move {
+        // Pre-create the output buffer (write_and_emit only appends to an existing
+        // entry; disconnect's remove() must be final). Persists across reconnects.
+        buffers.lock().await.entry(session_id.clone()).or_default();
         let mut rx = first_rx;
         let mut first = true;
         let mut backoff = 1u64;
@@ -423,9 +442,21 @@ async fn connect(
 
             let mut connection = TelnetConnection::new(session_id.clone(), telnet_config);
             let response = connection.connect().await.map_err(|e| e.to_string())?;
+            let rx_opt = connection.take_data_receiver();
+
+            // Register the session BEFORE spawning the forwarder, so the forwarder's
+            // stream-end cleanup (remove_session) always runs after the session exists
+            // — otherwise an instantly-closing stream leaves a ghost "connected" tab.
+            state
+                .session_manager
+                .lock()
+                .await
+                .add_session(session_id.clone(), Box::new(connection))
+                .await
+                .map_err(|e| e.to_string())?;
 
             // Forward Telnet data + capture output for AI read-back.
-            if let Some(rx) = connection.take_data_receiver() {
+            if let Some(rx) = rx_opt {
                 spawn_forwarder(
                     app.clone(),
                     state.terminal_buffers.clone(),
@@ -436,14 +467,6 @@ async fn connect(
                     "Telnet connection closed",
                 );
             }
-
-            state
-                .session_manager
-                .lock()
-                .await
-                .add_session(session_id.clone(), Box::new(connection))
-                .await
-                .map_err(|e| e.to_string())?;
 
             let _ = app.emit_all(
                 "connection_status",
@@ -468,9 +491,19 @@ async fn connect(
 
             let mut connection = SerialConnection::new(session_id.clone(), serial_config);
             let response = connection.connect().await.map_err(|e| e.to_string())?;
+            let rx_opt = connection.take_data_receiver();
+
+            // Register the session before spawning the forwarder (see telnet note).
+            state
+                .session_manager
+                .lock()
+                .await
+                .add_session(session_id.clone(), Box::new(connection))
+                .await
+                .map_err(|e| e.to_string())?;
 
             // Forward serial data + capture output for AI read-back.
-            if let Some(rx) = connection.take_data_receiver() {
+            if let Some(rx) = rx_opt {
                 spawn_forwarder(
                     app.clone(),
                     state.terminal_buffers.clone(),
@@ -481,14 +514,6 @@ async fn connect(
                     "Serial port closed",
                 );
             }
-
-            state
-                .session_manager
-                .lock()
-                .await
-                .add_session(session_id.clone(), Box::new(connection))
-                .await
-                .map_err(|e| e.to_string())?;
 
             let _ = app.emit_all(
                 "connection_status",
@@ -511,9 +536,20 @@ async fn connect(
 
             let mut connection = LocalConnection::new(session_id.clone(), local_config);
             let response = connection.connect().await.map_err(|e| e.to_string())?;
+            let rx_opt = connection.take_data_receiver();
+
+            // Register the session before spawning the forwarder (see telnet note) —
+            // especially important for `local`, where a bad command can exit instantly.
+            state
+                .session_manager
+                .lock()
+                .await
+                .add_session(session_id.clone(), Box::new(connection))
+                .await
+                .map_err(|e| e.to_string())?;
 
             // Forward local PTY data + capture output for AI read-back.
-            if let Some(rx) = connection.take_data_receiver() {
+            if let Some(rx) = rx_opt {
                 spawn_forwarder(
                     app.clone(),
                     state.terminal_buffers.clone(),
@@ -524,14 +560,6 @@ async fn connect(
                     "Local session ended",
                 );
             }
-
-            state
-                .session_manager
-                .lock()
-                .await
-                .add_session(session_id.clone(), Box::new(connection))
-                .await
-                .map_err(|e| e.to_string())?;
 
             let _ = app.emit_all(
                 "connection_status",
@@ -564,6 +592,23 @@ async fn disconnect(
 
     state.terminal_buffers.lock().await.remove(&session_id);
     state.session_logs.lock().await.remove(&session_id);
+
+    // Tear down any SSH port-forwards belonging to this session, so a disconnect
+    // doesn't leave orphaned tunnels with the local port bound and stale entries
+    // in the Tunnels UI. (forwards are keyed by forward id, not session id.)
+    {
+        let mut fwds = state.forwards.lock().await;
+        let ids: Vec<String> = fwds
+            .iter()
+            .filter(|(_, (meta, _))| meta.session_id == session_id)
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in ids {
+            if let Some((_, task)) = fwds.remove(&id) {
+                task.abort();
+            }
+        }
+    }
 
     let _ = app.emit_all(
         "connection_status",
@@ -1485,6 +1530,7 @@ async fn sftp_upload(
     session_id: String,
     local_path: String,
     remote_path: String,
+    overwrite: Option<bool>,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let handle = state
@@ -1498,7 +1544,7 @@ async fn sftp_upload(
     let sftp = open_sftp_session(&mut handle)
         .await
         .map_err(|e| e.to_string())?;
-    sftp_upload_file(&sftp, &local_path, &remote_path)
+    sftp_upload_file(&sftp, &local_path, &remote_path, overwrite.unwrap_or(false))
         .await
         .map(|_| ())
         .map_err(|e| e.to_string())
@@ -1606,12 +1652,35 @@ async fn ai_chat_stream(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    if let Err(e) = ai::chat_stream(&state.ai_keys, request, &app, &stream_id).await {
+    // Register a cancel flag the Stop button (ai_cancel_stream) can trip.
+    let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    state
+        .ai_cancels
+        .lock()
+        .await
+        .insert(stream_id.clone(), cancel.clone());
+
+    let result = ai::chat_stream(&state.ai_keys, request, &app, &stream_id, cancel).await;
+
+    // Always deregister the flag, success or failure.
+    state.ai_cancels.lock().await.remove(&stream_id);
+
+    if let Err(e) = result {
         let _ = app.emit_all(
             "ai_error",
             serde_json::json!({ "streamId": stream_id, "error": e.to_string() }),
         );
         return Err(e.to_string());
+    }
+    Ok(())
+}
+
+/// Stop an in-flight AI stream — trips its cancel flag so the backend drops the
+/// provider request/egress instead of running to completion (and being billed).
+#[tauri::command]
+async fn ai_cancel_stream(stream_id: String, state: State<'_, AppState>) -> Result<(), String> {
+    if let Some(flag) = state.ai_cancels.lock().await.get(&stream_id) {
+        flag.store(true, std::sync::atomic::Ordering::Relaxed);
     }
     Ok(())
 }
@@ -1696,6 +1765,7 @@ fn main() {
             ai_set_key,
             ai_has_key,
             ai_chat,
+            ai_cancel_stream,
             ai_cli,
             ai_chat_stream,
             mcp_list_servers,

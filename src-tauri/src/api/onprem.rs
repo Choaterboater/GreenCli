@@ -55,9 +55,22 @@ impl Aos8Client {
             .send()
             .await
             .map_err(|e| AppError::ApiError(format!("AOS-8 login request failed: {}", e)))?;
-        let json: Value = resp
-            .json()
+        // Check the HTTP status BEFORE parsing — a 401/403/503 often returns an HTML
+        // error page, which would otherwise surface as a confusing "parse failed".
+        let status = resp.status();
+        let text = resp
+            .text()
             .await
+            .map_err(|e| AppError::ApiError(format!("AOS-8 login read failed: {}", e)))?;
+        if !status.is_success() {
+            let snippet: String = text.chars().take(200).collect();
+            return Err(AppError::AuthError(format!(
+                "AOS-8 login failed (HTTP {}): {}",
+                status.as_u16(),
+                snippet
+            )));
+        }
+        let json: Value = serde_json::from_str(&text)
             .map_err(|e| AppError::ApiError(format!("AOS-8 login parse failed: {}", e)))?;
         match json
             .get("_global_result")
@@ -193,8 +206,12 @@ impl ApstraClient {
         path: &str,
         body: Option<&str>,
     ) -> Result<reqwest::Response, AppError> {
+        // Apstra endpoint paths already include the `/api` prefix (e.g.
+        // `/api/blueprints`). Don't add a second one — `/api/api/...` 404s.
         let url = if path.starts_with("http") {
             path.to_string()
+        } else if path == "/api" || path.starts_with("/api/") {
+            format!("{}{}", self.base, path)
         } else {
             format!("{}/api{}", self.base, path)
         };
