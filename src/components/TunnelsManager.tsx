@@ -49,9 +49,21 @@ export default function TunnelsManager() {
       return;
     }
     const lp = Number(localPort);
-    if (!lp) {
-      notify.warning('Local port required');
+    if (!Number.isInteger(lp) || lp < 1 || lp > 65535) {
+      notify.warning('Invalid local port', 'Enter a port between 1 and 65535.');
       return;
+    }
+    let rp: number | null = null;
+    if (kind === 'local') {
+      rp = Number(remotePort);
+      if (!Number.isInteger(rp) || rp < 1 || rp > 65535) {
+        notify.warning('Invalid remote port', 'Enter a port between 1 and 65535.');
+        return;
+      }
+      if (!remoteHost.trim()) {
+        notify.warning('Remote host required', 'A local forward needs a target host.');
+        return;
+      }
     }
     setBusy(true);
     try {
@@ -59,8 +71,8 @@ export default function TunnelsManager() {
         sessionId,
         kind,
         localPort: lp,
-        remoteHost: kind === 'local' ? remoteHost.trim() || null : null,
-        remotePort: kind === 'local' ? Number(remotePort) || null : null,
+        remoteHost: kind === 'local' ? remoteHost.trim() : null,
+        remotePort: rp,
       });
       notify.success(
         'Tunnel started',

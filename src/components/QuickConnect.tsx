@@ -131,6 +131,15 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
             parity: config.parity,
             stop_bits: config.stopBits,
             startup_commands: config.startupCommands,
+            // Local CLI launch command and SSH jump-host (ProxyJump), so a saved
+            // session reconnects the same way instead of dropping its command /
+            // bastion. (StoredSession persists all of these.)
+            command: config.command,
+            args: config.args,
+            cwd: config.cwd,
+            jump_host: config.jumpHost,
+            jump_port: config.jumpPort,
+            jump_username: config.jumpUsername,
           },
           folderId: 'default',
         })

@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import { TerminalSettings, DEFAULT_SETTINGS, AiProvider } from '../types';
+import { TerminalSettings, DEFAULT_SETTINGS, AiProvider, CentralAccount } from '../types';
 
 interface SettingsState extends TerminalSettings {
   // Actions
@@ -60,6 +60,28 @@ export const useSettingsStore = create<SettingsState>()(
     }),
     {
       name: 'atp-settings',
+      // Keep plaintext secrets OUT of localStorage (it sits unencrypted on disk).
+      // API keys live in the Rust key store; Central/Apstra secrets stay in memory
+      // for the session (and Rust holds the configured copy). Account metadata
+      // still persists, just without its secret material — re-enter on next load.
+      partialize: (state) => {
+        const {
+          anthropicApiKey: _k,
+          centralToken: _t,
+          centralClientSecret: _cs,
+          apstraPassword: _ap,
+          centralAccounts,
+          ...rest
+        } = state;
+        return {
+          ...rest,
+          centralAccounts: (centralAccounts as CentralAccount[] | undefined)?.map((a) => ({
+            ...a,
+            clientSecret: '',
+            token: '',
+          })),
+        };
+      },
     }
   )
 );

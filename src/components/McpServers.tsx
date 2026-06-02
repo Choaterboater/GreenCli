@@ -11,6 +11,7 @@ import {
   CheckCircle2,
 } from 'lucide-react';
 import { notify } from '../store/toastStore';
+import { askConfirm } from '../store/dialogStore';
 
 interface McpServerDef {
   name: string;
@@ -46,6 +47,9 @@ export default function McpServers() {
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({ ...blankForm });
   const [credsSaved, setCredsSaved] = useState(false);
+  // The name the form was opened on, so a rename can move the server instead of
+  // leaving the old name behind as a duplicate.
+  const [editingName, setEditingName] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -83,12 +87,20 @@ export default function McpServers() {
   };
 
   const remove = async (name: string) => {
+    const ok = await askConfirm({
+      title: `Remove "${name}"?`,
+      message: 'This deletes the server definition (command, args, env, credentials mapping). This cannot be undone.',
+      confirmLabel: 'Remove',
+      danger: true,
+    });
+    if (!ok) return;
     await invoke('mcp_delete_server', { name }).catch(() => {});
     notify.info('MCP server removed', name);
     refresh();
   };
 
   const edit = (s: McpServerDef) => {
+    setEditingName(s.name);
     setForm({
       name: s.name,
       command: s.command,
@@ -128,6 +140,11 @@ export default function McpServers() {
     };
     try {
       await invoke('mcp_save_server', { def });
+      // A rename writes under the new name; remove the old entry so we don't leave
+      // an orphaned duplicate behind.
+      if (editingName && editingName !== def.name) {
+        await invoke('mcp_delete_server', { name: editingName }).catch(() => {});
+      }
       // Persist credentials content only when the user typed new content (so we
       // never wipe saved creds just because the field is blank on edit).
       if (form.credsContent.trim()) {
@@ -137,6 +154,7 @@ export default function McpServers() {
       setShowForm(false);
       setForm({ ...blankForm });
       setCredsSaved(false);
+      setEditingName(null);
       refresh();
     } catch (e) {
       notify.error('Could not save MCP server', String(e));
@@ -153,6 +171,7 @@ export default function McpServers() {
           onClick={() => {
             setForm({ ...blankForm });
             setCredsSaved(false);
+            setEditingName(null);
             setShowForm((v) => !v);
           }}
           className="flex items-center gap-1.5 px-2.5 py-1 text-[11px] rounded-md bg-[var(--bg-tertiary)] hover:bg-[var(--border-strong)] text-[var(--text-primary)] transition-colors"
@@ -312,6 +331,7 @@ export default function McpServers() {
                 setShowForm(false);
                 setForm({ ...blankForm });
                 setCredsSaved(false);
+                setEditingName(null);
               }}
               className="px-3 h-8 text-[12px] rounded-md text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]"
             >

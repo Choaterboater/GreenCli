@@ -75,6 +75,16 @@ function toCsv(rows: Row[], cols: string[]): string {
   return [cols.map(esc).join(','), ...rows.map((r) => cols.map((c) => esc(cellText(r[c]))).join(','))].join('\n');
 }
 
+/** Max table rows / JSON chars to render — a huge list endpoint would otherwise
+ *  freeze the webview. Full data is still available via CSV export. */
+const MAX_RENDER_ROWS = 500;
+const MAX_RENDER_JSON = 200_000;
+function capJson(text: string): string {
+  return text.length > MAX_RENDER_JSON
+    ? `${text.slice(0, MAX_RENDER_JSON)}\n… (truncated ${text.length - MAX_RENDER_JSON} more chars — export to see the full body)`
+    : text;
+}
+
 const CATEGORY_ICONS: Record<string, React.ReactNode> = {
   // On-box (CX REST)
   System: <Server size={14} className="text-[var(--accent)]" />,
@@ -249,6 +259,12 @@ export default function ApiExplorer() {
       if (!IS_TAURI) {
         throw new Error('Login requires the desktop app (the browser can\'t reach the switch directly).');
       }
+      // Honour the REST version/base the user typed in the Base URL field so the
+      // session (and all later relative requests) use it — otherwise the version
+      // was silently dropped and everything went to the default v10.09.
+      const raw = url.trim().replace(/\/+$/, '');
+      const basePath = raw && raw.startsWith('/') ? raw : '/rest/v10.09';
+      const fullBase = /^https?:\/\//i.test(raw) ? raw : `https://${newConnHost}${basePath}`;
       // Rust client logs in (cookie stored server-side; self-signed certs OK).
       await invoke('api_login', {
         request: {
@@ -256,6 +272,7 @@ export default function ApiExplorer() {
           username: newConnUser,
           password: newConnPass,
           accept_invalid_certs: !verifyTls,
+          base_url: fullBase,
         },
       });
 
@@ -265,7 +282,7 @@ export default function ApiExplorer() {
         name: newConnName || newConnHost,
         host: newConnHost,
         username: newConnUser,
-        baseUrl: `https://${newConnHost}/rest/v10.09`,
+        baseUrl: fullBase,
         connected: true,
       };
 
@@ -682,6 +699,7 @@ export default function ApiExplorer() {
             </div>
             <div className="flex-1 overflow-auto bg-[var(--bg-primary)]">
               {showTable && tableRows ? (
+                <>
                 <table className="w-full text-[11px] border-collapse">
                   <thead className="sticky top-0 bg-[var(--bg-secondary)]">
                     <tr>
@@ -693,7 +711,9 @@ export default function ApiExplorer() {
                     </tr>
                   </thead>
                   <tbody>
-                    {tableRows.map((r, i) => (
+                    {/* Cap rendered rows so a multi-thousand-object list (clients,
+                        MACs, interfaces) can't freeze the webview. */}
+                    {tableRows.slice(0, MAX_RENDER_ROWS).map((r, i) => (
                       <tr key={i} className="hover:bg-[var(--bg-tertiary)]">
                         {tableCols.map((c) => (
                           <td
@@ -708,9 +728,15 @@ export default function ApiExplorer() {
                     ))}
                   </tbody>
                 </table>
+                {tableRows.length > MAX_RENDER_ROWS && (
+                  <div className="px-3 py-2 text-[11px] text-[var(--text-muted)] border-t border-[var(--border)]">
+                    Showing {MAX_RENDER_ROWS} of {tableRows.length} rows — refine the query or export CSV to see all.
+                  </div>
+                )}
+                </>
               ) : (
                 <pre className="text-[11px] font-mono text-[var(--text-primary)] whitespace-pre-wrap break-all p-3">
-                  <code>{JSON.stringify(response.body, null, 2)}</code>
+                  <code>{capJson(JSON.stringify(response.body, null, 2))}</code>
                 </pre>
               )}
             </div>

@@ -42,6 +42,9 @@ export default function Terminal({ sessionId, deviceType, onSend }: TerminalProp
   const audioCtxRef = useRef<AudioContext | null>(null);
   // Debounce per-trigger alerts (id -> last-fired ms).
   const triggerFiredRef = useRef<Record<string, number>>({});
+  // Tail of the previous decoded chunk, prepended to the next so an output trigger
+  // whose match straddles a chunk boundary is still detected.
+  const triggerCarryRef = useRef<string>('');
 
   // Short audible blip, reusing the shared AudioContext.
   const beep = () => {
@@ -160,10 +163,11 @@ export default function Terminal({ sessionId, deviceType, onSend }: TerminalProp
     // Refit when the container itself resizes (panels opening, split view, etc.)
     const ro = new ResizeObserver(() => handleResize());
     ro.observe(containerRef.current);
-    setTimeout(handleResize, 100);
+    const initialFit = setTimeout(handleResize, 100);
 
     return () => {
       disposed = true;
+      clearTimeout(initialFit); // don't fit()/resize a disposed xterm after a fast unmount
       window.removeEventListener('resize', handleResize);
       ro.disconnect();
       unregisterSearchAdapter(sessionId);
@@ -206,13 +210,18 @@ export default function Terminal({ sessionId, deviceType, onSend }: TerminalProp
           const triggers = useTriggersStore.getState().triggers;
           if (triggers.length) {
             const now = Date.now();
+            // Search the new chunk plus a small carry from the previous one, so a
+            // pattern split across PTY chunks is still matched (the 2.5s cooldown
+            // below suppresses duplicate fires from the overlap).
+            const haystack = triggerCarryRef.current + text;
             for (const tr of triggers) {
               let matchText = '';
               try {
                 if (tr.isRegex) {
-                  const m = text.match(new RegExp(tr.pattern, 'i'));
+                  // 'm' so ^/$ anchor per line, matching user expectation.
+                  const m = haystack.match(new RegExp(tr.pattern, 'im'));
                   if (m) matchText = m[0];
-                } else if (text.toLowerCase().includes(tr.pattern.toLowerCase())) {
+                } else if (haystack.toLowerCase().includes(tr.pattern.toLowerCase())) {
                   matchText = tr.pattern;
                 }
               } catch {
@@ -224,6 +233,7 @@ export default function Terminal({ sessionId, deviceType, onSend }: TerminalProp
                 if (tr.bell) beep();
               }
             }
+            triggerCarryRef.current = haystack.slice(-200);
           }
 
           // Only auto-detect the grammar when the user left the device type as
@@ -284,11 +294,11 @@ export default function Terminal({ sessionId, deviceType, onSend }: TerminalProp
     return () => {
       cancelled = true;
       if (unlistenFn) unlistenFn();
-      // Flush any bytes the streaming decoder is still holding (a multibyte
-      // char that was only partially received before teardown).
+      // Reset the streaming decoder (the terminal is already disposed by the init
+      // effect's cleanup, so its held tail bytes can't be written — just clear the
+      // decoder state so a remount/new session starts clean).
       try {
-        const tail = decoderRef.current.decode();
-        if (tail && terminalRef.current) terminalRef.current.write(tail);
+        decoderRef.current.decode();
       } catch {
         /* ignore */
       }
@@ -309,6 +319,12 @@ export default function Terminal({ sessionId, deviceType, onSend }: TerminalProp
         if (event.payload.sessionId !== sessionId) return;
         const connected = event.payload.status === 'connected';
         updateSessionConnection(sessionId, connected);
+        if (event.payload.status === 'connected' || event.payload.status === 'reconnecting') {
+          // Fresh stream after a (re)connect — discard any partial multibyte bytes
+          // the decoder held from before the drop so they can't corrupt the first
+          // bytes of the new connection.
+          decoderRef.current = new TextDecoder('utf-8', { fatal: false });
+        }
         if (event.payload.message && terminalRef.current && !connected) {
           // Surface drops/reconnect notices inline in the terminal.
           terminalRef.current.write(`\r\n\x1b[33m[${event.payload.message}]\x1b[0m\r\n`);

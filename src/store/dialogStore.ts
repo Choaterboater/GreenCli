@@ -15,14 +15,24 @@ export interface DialogRequest {
 
 interface DialogState {
   current: DialogRequest | null;
+  queue: DialogRequest[];
   enqueue: (req: DialogRequest) => void;
   close: () => void;
 }
 
 const useDialogStore = create<DialogState>()((set) => ({
   current: null,
-  enqueue: (req) => set({ current: req }),
-  close: () => set({ current: null }),
+  queue: [],
+  // FIFO: if a dialog is already showing, queue the new one instead of clobbering
+  // it (which would silently drop the first promise's resolver and hang its await).
+  enqueue: (req) =>
+    set((s) => (s.current ? { queue: [...s.queue, req] } : { current: req })),
+  // Advance to the next queued dialog (if any) when the current one closes.
+  close: () =>
+    set((s) => {
+      const [next, ...rest] = s.queue;
+      return { current: next ?? null, queue: rest };
+    }),
 }));
 
 export { useDialogStore };

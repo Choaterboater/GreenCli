@@ -6,6 +6,8 @@ import { sendAndCapture } from '../utils/terminal';
 interface RunResult {
   sessionId: string;
   name: string;
+  /** The command that produced this result (snapshot at run time, for the CSV). */
+  command: string;
   output: string;
   status: 'pending' | 'running' | 'done' | 'error';
 }
@@ -44,10 +46,13 @@ export default function BulkRunner() {
     const targets = connected.filter((s) => selected.has(s.sessionId));
     if (targets.length === 0) return;
     setRunning(true);
+    // Snapshot the command so a later edit/clear can't mislabel results in the CSV.
+    const ranCommand = command;
     setResults(
       targets.map((s) => ({
         sessionId: s.sessionId,
         name: s.config.name || s.config.host || 'Session',
+        command: ranCommand,
         output: '',
         status: 'pending' as const,
       }))
@@ -58,10 +63,18 @@ export default function BulkRunner() {
         prev.map((r) => (r.sessionId === s.sessionId ? { ...r, status: 'running' } : r))
       );
       try {
-        const out = await sendAndCapture(s.sessionId, command);
+        const out = await sendAndCapture(s.sessionId, ranCommand);
         setResults((prev) =>
           prev.map((r) =>
-            r.sessionId === s.sessionId ? { ...r, output: out || '(no output)', status: 'done' } : r
+            r.sessionId === s.sessionId
+              ? {
+                  ...r,
+                  // An empty capture means the device never answered (timeout / hung
+                  // prompt) — flag it as an error, not a green "(no output)" success.
+                  output: out.trim() ? out : 'No response (timed out or no output returned)',
+                  status: out.trim() ? 'done' : 'error',
+                }
+              : r
           )
         );
       } catch (e) {
@@ -78,7 +91,7 @@ export default function BulkRunner() {
   const exportCsv = () => {
     const esc = (v: string) => `"${v.replace(/"/g, '""')}"`;
     const rows = [['device', 'command', 'output'].map(esc).join(',')];
-    for (const r of results) rows.push([r.name, command, r.output].map(esc).join(','));
+    for (const r of results) rows.push([r.name, r.command, r.output].map(esc).join(','));
     const blob = new Blob([rows.join('\n')], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');

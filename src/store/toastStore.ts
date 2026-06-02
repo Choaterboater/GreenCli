@@ -25,7 +25,10 @@ export const useToastStore = create<ToastState>()((set) => ({
   push: ({ kind, title, message, duration }) => {
     const id = `toast-${++seq}`;
     const ttl = duration ?? (kind === 'error' ? 7000 : 4000);
-    set((s) => ({ toasts: [...s.toasts, { id, kind, title, message, duration: ttl }] }));
+    // Cap the on-screen stack so a burst (trigger storms, connect/disconnect
+    // cycles) can't pile up unbounded fixed-position cards. Keep the newest 5.
+    const MAX = 5;
+    set((s) => ({ toasts: [...s.toasts, { id, kind, title, message, duration: ttl }].slice(-MAX) }));
     return id;
   },
   dismiss: (id) => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),
