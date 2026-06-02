@@ -62,6 +62,16 @@ function runStartupCommands(sessionId: string, startupCommands?: string) {
   }, 700);
 }
 
+// GreenCLI brand glyph — a terminal prompt `>_` (uses currentColor).
+function PromptGlyph({ size, style }: { size: number; style?: React.CSSProperties }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" style={style}>
+      <path d="M6.5 7 L11.5 12 L6.5 17" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M13.6 16.5 H18" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 function App() {
   const { theme } = useTheme();
   const {
@@ -562,7 +572,7 @@ function App() {
                 boxShadow: 'var(--elevation-1)',
               }}
             >
-              <TerminalSquare size={15} style={{ color: 'var(--accent-fg)' }} />
+              <PromptGlyph size={16} style={{ color: 'var(--accent-fg)' }} />
             </div>
             <span className="text-[13px] font-semibold text-[var(--text-primary)] tracking-tight whitespace-nowrap">
               GreenCLI
@@ -804,7 +814,7 @@ function App() {
                         boxShadow: 'var(--glow-accent)',
                       }}
                     >
-                      <TerminalSquare size={30} style={{ color: 'var(--accent-fg)' }} />
+                      <PromptGlyph size={32} style={{ color: 'var(--accent-fg)' }} />
                     </div>
                     <h1 className="text-[22px] font-semibold text-[var(--text-primary)] tracking-tight">
                       GreenCLI
