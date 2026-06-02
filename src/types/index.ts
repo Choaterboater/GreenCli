@@ -104,6 +104,10 @@ export interface TerminalSettings {
   aiUseMcp: boolean;
   /** Let the AI query a configured Juniper Apstra fabric controller. */
   aiUseApstra: boolean;
+  /** Verify TLS certificates when talking to on-prem device REST APIs
+   *  (AOS-CX/AOS-8/AOS-S/Apstra). Default off because field gear usually ships a
+   *  self-signed cert; turn on to enforce verification (reject untrusted certs). */
+  verifyDeviceTls: boolean;
   // Juniper Apstra (intent-based DC fabric) controller config.
   apstraHost: string;
   apstraUsername: string;
@@ -184,6 +188,7 @@ export const DEFAULT_SETTINGS: TerminalSettings = {
   aiUseCxRest: false,
   aiUseMcp: false,
   aiUseApstra: false,
+  verifyDeviceTls: false,
   apstraHost: '',
   apstraUsername: '',
   apstraPassword: '',

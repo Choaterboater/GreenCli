@@ -153,17 +153,15 @@ pub struct ApiLoginRequest {
     pub host: String,
     pub username: String,
     pub password: String,
-    /// Allow self-signed certs (default true for field gear). Set false to verify.
-    #[serde(default = "default_true")]
+    /// Allow self-signed certs. The frontend always sends this explicitly (driven by
+    /// the "Verify device TLS" setting); the fallback when omitted is secure (false
+    /// => verify), not silently permissive.
+    #[serde(default)]
     pub accept_invalid_certs: bool,
     /// Full REST base URL from the UI Base URL field, e.g.
     /// "https://192.168.1.10/rest/v10.13". Absent => https://{host}/rest/v10.09.
     #[serde(default)]
     pub base_url: Option<String>,
-}
-
-fn default_true() -> bool {
-    true
 }
 
 // ─── Helpers ───

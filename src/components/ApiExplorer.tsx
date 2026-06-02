@@ -28,6 +28,7 @@ import {
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/tauri';
 import { useSessionStore } from '../store/sessionStore';
+import { useSettingsStore } from '../store/settingsStore';
 import {
   ApiConnection,
   ApiEndpoint,
@@ -118,6 +119,7 @@ const METHOD_COLORS: Record<string, string> = {
 
 export default function ApiExplorer() {
   const { showApiExplorer, toggleApiExplorer, activeSessionId, sessions } = useSessionStore();
+  const verifyDeviceTls = useSettingsStore((s) => s.verifyDeviceTls);
   const [connections, setConnections] = useState<ApiConnection[]>([]);
   const [activeConnectionId, setActiveConnectionId] = useState<string | null>(null);
   const [url, setUrl] = useState('/rest/v10.09');
@@ -135,7 +137,8 @@ export default function ApiExplorer() {
   const [newConnName, setNewConnName] = useState('');
   const [newConnUser, setNewConnUser] = useState('');
   const [newConnPass, setNewConnPass] = useState('');
-  const [verifyTls, setVerifyTls] = useState(false);
+  // Default this per-login checkbox from the global "Verify device TLS" setting.
+  const [verifyTls, setVerifyTls] = useState(verifyDeviceTls);
   const [target, setTarget] = useState<'device' | 'central' | 'apstra'>('device');
   const bodyRef = useRef<HTMLTextAreaElement>(null);
 

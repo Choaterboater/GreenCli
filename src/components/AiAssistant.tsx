@@ -250,7 +250,14 @@ async function tryDeviceLogin(session: Session, loginCmd: string): Promise<boole
   if (!password) return false;
   try {
     await invoke(loginCmd, {
-      request: { host, username, password, accept_invalid_certs: true },
+      request: {
+        host,
+        username,
+        password,
+        // Honour the global "Verify device TLS" setting (read live — this is a
+        // module function, not a hook).
+        accept_invalid_certs: !useSettingsStore.getState().verifyDeviceTls,
+      },
     });
     return true;
   } catch {
