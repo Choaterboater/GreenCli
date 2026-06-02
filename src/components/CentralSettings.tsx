@@ -11,14 +11,17 @@ export default function CentralSettings() {
 
   const saveAccount = async () => {
     if (!s.centralBaseUrl.trim()) return;
+    // If an account is currently loaded, UPDATE it in place rather than appending a
+    // duplicate (the old behaviour piled up copies on every edit/rotate).
+    const existing = accountId ? s.centralAccounts.find((a) => a.id === accountId) : undefined;
     const name = await askPrompt({
-      title: 'Save Central account',
+      title: existing ? 'Update Central account' : 'Save Central account',
       placeholder: 'e.g. Prod US4',
-      defaultValue: s.centralBaseUrl.replace(/^https?:\/\//, '').split('.')[0],
+      defaultValue: existing?.name || s.centralBaseUrl.replace(/^https?:\/\//, '').split('.')[0],
     });
     if (!name) return;
     const acct: CentralAccount = {
-      id: generateId(),
+      id: existing?.id || generateId(),
       name,
       baseUrl: s.centralBaseUrl,
       clientId: s.centralClientId,
@@ -26,7 +29,11 @@ export default function CentralSettings() {
       token: s.centralToken,
       mode: s.centralAuthMode,
     };
-    s.updateSettings({ centralAccounts: [...s.centralAccounts, acct] });
+    s.updateSettings({
+      centralAccounts: existing
+        ? s.centralAccounts.map((a) => (a.id === existing.id ? acct : a))
+        : [...s.centralAccounts, acct],
+    });
     setAccountId(acct.id);
   };
 

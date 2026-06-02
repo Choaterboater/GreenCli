@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Plus, Trash2, Bell, BellOff, Regex } from 'lucide-react';
 import { useTriggersStore } from '../store/triggersStore';
+import { notify } from '../store/toastStore';
 
 export default function TriggersSettings() {
   const { triggers, addTrigger, removeTrigger } = useTriggersStore();
@@ -9,8 +10,19 @@ export default function TriggersSettings() {
   const [bell, setBell] = useState(true);
 
   const add = () => {
-    if (!pattern.trim()) return;
-    addTrigger({ pattern: pattern.trim(), isRegex, bell });
+    const p = pattern.trim();
+    if (!p) return;
+    // Validate a regex at add-time — otherwise a bad pattern (e.g. "[") is saved,
+    // silently swallowed on every chunk, and just never fires with no explanation.
+    if (isRegex) {
+      try {
+        new RegExp(p, 'im');
+      } catch (e) {
+        notify.error('Invalid regular expression', e instanceof Error ? e.message : String(e));
+        return;
+      }
+    }
+    addTrigger({ pattern: p, isRegex, bell });
     setPattern('');
   };
 

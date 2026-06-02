@@ -23,6 +23,7 @@ import { open as openDialog, save as saveDialog } from '@tauri-apps/api/dialog';
 import { useSessionStore } from '../store/sessionStore';
 import { sleep, stripAnsi as stripAnsiUtil, hasAnsi, sendAndCapture } from '../utils/terminal';
 import { useResizablePanel } from '../hooks/useResizablePanel';
+import { askConfirm } from '../store/dialogStore';
 
 // ─── Tauri / browser file I/O ───
 
@@ -320,6 +321,22 @@ export default function ConfigEditor() {
   const [currentFilePath, setCurrentFilePath] = useState<string | null>(null);
   const [isDirty, setIsDirty] = useState(false);
 
+  // Guard any action that replaces the editor contents — this tool authors device
+  // config, so silently discarding unsaved edits is real data loss. Read isDirty via
+  // a ref so the useCallback-memoized handlers don't see a stale value.
+  const isDirtyRef = useRef(false);
+  useEffect(() => {
+    isDirtyRef.current = isDirty;
+  }, [isDirty]);
+  const confirmDiscard = async (): Promise<boolean> =>
+    !isDirtyRef.current ||
+    (await askConfirm({
+      title: 'Discard unsaved changes?',
+      message: 'You have unsaved edits in the editor. They will be lost.',
+      confirmLabel: 'Discard',
+      danger: true,
+    }));
+
   const [showTemplates, setShowTemplates] = useState(false);
   const [showLangPicker, setShowLangPicker] = useState(false);
   const [langSearch, setLangSearch] = useState('');
@@ -368,6 +385,7 @@ export default function ConfigEditor() {
   };
 
   const openFile = useCallback(async () => {
+    if (!(await confirmDiscard())) return;
     try {
       if (isTauri) {
         const path = await tauriOpen();
@@ -416,6 +434,7 @@ export default function ConfigEditor() {
       showStatus('Connect a session first');
       return;
     }
+    if (!(await confirmDiscard())) return;
     const sid = activeSession.sessionId;
     showStatus('Pulling running-config…');
     try {
@@ -599,8 +618,11 @@ export default function ConfigEditor() {
     const lines = content
       .split('\n')
       .map((l) => l.trim())
-      // Drop comment lines for every supported vendor: Aruba/Cisco '!' '#',
-      // and Junos block comments '/* ... */'.
+      // Strip INLINE Junos block comments /* ... */ rather than dropping the whole
+      // line — "/* uplink */ set interfaces ..." must keep its `set` command.
+      .map((l) => l.replace(/\/\*.*?\*\//g, '').trim())
+      // Drop pure comment lines for every supported vendor: Aruba/Cisco '!' '#',
+      // now-empty comment-only lines, and lone Junos block delimiters.
       .filter((l) => l && !l.startsWith('!') && !l.startsWith('#') && !l.startsWith('/*') && !l.startsWith('*/'));
 
     try {
@@ -621,7 +643,8 @@ export default function ConfigEditor() {
     showStatus('Copied');
   };
 
-  const loadTemplate = (name: string) => {
+  const loadTemplate = async (name: string) => {
+    if (!(await confirmDiscard())) return;
     setContent(TEMPLATES[name]);
     setLanguage('aruba-cx');
     setCurrentFilePath(null);
@@ -670,7 +693,7 @@ export default function ConfigEditor() {
           <button onClick={copyToClipboard} className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]" title="Copy all">
             <Copy size={13} />
           </button>
-          <button onClick={() => { setContent(''); setCurrentFilePath(null); setIsDirty(false); }} className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--accent-danger)]" title="Clear">
+          <button onClick={async () => { if (!(await confirmDiscard())) return; setContent(''); setCurrentFilePath(null); setIsDirty(false); }} className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--accent-danger)]" title="Clear">
             <FileX size={13} />
           </button>
           <button
@@ -680,7 +703,7 @@ export default function ConfigEditor() {
           >
             {maximized ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
           </button>
-          <button onClick={toggleConfigEditor} className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--accent-danger)]" title="Close">
+          <button onClick={async () => { if (!(await confirmDiscard())) return; toggleConfigEditor(); }} className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--accent-danger)]" title="Close">
             <X size={14} />
           </button>
         </div>

@@ -72,9 +72,23 @@ export default function SftpBrowser({ sessionId, onClose }: Props) {
   const uploadPath = useCallback(
     async (localPath: string) => {
       const fileName = basename(localPath);
+      const remotePath = join(cwd, fileName);
       setBusy(true);
       try {
-        await invoke('sftp_upload', { sessionId, localPath, remotePath: join(cwd, fileName) });
+        try {
+          // Try without overwriting; the backend returns EEXIST if it would clobber.
+          await invoke('sftp_upload', { sessionId, localPath, remotePath, overwrite: false });
+        } catch (e) {
+          if (!String(e).includes('EEXIST')) throw e;
+          const ok = await askConfirm({
+            title: `Overwrite "${fileName}"?`,
+            message: `${fileName} already exists in ${cwd}. Replacing it can clobber a device config/firmware file.`,
+            confirmLabel: 'Overwrite',
+            danger: true,
+          });
+          if (!ok) return;
+          await invoke('sftp_upload', { sessionId, localPath, remotePath, overwrite: true });
+        }
         notify.success('Uploaded', fileName);
         listDir(cwd);
       } catch (e) {
@@ -86,13 +100,24 @@ export default function SftpBrowser({ sessionId, onClose }: Props) {
     [cwd, sessionId, listDir]
   );
 
-  // Native (Tauri) file-drop → upload to the current directory.
+  // Native (Tauri) file-drop → upload to the current directory. Tauri's file-drop
+  // is window-global (fires for a drop ANYWHERE in the app), so confirm the target
+  // before uploading rather than silently pushing files to a remote device.
   useEffect(() => {
     const unlisteners: Array<() => void> = [];
     Promise.all([
       listen<string[]>('tauri://file-drop', async (e) => {
         setDragging(false);
-        for (const p of e.payload || []) await uploadPath(p);
+        const paths = e.payload || [];
+        if (!paths.length) return;
+        const names = paths.map(basename).join(', ');
+        const ok = await askConfirm({
+          title: paths.length === 1 ? `Upload "${names}"?` : `Upload ${paths.length} files?`,
+          message: `Upload to ${cwd} on the remote device?\n${names}`,
+          confirmLabel: 'Upload',
+        });
+        if (!ok) return;
+        for (const p of paths) await uploadPath(p);
       }),
       listen('tauri://file-drop-hover', () => setDragging(true)),
       listen('tauri://file-drop-cancelled', () => setDragging(false)),
