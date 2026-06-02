@@ -7,14 +7,17 @@ import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/tauri';
 import { useSettingsStore } from '../store/settingsStore';
 import { useSessionStore } from '../store/sessionStore';
+import { useTriggersStore } from '../store/triggersStore';
+import { notify } from '../store/toastStore';
 import { useTheme } from '../hooks/useTheme';
+import { DeviceType } from '../types';
 import { ArubaHighlighter, AnsiProcessor } from '../syntax';
 import { registerSearchAdapter, unregisterSearchAdapter, createSearchAdapter } from '../utils/terminalSearch';
 import 'xterm/css/xterm.css';
 
 interface TerminalProps {
   sessionId: string;
-  deviceType: 'aruba-cx' | 'aruba-ap' | 'aruba-controller' | 'generic';
+  deviceType: DeviceType;
   onData?: (data: string) => void;
   onSend?: (data: string) => void;
 }
@@ -27,9 +30,42 @@ export default function Terminal({ sessionId, deviceType, onSend }: TerminalProp
   const highlighterRef = useRef<ArubaHighlighter>(
     ArubaHighlighter.forDeviceType(deviceType)
   );
+  // Mirror the deviceType prop into a ref so the data listener can read it
+  // without being torn down and re-subscribed (which drops in-flight output).
+  const deviceTypeRef = useRef(deviceType);
   const ansiProcessorRef = useRef<AnsiProcessor>(new AnsiProcessor());
   const bufferRef = useRef<string>('');
-  const unlistenRef = useRef<(() => void) | null>(null);
+  // Persistent streaming decoder so multibyte UTF-8 split across chunks is not
+  // corrupted (a fresh per-event decoder mangles split code points).
+  const decoderRef = useRef<TextDecoder>(new TextDecoder('utf-8', { fatal: false }));
+  // One long-lived AudioContext, reused for every bell (don't leak one per BEL).
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  // Debounce per-trigger alerts (id -> last-fired ms).
+  const triggerFiredRef = useRef<Record<string, number>>({});
+
+  // Short audible blip, reusing the shared AudioContext.
+  const beep = () => {
+    try {
+      if (!audioCtxRef.current) {
+        const Ctx =
+          window.AudioContext ||
+          (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+        audioCtxRef.current = new Ctx();
+      }
+      const ctx = audioCtxRef.current;
+      if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.frequency.value = 880;
+      gain.gain.value = 0.05;
+      osc.connect(gain).connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.12);
+    } catch {
+      /* audio unavailable */
+    }
+  };
+
 
   const { terminalTheme, isDark } = useTheme();
   const settings = useSettingsStore();
@@ -37,6 +73,7 @@ export default function Terminal({ sessionId, deviceType, onSend }: TerminalProp
 
   // Update highlighter when device type changes
   useEffect(() => {
+    deviceTypeRef.current = deviceType;
     highlighterRef.current = ArubaHighlighter.forDeviceType(deviceType);
   }, [deviceType]);
 
@@ -81,7 +118,14 @@ export default function Terminal({ sessionId, deviceType, onSend }: TerminalProp
       .then(({ WebglAddon }) => {
         if (disposed || !terminalRef.current) return;
         try {
-          term.loadAddon(new WebglAddon());
+          const webgl = new WebglAddon();
+          // If the GPU context is lost (sleep/resume, driver reset), dispose the
+          // addon so xterm transparently falls back to the canvas/DOM renderer
+          // instead of going permanently blank.
+          webgl.onContextLoss(() => {
+            webgl.dispose();
+          });
+          term.loadAddon(webgl);
         } catch {
           /* WebGL unsupported — stay on canvas */
         }
@@ -93,6 +137,12 @@ export default function Terminal({ sessionId, deviceType, onSend }: TerminalProp
     // Handle input
     term.onData((data) => {
       onSend?.(data);
+    });
+
+    // Audible bell — gated on the live setting (xterm has no bell option, so we
+    // play a short WebAudio blip on the BEL control char when enabled).
+    term.onBell(() => {
+      if (useSettingsStore.getState().bell) beep();
     });
 
     terminalRef.current = term;
@@ -118,6 +168,8 @@ export default function Terminal({ sessionId, deviceType, onSend }: TerminalProp
       ro.disconnect();
       unregisterSearchAdapter(sessionId);
       term.dispose();
+      audioCtxRef.current?.close().catch(() => {});
+      audioCtxRef.current = null;
       terminalRef.current = null;
       fitAddonRef.current = null;
       searchAddonRef.current = null;
@@ -140,23 +192,56 @@ export default function Terminal({ sessionId, deviceType, onSend }: TerminalProp
           if (!terminalRef.current) return;
 
           const bytes = new Uint8Array(event.payload.data);
-          const decoder = new TextDecoder('utf-8');
-          const text = decoder.decode(bytes);
+          // Streaming decode keeps partial multibyte sequences buffered until
+          // the next chunk completes them.
+          const text = decoderRef.current.decode(bytes, { stream: true });
+          if (!text) return;
 
           bufferRef.current += text;
           if (bufferRef.current.length > 5000) {
             bufferRef.current = bufferRef.current.slice(-3000);
           }
 
-          // Auto-detect device type from prompt patterns
-          const detected = highlighterRef.current.detectDeviceType(bufferRef.current);
-          if (detected !== deviceType && detected !== 'generic') {
-            highlighterRef.current = ArubaHighlighter.forDeviceType(detected);
+          // Output triggers: toast (+ optional beep) when a keyword/regex appears.
+          const triggers = useTriggersStore.getState().triggers;
+          if (triggers.length) {
+            const now = Date.now();
+            for (const tr of triggers) {
+              let matchText = '';
+              try {
+                if (tr.isRegex) {
+                  const m = text.match(new RegExp(tr.pattern, 'i'));
+                  if (m) matchText = m[0];
+                } else if (text.toLowerCase().includes(tr.pattern.toLowerCase())) {
+                  matchText = tr.pattern;
+                }
+              } catch {
+                /* bad regex — ignore */
+              }
+              if (matchText && now - (triggerFiredRef.current[tr.id] || 0) > 2500) {
+                triggerFiredRef.current[tr.id] = now;
+                notify.warning('Output trigger', `Matched "${matchText.slice(0, 60)}"`);
+                if (tr.bell) beep();
+              }
+            }
+          }
+
+          // Only auto-detect the grammar when the user left the device type as
+          // 'generic'. An explicit choice is authoritative and must not be
+          // flipped mid-session by transient output. Read from a ref so the
+          // listener never needs to be torn down + re-subscribed on prop change.
+          if (deviceTypeRef.current === 'generic') {
+            const detected = highlighterRef.current.detectDeviceType(bufferRef.current);
+            if (detected !== 'generic') {
+              highlighterRef.current = ArubaHighlighter.forDeviceType(detected);
+            }
           }
 
           const term = terminalRef.current;
 
-          if (settings.syntaxHighlighting) {
+          // Read the setting live (getState) instead of via a closure dep, so
+          // toggling it does not re-subscribe the listener (which loses output).
+          if (useSettingsStore.getState().syntaxHighlighting) {
             // Detect control chars that would corrupt highlighting:
             // backspace (\x08), terminal control sequences, etc.
             // Allow: \t (0x09), \n (0x0a), \r (0x0d)
@@ -189,7 +274,6 @@ export default function Terminal({ sessionId, deviceType, onSend }: TerminalProp
         });
 
         unlistenFn = unlisten;
-        unlistenRef.current = unlisten;
       } catch (err) {
         console.error('Failed to setup terminal data listener:', err);
       }
@@ -200,9 +284,16 @@ export default function Terminal({ sessionId, deviceType, onSend }: TerminalProp
     return () => {
       cancelled = true;
       if (unlistenFn) unlistenFn();
-      if (unlistenRef.current) unlistenRef.current();
+      // Flush any bytes the streaming decoder is still holding (a multibyte
+      // char that was only partially received before teardown).
+      try {
+        const tail = decoderRef.current.decode();
+        if (tail && terminalRef.current) terminalRef.current.write(tail);
+      } catch {
+        /* ignore */
+      }
     };
-  }, [sessionId, deviceType, settings.syntaxHighlighting]);
+  }, [sessionId]);
 
   // Listen for connection status changes (connect/disconnect/reconnect) from
   // the backend and reflect them in the session store so tabs and the status
@@ -265,7 +356,7 @@ export default function Terminal({ sessionId, deviceType, onSend }: TerminalProp
     <div
       ref={containerRef}
       className="w-full h-full"
-      style={{ background: isDark ? '#0d1117' : '#ffffff' }}
+      style={{ background: isDark ? 'var(--bg-primary)' : '#ffffff' }}
     />
   );
 }

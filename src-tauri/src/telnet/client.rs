@@ -34,6 +34,7 @@ pub struct TelnetConnection {
     pub write_half: Option<Arc<Mutex<WriteHalf<TcpStream>>>>,
     pub data_sender: Option<Sender<Vec<u8>>>,
     pub data_receiver: Option<tokio::sync::mpsc::Receiver<Vec<u8>>>,
+    pub reader_task: Option<tokio::task::JoinHandle<()>>,
     pub connected: bool,
 }
 
@@ -45,6 +46,7 @@ impl TelnetConnection {
             write_half: None,
             data_sender: None,
             data_receiver: None,
+            reader_task: None,
             connected: false,
         }
     }
@@ -54,15 +56,67 @@ impl TelnetConnection {
     }
 
     async fn negotiate_options(&self, stream: &mut TcpStream) -> Result<(), AppError> {
-        // Send WILL SUPPRESS_GO_AHEAD and WILL ECHO
+        // As an interactive terminal client we want the REMOTE end to echo, so
+        // we request `DO ECHO` (and `WONT ECHO` ourselves). Offering `WILL ECHO`
+        // — as this used to — tells the server *we* will echo, which is
+        // backwards and leaves typed input unechoed on many devices.
         let negotiate = [
             IAC, WILL, OPT_SUPPRESS_GO_AHEAD,
-            IAC, WILL, OPT_ECHO,
             IAC, DO, OPT_SUPPRESS_GO_AHEAD,
+            IAC, DO, OPT_ECHO,
+            IAC, WONT, OPT_ECHO,
         ];
         stream.write_all(&negotiate).await.map_err(AppError::from)?;
         stream.flush().await.map_err(AppError::from)?;
         Ok(())
+    }
+
+    /// Number of trailing bytes that form an INCOMPLETE telnet command sequence
+    /// (an IAC negotiation split across two reads). Those bytes must be carried
+    /// over to the next read instead of being treated as data.
+    fn incomplete_tail_len(data: &[u8]) -> usize {
+        // Walk backwards to the last IAC that could start an unterminated seq.
+        let n = data.len();
+        if n == 0 {
+            return 0;
+        }
+        // Lone trailing IAC.
+        if data[n - 1] == IAC {
+            return 1;
+        }
+        // IAC + negotiation verb with the option byte still missing.
+        if n >= 2 && data[n - 2] == IAC && matches!(data[n - 1], WILL | WONT | DO | DONT) {
+            return 2;
+        }
+        // Unterminated sub-negotiation: an IAC SB with no following IAC SE.
+        let mut i = 0;
+        let mut sb_start: Option<usize> = None;
+        while i + 1 < n {
+            if data[i] == IAC {
+                match data[i + 1] {
+                    SB => {
+                        sb_start = Some(i);
+                        i += 2;
+                        continue;
+                    }
+                    SE => {
+                        sb_start = None;
+                        i += 2;
+                        continue;
+                    }
+                    WILL | WONT | DO | DONT => {
+                        i += 3;
+                        continue;
+                    }
+                    _ => {
+                        i += 2;
+                        continue;
+                    }
+                }
+            }
+            i += 1;
+        }
+        sb_start.map(|s| n - s).unwrap_or(0)
     }
 
     fn process_telnet_data(data: &[u8]) -> Vec<u8> {
@@ -116,15 +170,25 @@ impl Connection for TelnetConnection {
         let (read_half, write_half) = tokio::io::split(stream);
         let (data_tx, data_rx) = channel::<Vec<u8>>(1024);
 
-        // Spawn background task to read from TCP stream and forward to channel
-        tokio::spawn(async move {
+        // Spawn background task to read from TCP stream and forward to channel.
+        // `carry` holds the tail of a telnet command sequence that was split
+        // across a read boundary so it is parsed correctly next time.
+        let reader_task = tokio::spawn(async move {
             let mut reader = read_half;
             let mut buf = vec![0u8; 4096];
+            let mut carry: Vec<u8> = Vec::new();
             loop {
                 match reader.read(&mut buf).await {
                     Ok(0) => break,
                     Ok(n) => {
-                        let processed = TelnetConnection::process_telnet_data(&buf[..n]);
+                        let mut chunk = std::mem::take(&mut carry);
+                        chunk.extend_from_slice(&buf[..n]);
+                        let keep = TelnetConnection::incomplete_tail_len(&chunk);
+                        let split = chunk.len() - keep;
+                        if keep > 0 {
+                            carry = chunk[split..].to_vec();
+                        }
+                        let processed = TelnetConnection::process_telnet_data(&chunk[..split]);
                         if !processed.is_empty() && data_tx.send(processed).await.is_err() {
                             break;
                         }
@@ -137,6 +201,7 @@ impl Connection for TelnetConnection {
         self.data_sender = None;
         self.write_half = Some(Arc::new(Mutex::new(write_half)));
         self.data_receiver = Some(data_rx);
+        self.reader_task = Some(reader_task);
         self.connected = true;
 
         Ok(ConnectResponse {
@@ -148,7 +213,18 @@ impl Connection for TelnetConnection {
 
     async fn disconnect(&mut self) -> Result<(), AppError> {
         self.connected = false;
-        self.write_half = None;
+        // Shut the write half down first so the peer sees a clean FIN…
+        if let Some(wh) = self.write_half.take() {
+            if let Ok(mut w) = wh.try_lock() {
+                let _ = w.shutdown().await;
+            }
+        }
+        // …then abort the reader task so its read half drops and the TCP
+        // socket is fully released (previously it lingered until the peer
+        // closed, leaking the connection).
+        if let Some(task) = self.reader_task.take() {
+            task.abort();
+        }
         self.data_sender = None;
         self.data_receiver = None;
         Ok(())
@@ -157,12 +233,12 @@ impl Connection for TelnetConnection {
     async fn send(&self, data: &[u8]) -> Result<(), AppError> {
         if let Some(ref wh) = self.write_half {
             let mut w = wh.lock().await;
-            w.write_all(data).await.map_err(|e| {
-                AppError::TelnetError(format!("Write error: {}", e))
-            })?;
-            w.flush().await.map_err(|e| {
-                AppError::TelnetError(format!("Flush error: {}", e))
-            })?;
+            w.write_all(data)
+                .await
+                .map_err(|e| AppError::TelnetError(format!("Write error: {}", e)))?;
+            w.flush()
+                .await
+                .map_err(|e| AppError::TelnetError(format!("Flush error: {}", e)))?;
             Ok(())
         } else {
             Err(AppError::TelnetError("Not connected".into()))

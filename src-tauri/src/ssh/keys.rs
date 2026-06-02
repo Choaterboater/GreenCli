@@ -21,10 +21,7 @@ impl SshKeyManager {
         let private_key_pem = String::from_utf8(private_key_pem)
             .map_err(|e| AppError::SshError(format!("UTF-8 export: {}", e)))?;
 
-        let public_ssh_format = format!(
-            "ssh-ed25519 {} aruba-terminal-pro",
-            public_key_base64
-        );
+        let public_ssh_format = format!("ssh-ed25519 {} hpe-network-terminal", public_key_base64);
 
         Ok((public_ssh_format, private_key_pem))
     }

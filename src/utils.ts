@@ -1,31 +1,15 @@
 /**
- * Utility functions for Aruba Terminal Pro
+ * Utility functions for HPE Network Terminal
  */
 
+import { deviceMeta } from './types';
+
 export function getDeviceIcon(deviceType: string): string {
-  switch (deviceType) {
-    case 'aruba-cx':
-      return 'CX';
-    case 'aruba-ap':
-      return 'AP';
-    case 'aruba-controller':
-      return 'MC';
-    default:
-      return 'SH';
-  }
+  return deviceMeta(deviceType).short;
 }
 
 export function getDeviceLabel(deviceType: string): string {
-  switch (deviceType) {
-    case 'aruba-cx':
-      return 'Aruba CX';
-    case 'aruba-ap':
-      return 'Aruba AP';
-    case 'aruba-controller':
-      return 'Aruba MC';
-    default:
-      return 'Generic';
-  }
+  return deviceMeta(deviceType).label;
 }
 
 export function getProtocolLabel(protocol: string): string {
@@ -66,4 +50,34 @@ export function debounce<T extends (...args: any[]) => void>(
 
 export function clamp(num: number, min: number, max: number): number {
   return Math.min(Math.max(num, min), max);
+}
+
+// Fuzzy match inspired by cencli's device lookup: case-insensitive, ignoring
+// hyphens/underscores/spaces, substring-preferred with a subsequence fallback.
+// Returns a score (higher = better) or -1 for no match.
+export function fuzzyScore(query: string, target: string): number {
+  const norm = (s: string) => s.toLowerCase().replace(/[-_\s]/g, '');
+  const q = norm(query);
+  const t = norm(target);
+  if (!q) return 0;
+  const idx = t.indexOf(q);
+  if (idx >= 0) return 1000 - idx - (t.length - q.length); // contiguous match wins
+  // Subsequence: every query char appears in order; reward adjacency.
+  let qi = 0;
+  let streak = 0;
+  let score = 0;
+  for (let ti = 0; ti < t.length && qi < q.length; ti++) {
+    if (t[ti] === q[qi]) {
+      qi++;
+      streak++;
+      score += streak;
+    } else {
+      streak = 0;
+    }
+  }
+  return qi === q.length ? score : -1;
+}
+
+export function fuzzyMatch(query: string, target: string): boolean {
+  return !query.trim() || fuzzyScore(query, target) >= 0;
 }

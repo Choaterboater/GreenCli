@@ -141,6 +141,7 @@ impl VaultStorage {
     }
 
     /// Rewrite the whole vault under a new salt + cipher (used by change_password).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn rewrite(
         &self,
         salt: &[u8],

@@ -23,6 +23,7 @@ pub struct SerialConnection {
     pub config: SerialConfig,
     write_half: Option<Arc<Mutex<WriteHalf<SerialStream>>>>,
     data_receiver: Option<tokio::sync::mpsc::Receiver<Vec<u8>>>,
+    reader_task: Option<tokio::task::JoinHandle<()>>,
     connected: bool,
 }
 
@@ -33,6 +34,7 @@ impl SerialConnection {
             config,
             write_half: None,
             data_receiver: None,
+            reader_task: None,
             connected: false,
         }
     }
@@ -74,16 +76,14 @@ impl Connection for SerialConnection {
             .parity(self.parity())
             .stop_bits(self.stop_bits())
             .open_native_async()
-            .map_err(|e| {
-                AppError::SerialError(format!("Open {}: {}", self.config.port, e))
-            })?;
+            .map_err(|e| AppError::SerialError(format!("Open {}: {}", self.config.port, e)))?;
 
         let (read_half, write_half): (ReadHalf<SerialStream>, WriteHalf<SerialStream>) =
             tokio::io::split(stream);
         let (data_tx, data_rx) = channel::<Vec<u8>>(1024);
 
         // Spawn background reader forwarding serial bytes to the frontend channel.
-        tokio::spawn(async move {
+        let reader_task = tokio::spawn(async move {
             let mut reader = read_half;
             let mut buf = vec![0u8; 4096];
             loop {
@@ -101,6 +101,7 @@ impl Connection for SerialConnection {
 
         self.write_half = Some(Arc::new(Mutex::new(write_half)));
         self.data_receiver = Some(data_rx);
+        self.reader_task = Some(reader_task);
         self.connected = true;
 
         Ok(ConnectResponse {
@@ -113,6 +114,11 @@ impl Connection for SerialConnection {
     async fn disconnect(&mut self) -> Result<(), AppError> {
         self.connected = false;
         self.write_half = None;
+        // Abort the reader so its read half drops and the serial port is
+        // released — otherwise it stayed open and blocked re-opening the port.
+        if let Some(task) = self.reader_task.take() {
+            task.abort();
+        }
         self.data_receiver = None;
         Ok(())
     }

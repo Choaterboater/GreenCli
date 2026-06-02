@@ -5,19 +5,25 @@ import {
   Search,
   PanelLeft,
   Plug,
-  HelpCircle,
+  Command,
   Globe,
   Sparkles,
   FileCode,
   Radio,
   Columns2,
+  TerminalSquare,
+  Waypoints,
+  Target,
 } from 'lucide-react';
 
 import { useSessionStore } from './store/sessionStore';
 import { useSettingsStore } from './store/settingsStore';
 import { useTheme } from './hooks/useTheme';
-import { ConnectionConfig, Protocol } from './types';
+import { ConnectionConfig, Protocol, DeviceType } from './types';
 import { generateId } from './utils';
+import { notify } from './store/toastStore';
+import Toaster from './components/Toaster';
+import DialogHost from './components/DialogHost';
 
 import Terminal from './components/Terminal';
 import TerminalTabs from './components/TerminalTabs';
@@ -32,6 +38,8 @@ import AiAssistant from './components/AiAssistant';
 import ConfigEditor from './components/ConfigEditor';
 import SnippetsMenu from './components/SnippetsMenu';
 import CommandPalette from './components/CommandPalette';
+import TunnelsManager from './components/TunnelsManager';
+import IntentPanel from './components/IntentPanel';
 import VaultUnlock from './components/VaultUnlock';
 import BulkRunner from './components/BulkRunner';
 import SftpBrowser from './components/SftpBrowser';
@@ -88,21 +96,34 @@ function App() {
 
   const [broadcastInput, setBroadcastInput] = useState('');
 
+  // Detect macOS desktop build so the title bar can clear the native traffic
+  // lights (window uses an overlay title bar). In the browser dev preview there
+  // is no Tauri IPC, so we keep the normal inset.
+  const isTauriMac =
+    typeof navigator !== 'undefined' &&
+    /Mac/.test(navigator.userAgent) &&
+    typeof window !== 'undefined' &&
+    '__TAURI_IPC__' in window;
+
   // Send a command to every connected session at once.
   const sendBroadcast = useCallback(() => {
     const cmd = broadcastInput;
     if (!cmd.trim()) return;
-    sessions
-      .filter((s) => s.connected)
-      .forEach((s) =>
-        invoke('send_data', { sessionId: s.sessionId, data: cmd + '\r' }).catch(() => {})
-      );
+    const targets = sessions.filter((s) => s.connected);
+    if (targets.length === 0) {
+      notify.warning('Nothing to broadcast', 'No sessions are currently connected.');
+      return;
+    }
+    targets.forEach((s) =>
+      invoke('send_data', { sessionId: s.sessionId, data: cmd + '\r' }).catch(() => {})
+    );
+    notify.success('Broadcast sent', `Sent to ${targets.length} session${targets.length > 1 ? 's' : ''}.`);
     setBroadcastInput('');
   }, [broadcastInput, sessions]);
 
   // Load saved sessions from backend on mount
   useEffect(() => {
-    invoke<Array<{ id: string; name: string; items: Array<{ id: string; name: string; protocol: string; host?: string; port?: number; username?: string; authType?: string; deviceType: string; serialPort?: string; baudRate?: number }>; expanded: boolean }>>('list_folders')
+    invoke<Array<{ id: string; name: string; items: Array<{ id: string; name: string; protocol: string; host?: string; port?: number; username?: string; authType?: string; deviceType: string; serialPort?: string; baudRate?: number; dataBits?: number; parity?: string; stopBits?: number; startupCommands?: string; tags?: string[]; jumpHost?: string; jumpPort?: number; jumpUsername?: string }>; expanded: boolean }>>('list_folders')
       .then((folders) => {
         setFolders(
           folders.map((f) => ({
@@ -117,9 +138,17 @@ function App() {
               port: s.port,
               username: s.username,
               authType: (s.authType ?? 'password') as 'password' | 'key' | 'agent',
-              deviceType: (s.deviceType ?? 'generic') as 'aruba-cx' | 'aruba-ap' | 'aruba-controller' | 'generic',
+              deviceType: (s.deviceType ?? 'generic') as DeviceType,
               serialPort: s.serialPort,
               baudRate: s.baudRate,
+              dataBits: s.dataBits,
+              parity: s.parity,
+              stopBits: s.stopBits,
+              startupCommands: s.startupCommands,
+              tags: s.tags,
+              jumpHost: s.jumpHost,
+              jumpPort: s.jumpPort,
+              jumpUsername: s.jumpUsername,
             })),
           }))
         );
@@ -138,15 +167,37 @@ function App() {
   const centralBaseUrl = useSettingsStore((s) => s.centralBaseUrl);
   const centralClientId = useSettingsStore((s) => s.centralClientId);
   const centralClientSecret = useSettingsStore((s) => s.centralClientSecret);
+  const centralAuthMode = useSettingsStore((s) => s.centralAuthMode);
+  const centralToken = useSettingsStore((s) => s.centralToken);
   useEffect(() => {
-    if (centralBaseUrl && centralClientId && centralClientSecret) {
+    if (!centralBaseUrl) return;
+    if (centralAuthMode === 'token') {
+      if (centralToken) {
+        invoke('central_set_token', { baseUrl: centralBaseUrl, token: centralToken }).catch(() => {});
+      }
+    } else if (centralClientId && centralClientSecret) {
       invoke('central_configure', {
         baseUrl: centralBaseUrl,
         clientId: centralClientId,
         clientSecret: centralClientSecret,
       }).catch(() => {});
     }
-  }, [centralBaseUrl, centralClientId, centralClientSecret]);
+  }, [centralBaseUrl, centralClientId, centralClientSecret, centralAuthMode, centralToken]);
+
+  // Push Juniper Apstra credentials to the backend whenever they change.
+  const apstraHost = useSettingsStore((s) => s.apstraHost);
+  const apstraUsername = useSettingsStore((s) => s.apstraUsername);
+  const apstraPassword = useSettingsStore((s) => s.apstraPassword);
+  useEffect(() => {
+    if (apstraHost && apstraUsername && apstraPassword) {
+      invoke('apstra_configure', {
+        host: apstraHost,
+        username: apstraUsername,
+        password: apstraPassword,
+        accept_invalid_certs: true,
+      }).catch(() => {});
+    }
+  }, [apstraHost, apstraUsername, apstraPassword]);
 
   const activeSession = sessions.find((s) => s.sessionId === activeSessionId);
 
@@ -261,6 +312,9 @@ function App() {
             key_passphrase: fullConfig.keyPassphrase,
             serial_port: fullConfig.serialPort,
             baud_rate: fullConfig.baudRate,
+            data_bits: fullConfig.dataBits,
+            parity: fullConfig.parity,
+            stop_bits: fullConfig.stopBits,
             device_type: fullConfig.deviceType,
             keep_alive_interval: useSettingsStore.getState().keepAliveInterval,
             auto_reconnect: useSettingsStore.getState().autoReconnect,
@@ -280,18 +334,57 @@ function App() {
           if (authBased) {
             setPendingConnection(fullConfig);
             setShowAuthDialog(true);
+          } else {
+            // local/serial: no auth to retry — surface the failure.
+            useSessionStore.getState().updateSessionConnection(sessionId, false);
+            notify.error(
+              `Could not start ${fullConfig.name || fullConfig.protocol}`,
+              result.error || 'The connection failed to start.'
+            );
           }
         } else {
+          // The user may have closed the tab while connect was awaiting — if the
+          // session is gone, tear the orphaned backend connection down.
+          const stillOpen = useSessionStore
+            .getState()
+            .sessions.some((s) => s.sessionId === sessionId);
+          if (!stillOpen) {
+            invoke('disconnect', { sessionId }).catch(() => {});
+            return;
+          }
           useSessionStore.getState().updateSessionConnection(sessionId, true);
+          const where =
+            fullConfig.protocol === 'local'
+              ? fullConfig.command || 'local shell'
+              : `${fullConfig.username ? fullConfig.username + '@' : ''}${fullConfig.host || fullConfig.serialPort || ''}`;
+          notify.success('Connected', `${fullConfig.name || where} is online.`);
+
+          // Per-host startup commands: run them once the shell is ready.
+          const startup = fullConfig.startupCommands?.trim();
+          if (startup) {
+            const cmds = startup.split('\n').map((c) => c.trim()).filter(Boolean);
+            setTimeout(() => {
+              cmds.forEach((c, i) =>
+                setTimeout(
+                  () => invoke('send_data', { sessionId, data: c + '\r' }).catch(() => {}),
+                  i * 250
+                )
+              );
+            }, 700);
+          }
         }
       } catch (err) {
         console.error('Connection error:', err);
-        // For local/serial there's no auth to retry — surface the failure on the tab.
+        // For local/serial there's no auth to retry — surface the failure.
         if (fullConfig.protocol === 'ssh' || fullConfig.protocol === 'telnet') {
           setPendingConnection(fullConfig);
           setShowAuthDialog(true);
         } else {
           useSessionStore.getState().updateSessionConnection(sessionId, false);
+          notify.error(
+            `Could not start ${fullConfig.name || fullConfig.protocol}`,
+            String(err)
+          );
         }
       }
     },
@@ -326,7 +419,8 @@ function App() {
             port: pending.port,
             username: pending.username,
             // Honour the auth type the user picked in the dialog.
-            auth_type: creds.authType === 'key' ? 'key' : 'password',
+            auth_type:
+              creds.authType === 'key' ? 'key' : creds.authType === 'agent' ? 'agent' : 'password',
             password: creds.password,
             private_key: creds.privateKey,
             key_passphrase: creds.keyPassphrase,
@@ -369,128 +463,135 @@ function App() {
     <div
       className="h-screen w-screen flex flex-col overflow-hidden"
       data-theme={theme}
-      style={{ background: theme === 'dark' ? 'var(--bg-primary)' : '#ffffff' }}
+      style={{
+        backgroundColor: theme === 'dark' ? 'var(--bg-primary)' : '#ffffff',
+        backgroundImage: theme === 'dark' ? 'var(--app-bg-gradient)' : 'none',
+      }}
     >
       {/* Title Bar */}
-      <div className="flex items-center justify-between h-9 px-3 bg-[var(--bg-secondary)] border-b border-[var(--bg-tertiary)] drag-region">
-        <div className="flex items-center gap-3">
-          <span className="text-sm font-semibold text-[var(--text-primary)]">
-            Aruba Terminal Pro
-          </span>
+      <div
+        className="flex items-center justify-between h-11 pr-2 bg-[var(--bg-secondary)] border-b border-[var(--border)] drag-region select-none"
+        style={{ paddingLeft: isTauriMac ? 80 : 12 }}
+      >
+        {/* Left: brand + sidebar toggle */}
+        <div className="flex items-center gap-2.5 min-w-0">
+          <div className="flex items-center gap-2">
+            <div
+              className="flex items-center justify-center w-[26px] h-[26px] rounded-md flex-shrink-0"
+              style={{
+                background: 'linear-gradient(135deg, var(--accent-hover), var(--accent))',
+                boxShadow: 'var(--elevation-1)',
+              }}
+            >
+              <TerminalSquare size={15} style={{ color: 'var(--accent-fg)' }} />
+            </div>
+            <span className="text-[13px] font-semibold text-[var(--text-primary)] tracking-tight whitespace-nowrap">
+              HPE Network Terminal
+            </span>
+          </div>
           {!sidebarVisible && (
             <button
-              onClick={() =>
-                useSessionStore.getState().toggleSidebar()
-              }
-              className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+              onClick={() => useSessionStore.getState().toggleSidebar()}
+              className="no-drag p-1.5 rounded-md hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
+              title="Show sidebar (Ctrl+B)"
             >
-              <PanelLeft size={14} />
+              <PanelLeft size={15} />
             </button>
           )}
         </div>
-        <div className="flex items-center gap-1">
-          {/* Config Editor Toggle */}
-          <button
-            onClick={toggleConfigEditor}
-            className={`flex items-center gap-1.5 px-2 py-1 text-xs rounded transition-colors ${
-              showConfigEditor
-                ? 'text-[#e5c07b] bg-[#e5c07b20]'
-                : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
-            }`}
-            title="Config Editor (Ctrl+Shift+E)"
-          >
-            <FileCode size={12} />
-            <span>Editor</span>
-          </button>
-          {/* API Explorer Toggle */}
-          <button
-            onClick={toggleApiExplorer}
-            className={`flex items-center gap-1.5 px-2 py-1 text-xs rounded transition-colors ${
-              showApiExplorer
-                ? 'text-[#58a6ff] bg-[#58a6ff20]'
-                : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
-            }`}
-            title="API Explorer (Ctrl+Shift+A)"
-          >
-            <Globe size={12} />
-            <span>API</span>
-          </button>
-          {/* AI Assistant Toggle */}
-          <button
-            onClick={toggleAiAssistant}
-            className={`flex items-center gap-1.5 px-2 py-1 text-xs rounded transition-colors ${
-              showAiAssistant
-                ? 'text-[#d2a8ff] bg-[#d2a8ff20]'
-                : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
-            }`}
-            title="AI Assistant (Ctrl+Shift+I)"
-          >
-            <Sparkles size={12} />
-            <span>AI</span>
-          </button>
-          {/* Split view toggle */}
-          <button
-            onClick={() => {
-              toggleSplitView();
-              refitTerminals();
-            }}
-            className={`flex items-center gap-1.5 px-2 py-1 text-xs rounded transition-colors ${
-              splitView
-                ? 'text-[#58a6ff] bg-[#58a6ff20]'
-                : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
-            }`}
-            title="Split the terminal into two panes"
-          >
-            <Columns2 size={12} />
-            <span>Split</span>
-          </button>
 
-          {/* Snippets */}
-          <SnippetsMenu />
+        {/* Center: panel segmented control + workspace utilities */}
+        <div className="flex items-center gap-2 no-drag">
+          <div className="segmented">
+            <button data-active={showConfigEditor} onClick={toggleConfigEditor} title="Config Editor (Ctrl+Shift+E)">
+              <FileCode size={13} style={showConfigEditor ? { color: 'var(--accent-2)' } : undefined} />
+              <span>Editor</span>
+            </button>
+            <button data-active={showApiExplorer} onClick={toggleApiExplorer} title="API Explorer (Ctrl+Shift+A)">
+              <Globe size={13} style={showApiExplorer ? { color: 'var(--accent-info)' } : undefined} />
+              <span>API</span>
+            </button>
+            <button data-active={showAiAssistant} onClick={toggleAiAssistant} title="AI Assistant (Ctrl+Shift+I)">
+              <Sparkles size={13} style={showAiAssistant ? { color: 'var(--vendor-mist)' } : undefined} />
+              <span>AI</span>
+            </button>
+          </div>
 
-          {/* Broadcast toggle */}
+          <div className="flex items-center gap-0.5">
+            <button
+              onClick={() => {
+                toggleSplitView();
+                refitTerminals();
+              }}
+              className={`flex items-center justify-center w-8 h-8 rounded-md transition-colors ${
+                splitView
+                  ? 'text-[var(--accent)] bg-[var(--accent-soft)]'
+                  : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
+              }`}
+              title="Split into two panes"
+            >
+              <Columns2 size={15} />
+            </button>
+            <SnippetsMenu />
+            <button
+              onClick={() => useSessionStore.getState().setShowTunnels(true)}
+              className="flex items-center justify-center w-8 h-8 rounded-md text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] transition-colors"
+              title="SSH tunnels / port forwarding"
+            >
+              <Waypoints size={15} />
+            </button>
+            <button
+              onClick={() => useSessionStore.getState().setShowIntent(true)}
+              className="flex items-center justify-center w-8 h-8 rounded-md text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] transition-colors"
+              title="Network intent / desired-state assurance"
+            >
+              <Target size={15} />
+            </button>
+            <button
+              onClick={toggleBroadcast}
+              className={`flex items-center justify-center w-8 h-8 rounded-md transition-colors ${
+                broadcastMode
+                  ? 'text-[var(--accent-2)] bg-[var(--accent-2-soft)]'
+                  : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
+              }`}
+              title="Broadcast a command to all connected sessions"
+            >
+              <Radio size={15} />
+            </button>
+          </div>
+        </div>
+
+        {/* Right: connect + utilities */}
+        <div className="flex items-center gap-1 no-drag">
           <button
-            onClick={toggleBroadcast}
-            className={`flex items-center gap-1.5 px-2 py-1 text-xs rounded transition-colors ${
-              broadcastMode
-                ? 'text-[#ff7b72] bg-[#ff7b7220]'
-                : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
-            }`}
-            title="Broadcast a command to all connected sessions"
+            onClick={() => useSessionStore.getState().setShowQuickConnect(true)}
+            className="btn-accent flex items-center gap-1.5 h-8 px-3 text-[12px]"
+            title="New connection (Ctrl+T)"
           >
-            <Radio size={12} />
-            <span>Broadcast</span>
-          </button>
-          <div className="w-px h-4 bg-[var(--border)] mx-1" />
-          <button
-            onClick={() =>
-              useSessionStore.getState().setShowQuickConnect(true)
-            }
-            className="flex items-center gap-1.5 px-2 py-1 text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] rounded transition-colors"
-          >
-            <Plug size={12} />
+            <Plug size={13} />
             <span>Connect</span>
           </button>
+          <div className="w-px h-5 bg-[var(--border)] mx-1" />
           <button
             onClick={() => setShowSearch(true)}
-            className="p-1.5 text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] rounded transition-colors"
+            className="p-2 rounded-md text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] transition-colors"
             title="Search (Ctrl+F)"
           >
-            <Search size={14} />
-          </button>
-          <button
-            onClick={() => setShowSettings(true)}
-            className="p-1.5 text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] rounded transition-colors"
-            title="Settings (Ctrl+,)"
-          >
-            <Settings size={14} />
+            <Search size={16} />
           </button>
           <button
             onClick={() => useSessionStore.getState().setShowCommandPalette(true)}
-            className="p-1.5 text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] rounded transition-colors"
+            className="p-2 rounded-md text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] transition-colors"
             title="Command palette (Ctrl+K)"
           >
-            <HelpCircle size={14} />
+            <Command size={16} />
+          </button>
+          <button
+            onClick={() => setShowSettings(true)}
+            className="p-2 rounded-md text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] transition-colors"
+            title="Settings (Ctrl+,)"
+          >
+            <Settings size={16} />
           </button>
         </div>
       </div>
@@ -603,71 +704,75 @@ function App() {
                     />
                   )
                 ) : (
-                  <div className="flex flex-col items-center justify-center h-full text-[var(--text-muted)]">
-                    <Plug size={48} className="mb-4 opacity-30" />
-                    <p className="text-lg font-medium mb-2">
-                      No Active Session
+                  <div className="flex flex-col items-center justify-center h-full px-6 text-center animate-fade-in">
+                    <div
+                      className="flex items-center justify-center w-16 h-16 rounded-2xl mb-5"
+                      style={{
+                        background: 'linear-gradient(135deg, var(--accent-hover), var(--accent))',
+                        boxShadow: 'var(--glow-accent)',
+                      }}
+                    >
+                      <TerminalSquare size={30} style={{ color: 'var(--accent-fg)' }} />
+                    </div>
+                    <h1 className="text-[22px] font-semibold text-[var(--text-primary)] tracking-tight">
+                      HPE Network Terminal
+                    </h1>
+                    <p className="mt-1.5 text-[13px] text-[var(--text-secondary)]">
+                      One cockpit for HPE Networking — Aruba, Juniper &amp; Mist.
                     </p>
-                    <p className="text-sm mb-4">
-                      Connect to a device to start your session
-                    </p>
-                    <div className="flex items-center gap-2">
+
+                    {/* Vendor chips */}
+                    <div className="mt-4 flex items-center gap-2">
+                      {([
+                        ['Aruba', 'var(--vendor-aruba)'],
+                        ['Juniper', 'var(--vendor-juniper)'],
+                        ['Mist', 'var(--vendor-mist)'],
+                      ] as [string, string][]).map(([label, color]) => (
+                        <span
+                          key={label}
+                          className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium border border-[var(--border)] bg-[var(--bg-secondary)] text-[var(--text-secondary)]"
+                        >
+                          <span className="vendor-dot" style={{ background: color, color }} />
+                          {label}
+                        </span>
+                      ))}
+                    </div>
+
+                    <div className="mt-7 flex items-center gap-2.5">
                       <button
-                        onClick={() =>
-                          useSessionStore
-                            .getState()
-                            .setShowQuickConnect(true)
-                        }
-                        className="px-4 py-2 text-sm bg-[#238636] hover:bg-[#2ea043] text-white rounded-lg transition-colors"
+                        onClick={() => useSessionStore.getState().setShowQuickConnect(true)}
+                        className="btn-accent flex items-center gap-2 h-10 px-5 text-sm"
                       >
+                        <Plug size={16} />
                         Quick Connect
                       </button>
                       <button
                         onClick={openLocalShell}
-                        className="flex items-center gap-1.5 px-4 py-2 text-sm bg-[var(--bg-tertiary)] hover:bg-[var(--border)] text-[var(--text-primary)] rounded-lg transition-colors"
+                        className="flex items-center gap-2 h-10 px-5 text-sm rounded-[var(--radius)] border border-[var(--border-strong)] bg-[var(--bg-secondary)] hover:bg-[var(--bg-tertiary)] text-[var(--text-primary)] transition-colors"
                         title="Open a local shell terminal"
                       >
-                        <FileCode size={14} />
+                        <TerminalSquare size={16} />
                         Local Shell
                       </button>
                     </div>
-                    <div className="mt-6 text-xs space-y-1 text-center">
-                      <p>
-                        <kbd className="px-1.5 py-0.5 bg-[var(--bg-tertiary)] rounded text-[var(--text-secondary)]">
-                          Ctrl+T
-                        </kbd>{' '}
-                        Quick Connect
-                      </p>
-                      <p>
-                        <kbd className="px-1.5 py-0.5 bg-[var(--bg-tertiary)] rounded text-[var(--text-secondary)]">
-                          Ctrl+W
-                        </kbd>{' '}
-                        Close Tab
-                      </p>
-                      <p>
-                        <kbd className="px-1.5 py-0.5 bg-[var(--bg-tertiary)] rounded text-[var(--text-secondary)]">
-                          Ctrl+F
-                        </kbd>{' '}
-                        Search
-                      </p>
-                      <p>
-                        <kbd className="px-1.5 py-0.5 bg-[var(--bg-tertiary)] rounded text-[var(--text-secondary)]">
-                          Ctrl+Shift+E
-                        </kbd>{' '}
-                        Config Editor
-                      </p>
-                      <p>
-                        <kbd className="px-1.5 py-0.5 bg-[var(--bg-tertiary)] rounded text-[var(--text-secondary)]">
-                          Ctrl+Shift+A
-                        </kbd>{' '}
-                        API Explorer
-                      </p>
-                      <p>
-                        <kbd className="px-1.5 py-0.5 bg-[var(--bg-tertiary)] rounded text-[var(--text-secondary)]">
-                          Ctrl+Shift+I
-                        </kbd>{' '}
-                        AI Assistant
-                      </p>
+
+                    {/* Shortcut hints */}
+                    <div className="mt-8 flex flex-wrap items-center justify-center gap-x-5 gap-y-2 max-w-md text-[11px] text-[var(--text-muted)]">
+                      {([
+                        ['Ctrl+T', 'Connect'],
+                        ['Ctrl+K', 'Commands'],
+                        ['Ctrl+F', 'Search'],
+                        ['Ctrl+Shift+E', 'Editor'],
+                        ['Ctrl+Shift+A', 'API'],
+                        ['Ctrl+Shift+I', 'AI'],
+                      ] as [string, string][]).map(([k, label]) => (
+                        <span key={k} className="flex items-center gap-1.5">
+                          <kbd className="px-1.5 py-0.5 rounded bg-[var(--bg-tertiary)] border border-[var(--border)] text-[var(--text-secondary)] font-mono text-[10px]">
+                            {k}
+                          </kbd>
+                          {label}
+                        </span>
+                      ))}
                     </div>
                   </div>
                 )}
@@ -699,9 +804,13 @@ function App() {
       )}
       <VaultUnlock onUnlocked={flushPendingCredSave} />
       <CommandPalette onConnect={handleConnect} onLocalShell={openLocalShell} />
+      <TunnelsManager />
+      <IntentPanel />
       <QuickConnect onConnect={handleConnect} />
       <SshAuthDialog onAuthenticate={handleAuthenticate} />
       <SettingsPanel />
+      <DialogHost />
+      <Toaster />
     </div>
   );
 }

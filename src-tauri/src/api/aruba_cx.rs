@@ -8,19 +8,31 @@ use serde_json::{json, Value};
 
 use crate::error::AppError;
 
-/// Aruba CX REST API client
+/// Aruba CX REST API client.
+///
+/// The session cookie is managed automatically by reqwest's `cookie_store`
+/// (the same client instance is reused for the life of the API session), so we
+/// never capture or re-send the `Set-Cookie` header by hand — doing so used to
+/// duplicate the cookie and ship its raw attributes as a malformed value.
 pub struct ArubaCxClient {
     client: reqwest::Client,
     base_url: String,
-    cookie: Option<String>,
 }
 
-/// Interface information
+/// Interface information.
+///
+/// AOS-CX `depth=2` returns interface objects keyed by name, WITHOUT a top-level
+/// `id`, and represents `vlan_tag`/`vlan_trunks` as maps (vlan-id -> URI). So id
+/// and name are `#[serde(default)]` (filled from the map key) and the vlan
+/// fields are permissive `Value`s — otherwise every interface fails to parse and
+/// is silently dropped.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Interface {
+    #[serde(default)]
     pub id: String,
+    #[serde(default)]
     pub name: String,
-    #[serde(rename = "type")]
+    #[serde(default, rename = "type")]
     pub interface_type: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
@@ -31,15 +43,17 @@ pub struct Interface {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vlan_mode: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub vlan_trunk: Option<Vec<u32>>,
+    pub vlan_trunk: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub vlan_tag: Option<u32>,
+    pub vlan_tag: Option<Value>,
 }
 
 /// VLAN information
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Vlan {
+    #[serde(default)]
     pub id: u32,
+    #[serde(default)]
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
@@ -63,46 +77,33 @@ pub struct SystemInfo {
     pub uptime: Option<u64>,
 }
 
-/// LLDP neighbor information
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LldpNeighbor {
-    pub interface: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub chassis_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub port_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub system_name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub system_description: Option<String>,
-}
-
 impl ArubaCxClient {
     /// Create a new Aruba CX API client. `accept_invalid_certs` allows
     /// self-signed switch certificates (common in the field); pass `false` to
     /// enforce TLS validation.
-    pub fn new(host: String, accept_invalid_certs: bool) -> Self {
+    pub fn new(host: String, accept_invalid_certs: bool, base_url: Option<String>) -> Self {
         let client = reqwest::Client::builder()
             .danger_accept_invalid_certs(accept_invalid_certs)
             .cookie_store(true)
             .timeout(std::time::Duration::from_secs(30))
             .build()
-            .unwrap_or_default();
+            .expect("Failed to build reqwest client — TLS stack unavailable");
 
-        Self {
-            client,
-            base_url: format!("https://{}/rest/v10.09", host),
-            cookie: None,
-        }
+        // Honour the UI Base URL when provided (a different REST version or a
+        // non-standard port); strip a trailing slash so `{base}/login` joins cleanly.
+        let base_url = base_url
+            .map(|u| u.trim().trim_end_matches('/').to_string())
+            .filter(|u| !u.is_empty())
+            .unwrap_or_else(|| format!("https://{}/rest/v10.09", host));
+
+        Self { client, base_url }
     }
 
-    /// Login to the switch using cookie-based authentication
+    /// Login to the switch using cookie-based authentication. The resulting
+    /// session cookie is retained by the client's cookie store automatically.
     pub async fn login(&mut self, username: &str, password: &str) -> Result<(), AppError> {
         let url = format!("{}/login", self.base_url);
-        let params = [
-            ("username", username),
-            ("password", password),
-        ];
+        let params = [("username", username), ("password", password)];
 
         let response = self
             .client
@@ -113,12 +114,6 @@ impl ArubaCxClient {
             .map_err(|e| AppError::ApiError(format!("Login request failed: {}", e)))?;
 
         if response.status().is_success() {
-            // Extract cookie from response
-            if let Some(cookie_hdr) = response.headers().get("set-cookie") {
-                if let Ok(cookie_str) = cookie_hdr.to_str() {
-                    self.cookie = Some(cookie_str.to_string());
-                }
-            }
             Ok(())
         } else {
             Err(AppError::AuthError(format!(
@@ -128,16 +123,19 @@ impl ArubaCxClient {
         }
     }
 
-    /// Get all interfaces
+    /// Get all interfaces.
+    ///
+    /// CX REST is OVSDB-backed: without `depth`, a collection GET returns a map
+    /// of name -> URI string (not objects), which deserialises to nothing. We
+    /// request `depth=2` so each entry is a full object with its attributes.
     pub async fn get_interfaces(&self) -> Result<Vec<Interface>, AppError> {
-        let url = format!("{}/system/interfaces", self.base_url);
-        let response = self
-            .authenticated_request(|req| req.get(&url))
-            .await?;
+        let url = format!("{}/system/interfaces?depth=2", self.base_url);
+        let response = self.authenticated_request(|req| req.get(&url)).await?;
 
-        let data: Value = response.json().await.map_err(|e| {
-            AppError::ApiError(format!("Failed to parse interfaces: {}", e))
-        })?;
+        let data: Value = response
+            .json()
+            .await
+            .map_err(|e| AppError::ApiError(format!("Failed to parse interfaces: {}", e)))?;
 
         let mut interfaces = Vec::new();
         if let Some(if_map) = data.as_object() {
@@ -156,16 +154,15 @@ impl ArubaCxClient {
         Ok(interfaces)
     }
 
-    /// Get all VLANs
+    /// Get all VLANs (see `get_interfaces` for why `depth` is required).
     pub async fn get_vlans(&self) -> Result<Vec<Vlan>, AppError> {
-        let url = format!("{}/system/vlans", self.base_url);
-        let response = self
-            .authenticated_request(|req| req.get(&url))
-            .await?;
+        let url = format!("{}/system/vlans?depth=2", self.base_url);
+        let response = self.authenticated_request(|req| req.get(&url)).await?;
 
-        let data: Value = response.json().await.map_err(|e| {
-            AppError::ApiError(format!("Failed to parse VLANs: {}", e))
-        })?;
+        let data: Value = response
+            .json()
+            .await
+            .map_err(|e| AppError::ApiError(format!("Failed to parse VLANs: {}", e)))?;
 
         let mut vlans = Vec::new();
         if let Some(vlan_map) = data.as_object() {
@@ -183,60 +180,45 @@ impl ArubaCxClient {
         Ok(vlans)
     }
 
-    /// Get system information
+    /// Get system information. `depth=1` returns the scalar attributes of the
+    /// `/system` row. Field names follow the CX schema (`platform_name`,
+    /// `software_version`, `system_mac`) — not the Cisco-style names used
+    /// previously, which never matched anything.
     pub async fn get_system(&self) -> Result<SystemInfo, AppError> {
-        let url = format!("{}/system", self.base_url);
-        let response = self
-            .authenticated_request(|req| req.get(&url))
-            .await?;
+        let url = format!("{}/system?depth=1", self.base_url);
+        let response = self.authenticated_request(|req| req.get(&url)).await?;
 
-        let data: Value = response.json().await.map_err(|e| {
-            AppError::ApiError(format!("Failed to parse system info: {}", e))
-        })?;
+        let data: Value = response
+            .json()
+            .await
+            .map_err(|e| AppError::ApiError(format!("Failed to parse system info: {}", e)))?;
+
+        // `software_info` may carry the version when `software_version` is absent.
+        let firmware = data["software_version"]
+            .as_str()
+            .or_else(|| data["software_info"]["software_version"].as_str())
+            .map(String::from);
 
         let system_info = SystemInfo {
             hostname: data["hostname"].as_str().unwrap_or("").to_string(),
-            product_name: data["product_name"].as_str().map(String::from),
-            firmware_version: data["firmware_version"].as_str().map(String::from),
-            serial_number: data["serial_number"].as_str().map(String::from),
-            mac_address: data["mac_address"].as_str().map(String::from),
-            uptime: data["uptime"].as_u64(),
+            product_name: data["platform_name"].as_str().map(String::from),
+            firmware_version: firmware,
+            serial_number: data["serial_number"]
+                .as_str()
+                .or_else(|| data["product_info"]["serial_number"].as_str())
+                .map(String::from),
+            mac_address: data["system_mac"].as_str().map(String::from),
+            // CX exposes boot_time (epoch seconds); derive an actual uptime.
+            uptime: data["boot_time"].as_u64().map(|boot| {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(boot);
+                now.saturating_sub(boot)
+            }),
         };
 
         Ok(system_info)
-    }
-
-    /// Get LLDP neighbors
-    pub async fn get_lldp_neighbors(&self) -> Result<Vec<LldpNeighbor>, AppError> {
-        let url = format!("{}/system/interfaces/{{interface}}/lldp_neighbors", self.base_url);
-        let interfaces = self.get_interfaces().await?;
-        let mut neighbors = Vec::new();
-
-        for iface in interfaces {
-            let iface_url = url.replace("{interface}", &iface.id);
-            match self
-                .authenticated_request(|req| req.get(&iface_url))
-                .await
-            {
-                Ok(response) => {
-                    if let Ok(data) = response.json::<Value>().await {
-                        if let Some(nbr_map) = data.as_object() {
-                            for (_, val) in nbr_map {
-                                if let Ok(mut nbr) =
-                                    serde_json::from_value::<LldpNeighbor>(val.clone())
-                                {
-                                    nbr.interface = iface.id.clone();
-                                    neighbors.push(nbr);
-                                }
-                            }
-                        }
-                    }
-                }
-                Err(_) => continue,
-            }
-        }
-
-        Ok(neighbors)
     }
 
     /// Execute a CLI command via the API
@@ -248,23 +230,12 @@ impl ArubaCxClient {
             .authenticated_request(|req| req.post(&url).json(&body))
             .await?;
 
-        let text = response.text().await.map_err(|e| {
-            AppError::ApiError(format!("Failed to read CLI response: {}", e))
-        })?;
+        let text = response
+            .text()
+            .await
+            .map_err(|e| AppError::ApiError(format!("Failed to read CLI response: {}", e)))?;
 
         Ok(text)
-    }
-
-    /// Logout and clear session
-    pub async fn logout(&self) -> Result<(), AppError> {
-        let url = format!("{}/logout", self.base_url);
-        let _ = self
-            .client
-            .post(&url)
-            .send()
-            .await
-            .map_err(|e| AppError::ApiError(format!("Logout failed: {}", e)))?;
-        Ok(())
     }
 
     /// Generic authenticated request for the API Explorer (Postman-style).
@@ -292,9 +263,6 @@ impl ArubaCxClient {
             other => return Err(AppError::ApiError(format!("Unsupported method: {}", other))),
         };
 
-        if let Some(ref cookie) = self.cookie {
-            builder = builder.header("Cookie", cookie);
-        }
         if let Some(b) = body {
             if !b.trim().is_empty() {
                 builder = builder
@@ -318,10 +286,7 @@ impl ArubaCxClient {
     where
         F: FnOnce(reqwest::Client) -> reqwest::RequestBuilder,
     {
-        let mut builder = build(self.client.clone());
-        if let Some(ref cookie) = self.cookie {
-            builder = builder.header("Cookie", cookie);
-        }
+        let builder = build(self.client.clone());
 
         let response = builder
             .send()

@@ -34,6 +34,21 @@ impl KnownHosts {
         }
     }
 
+    /// List all trusted entries as (host:port, fingerprint), sorted by host.
+    pub fn list(&self) -> Vec<(String, String)> {
+        let mut v: Vec<(String, String)> = self.load().into_iter().collect();
+        v.sort_by(|a, b| a.0.cmp(&b.0));
+        v
+    }
+
+    /// Remove a trusted entry so the host is re-trusted (TOFU) on next connect.
+    pub fn remove(&self, host_port: &str) {
+        let mut map = self.load();
+        if map.remove(host_port).is_some() {
+            self.save(&map);
+        }
+    }
+
     /// Verify a fingerprint for `host:port`.
     /// Returns `Ok(true)` to accept, `Err(reason)` to reject on mismatch.
     /// Unknown hosts are recorded (TOFU) and accepted.

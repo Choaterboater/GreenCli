@@ -2,4 +2,4 @@ pub mod manager;
 pub mod store;
 
 pub use manager::SessionManager;
-pub use store::{SessionStore, StoredSession, SessionFolder};
+pub use store::{SessionFolder, SessionStore, StoredSession};

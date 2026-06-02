@@ -107,6 +107,7 @@ impl CredentialVault {
         })
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn change_password(&self, old_password: &str, new_password: &str) -> Result<(), AppError> {
         // Decrypt existing data under the old password + stored salt.
         let env = self

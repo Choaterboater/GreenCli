@@ -2,6 +2,7 @@ import { Grammar, Token } from '../types';
 import { arubaCxGrammar } from './grammar-aruba-cx';
 import { arubaApGrammar } from './grammar-aruba-ap';
 import { arubaCtrlGrammar } from './grammar-aruba-ctrl';
+import { junosGrammar } from './grammar-junos';
 
 // ─── ANSI Color Map (256-color, Solarized-inspired muted palette) ───
 const ANSI_COLORS: Record<string, string> = {
@@ -17,15 +18,30 @@ const ANSI_COLORS: Record<string, string> = {
 };
 
 const ANSI_RESET = '\x1b[0m';
+// Soft reset: clears only the foreground colour (SGR 39) so we never wipe a
+// device's own bold/underline/reverse attributes when re-emitting tokens.
+const ANSI_FG_RESET = '\x1b[39m';
+
+type DetectedDevice = 'aruba-cx' | 'aruba-ap' | 'aruba-controller' | 'juniper-junos' | 'generic';
 
 // ─── Device Detection Patterns ───
 interface DevicePattern {
-  type: 'aruba-cx' | 'aruba-ap' | 'aruba-controller' | 'generic';
+  type: DetectedDevice;
   patterns: RegExp[];
   commandFingerprints: string[];
 }
 
 const DEVICE_PATTERNS: DevicePattern[] = [
+  {
+    type: 'juniper-junos',
+    patterns: [
+      /^[\w.-]+@[\w.-]+>\s?$/,
+      /^[\w.-]+@[\w.-]+#\s?$/,
+      /^\{(?:master|backup|primary|secondary|line card)[^}]*\}\s*$/,
+      /^\[edit[^\]]*\]\s*$/,
+    ],
+    commandFingerprints: ['ge-0/', 'xe-0/', 'et-0/', 'set interfaces', 'family inet', 'routing-instances', 'ethernet-switching', '| display set', 'commit confirmed', 'request system'],
+  },
   {
     type: 'aruba-cx',
     patterns: [
@@ -196,8 +212,19 @@ export class ArubaHighlighter {
     let result = '';
 
     for (const token of tokens) {
-      const ansiCode = ANSI_COLORS[token.className] || ANSI_RESET;
-      result += `${ansiCode}${token.text}${ANSI_RESET}`;
+      // Plain text needs no colour wrapping — emit as-is so we don't disturb
+      // any attributes (bold/underline) the device may have set.
+      if (token.className === 'token-default') {
+        result += token.text;
+        continue;
+      }
+      const ansiCode = ANSI_COLORS[token.className];
+      if (!ansiCode) {
+        result += token.text;
+        continue;
+      }
+      // Wrap with a foreground-only reset to preserve device text attributes.
+      result += `${ansiCode}${token.text}${ANSI_FG_RESET}`;
     }
 
     return result;
@@ -205,12 +232,13 @@ export class ArubaHighlighter {
 
   // ─── Device Type Detection ───
 
-  detectDeviceType(buffer: string): 'aruba-cx' | 'aruba-ap' | 'aruba-controller' | 'generic' {
+  detectDeviceType(buffer: string): DetectedDevice {
     const lines = buffer.split('\n');
     const scores: Record<string, number> = {
       'aruba-cx': 0,
       'aruba-ap': 0,
       'aruba-controller': 0,
+      'juniper-junos': 0,
     };
 
     for (const line of lines) {
@@ -235,13 +263,13 @@ export class ArubaHighlighter {
     }
 
     // Find the highest scoring device type
-    let bestType: 'aruba-cx' | 'aruba-ap' | 'aruba-controller' | 'generic' = 'generic';
+    let bestType: DetectedDevice = 'generic';
     let bestScore = 0;
 
     for (const [type, score] of Object.entries(scores)) {
       if (score > bestScore && score >= 1) {
         bestScore = score;
-        bestType = type as 'aruba-cx' | 'aruba-ap' | 'aruba-controller';
+        bestType = type as DetectedDevice;
       }
     }
 
@@ -251,26 +279,21 @@ export class ArubaHighlighter {
   // ─── Factory ───
 
   static forDeviceType(deviceType: string): ArubaHighlighter {
-    switch (deviceType) {
-      case 'aruba-cx':
-        return new ArubaHighlighter(arubaCxGrammar);
-      case 'aruba-ap':
-        return new ArubaHighlighter(arubaApGrammar);
-      case 'aruba-controller':
-        return new ArubaHighlighter(arubaCtrlGrammar);
-      default:
-        return new ArubaHighlighter(arubaCxGrammar);
-    }
+    return new ArubaHighlighter(ArubaHighlighter.getGrammarForDevice(deviceType));
   }
 
   static getGrammarForDevice(deviceType: string): Grammar {
     switch (deviceType) {
       case 'aruba-cx':
+      case 'aruba-aos-s':
         return arubaCxGrammar;
       case 'aruba-ap':
         return arubaApGrammar;
       case 'aruba-controller':
         return arubaCtrlGrammar;
+      case 'juniper-junos':
+      case 'mist':
+        return junosGrammar;
       default:
         return arubaCxGrammar;
     }
@@ -430,5 +453,5 @@ export class ArubaHighlighter {
 
 // ─── Convenience Exports ───
 
-export { arubaCxGrammar, arubaApGrammar, arubaCtrlGrammar };
+export { arubaCxGrammar, arubaApGrammar, arubaCtrlGrammar, junosGrammar };
 export * from './ansi-processor';

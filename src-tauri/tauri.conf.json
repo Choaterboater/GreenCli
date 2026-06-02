@@ -6,7 +6,7 @@
     "distDir": "../dist"
   },
   "package": {
-    "productName": "Aruba Terminal Pro"
+    "productName": "HPE Network Terminal"
   },
   "tauri": {
     "allowlist": {
@@ -52,7 +52,7 @@
         "icons/icon.ico"
       ],
       "identifier": "com.arubaterminalpro.app",
-      "longDescription": "A SecureCRT replacement with Aruba syntax highlighting for network engineers",
+      "longDescription": "One cockpit for HPE Networking — Aruba, Juniper, and Mist. A premium SSH/Telnet/Serial terminal with multi-vendor syntax highlighting, config tooling, REST API explorer, and an AI assistant for network engineers.",
       "macOS": {
         "entitlements": null,
         "exceptionDomain": "",
@@ -61,7 +61,7 @@
         "signingIdentity": null
       },
       "resources": [],
-      "shortDescription": "Aruba Terminal Pro",
+      "shortDescription": "HPE Network Terminal",
       "targets": "all",
       "windows": {
         "certificateThumbprint": null,
@@ -78,13 +78,15 @@
     "windows": [
       {
         "fullscreen": false,
-        "height": 768,
+        "height": 800,
         "resizable": true,
-        "title": "Aruba Terminal Pro",
-        "width": 1280,
-        "minWidth": 800,
-        "minHeight": 500,
-        "center": true
+        "title": "HPE Network Terminal",
+        "width": 1320,
+        "minWidth": 880,
+        "minHeight": 560,
+        "center": true,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true
       }
     ]
   }

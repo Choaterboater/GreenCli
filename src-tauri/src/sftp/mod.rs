@@ -17,9 +17,7 @@ pub struct RemoteEntry {
 }
 
 /// Open an SFTP session on an existing SSH handle.
-pub async fn open_sftp(
-    handle: &mut Handle<ClientHandler>,
-) -> Result<SftpSession, AppError> {
+pub async fn open_sftp(handle: &mut Handle<ClientHandler>) -> Result<SftpSession, AppError> {
     let channel = handle
         .channel_open_session()
         .await
@@ -50,9 +48,7 @@ pub async fn list_dir(sftp: &SftpSession, path: &str) -> Result<Vec<RemoteEntry>
         let size = entry.metadata().len();
         result.push(RemoteEntry { name, is_dir, size });
     }
-    result.sort_by(|a, b| {
-        b.is_dir.cmp(&a.is_dir).then_with(|| a.name.cmp(&b.name))
-    });
+    result.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| a.name.cmp(&b.name)));
     Ok(result)
 }
 
@@ -76,6 +72,34 @@ pub async fn download(
         .await
         .map_err(|e| AppError::SshError(format!("Write local '{}': {}", local_path, e)))?;
     Ok(len)
+}
+
+/// Create a remote directory.
+pub async fn mkdir(sftp: &SftpSession, path: &str) -> Result<(), AppError> {
+    sftp.create_dir(path)
+        .await
+        .map_err(|e| AppError::SshError(format!("SFTP mkdir '{}': {}", path, e)))
+}
+
+/// Remove a remote file.
+pub async fn remove_file(sftp: &SftpSession, path: &str) -> Result<(), AppError> {
+    sftp.remove_file(path)
+        .await
+        .map_err(|e| AppError::SshError(format!("SFTP rm '{}': {}", path, e)))
+}
+
+/// Remove a remote (empty) directory.
+pub async fn remove_dir(sftp: &SftpSession, path: &str) -> Result<(), AppError> {
+    sftp.remove_dir(path)
+        .await
+        .map_err(|e| AppError::SshError(format!("SFTP rmdir '{}': {}", path, e)))
+}
+
+/// Rename / move a remote path.
+pub async fn rename(sftp: &SftpSession, from: &str, to: &str) -> Result<(), AppError> {
+    sftp.rename(from, to)
+        .await
+        .map_err(|e| AppError::SshError(format!("SFTP rename '{}'→'{}': {}", from, to, e)))
 }
 
 /// Upload a local file to a remote path.

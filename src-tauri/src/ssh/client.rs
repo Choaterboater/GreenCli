@@ -47,7 +47,6 @@ pub struct SshConnection {
 
 #[derive(Clone, Debug)]
 pub struct ConnectionConfig {
-    pub id: String,
     pub host: String,
     pub port: u16,
     pub username: String,
@@ -101,11 +100,8 @@ impl Handler for ClientHandler {
         match &self.known_hosts_path {
             Some(path) => {
                 let fingerprint = server_public_key.fingerprint();
-                match crate::ssh::known_hosts::verify_or_record(
-                    path,
-                    &self.host_port,
-                    &fingerprint,
-                ) {
+                match crate::ssh::known_hosts::verify_or_record(path, &self.host_port, &fingerprint)
+                {
                     Ok(accepted) => Ok(accepted),
                     Err(reason) => {
                         log::warn!("Rejected SSH host key: {}", reason);
@@ -124,7 +120,11 @@ impl Handler for ClientHandler {
         data: &[u8],
         _session: &mut client::Session,
     ) -> Result<(), Self::Error> {
-        let _ = self.sender.try_send(data.to_vec());
+        // Await the send (rather than try_send) so bursty output — `show tech`,
+        // a full running-config — applies backpressure to the SSH read loop
+        // instead of silently dropping bytes when the buffer fills. A closed
+        // receiver just ends the send with an error we can ignore.
+        let _ = self.sender.send(data.to_vec()).await;
         Ok(())
     }
 
@@ -135,7 +135,7 @@ impl Handler for ClientHandler {
         data: &[u8],
         _session: &mut client::Session,
     ) -> Result<(), Self::Error> {
-        let _ = self.sender.try_send(data.to_vec());
+        let _ = self.sender.send(data.to_vec()).await;
         Ok(())
     }
 }
@@ -225,13 +225,12 @@ impl SshConnection {
                 .await
                 .map_err(|e| AppError::SshError(format!("Tunnel to target failed: {}", e)))?;
 
-            let target = russh::client::connect_stream(
-                client_config.clone(),
-                tunnel.into_stream(),
-                handler,
-            )
-            .await
-            .map_err(|e| AppError::SshError(format!("Connect via jump host failed: {}", e)))?;
+            let target =
+                russh::client::connect_stream(client_config.clone(), tunnel.into_stream(), handler)
+                    .await
+                    .map_err(|e| {
+                        AppError::SshError(format!("Connect via jump host failed: {}", e))
+                    })?;
 
             // Keep the jump session alive for the lifetime of this connection.
             self.jump_handle = Some(Arc::new(Mutex::new(jump)));
@@ -251,14 +250,53 @@ impl SshConnection {
             AuthType::Password => {
                 let password = self.config.password.clone().unwrap_or_default();
                 let auth_res = handle
-                    .authenticate_password(&self.config.username, password)
+                    .authenticate_password(&self.config.username, password.clone())
                     .await
                     .map_err(|e| AppError::SshError(format!("Auth failed: {}", e)))?;
 
                 if !auth_res {
-                    return Err(AppError::AuthError(
-                        "Password authentication failed".into(),
-                    ));
+                    // Fall back to keyboard-interactive: lots of network gear
+                    // (TACACS+/RADIUS) presents the password via a challenge
+                    // prompt rather than the `password` auth method. Answer each
+                    // prompt with the same password.
+                    use russh::client::KeyboardInteractiveAuthResponse;
+                    let mut authed = false;
+                    let mut res = handle
+                        .authenticate_keyboard_interactive_start(
+                            self.config.username.clone(),
+                            None,
+                        )
+                        .await
+                        .map_err(|e| {
+                            AppError::SshError(format!("Keyboard-interactive start: {}", e))
+                        })?;
+                    for _ in 0..16 {
+                        match res {
+                            KeyboardInteractiveAuthResponse::Success => {
+                                authed = true;
+                                break;
+                            }
+                            KeyboardInteractiveAuthResponse::Failure => break,
+                            KeyboardInteractiveAuthResponse::InfoRequest { prompts, .. } => {
+                                let answers: Vec<String> =
+                                    prompts.iter().map(|_| password.clone()).collect();
+                                res = handle
+                                    .authenticate_keyboard_interactive_respond(answers)
+                                    .await
+                                    .map_err(|e| {
+                                        AppError::SshError(format!(
+                                            "Keyboard-interactive respond: {}",
+                                            e
+                                        ))
+                                    })?;
+                            }
+                        }
+                    }
+                    if !authed {
+                        return Err(AppError::AuthError(
+                            "Password / keyboard-interactive authentication failed".into(),
+                        ));
+                    }
                 }
             }
             AuthType::PublicKey => {
@@ -266,9 +304,7 @@ impl SshConnection {
                     let passphrase = self.config.key_passphrase.as_deref();
                     SshKeyManager::load_private_key(key_str.as_bytes(), passphrase)?
                 } else {
-                    return Err(AppError::AuthError(
-                        "No private key provided".into(),
-                    ));
+                    return Err(AppError::AuthError("No private key provided".into()));
                 };
 
                 let auth_res = handle
@@ -283,28 +319,52 @@ impl SshConnection {
                 }
             }
             AuthType::Agent => {
-                return Err(AppError::AuthError(
-                    "SSH agent auth not yet implemented".into(),
-                ));
+                // Authenticate against a running ssh-agent (SSH_AUTH_SOCK on
+                // unix; the OpenSSH/Pageant pipe on Windows). Try each loaded
+                // identity until one is accepted.
+                let mut agent = russh_keys::agent::client::AgentClient::connect_env()
+                    .await
+                    .map_err(|e| {
+                        AppError::AuthError(format!(
+                            "Could not reach ssh-agent (is it running / SSH_AUTH_SOCK set?): {}",
+                            e
+                        ))
+                    })?;
+                let identities = agent.request_identities().await.map_err(|e| {
+                    AppError::AuthError(format!("ssh-agent request failed: {}", e))
+                })?;
+                if identities.is_empty() {
+                    return Err(AppError::AuthError(
+                        "ssh-agent has no keys loaded (run `ssh-add`)".into(),
+                    ));
+                }
+                let mut authenticated = false;
+                for key in identities {
+                    let (agent_back, res) = handle
+                        .authenticate_future(self.config.username.clone(), key, agent)
+                        .await;
+                    agent = agent_back;
+                    if matches!(res, Ok(true)) {
+                        authenticated = true;
+                        break;
+                    }
+                }
+                if !authenticated {
+                    return Err(AppError::AuthError(
+                        "SSH agent authentication failed (no agent key was accepted)".into(),
+                    ));
+                }
             }
         }
 
         // Open session channel with PTY
-        let mut channel = handle
+        let channel = handle
             .channel_open_session()
             .await
             .map_err(|e| AppError::SshError(format!("Channel open: {}", e)))?;
 
         channel
-            .request_pty(
-                false,
-                &self.get_term_type(),
-                80,
-                24,
-                0,
-                0,
-                &[],
-            )
+            .request_pty(false, &self.get_term_type(), 80, 24, 0, 0, &[])
             .await
             .map_err(|e| AppError::SshError(format!("PTY request: {}", e)))?;
 
@@ -413,7 +473,7 @@ impl Connection for SshConnection {
     }
 
     fn is_connected(&self) -> bool {
-        self.connected
+        SshConnection::is_connected(self)
     }
 
     fn get_session_id(&self) -> String {

@@ -1,16 +1,26 @@
 import { useState } from 'react';
-import { X, Plug, Monitor, Server, Wifi, Router, TerminalSquare } from 'lucide-react';
+import { X, Plug, Monitor, Server, Wifi, RadioTower, Cloud, Network, TerminalSquare } from 'lucide-react';
 import { useSessionStore } from '../store/sessionStore';
-import { ConnectionConfig, Protocol, PROTOCOLS, DEVICE_TYPES, LOCAL_CLI_PRESETS } from '../types';
+import {
+  ConnectionConfig,
+  Protocol,
+  DeviceType,
+  PROTOCOLS,
+  DEVICE_TYPES,
+  LOCAL_CLI_PRESETS,
+  deviceMeta,
+  vendorColor,
+} from '../types';
 import { generateId } from '../utils';
 import { invoke } from '@tauri-apps/api/tauri';
+import { notify } from '../store/toastStore';
 
-const deviceIcons: Record<string, React.ReactNode> = {
-  'aruba-cx': <Server size={16} />,
-  'aruba-ap': <Wifi size={16} />,
-  'aruba-controller': <Router size={16} />,
-  generic: <Monitor size={16} />,
-};
+const LUCIDE: Record<string, typeof Monitor> = { Network, Wifi, RadioTower, Server, Cloud, Monitor };
+
+function DeviceGlyph({ deviceType, size = 16 }: { deviceType: string; size?: number }) {
+  const Ico = LUCIDE[deviceMeta(deviceType).icon] ?? Monitor;
+  return <Ico size={size} />;
+}
 
 interface QuickConnectProps {
   onConnect: (config: ConnectionConfig) => void;
@@ -22,10 +32,13 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
   const [host, setHost] = useState('');
   const [port, setPort] = useState(22);
   const [username, setUsername] = useState('');
-  const [deviceType, setDeviceType] =
-    useState<ConnectionConfig['deviceType']>('aruba-cx');
+  const [deviceType, setDeviceType] = useState<DeviceType>('aruba-cx');
   const [serialPort, setSerialPort] = useState('');
   const [baudRate, setBaudRate] = useState(9600);
+  const [dataBits, setDataBits] = useState(8);
+  const [parity, setParity] = useState('none');
+  const [stopBits, setStopBits] = useState(1);
+  const [startupCommands, setStartupCommands] = useState('');
   const [cliPresetId, setCliPresetId] = useState('shell');
   const [customCommand, setCustomCommand] = useState('');
   const [showJump, setShowJump] = useState(false);
@@ -41,6 +54,29 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
 
   const isHostBased = protocol === 'ssh' || protocol === 'telnet';
 
+  const resetForm = () => {
+    setProtocol('ssh');
+    setHost('');
+    setPort(22);
+    setUsername('');
+    setDeviceType('aruba-cx');
+    setSerialPort('');
+    setBaudRate(9600);
+    setDataBits(8);
+    setParity('none');
+    setStopBits(1);
+    setStartupCommands('');
+    setCliPresetId('shell');
+    setCustomCommand('');
+    setShowJump(false);
+    setJumpHost('');
+    setJumpPort(22);
+    setJumpUsername('');
+    setJumpPassword('');
+    setSaveSession(false);
+    setError(null);
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
@@ -48,13 +84,12 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
 
     try {
       const preset = LOCAL_CLI_PRESETS.find((p) => p.id === cliPresetId);
-      const localCommand =
-        protocol === 'local'
-          ? customCommand.trim() || preset?.command
-          : undefined;
+      const localCommand = protocol === 'local' ? customCommand.trim() || preset?.command : undefined;
       const localName =
         protocol === 'local'
-          ? (preset && preset.id !== 'shell' ? preset.label : localCommand || 'Local Shell')
+          ? preset && preset.id !== 'shell'
+            ? preset.label
+            : localCommand || 'Local Shell'
           : undefined;
 
       const config: ConnectionConfig = {
@@ -66,6 +101,10 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
         username: isHostBased ? username : undefined,
         serialPort: protocol === 'serial' ? serialPort : undefined,
         baudRate: protocol === 'serial' ? baudRate : undefined,
+        dataBits: protocol === 'serial' ? dataBits : undefined,
+        parity: protocol === 'serial' ? parity : undefined,
+        stopBits: protocol === 'serial' ? stopBits : undefined,
+        startupCommands: startupCommands.trim() || undefined,
         deviceType: protocol === 'local' ? 'generic' : deviceType,
         command: localCommand,
         args: protocol === 'local' ? preset?.args : undefined,
@@ -76,7 +115,7 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
       };
 
       if (saveSession) {
-        await invoke('save_session', {
+        const saved = await invoke('save_session', {
           config: {
             id: config.id,
             name: config.name,
@@ -88,17 +127,33 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
             device_type: config.deviceType,
             serial_port: config.serialPort,
             baud_rate: config.baudRate,
+            data_bits: config.dataBits,
+            parity: config.parity,
+            stop_bits: config.stopBits,
+            startup_commands: config.startupCommands,
           },
           folderId: 'default',
-        }).catch(() => {});
+        })
+          .then(() => true)
+          .catch(() => false);
+        if (saved) {
+          // Mirror the sidebar item to what the backend persists: NO secrets
+          // (passwords/keys are never written to sessions.json), so the in-memory
+          // item matches the stored record and can't leak credentials.
+          const { password, jumpPassword, privateKey, keyPassphrase, ...safe } = config;
+          void password;
+          void jumpPassword;
+          void privateKey;
+          void keyPassphrase;
+          useSessionStore.getState().addSessionToFolder('default', safe as ConnectionConfig);
+        } else {
+          notify.error('Could not save session', 'It was not added to the sidebar.');
+        }
       }
 
       await onConnect(config);
       setShowQuickConnect(false);
-      setHost('');
-      setPort(22);
-      setUsername('');
-      setSaveSession(false);
+      resetForm();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -106,22 +161,35 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
     }
   };
 
-  const handleProtocolChange = (p: typeof protocol) => {
+  const handleProtocolChange = (p: Protocol) => {
     setProtocol(p);
     setPort(p === 'ssh' ? 22 : p === 'telnet' ? 23 : 9600);
   };
 
+  const inputCls = 'input-field w-full h-9 px-3 text-sm';
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
-      <div className="w-[480px] bg-[var(--bg-secondary)] border border-[var(--border)] rounded-xl shadow-2xl">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center modal-backdrop animate-fade-in"
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) setShowQuickConnect(false);
+      }}
+    >
+      <div className="surface-elevated w-[500px] max-w-[94vw] max-h-[92vh] overflow-y-auto animate-scale-in">
         {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--bg-tertiary)]">
-          <h2 className="text-lg font-semibold text-[var(--text-primary)]">
-            Quick Connect
-          </h2>
+        <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--border)]">
+          <div className="flex items-center gap-2.5">
+            <div
+              className="flex items-center justify-center w-7 h-7 rounded-md"
+              style={{ background: 'var(--accent-soft)' }}
+            >
+              <Plug size={15} style={{ color: 'var(--accent)' }} />
+            </div>
+            <h2 className="text-[16px] font-semibold text-[var(--text-primary)]">Quick Connect</h2>
+          </div>
           <button
             onClick={() => setShowQuickConnect(false)}
-            className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+            className="p-1.5 rounded-md hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
           >
             <X size={18} />
           </button>
@@ -131,7 +199,7 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
         <form onSubmit={handleSubmit} className="px-5 py-4 space-y-4">
           {/* Protocol */}
           <div>
-            <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1.5">
+            <label className="block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-secondary)] mb-1.5">
               Protocol
             </label>
             <div className="flex gap-2">
@@ -140,14 +208,11 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
                   key={p.value}
                   type="button"
                   onClick={() => handleProtocolChange(p.value)}
-                  className={`
-                    flex-1 py-2 text-sm rounded-lg border transition-all
-                    ${
-                      protocol === p.value
-                        ? 'bg-[#238636] border-[#238636] text-white'
-                        : 'bg-[var(--bg-primary)] border-[var(--border)] text-[var(--text-secondary)] hover:border-[#58a6ff] hover:text-[var(--text-primary)]'
-                    }
-                  `}
+                  className={`flex-1 py-2 text-sm rounded-[var(--radius)] border transition-all ${
+                    protocol === p.value
+                      ? 'border-[var(--accent)] text-[var(--accent)] bg-[var(--accent-soft)] font-medium'
+                      : 'bg-[var(--bg-inset)] border-[var(--border)] text-[var(--text-secondary)] hover:border-[var(--border-strong)] hover:text-[var(--text-primary)]'
+                  }`}
                 >
                   {p.label}
                 </button>
@@ -155,12 +220,12 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
             </div>
           </div>
 
-          {/* Host / Serial Port */}
+          {/* Host / Serial */}
           <div className="grid grid-cols-3 gap-3">
             {isHostBased ? (
               <>
                 <div className="col-span-2">
-                  <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1.5">
+                  <label className="block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-secondary)] mb-1.5">
                     Host
                   </label>
                   <input
@@ -169,11 +234,11 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
                     onChange={(e) => setHost(e.target.value)}
                     placeholder="192.168.1.1"
                     required
-                    className="w-full h-9 px-3 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[#58a6ff]"
+                    className={inputCls}
                   />
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1.5">
+                  <label className="block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-secondary)] mb-1.5">
                     Port
                   </label>
                   <input
@@ -182,14 +247,14 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
                     onChange={(e) => setPort(Number(e.target.value))}
                     min={1}
                     max={65535}
-                    className="w-full h-9 px-3 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] focus:outline-none focus:border-[#58a6ff]"
+                    className={inputCls}
                   />
                 </div>
               </>
             ) : protocol === 'serial' ? (
               <>
                 <div className="col-span-2">
-                  <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1.5">
+                  <label className="block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-secondary)] mb-1.5">
                     Serial Port
                   </label>
                   <input
@@ -198,17 +263,17 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
                     onChange={(e) => setSerialPort(e.target.value)}
                     placeholder="/dev/ttyUSB0"
                     required
-                    className="w-full h-9 px-3 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[#58a6ff]"
+                    className={inputCls}
                   />
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1.5">
-                    Baud Rate
+                  <label className="block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-secondary)] mb-1.5">
+                    Baud
                   </label>
                   <select
                     value={baudRate}
                     onChange={(e) => setBaudRate(Number(e.target.value))}
-                    className="w-full h-9 px-3 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] focus:outline-none focus:border-[#58a6ff]"
+                    className={inputCls}
                   >
                     <option value={9600}>9600</option>
                     <option value={19200}>19200</option>
@@ -221,11 +286,38 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
             ) : null}
           </div>
 
-          {/* Local Shell / CLI */}
+          {/* Serial line settings */}
+          {protocol === 'serial' && (
+            <div className="grid grid-cols-3 gap-3">
+              <div>
+                <label className="block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-secondary)] mb-1.5">Data bits</label>
+                <select value={dataBits} onChange={(e) => setDataBits(Number(e.target.value))} className={inputCls}>
+                  {[8, 7, 6, 5].map((d) => (<option key={d} value={d}>{d}</option>))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-secondary)] mb-1.5">Parity</label>
+                <select value={parity} onChange={(e) => setParity(e.target.value)} className={inputCls}>
+                  <option value="none">None</option>
+                  <option value="even">Even</option>
+                  <option value="odd">Odd</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-secondary)] mb-1.5">Stop bits</label>
+                <select value={stopBits} onChange={(e) => setStopBits(Number(e.target.value))} className={inputCls}>
+                  <option value={1}>1</option>
+                  <option value={2}>2</option>
+                </select>
+              </div>
+            </div>
+          )}
+
+          {/* Local CLI */}
           {protocol === 'local' && (
             <div className="space-y-3">
               <div>
-                <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1.5">
+                <label className="block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-secondary)] mb-1.5">
                   Launch
                 </label>
                 <div className="grid grid-cols-4 gap-2">
@@ -237,10 +329,10 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
                         setCliPresetId(p.id);
                         setCustomCommand('');
                       }}
-                      className={`flex flex-col items-center gap-1 py-2.5 rounded-lg border transition-all ${
+                      className={`flex flex-col items-center gap-1 py-2.5 rounded-[var(--radius)] border transition-all ${
                         cliPresetId === p.id && !customCommand
-                          ? 'bg-[#1c4f3e] border-[#238636] text-[#3fb950]'
-                          : 'bg-[var(--bg-primary)] border-[var(--border)] text-[var(--text-secondary)] hover:border-[#58a6ff]'
+                          ? 'border-[var(--accent)] text-[var(--accent)] bg-[var(--accent-soft)]'
+                          : 'bg-[var(--bg-inset)] border-[var(--border)] text-[var(--text-secondary)] hover:border-[var(--border-strong)]'
                       }`}
                     >
                       <TerminalSquare size={16} />
@@ -250,7 +342,7 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
                 </div>
               </div>
               <div>
-                <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1.5">
+                <label className="block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-secondary)] mb-1.5">
                   Custom command (optional)
                 </label>
                 <input
@@ -258,7 +350,7 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
                   value={customCommand}
                   onChange={(e) => setCustomCommand(e.target.value)}
                   placeholder="e.g. gh copilot — overrides the preset above"
-                  className="w-full h-9 px-3 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[#58a6ff]"
+                  className={inputCls}
                 />
               </div>
             </div>
@@ -267,7 +359,7 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
           {/* Username */}
           {isHostBased && (
             <div>
-              <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1.5">
+              <label className="block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-secondary)] mb-1.5">
                 Username
               </label>
               <input
@@ -275,12 +367,12 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
                 placeholder="admin"
-                className="w-full h-9 px-3 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[#58a6ff]"
+                className={inputCls}
               />
             </div>
           )}
 
-          {/* Jump host / bastion (SSH only, optional) */}
+          {/* Jump host */}
           {protocol === 'ssh' && (
             <div>
               <button
@@ -291,20 +383,20 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
                 {showJump ? '▾' : '▸'} Jump host / bastion (optional)
               </button>
               {showJump && (
-                <div className="mt-2 space-y-2 p-2 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg">
+                <div className="mt-2 space-y-2 p-2.5 bg-[var(--bg-inset)] border border-[var(--border)] rounded-[var(--radius)]">
                   <div className="grid grid-cols-3 gap-2">
                     <input
                       value={jumpHost}
                       onChange={(e) => setJumpHost(e.target.value)}
                       placeholder="Jump host"
-                      className="col-span-2 h-8 px-2 bg-[var(--bg-secondary)] border border-[var(--border)] rounded text-xs text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[#58a6ff]"
+                      className="input-field col-span-2 h-8 px-2 text-xs"
                     />
                     <input
                       type="number"
                       value={jumpPort}
                       onChange={(e) => setJumpPort(Number(e.target.value))}
                       placeholder="22"
-                      className="h-8 px-2 bg-[var(--bg-secondary)] border border-[var(--border)] rounded text-xs text-[var(--text-primary)] focus:outline-none focus:border-[#58a6ff]"
+                      className="input-field h-8 px-2 text-xs"
                     />
                   </div>
                   <div className="grid grid-cols-2 gap-2">
@@ -312,14 +404,14 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
                       value={jumpUsername}
                       onChange={(e) => setJumpUsername(e.target.value)}
                       placeholder="Jump username"
-                      className="h-8 px-2 bg-[var(--bg-secondary)] border border-[var(--border)] rounded text-xs text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[#58a6ff]"
+                      className="input-field h-8 px-2 text-xs"
                     />
                     <input
                       type="password"
                       value={jumpPassword}
                       onChange={(e) => setJumpPassword(e.target.value)}
                       placeholder="Jump password"
-                      className="h-8 px-2 bg-[var(--bg-secondary)] border border-[var(--border)] rounded text-xs text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[#58a6ff]"
+                      className="input-field h-8 px-2 text-xs"
                     />
                   </div>
                   <p className="text-[10px] text-[var(--text-muted)]">
@@ -330,69 +422,90 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
             </div>
           )}
 
-          {/* Device Type */}
+          {/* Device type */}
           {protocol !== 'local' && (
-          <div>
-            <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1.5">
-              Device Type
-            </label>
-            <div className="grid grid-cols-4 gap-2">
-              {DEVICE_TYPES.map((dt) => (
-                <button
-                  key={dt.value}
-                  type="button"
-                  onClick={() => setDeviceType(dt.value)}
-                  className={`
-                    flex flex-col items-center gap-1 py-2.5 rounded-lg border transition-all
-                    ${
-                      deviceType === dt.value
-                        ? 'bg-[#1c4f3e] border-[#238636] text-[#3fb950]'
-                        : 'bg-[var(--bg-primary)] border-[var(--border)] text-[var(--text-secondary)] hover:border-[#58a6ff]'
-                    }
-                  `}
-                >
-                  {deviceIcons[dt.value]}
-                  <span className="text-[10px] font-medium">{dt.label}</span>
-                </button>
-              ))}
+            <div>
+              <label className="block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-secondary)] mb-1.5">
+                Device Type
+              </label>
+              <div className="grid grid-cols-4 gap-2">
+                {DEVICE_TYPES.map((dt) => {
+                  const active = deviceType === dt.value;
+                  const color = vendorColor(dt.value);
+                  return (
+                    <button
+                      key={dt.value}
+                      type="button"
+                      onClick={() => setDeviceType(dt.value)}
+                      title={dt.label}
+                      className={`flex flex-col items-center gap-1 py-2.5 rounded-[var(--radius)] border transition-all ${
+                        active
+                          ? 'bg-[var(--bg-tertiary)]'
+                          : 'bg-[var(--bg-inset)] border-[var(--border)] text-[var(--text-secondary)] hover:border-[var(--border-strong)]'
+                      }`}
+                      style={active ? { borderColor: color, color } : undefined}
+                    >
+                      <span style={{ color }}>
+                        <DeviceGlyph deviceType={dt.value} />
+                      </span>
+                      <span className="text-[10px] font-semibold">{dt.short}</span>
+                    </button>
+                  );
+                })}
+              </div>
             </div>
-          </div>
           )}
 
-          {/* Save to Sidebar */}
+          {/* Startup commands (run after connect) */}
+          {protocol !== 'local' && (
+            <div>
+              <label className="block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-secondary)] mb-1.5">
+                Startup commands (optional)
+              </label>
+              <textarea
+                value={startupCommands}
+                onChange={(e) => setStartupCommands(e.target.value)}
+                rows={2}
+                placeholder={'One per line, run on connect — e.g.\nterminal length 0\nno page'}
+                className="input-field w-full px-3 py-2 text-xs font-mono resize-y"
+              />
+            </div>
+          )}
+
+          {/* Save */}
           <label className="flex items-center gap-2 cursor-pointer select-none">
             <input
               type="checkbox"
               checked={saveSession}
               onChange={(e) => setSaveSession(e.target.checked)}
-              className="w-4 h-4 rounded accent-[#238636]"
+              className="w-4 h-4 rounded"
             />
             <span className="text-sm text-[var(--text-secondary)]">Save to Sidebar</span>
           </label>
 
           {/* Error */}
           {error && (
-            <div className="px-3 py-2 bg-[#3d1518] border border-[#ff7b72]/30 rounded-lg text-sm text-[#ff7b72]">
+            <div className="px-3 py-2 rounded-[var(--radius)] text-sm" style={{ background: 'rgba(240,83,63,0.12)', color: 'var(--accent-danger)', border: '1px solid rgba(240,83,63,0.3)' }}>
               {error}
             </div>
           )}
 
           {/* Actions */}
-          <div className="flex items-center gap-3 pt-2">
+          <div className="flex items-center gap-3 pt-1">
             <button
               type="button"
               onClick={() => setShowQuickConnect(false)}
-              className="flex-1 h-9 text-sm bg-[var(--bg-tertiary)] hover:bg-[var(--border)] text-[var(--text-primary)] rounded-lg transition-colors"
+              className="flex-1 h-10 text-sm rounded-[var(--radius)] bg-[var(--bg-tertiary)] hover:bg-[var(--border-strong)] text-[var(--text-primary)] transition-colors"
             >
               Cancel
             </button>
             <button
               type="submit"
               disabled={connecting || (isHostBased && !host) || (protocol === 'serial' && !serialPort)}
-              className="flex-1 flex items-center justify-center gap-2 h-9 text-sm bg-[#238636] hover:bg-[#2ea043] disabled:bg-[#1c4f3e] disabled:text-[var(--text-muted)] text-white rounded-lg transition-colors"
+              className="btn-accent flex-1 flex items-center justify-center gap-2 h-10 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              <Plug size={14} />
-              {connecting ? 'Connecting...' : 'Connect'}
+              <Plug size={15} />
+              {connecting ? 'Connecting…' : 'Connect'}
             </button>
           </div>
         </form>

@@ -3,7 +3,11 @@ import { X, RotateCcw, Moon, Sun, Eye, EyeOff, CheckCircle2 } from 'lucide-react
 import { invoke } from '@tauri-apps/api/tauri';
 import { useSessionStore } from '../store/sessionStore';
 import { useSettingsStore } from '../store/settingsStore';
-import { AI_PROVIDERS, AI_CLI_PRESETS, CENTRAL_REGIONS } from '../types';
+import { AI_PROVIDERS, AI_CLI_PRESETS, TerminalSettings } from '../types';
+import McpServers from './McpServers';
+import HostsManager from './HostsManager';
+import TriggersSettings from './TriggersSettings';
+import CentralSettings from './CentralSettings';
 
 export default function SettingsPanel() {
   const { showSettings, setShowSettings } = useSessionStore();
@@ -82,7 +86,7 @@ export default function SettingsPanel() {
                     flex items-center gap-2 flex-1 py-2 rounded-lg border text-sm transition-colors
                     ${
                       settings.theme === 'dark'
-                        ? 'bg-[var(--bg-tertiary)] border-[#58a6ff] text-[var(--text-primary)]'
+                        ? 'bg-[var(--bg-tertiary)] border-[var(--accent)] text-[var(--text-primary)]'
                         : 'bg-[var(--bg-primary)] border-[var(--border)] text-[var(--text-secondary)] hover:border-[var(--text-muted)]'
                     }
                   `}
@@ -96,7 +100,7 @@ export default function SettingsPanel() {
                     flex items-center gap-2 flex-1 py-2 rounded-lg border text-sm transition-colors
                     ${
                       settings.theme === 'light'
-                        ? 'bg-[#ffffff] border-[#58a6ff] text-[#1f2328]'
+                        ? 'bg-[#ffffff] border-[var(--accent)] text-[#1f2328]'
                         : 'bg-[var(--bg-primary)] border-[var(--border)] text-[var(--text-secondary)] hover:border-[var(--text-muted)]'
                     }
                   `}
@@ -122,7 +126,7 @@ export default function SettingsPanel() {
                     onChange={(e) =>
                       settings.setFontSize(Number(e.target.value))
                     }
-                    className="flex-1 accent-[#238636]"
+                    className="flex-1 accent-[var(--accent)]"
                   />
                   <span className="text-sm text-[var(--text-primary)] w-6 text-right">
                     {settings.fontSize}
@@ -136,7 +140,7 @@ export default function SettingsPanel() {
                 <select
                   value={settings.fontFamily}
                   onChange={(e) => settings.setFontFamily(e.target.value)}
-                  className="w-full h-8 px-2 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] focus:outline-none focus:border-[#58a6ff]"
+                  className="w-full h-8 px-2 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)]"
                 >
                   <option value="JetBrains Mono, Consolas, monospace">
                     JetBrains Mono
@@ -175,7 +179,7 @@ export default function SettingsPanel() {
                         flex-1 py-1.5 text-xs rounded-md border capitalize transition-colors
                         ${
                           settings.cursorStyle === style
-                            ? 'bg-[var(--bg-tertiary)] border-[#58a6ff] text-[var(--text-primary)]'
+                            ? 'bg-[var(--bg-tertiary)] border-[var(--accent)] text-[var(--text-primary)]'
                             : 'bg-[var(--bg-primary)] border-[var(--border)] text-[var(--text-secondary)] hover:border-[var(--text-muted)]'
                         }
                       `}
@@ -201,7 +205,7 @@ export default function SettingsPanel() {
                     onChange={(e) =>
                       settings.setScrollback(Number(e.target.value))
                     }
-                    className="flex-1 accent-[#238636]"
+                    className="flex-1 accent-[var(--accent)]"
                   />
                   <span className="text-xs text-[var(--text-primary)] w-12 text-right">
                     {settings.scrollback >= 1000
@@ -248,25 +252,23 @@ export default function SettingsPanel() {
                   <span className="text-sm text-[var(--text-primary)]">{label}</span>
                   <div
                     onClick={() => onChange(!value)}
-                    className={`
-                      w-9 h-5 rounded-full transition-colors cursor-pointer relative
-                      ${value ? 'bg-[#238636]' : 'bg-[var(--border)]'}
-                    `}
+                    className="w-9 h-5 rounded-full transition-colors cursor-pointer relative"
+                    style={{ background: value ? 'var(--accent)' : 'var(--border-strong)' }}
                   >
                     <div
-                      className={`
-                        absolute top-0.5 w-4 h-4 rounded-full bg-white shadow-sm transition-transform
-                        ${value ? 'translate-x-4.5 left-0' : 'left-0.5'}
-                      `}
-                      style={{
-                        transform: value ? 'translateX(16px)' : 'translateX(0)',
-                      }}
+                      className="absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow-sm transition-transform"
+                      style={{ transform: value ? 'translateX(16px)' : 'translateX(0)' }}
                     />
                   </div>
                 </label>
               ))}
             </div>
           </section>
+
+          <div className="border-t border-[var(--bg-tertiary)]" />
+
+          {/* Output triggers */}
+          <TriggersSettings />
 
           <div className="border-t border-[var(--bg-tertiary)]" />
 
@@ -288,7 +290,7 @@ export default function SettingsPanel() {
                   onChange={(e) =>
                     settings.setKeepAliveInterval(Number(e.target.value))
                   }
-                  className="flex-1 accent-[#238636]"
+                  className="flex-1 accent-[var(--accent)]"
                 />
                 <span className="text-sm text-[var(--text-primary)] w-8 text-right">
                   {settings.keepAliveInterval}
@@ -296,6 +298,11 @@ export default function SettingsPanel() {
               </div>
             </div>
           </section>
+
+          <div className="border-t border-[var(--bg-tertiary)]" />
+
+          {/* SSH config import + host-key management */}
+          <HostsManager />
 
           <div className="border-t border-[var(--bg-tertiary)]" />
 
@@ -315,7 +322,7 @@ export default function SettingsPanel() {
                       onClick={() => settings.setAiProvider(p.value)}
                       className={`py-2 text-[11px] rounded-lg border transition-colors ${
                         settings.aiProvider === p.value
-                          ? 'bg-[var(--bg-tertiary)] border-[#58a6ff] text-[var(--text-primary)]'
+                          ? 'bg-[var(--bg-tertiary)] border-[var(--accent)] text-[var(--text-primary)]'
                           : 'bg-[var(--bg-primary)] border-[var(--border)] text-[var(--text-secondary)] hover:border-[var(--text-muted)]'
                       }`}
                     >
@@ -332,7 +339,7 @@ export default function SettingsPanel() {
                     API Key
                     {keySaved && (
                       <>
-                        <span className="flex items-center gap-1 text-[#3fb950]">
+                        <span className="flex items-center gap-1 text-[var(--accent-success)]">
                           <CheckCircle2 size={11} /> saved
                         </span>
                         <button
@@ -345,7 +352,7 @@ export default function SettingsPanel() {
                               })
                               .catch(() => {});
                           }}
-                          className="ml-auto text-[10px] text-[var(--text-muted)] hover:text-[#ff7b72]"
+                          className="ml-auto text-[10px] text-[var(--text-muted)] hover:text-[var(--accent-danger)]"
                         >
                           remove
                         </button>
@@ -359,7 +366,7 @@ export default function SettingsPanel() {
                       onChange={(e) => setKeyInput(e.target.value)}
                       onBlur={saveKey}
                       placeholder={keySaved ? '•••••••• (saved — type to replace)' : 'Enter API key'}
-                      className="w-full h-8 px-2 pr-8 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[#58a6ff] font-mono"
+                      className="w-full h-8 px-2 pr-8 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)] font-mono"
                     />
                     <button
                       type="button"
@@ -382,10 +389,10 @@ export default function SettingsPanel() {
                   <select
                     value={settings.aiModel}
                     onChange={(e) => settings.setAiModel(e.target.value)}
-                    className="w-full h-8 px-2 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] focus:outline-none focus:border-[#58a6ff]"
+                    className="w-full h-8 px-2 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)]"
                   >
                     <option value="claude-sonnet-4-6">Claude Sonnet 4.6 (Recommended)</option>
-                    <option value="claude-opus-4-7">Claude Opus 4.7 (Most capable)</option>
+                    <option value="claude-opus-4-8">Claude Opus 4.8 (Most capable)</option>
                     <option value="claude-haiku-4-5-20251001">Claude Haiku 4.5 (Fastest)</option>
                   </select>
                 </div>
@@ -398,7 +405,7 @@ export default function SettingsPanel() {
                     value={settings.openrouterModel}
                     onChange={(e) => settings.setOpenrouterModel(e.target.value)}
                     placeholder="e.g. anthropic/claude-3.5-sonnet"
-                    className="w-full h-8 px-2 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[#58a6ff] font-mono"
+                    className="w-full h-8 px-2 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)] font-mono"
                   />
                   <p className="text-[10px] text-[var(--text-muted)] mt-1">
                     Any OpenRouter model id (see openrouter.ai/models), e.g. <code className="text-[var(--text-primary)]">openai/gpt-4o</code>, <code className="text-[var(--text-primary)]">meta-llama/llama-3.1-70b-instruct</code>.
@@ -413,7 +420,7 @@ export default function SettingsPanel() {
                     value={settings.moonshotModel}
                     onChange={(e) => settings.setMoonshotModel(e.target.value)}
                     placeholder="e.g. kimi-k2-0905-preview"
-                    className="w-full h-8 px-2 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[#58a6ff] font-mono"
+                    className="w-full h-8 px-2 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)] font-mono"
                   />
                   <p className="text-[10px] text-[var(--text-muted)] mt-1">
                     A Moonshot/Kimi model id (see platform.moonshot.ai), e.g. <code className="text-[var(--text-primary)]">moonshot-v1-8k</code>.
@@ -432,7 +439,7 @@ export default function SettingsPanel() {
                         onClick={() => settings.setLocalCliCommand(p.command)}
                         className={`flex-1 py-1.5 text-[11px] rounded-lg border transition-colors ${
                           settings.localCliCommand === p.command
-                            ? 'bg-[var(--bg-tertiary)] border-[#58a6ff] text-[var(--text-primary)]'
+                            ? 'bg-[var(--bg-tertiary)] border-[var(--accent)] text-[var(--text-primary)]'
                             : 'bg-[var(--bg-primary)] border-[var(--border)] text-[var(--text-secondary)] hover:border-[var(--text-muted)]'
                         }`}
                       >
@@ -445,10 +452,10 @@ export default function SettingsPanel() {
                     value={settings.localCliCommand}
                     onChange={(e) => settings.setLocalCliCommand(e.target.value)}
                     placeholder="claude -p"
-                    className="w-full h-8 px-2 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[#58a6ff] font-mono"
+                    className="w-full h-8 px-2 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)] font-mono"
                   />
                   <p className="text-[10px] text-[var(--text-muted)] mt-1">
-                    Runs a locally-installed CLI one-shot with the prompt on stdin — <span className="text-[#3fb950]">no API key needed</span> (the CLI uses its own login). E.g. <code className="text-[var(--text-primary)]">claude -p</code>, <code className="text-[var(--text-primary)]">kimi</code>, <code className="text-[var(--text-primary)]">copilot -p</code>.
+                    Runs a locally-installed CLI one-shot with the prompt on stdin — <span className="text-[var(--accent-success)]">no API key needed</span> (the CLI uses its own login). E.g. <code className="text-[var(--text-primary)]">claude -p</code>, <code className="text-[var(--text-primary)]">kimi</code>, <code className="text-[var(--text-primary)]">copilot -p</code>.
                   </p>
                 </div>
               )}
@@ -463,7 +470,7 @@ export default function SettingsPanel() {
                       value={settings.ollamaUrl}
                       onChange={(e) => settings.setOllamaUrl(e.target.value)}
                       placeholder="http://localhost:11434"
-                      className="w-full h-8 px-2 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[#58a6ff] font-mono"
+                      className="w-full h-8 px-2 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)] font-mono"
                     />
                   </div>
                   <div>
@@ -473,7 +480,7 @@ export default function SettingsPanel() {
                       value={settings.ollamaModel}
                       onChange={(e) => settings.setOllamaModel(e.target.value)}
                       placeholder="llama3.2"
-                      className="w-full h-8 px-2 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[#58a6ff] font-mono"
+                      className="w-full h-8 px-2 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)] font-mono"
                     />
                     <p className="text-[10px] text-[var(--text-muted)] mt-1">
                       Run <code className="text-[var(--text-primary)]">ollama list</code> to see installed models. Recommended: llama3.2, mistral, codellama
@@ -481,6 +488,43 @@ export default function SettingsPanel() {
                   </div>
                 </>
               )}
+
+              {/* Tool sources the assistant may use (opt-in beyond plain CLI) */}
+              <div>
+                <label className="block text-xs text-[var(--text-secondary)] mb-1.5">
+                  Assistant tools <span className="text-[var(--text-muted)]">(opt-in)</span>
+                </label>
+                <div className="space-y-2.5 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--bg-inset)] p-2.5">
+                  {(
+                    [
+                      { key: 'aiUseTerminal', label: 'Run device CLI commands', hint: 'Execute show/config on the active SSH/terminal session' },
+                      { key: 'aiUseCxRest', label: 'Aruba device REST APIs', hint: 'On-box REST for CX / AOS-S / AOS-8 — structured data, no Central' },
+                      { key: 'aiUseMcp', label: 'MCP server tools', hint: 'Tools from connected MCP servers (centralmcp, etc.)' },
+                      { key: 'aiUseApstra', label: 'Juniper Apstra', hint: 'Query the configured Apstra fabric controller (AOS REST)' },
+                    ] as const
+                  ).map(({ key, label, hint }) => {
+                    const val = settings[key] as boolean;
+                    return (
+                      <label key={key} className="flex items-center justify-between cursor-pointer gap-3">
+                        <span className="min-w-0">
+                          <span className="text-sm text-[var(--text-primary)]">{label}</span>
+                          <span className="block text-[10px] text-[var(--text-muted)] truncate">{hint}</span>
+                        </span>
+                        <div
+                          onClick={() => settings.updateSettings({ [key]: !val } as Partial<TerminalSettings>)}
+                          className="w-9 h-5 rounded-full relative cursor-pointer transition-colors flex-shrink-0"
+                          style={{ background: val ? 'var(--accent)' : 'var(--border-strong)' }}
+                        >
+                          <div
+                            className="absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform"
+                            style={{ transform: val ? 'translateX(16px)' : 'translateX(0)' }}
+                          />
+                        </div>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
 
               {/* References / standards — lightweight grounding for the AI */}
               <div>
@@ -492,7 +536,7 @@ export default function SettingsPanel() {
                   onChange={(e) => settings.setAiReferences(e.target.value)}
                   rows={6}
                   placeholder="Add your org standards, golden-config rules, or doc links the AI should apply…"
-                  className="w-full px-2 py-1.5 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-xs text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[#58a6ff] font-mono resize-y"
+                  className="w-full px-2 py-1.5 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-xs text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)] font-mono resize-y"
                 />
                 <p className="text-[10px] text-[var(--text-muted)] mt-1">
                   Injected into the AI's context (used by the Best-practices audit). Lightweight
@@ -503,49 +547,55 @@ export default function SettingsPanel() {
             </div>
           </section>
 
-          {/* Aruba Central (cloud API) */}
+          <div className="border-t border-[var(--bg-tertiary)]" />
+
+          {/* MCP servers (external tools for the AI) */}
+          <McpServers />
+
+          <div className="border-t border-[var(--bg-tertiary)]" />
+
+          {/* Aruba Central (cloud API) — multi-account + token */}
+          <CentralSettings />
+
+          <div className="border-t border-[var(--bg-tertiary)]" />
+
+          {/* Juniper Apstra (DC fabric) */}
           <section>
-            <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-3">Aruba Central</h3>
+            <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-3">Juniper Apstra</h3>
             <div className="space-y-3">
               <div>
-                <label className="block text-xs text-[var(--text-secondary)] mb-1.5">Base URL (region)</label>
+                <label className="block text-xs text-[var(--text-secondary)] mb-1.5">Controller host / URL</label>
                 <input
-                  list="central-regions"
-                  value={settings.centralBaseUrl}
-                  onChange={(e) => settings.updateSettings({ centralBaseUrl: e.target.value })}
-                  placeholder="https://us4.api.central.arubanetworks.com"
-                  className="w-full h-8 px-2 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[#58a6ff] font-mono"
+                  value={settings.apstraHost}
+                  onChange={(e) => settings.updateSettings({ apstraHost: e.target.value })}
+                  placeholder="apstra.example.com  (or https://apstra:443)"
+                  className="input-field w-full h-8 px-2 text-sm font-mono"
                 />
-                <datalist id="central-regions">
-                  {CENTRAL_REGIONS.map((r) => (
-                    <option key={r} value={r} />
-                  ))}
-                </datalist>
               </div>
               <div className="grid grid-cols-2 gap-2">
                 <div>
-                  <label className="block text-xs text-[var(--text-secondary)] mb-1.5">Client ID</label>
+                  <label className="block text-xs text-[var(--text-secondary)] mb-1.5">Username</label>
                   <input
-                    value={settings.centralClientId}
-                    onChange={(e) => settings.updateSettings({ centralClientId: e.target.value })}
-                    placeholder="client id"
-                    className="w-full h-8 px-2 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[#58a6ff] font-mono"
+                    value={settings.apstraUsername}
+                    onChange={(e) => settings.updateSettings({ apstraUsername: e.target.value })}
+                    placeholder="admin"
+                    className="input-field w-full h-8 px-2 text-sm font-mono"
                   />
                 </div>
                 <div>
-                  <label className="block text-xs text-[var(--text-secondary)] mb-1.5">Client Secret</label>
+                  <label className="block text-xs text-[var(--text-secondary)] mb-1.5">Password</label>
                   <input
                     type="password"
-                    value={settings.centralClientSecret}
-                    onChange={(e) => settings.updateSettings({ centralClientSecret: e.target.value })}
-                    placeholder="client secret"
-                    className="w-full h-8 px-2 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[#58a6ff] font-mono"
+                    value={settings.apstraPassword}
+                    onChange={(e) => settings.updateSettings({ apstraPassword: e.target.value })}
+                    placeholder="password"
+                    className="input-field w-full h-8 px-2 text-sm font-mono"
                   />
                 </div>
               </div>
               <p className="text-[10px] text-[var(--text-muted)]">
-                OAuth client-credentials. Pick your region's API gateway (us1–us6/eu/apac).
-                Used by the API Explorer's "Aruba Central" target.
+                Intent-based DC fabric (AOS REST). Token auth with auto-refresh. Enable
+                <strong> Assistant tools → Juniper Apstra</strong> to let the AI query blueprints, systems, and anomalies.
               </p>
             </div>
           </section>

@@ -1,5 +1,31 @@
 export type Protocol = 'ssh' | 'telnet' | 'serial' | 'local';
 
+// ── Multi-vendor model (HPE Networking: Aruba · Juniper · Mist) ──
+export type Vendor = 'aruba' | 'juniper' | 'mist' | 'hpe' | 'generic';
+
+export type DeviceType =
+  | 'aruba-cx'        // Aruba AOS-CX switches
+  | 'aruba-aos-s'     // Aruba AOS-S (ProVision / 2930/5400 etc.)
+  | 'aruba-ap'        // Aruba InstantOS access points
+  | 'aruba-controller'// ArubaOS Mobility Controller / Conductor
+  | 'juniper-junos'   // Juniper Junos (EX/QFX/SRX/MX/ACX)
+  | 'mist'            // Juniper Mist (cloud-managed switches/APs)
+  | 'generic';
+
+export interface VendorMeta {
+  label: string;
+  /** CSS custom property holding the vendor accent colour. */
+  colorVar: string;
+}
+
+export const VENDOR_META: Record<Vendor, VendorMeta> = {
+  hpe: { label: 'HPE', colorVar: 'var(--vendor-hpe)' },
+  aruba: { label: 'Aruba', colorVar: 'var(--vendor-aruba)' },
+  juniper: { label: 'Juniper', colorVar: 'var(--vendor-juniper)' },
+  mist: { label: 'Mist', colorVar: 'var(--vendor-mist)' },
+  generic: { label: 'Generic', colorVar: 'var(--vendor-generic)' },
+};
+
 export interface ConnectionConfig {
   id: string;
   name: string;
@@ -13,7 +39,15 @@ export interface ConnectionConfig {
   keyPassphrase?: string;
   serialPort?: string;
   baudRate?: number;
-  deviceType: 'aruba-cx' | 'aruba-ap' | 'aruba-controller' | 'generic';
+  /** Serial line settings (defaults 8 / none / 1). */
+  dataBits?: number;
+  parity?: string;
+  stopBits?: number;
+  deviceType: DeviceType;
+  /** Free-form labels for filtering the host list (e.g. site, role). */
+  tags?: string[];
+  /** Commands sent automatically right after the session connects. */
+  startupCommands?: string;
   // For protocol 'local': command to run in the PTY (undefined => default shell)
   command?: string;
   args?: string[];
@@ -61,10 +95,38 @@ export interface TerminalSettings {
   localCliCommand: string;
   /** References / standards injected into the AI context (lightweight RAG). */
   aiReferences: string;
-  // Aruba Central (cloud) API
+  // Which tool sources the AI assistant may use (opt-in beyond plain CLI).
+  /** Let the AI run CLI commands on the active device (default on). */
+  aiUseTerminal: boolean;
+  /** Let the AI query the connected AOS-CX switch's on-box REST API. */
+  aiUseCxRest: boolean;
+  /** Offer tools from connected MCP servers (e.g. centralmcp) to the AI. */
+  aiUseMcp: boolean;
+  /** Let the AI query a configured Juniper Apstra fabric controller. */
+  aiUseApstra: boolean;
+  // Juniper Apstra (intent-based DC fabric) controller config.
+  apstraHost: string;
+  apstraUsername: string;
+  apstraPassword: string;
+  // Aruba Central (cloud) API — active account.
   centralBaseUrl: string;
   centralClientId: string;
   centralClientSecret: string;
+  /** 'creds' = OAuth client-credentials; 'token' = pasted access token (SSO). */
+  centralAuthMode: 'creds' | 'token';
+  centralToken: string;
+  /** Saved Central accounts/workspaces to switch between. */
+  centralAccounts: CentralAccount[];
+}
+
+export interface CentralAccount {
+  id: string;
+  name: string;
+  baseUrl: string;
+  clientId: string;
+  clientSecret: string;
+  token: string;
+  mode: 'creds' | 'token';
 }
 
 // Aruba Central regional API base URLs.
@@ -118,6 +180,13 @@ export const DEFAULT_SETTINGS: TerminalSettings = {
   openrouterModel: 'anthropic/claude-3.5-sonnet',
   moonshotModel: 'kimi-k2-0905-preview',
   localCliCommand: 'claude -p',
+  aiUseTerminal: true,
+  aiUseCxRest: false,
+  aiUseMcp: false,
+  aiUseApstra: false,
+  apstraHost: '',
+  apstraUsername: '',
+  apstraPassword: '',
   aiReferences: `# Best-practice references the AI should apply (edit/extend freely)
 # Add your org's standards, golden-config rules, or doc links here.
 
@@ -134,6 +203,9 @@ export const DEFAULT_SETTINGS: TerminalSettings = {
   centralBaseUrl: '',
   centralClientId: '',
   centralClientSecret: '',
+  centralAuthMode: 'creds',
+  centralToken: '',
+  centralAccounts: [],
 };
 
 export interface Token {
@@ -185,12 +257,12 @@ export interface TerminalTheme {
 }
 
 export const DARK_TERMINAL_THEME: TerminalTheme = {
-  foreground: '#c9d1d9',
-  background: '#0d1117',
-  cursor: '#58a6ff',
-  cursorAccent: '#0d1117',
-  selectionBackground: '#264f78',
-  black: '#0d1117',
+  foreground: '#e6edf3',
+  background: '#0a0e14',
+  cursor: '#01a982',
+  cursorAccent: '#0a0e14',
+  selectionBackground: 'rgba(1,169,130,0.30)',
+  black: '#0a0e14',
   red: '#ff7b72',
   green: '#3fb950',
   yellow: '#d29922',
@@ -233,17 +305,40 @@ export const LIGHT_TERMINAL_THEME: TerminalTheme = {
 };
 
 export interface DeviceTypeOption {
-  value: 'aruba-cx' | 'aruba-ap' | 'aruba-controller' | 'generic';
+  value: DeviceType;
   label: string;
+  /** Short status-bar code (CX, AOS-S, AP, MC, JUNOS, MIST, GEN). */
+  short: string;
+  vendor: Vendor;
+  /** lucide-react icon name. */
   icon: string;
 }
 
 export const DEVICE_TYPES: DeviceTypeOption[] = [
-  { value: 'aruba-cx', label: 'Aruba CX Switch', icon: 'Switch' },
-  { value: 'aruba-ap', label: 'Aruba Wireless AP', icon: 'Wifi' },
-  { value: 'aruba-controller', label: 'Aruba Mobility Controller', icon: 'Router' },
-  { value: 'generic', label: 'Generic Device', icon: 'Monitor' },
+  { value: 'aruba-cx',         label: 'Aruba AOS-CX Switch',        short: 'CX',    vendor: 'aruba',    icon: 'Network' },
+  { value: 'aruba-aos-s',      label: 'Aruba AOS-S Switch',          short: 'AOS-S', vendor: 'aruba',    icon: 'Network' },
+  { value: 'aruba-ap',         label: 'Aruba Access Point',          short: 'AP',    vendor: 'aruba',    icon: 'Wifi' },
+  { value: 'aruba-controller', label: 'Aruba Mobility Controller',   short: 'MC',    vendor: 'aruba',    icon: 'RadioTower' },
+  { value: 'juniper-junos',    label: 'Juniper Junos (EX/QFX/SRX/MX)', short: 'JUNOS', vendor: 'juniper', icon: 'Server' },
+  { value: 'mist',             label: 'Juniper Mist (cloud)',        short: 'MIST',  vendor: 'mist',     icon: 'Cloud' },
+  { value: 'generic',          label: 'Generic Device',              short: 'GEN',   vendor: 'generic',  icon: 'Monitor' },
 ];
+
+export const DEVICE_META: Record<DeviceType, DeviceTypeOption> = DEVICE_TYPES.reduce(
+  (acc, d) => {
+    acc[d.value] = d;
+    return acc;
+  },
+  {} as Record<DeviceType, DeviceTypeOption>
+);
+
+export function deviceMeta(deviceType: string): DeviceTypeOption {
+  return DEVICE_META[deviceType as DeviceType] ?? DEVICE_META.generic;
+}
+
+export function vendorColor(deviceType: string): string {
+  return VENDOR_META[deviceMeta(deviceType).vendor].colorVar;
+}
 
 export const PROTOCOLS: { value: Protocol; label: string }[] = [
   { value: 'ssh', label: 'SSH' },
@@ -279,7 +374,8 @@ export interface ApiEndpoint {
   description: string;
   body?: object;
   category: 'System' | 'Interfaces' | 'VLANs' | 'LLDP' | 'Configuration' | 'CLI'
-    | 'Monitoring' | 'Clients' | 'Sites' | 'Config Groups' | 'Firmware' | 'Alerts';
+    | 'Monitoring' | 'Clients' | 'Sites' | 'Config Groups' | 'Firmware' | 'Alerts'
+    | 'Blueprints' | 'Fabric' | 'Design' | 'Resources';
 }
 
 export interface ApiConnection {
@@ -352,6 +448,31 @@ export const CENTRAL_ENDPOINTS: ApiEndpoint[] = [
   // Alerts
   { name: 'Active Alerts',         method: 'GET', path: '/central/v1/alerts',              description: 'Current unresolved alerts', category: 'Alerts' },
   { name: 'Alert Count',           method: 'GET', path: '/central/v1/alerts/count',        description: 'Count of active alerts by severity', category: 'Alerts' },
+];
+
+// Juniper Apstra (AOS) endpoint catalog — paths relative to /api.
+// Modeled on the Apstra resource set (terraform-provider-apstra / apstra-go-sdk).
+export const APSTRA_ENDPOINTS: ApiEndpoint[] = [
+  { name: 'Version',              method: 'GET', path: '/api/version',                                       description: 'Apstra controller version', category: 'System' },
+  { name: 'Blueprints',           method: 'GET', path: '/api/blueprints',                                    description: 'All blueprints (fabrics)', category: 'Blueprints' },
+  { name: 'Blueprint',            method: 'GET', path: '/api/blueprints/{blueprint_id}',                     description: 'Single blueprint detail', category: 'Blueprints' },
+  { name: 'Anomalies',            method: 'GET', path: '/api/blueprints/{blueprint_id}/anomalies',           description: 'Blueprint anomalies (health/intent deviations)', category: 'Blueprints' },
+  { name: 'Deploy status',        method: 'GET', path: '/api/blueprints/{blueprint_id}/deploy',              description: 'Staged vs deployed status', category: 'Blueprints' },
+  { name: 'Nodes — systems',      method: 'GET', path: '/api/blueprints/{blueprint_id}/nodes?node_type=system', description: 'Graph nodes filtered to systems (switches)', category: 'Fabric' },
+  { name: 'Security Zones (VRFs)',method: 'GET', path: '/api/blueprints/{blueprint_id}/security-zones',      description: 'Routing zones / VRFs', category: 'Fabric' },
+  { name: 'Virtual Networks',     method: 'GET', path: '/api/blueprints/{blueprint_id}/virtual-networks',    description: 'Virtual networks (VLAN/VXLAN)', category: 'Fabric' },
+  { name: 'Racks',                method: 'GET', path: '/api/blueprints/{blueprint_id}/racks',               description: 'Racks in the blueprint', category: 'Fabric' },
+  { name: 'Blueprint configlets', method: 'GET', path: '/api/blueprints/{blueprint_id}/configlets',          description: 'Configlets applied to this blueprint', category: 'Fabric' },
+  { name: 'Managed devices',      method: 'GET', path: '/api/systems',                                       description: 'Managed device system-agents', category: 'Resources' },
+  { name: 'ASN pools',            method: 'GET', path: '/api/resources/asn-pools',                           description: 'ASN resource pools', category: 'Resources' },
+  { name: 'IPv4 pools',           method: 'GET', path: '/api/resources/ip-pools',                            description: 'IPv4 resource pools', category: 'Resources' },
+  { name: 'VNI pools',            method: 'GET', path: '/api/resources/vni-pools',                           description: 'VNI pools', category: 'Resources' },
+  { name: 'Templates',            method: 'GET', path: '/api/design/templates',                             description: 'Pod / rack-based templates', category: 'Design' },
+  { name: 'Rack types',           method: 'GET', path: '/api/design/rack-types',                            description: 'Rack types', category: 'Design' },
+  { name: 'Logical devices',      method: 'GET', path: '/api/design/logical-devices',                       description: 'Logical devices', category: 'Design' },
+  { name: 'Interface maps',       method: 'GET', path: '/api/design/interface-maps',                        description: 'Interface maps', category: 'Design' },
+  { name: 'Design configlets',    method: 'GET', path: '/api/design/configlets',                            description: 'Global configlet catalog', category: 'Design' },
+  { name: 'Property sets',        method: 'GET', path: '/api/property-sets',                                description: 'Property sets', category: 'Design' },
 ];
 
 export const CENTRAL_DOCS = [
