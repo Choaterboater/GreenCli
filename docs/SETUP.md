@@ -92,9 +92,11 @@ id `com.arubaterminalpro.app`:
 | `known_hosts.json` | TOFU SSH host-key fingerprints | atomic writes |
 | `intents.json` | Network-intent definitions + last result | atomic; corrupt file is preserved, never silently wiped |
 
-> Secrets are deliberately kept here (owner-only files) rather than in browser
-> `localStorage`. Aruba Central / Apstra credentials entered in Settings are held in
-> memory for the session and are **not** persisted in plaintext.
+> Secrets are deliberately kept out of browser `localStorage`. Aruba Central / Apstra
+> credentials entered in Settings are stored **encrypted in the credential vault**
+> (`vault.enc`) when it is unlocked, so they survive a restart; while the vault is
+> locked they live in memory for the session only (same model as saved SSH
+> passwords). Account metadata (name / URL / client-id) persists either way.
 
 ---
 
