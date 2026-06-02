@@ -1,12 +1,12 @@
-# HPE Network Terminal
+# GreenCLI
 
-One cockpit for **HPE Networking — Aruba · Juniper · Mist**. A modern, cross-platform terminal, SSH client, config editor, REST API explorer, and AI assistant built as a SecureCRT/Termius replacement, with multi-vendor syntax highlighting for network engineers.
+One cockpit for **Aruba · Juniper · Mist**. A modern, cross-platform terminal, SSH client, config editor, REST API explorer, and AI assistant built as a SecureCRT/Termius replacement, with multi-vendor syntax highlighting for network engineers.
 
 > 📘 **New here? See the [Setup & Configuration Guide](docs/SETUP.md)** — installing,
 > running, and configuring every feature (SSH/vault, AI providers, MCP, Aruba Central,
 > Juniper Apstra, on-prem REST, network intent, TLS, screenshots).
 
-![HPE Network Terminal — home](docs/screenshots/01-home.png)
+![GreenCLI — home](docs/screenshots/01-home.png)
 
 ## Features
 

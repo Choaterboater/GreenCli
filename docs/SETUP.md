@@ -1,6 +1,6 @@
-# HPE Network Terminal — Setup & Configuration Guide
+# GreenCLI — Setup & Configuration Guide
 
-One cockpit for **HPE Networking — Aruba · Juniper · Mist**: a terminal / SSH client,
+One cockpit for **Aruba · Juniper · Mist**: a terminal / SSH client,
 config editor, REST API explorer, MCP-powered AI assistant, and a network-intent
 (desired-state) layer.
 
@@ -74,13 +74,13 @@ npm run tauri-build -- --target x86_64-unknown-linux-gnu   # Linux
 ## 3. Where your data lives
 
 All state is stored **outside the webview**, in the OS app-data directory for bundle
-id `com.arubaterminalpro.app`:
+id `com.greencli.app`:
 
 | OS | Path |
 |----|------|
-| macOS | `~/Library/Application Support/com.arubaterminalpro.app/` |
-| Linux | `~/.local/share/com.arubaterminalpro.app/` |
-| Windows | `%APPDATA%\com.arubaterminalpro.app\` |
+| macOS | `~/Library/Application Support/com.greencli.app/` |
+| Linux | `~/.local/share/com.greencli.app/` |
+| Windows | `%APPDATA%\com.greencli.app\` |
 
 | File | Contents | Notes |
 |------|----------|-------|

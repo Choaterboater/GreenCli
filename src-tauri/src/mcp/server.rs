@@ -151,7 +151,7 @@ impl McpServer {
                 "resources": { "subscribe": false, "listChanged": false }
             }),
             server_info: McpServerInfo {
-                name: "hpe-network-terminal-mcp".to_string(),
+                name: "greencli-mcp".to_string(),
                 version: env!("CARGO_PKG_VERSION").to_string(),
             },
         }
