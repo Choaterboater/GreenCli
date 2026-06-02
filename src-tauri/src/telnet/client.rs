@@ -143,6 +143,14 @@ impl TelnetConnection {
                         }
                         continue;
                     }
+                    IAC => {
+                        // IAC IAC (255 255) is an ESCAPED single 0xFF data byte
+                        // (RFC 854) — emit ONE 0xFF, don't drop both. Otherwise any
+                        // real data containing 0xFF is silently corrupted.
+                        result.push(IAC);
+                        i += 2;
+                        continue;
+                    }
                     _ => {
                         // Skip 2-byte command
                         i += 2;

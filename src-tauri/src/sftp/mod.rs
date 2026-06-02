@@ -5,7 +5,7 @@ use crate::error::AppError;
 use russh::client::Handle;
 use russh_sftp::client::SftpSession;
 use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 
 use crate::ssh::client::ClientHandler;
 
@@ -62,15 +62,15 @@ pub async fn download(
         .open(remote_path)
         .await
         .map_err(|e| AppError::SshError(format!("SFTP open '{}': {}", remote_path, e)))?;
-    let mut buf = Vec::new();
-    remote_file
-        .read_to_end(&mut buf)
+    let mut local_file = tokio::fs::File::create(local_path)
         .await
-        .map_err(|e| AppError::SshError(format!("SFTP read '{}': {}", remote_path, e)))?;
-    let len = buf.len() as u64;
-    tokio::fs::write(local_path, &buf)
+        .map_err(|e| AppError::SshError(format!("Create local '{}': {}", local_path, e)))?;
+    // Stream in chunks rather than buffering the whole file in RAM — a firmware
+    // image / capture can be GBs and would otherwise OOM the app.
+    let len = tokio::io::copy(&mut remote_file, &mut local_file)
         .await
-        .map_err(|e| AppError::SshError(format!("Write local '{}': {}", local_path, e)))?;
+        .map_err(|e| AppError::SshError(format!("SFTP download '{}': {}", remote_path, e)))?;
+    local_file.flush().await.ok();
     Ok(len)
 }
 
@@ -102,24 +102,32 @@ pub async fn rename(sftp: &SftpSession, from: &str, to: &str) -> Result<(), AppE
         .map_err(|e| AppError::SshError(format!("SFTP rename '{}'→'{}': {}", from, to, e)))
 }
 
-/// Upload a local file to a remote path.
+/// Upload a local file to a remote path. When `overwrite` is false and the remote
+/// path already exists, returns a distinguishable `EEXIST:` error so the UI can
+/// confirm before clobbering it (e.g. a device running-config / firmware file).
 pub async fn upload(
     sftp: &SftpSession,
     local_path: &str,
     remote_path: &str,
+    overwrite: bool,
 ) -> Result<u64, AppError> {
-    let data = tokio::fs::read(local_path)
+    if !overwrite && sftp.metadata(remote_path).await.is_ok() {
+        return Err(AppError::ApiError(format!(
+            "EEXIST: '{}' already exists on the remote",
+            remote_path
+        )));
+    }
+    let mut local_file = tokio::fs::File::open(local_path)
         .await
-        .map_err(|e| AppError::SshError(format!("Read local '{}': {}", local_path, e)))?;
-    let len = data.len() as u64;
+        .map_err(|e| AppError::SshError(format!("Open local '{}': {}", local_path, e)))?;
     let mut remote_file = sftp
         .create(remote_path)
         .await
         .map_err(|e| AppError::SshError(format!("SFTP create '{}': {}", remote_path, e)))?;
-    remote_file
-        .write_all(&data)
+    // Stream in chunks rather than reading the whole local file into RAM.
+    let len = tokio::io::copy(&mut local_file, &mut remote_file)
         .await
-        .map_err(|e| AppError::SshError(format!("SFTP write '{}': {}", remote_path, e)))?;
+        .map_err(|e| AppError::SshError(format!("SFTP upload '{}': {}", remote_path, e)))?;
     remote_file.shutdown().await.ok();
     Ok(len)
 }

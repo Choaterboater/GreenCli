@@ -5,6 +5,7 @@ use aes_gcm::{
 use argon2::Argon2;
 use rand::rngs::OsRng;
 use rand::RngCore;
+use zeroize::Zeroizing;
 
 use crate::error::AppError;
 
@@ -35,15 +36,27 @@ pub fn derive_key(password: &str, salt: &[u8]) -> Result<[u8; KEY_SIZE], AppErro
     Ok(key)
 }
 
+/// Holds the raw AES-256 key in a zeroizing buffer (wiped on drop) and rebuilds
+/// the GCM key schedule per operation, so the long-lived secret never sits in a
+/// non-zeroized cipher state for the life of the unlock.
 pub struct VaultCipher {
-    cipher: Aes256Gcm,
+    key: Zeroizing<[u8; KEY_SIZE]>,
 }
 
 impl VaultCipher {
     pub fn new(key: &[u8; KEY_SIZE]) -> Result<Self, AppError> {
-        let cipher = Aes256Gcm::new_from_slice(key)
+        // Validate the key length up front (cannot fail for a [u8; 32], but keep
+        // the error path so callers get a clean error rather than a panic).
+        Aes256Gcm::new_from_slice(key)
             .map_err(|e| AppError::VaultError(format!("Cipher init: {}", e)))?;
-        Ok(Self { cipher })
+        Ok(Self {
+            key: Zeroizing::new(*key),
+        })
+    }
+
+    fn cipher(&self) -> Aes256Gcm {
+        // The stored key is always exactly KEY_SIZE bytes, so this cannot fail.
+        Aes256Gcm::new_from_slice(self.key.as_ref()).expect("vault key is 32 bytes")
     }
 
     pub fn encrypt(&self, plaintext: &[u8]) -> Result<Vec<u8>, AppError> {
@@ -52,7 +65,7 @@ impl VaultCipher {
         let nonce = Nonce::from_slice(&nonce_bytes);
 
         let ciphertext = self
-            .cipher
+            .cipher()
             .encrypt(nonce, plaintext)
             .map_err(|e| AppError::VaultError(format!("Encrypt: {}", e)))?;
 
@@ -69,7 +82,7 @@ impl VaultCipher {
 
         let nonce = Nonce::from_slice(&ciphertext[..NONCE_SIZE]);
         let plaintext = self
-            .cipher
+            .cipher()
             .decrypt(nonce, &ciphertext[NONCE_SIZE..])
             .map_err(|e| AppError::VaultError(format!("Decrypt: {}", e)))?;
         Ok(plaintext)

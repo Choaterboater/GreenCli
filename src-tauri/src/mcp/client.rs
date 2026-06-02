@@ -122,9 +122,8 @@ impl McpSecretStore {
     }
 
     fn save(&self, m: &HashMap<String, String>) -> Result<(), AppError> {
-        fs::write(&self.path, serde_json::to_vec(m)?).map_err(AppError::from)?;
-        restrict_perms(&self.path);
-        Ok(())
+        // Create with mode 0600 directly (no world-readable write-then-chmod window).
+        write_secret_file(&self.path, &serde_json::to_vec(m)?)
     }
 
     pub fn set(&self, name: &str, content: &str) -> Result<(), AppError> {
@@ -237,7 +236,11 @@ impl McpClient {
                 let line = match lines.next_line().await {
                     Ok(Some(l)) => l,
                     Ok(None) => break, // EOF — process closed stdout
-                    Err(_) => continue, // skip an undecodable line, keep reading
+                    // A non-UTF8 line is consumed, so skip it and keep reading. But a
+                    // real I/O error (broken pipe / reset) does NOT advance the stream:
+                    // returning the same error forever would busy-spin a core. Break.
+                    Err(e) if e.kind() == std::io::ErrorKind::InvalidData => continue,
+                    Err(_) => break,
                 };
                 let line = line.trim();
                 if line.is_empty() {
@@ -247,6 +250,13 @@ impl McpClient {
                     Ok(v) => v,
                     Err(_) => continue, // skip any non-JSON banner/log lines
                 };
+                // A message carrying a `method` is a REQUEST/notification FROM the
+                // server (sampling/roots/elicitation), not a response to us. Never
+                // match it against pending waiters — ids restart at 1 each reconnect
+                // so a server-request id can collide with one of ours.
+                if v.get("method").is_some() {
+                    continue;
+                }
                 // Accept integer / float / numeric-string ids (servers vary).
                 let id = v.get("id").and_then(|i| {
                     i.as_i64()
@@ -427,9 +437,17 @@ pub struct McpManager {
 }
 
 fn sanitize_filename(name: &str) -> String {
-    name.chars()
+    use std::hash::{Hash, Hasher};
+    let base: String = name
+        .chars()
         .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
-        .collect()
+        .collect();
+    // Suffix a hash of the FULL name so distinct names that sanitize to the same
+    // base (e.g. "central mcp" vs "central/mcp" -> "central_mcp") never share a
+    // creds file. DefaultHasher uses fixed keys, so this is stable across runs.
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    name.hash(&mut h);
+    format!("{}_{:016x}", base, h.finish())
 }
 
 /// Lock down a secrets file to owner-only (0600) on Unix.
@@ -440,6 +458,31 @@ fn restrict_perms(path: &std::path::Path) {
 }
 #[cfg(not(unix))]
 fn restrict_perms(_path: &std::path::Path) {}
+
+/// Write a secret file owner-only WITHOUT a world-readable window: on Unix create
+/// the file with mode 0600 directly, rather than fs::write (umask 0644) then chmod
+/// — which leaves the cleartext readable to other local users in between.
+fn write_secret_file(path: &std::path::Path, content: &[u8]) -> Result<(), AppError> {
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut f = fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .mode(0o600)
+            .open(path)
+            .map_err(AppError::from)?;
+        f.write_all(content).map_err(AppError::from)?;
+    }
+    #[cfg(not(unix))]
+    {
+        fs::write(path, content).map_err(AppError::from)?;
+    }
+    restrict_perms(path); // also fixes perms if the file pre-existed
+    Ok(())
+}
 
 impl McpManager {
     pub fn new(app_dir: PathBuf) -> Self {
@@ -471,6 +514,10 @@ impl McpManager {
     /// `take_client` and shut it down outside the lock.
     pub fn remove_config_only(&self, name: &str) -> Result<(), AppError> {
         let _ = self.secrets.set(name, "");
+        // Also delete the materialised cleartext creds file that resolve_connect_def
+        // wrote, so the secret doesn't linger on disk after the server is removed.
+        let creds_file = self.app_dir.join("mcp_creds").join(sanitize_filename(name));
+        let _ = fs::remove_file(&creds_file);
         self.store.remove(name)
     }
 
@@ -488,8 +535,7 @@ impl McpManager {
             let dir = self.app_dir.join("mcp_creds");
             std::fs::create_dir_all(&dir).map_err(AppError::from)?;
             let path = dir.join(sanitize_filename(name));
-            std::fs::write(&path, content).map_err(AppError::from)?;
-            restrict_perms(&path);
+            write_secret_file(&path, content.as_bytes())?;
             let var = def
                 .credentials_env_var
                 .clone()

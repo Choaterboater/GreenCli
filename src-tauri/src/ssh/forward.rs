@@ -46,14 +46,20 @@ pub async fn start_local(
 ) -> Result<JoinHandle<()>, AppError> {
     let listener = bind(local_port).await?;
     Ok(tokio::spawn(async move {
+        // Own the per-connection tasks in a JoinSet: when this listener task is
+        // aborted (ssh_stop_forward / disconnect), the set is dropped and every
+        // in-flight tunnelled connection's channel is aborted too — otherwise
+        // stopping a forward leaks live SSH channels that keep proxying traffic.
+        let mut children = tokio::task::JoinSet::new();
         loop {
             let (mut sock, _) = match listener.accept().await {
                 Ok(x) => x,
                 Err(_) => break,
             };
+            while children.try_join_next().is_some() {} // reap finished connections
             let h = handle.clone();
             let rh = remote_host.clone();
-            tokio::spawn(async move {
+            children.spawn(async move {
                 let channel = {
                     let g = h.lock().await;
                     g.channel_open_direct_tcpip(rh, remote_port as u32, "127.0.0.1", 0).await
@@ -71,13 +77,17 @@ pub async fn start_local(
 pub async fn start_dynamic(handle: Handle, local_port: u16) -> Result<JoinHandle<()>, AppError> {
     let listener = bind(local_port).await?;
     Ok(tokio::spawn(async move {
+        // See start_local: child tasks live in a JoinSet so stopping the forward
+        // aborts every in-flight SOCKS connection's channel.
+        let mut children = tokio::task::JoinSet::new();
         loop {
             let (sock, _) = match listener.accept().await {
                 Ok(x) => x,
                 Err(_) => break,
             };
+            while children.try_join_next().is_some() {} // reap finished connections
             let h = handle.clone();
-            tokio::spawn(async move {
+            children.spawn(async move {
                 let _ = socks5(sock, h).await;
             });
         }

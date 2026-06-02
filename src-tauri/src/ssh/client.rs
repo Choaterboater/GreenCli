@@ -202,15 +202,55 @@ impl SshConnection {
             .await
             .map_err(|e| AppError::SshError(format!("Jump host connect failed: {}", e)))?;
 
-            let jump_user = self.config.jump_username.clone().unwrap_or_default();
+            // Authenticate to the bastion. A jump password is rarely set (especially
+            // for ssh_config-imported ProxyJump), and most bastions are key/agent
+            // only — so try password (if given), then the configured private key,
+            // then ssh-agent, rather than failing on an empty password.
+            let jump_user = self
+                .config
+                .jump_username
+                .clone()
+                .filter(|u| !u.is_empty())
+                .unwrap_or_else(|| self.config.username.clone());
             let jump_pass = self.config.jump_password.clone().unwrap_or_default();
-            let jump_ok = jump
-                .authenticate_password(&jump_user, jump_pass)
-                .await
-                .map_err(|e| AppError::SshError(format!("Jump host auth failed: {}", e)))?;
+            let mut jump_ok = false;
+            if !jump_pass.is_empty() {
+                jump_ok = jump
+                    .authenticate_password(&jump_user, jump_pass)
+                    .await
+                    .map_err(|e| AppError::SshError(format!("Jump host auth failed: {}", e)))?;
+            }
+            if !jump_ok {
+                if let Some(ref key_str) = self.config.private_key {
+                    if let Ok(kp) = SshKeyManager::load_private_key(
+                        key_str.as_bytes(),
+                        self.config.key_passphrase.as_deref(),
+                    ) {
+                        jump_ok = jump
+                            .authenticate_publickey(&jump_user, Arc::new(kp))
+                            .await
+                            .unwrap_or(false);
+                    }
+                }
+            }
+            if !jump_ok {
+                if let Ok(mut agent) = russh_keys::agent::client::AgentClient::connect_env().await {
+                    if let Ok(identities) = agent.request_identities().await {
+                        for key in identities {
+                            let (back, res) =
+                                jump.authenticate_future(jump_user.clone(), key, agent).await;
+                            agent = back;
+                            if matches!(res, Ok(true)) {
+                                jump_ok = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
             if !jump_ok {
                 return Err(AppError::AuthError(
-                    "Jump host authentication failed".into(),
+                    "Jump host authentication failed (tried password, key, and agent)".into(),
                 ));
             }
 
@@ -261,6 +301,7 @@ impl SshConnection {
                     // prompt with the same password.
                     use russh::client::KeyboardInteractiveAuthResponse;
                     let mut authed = false;
+                    let mut first_round = true;
                     let mut res = handle
                         .authenticate_keyboard_interactive_start(
                             self.config.username.clone(),
@@ -270,7 +311,8 @@ impl SshConnection {
                         .map_err(|e| {
                             AppError::SshError(format!("Keyboard-interactive start: {}", e))
                         })?;
-                    for _ in 0..16 {
+                    // Cap the number of challenge rounds; break out on success/failure.
+                    for _ in 0..4 {
                         match res {
                             KeyboardInteractiveAuthResponse::Success => {
                                 authed = true;
@@ -278,8 +320,21 @@ impl SshConnection {
                             }
                             KeyboardInteractiveAuthResponse::Failure => break,
                             KeyboardInteractiveAuthResponse::InfoRequest { prompts, .. } => {
-                                let answers: Vec<String> =
-                                    prompts.iter().map(|_| password.clone()).collect();
+                                // Only answer the FIRST prompt of the FIRST round with the
+                                // password — never blast it into every prompt (a second
+                                // factor / OTP prompt must not receive the password).
+                                let answers: Vec<String> = prompts
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(i, _)| {
+                                        if first_round && i == 0 {
+                                            password.clone()
+                                        } else {
+                                            String::new()
+                                        }
+                                    })
+                                    .collect();
+                                first_round = false;
                                 res = handle
                                     .authenticate_keyboard_interactive_respond(answers)
                                     .await
@@ -363,15 +418,27 @@ impl SshConnection {
             .await
             .map_err(|e| AppError::SshError(format!("Channel open: {}", e)))?;
 
+        // want_reply=true: wait for the server to actually accept the PTY and shell.
+        // With false, a server that REFUSES them (restricted accounts, appliances,
+        // forced-command keys) still resolves Ok and we'd report a connected-but-dead
+        // session. A rejection now surfaces as a clear connect error.
         channel
-            .request_pty(false, &self.get_term_type(), 80, 24, 0, 0, &[])
+            .request_pty(true, &self.get_term_type(), 80, 24, 0, 0, &[])
             .await
-            .map_err(|e| AppError::SshError(format!("PTY request: {}", e)))?;
+            .map_err(|_| {
+                AppError::SshError(
+                    "The server refused a PTY (the account or device may not allow an interactive shell)".into(),
+                )
+            })?;
 
         channel
-            .request_shell(false)
+            .request_shell(true)
             .await
-            .map_err(|e| AppError::SshError(format!("Shell request: {}", e)))?;
+            .map_err(|_| {
+                AppError::SshError(
+                    "The server refused to start a shell (restricted account or forced-command key?)".into(),
+                )
+            })?;
 
         self.handle = Some(Arc::new(Mutex::new(handle)));
         self.channel = Some(Arc::new(Mutex::new(channel)));
