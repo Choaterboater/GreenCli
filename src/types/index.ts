@@ -380,8 +380,12 @@ export interface ApiEndpoint {
   body?: object;
   category: 'System' | 'Interfaces' | 'VLANs' | 'LLDP' | 'Configuration' | 'CLI'
     | 'Monitoring' | 'Clients' | 'Sites' | 'Config Groups' | 'Firmware' | 'Alerts'
-    | 'Blueprints' | 'Fabric' | 'Design' | 'Resources';
+    | 'Blueprints' | 'Fabric' | 'Design' | 'Resources'
+    | 'Ports' | 'MAC' | 'Show';
 }
+
+/** Which on-box device REST flavour a connection speaks. */
+export type DeviceApiKind = 'cx' | 'aoss' | 'aos8';
 
 export interface ApiConnection {
   id: string;
@@ -392,6 +396,8 @@ export interface ApiConnection {
   cookie?: string;
   baseUrl: string;
   connected: boolean;
+  /** Device REST flavour — routes requests to the right backend client. */
+  kind?: DeviceApiKind;
 }
 
 export interface ApiResponse {
@@ -415,6 +421,38 @@ export const DEFAULT_ENDPOINTS: ApiEndpoint[] = [
   { name: 'Configuration', method: 'GET', path: '/system/fullconfigs', description: 'Get running configuration', category: 'Configuration' },
   { name: 'Execute CLI', method: 'POST', path: '/cli', description: 'Execute CLI command', body: { command: [] }, category: 'CLI' },
   { name: 'Show CLI Command', method: 'POST', path: '/cli', description: 'Run show command', body: { command: ['show running-config'] }, category: 'CLI' },
+];
+
+// Aruba AOS-S (AOS-Switch / ProVision) on-box REST — resources under /rest/v7.
+export const AOSS_ENDPOINTS: ApiEndpoint[] = [
+  { name: 'System Info', method: 'GET', path: '/system', description: 'System info', category: 'System' },
+  { name: 'System Status', method: 'GET', path: '/system/status', description: 'System status', category: 'System' },
+  { name: 'Switch Status', method: 'GET', path: '/system/status/switch', description: 'Switch hardware status', category: 'System' },
+  { name: 'VLANs', method: 'GET', path: '/vlans', description: 'List VLANs', category: 'VLANs' },
+  { name: 'VLAN Detail', method: 'GET', path: '/vlans/{vlan_id}', description: 'VLAN by id', category: 'VLANs' },
+  { name: 'VLAN-Port Membership', method: 'GET', path: '/vlans-ports', description: 'VLAN ↔ port membership', category: 'VLANs' },
+  { name: 'Ports', method: 'GET', path: '/ports', description: 'List ports', category: 'Ports' },
+  { name: 'Port Detail', method: 'GET', path: '/ports/{port_id}', description: 'Port by id', category: 'Ports' },
+  { name: 'Port Statistics', method: 'GET', path: '/port-statistics', description: 'Per-port counters', category: 'Ports' },
+  { name: 'PoE Ports', method: 'GET', path: '/poe/ports', description: 'PoE status per port', category: 'Ports' },
+  { name: 'LLDP Neighbors', method: 'GET', path: '/lldp/remote-device', description: 'LLDP remote devices', category: 'LLDP' },
+  { name: 'MAC Table', method: 'GET', path: '/mac-table', description: 'MAC address table', category: 'MAC' },
+  { name: 'Run CLI', method: 'POST', path: '/cli', description: 'Run a CLI/show command', body: { cmd: 'show running-config' }, category: 'CLI' },
+];
+
+// Aruba AOS-8 (Mobility Conductor/Controller) — showcommand-based. The `path`
+// holds the CLI show command, executed via the aos8_show backend command.
+export const AOS8_ENDPOINTS: ApiEndpoint[] = [
+  { name: 'show version', method: 'GET', path: 'show version', description: 'Controller version', category: 'Show' },
+  { name: 'show running-config', method: 'GET', path: 'show running-config', description: 'Running configuration', category: 'Configuration' },
+  { name: 'show switches', method: 'GET', path: 'show switches', description: 'Managed devices', category: 'Show' },
+  { name: 'show ap database', method: 'GET', path: 'show ap database', description: 'AP database', category: 'Show' },
+  { name: 'show ap active', method: 'GET', path: 'show ap active', description: 'Active APs', category: 'Show' },
+  { name: 'show user-table', method: 'GET', path: 'show user-table', description: 'Associated clients', category: 'Clients' },
+  { name: 'show vlan', method: 'GET', path: 'show vlan', description: 'VLANs', category: 'VLANs' },
+  { name: 'show ip interface brief', method: 'GET', path: 'show ip interface brief', description: 'L3 interfaces', category: 'Interfaces' },
+  { name: 'show datapath session', method: 'GET', path: 'show datapath session table', description: 'Datapath sessions', category: 'Show' },
+  { name: 'show log all', method: 'GET', path: 'show log all 50', description: 'Recent log lines', category: 'Show' },
 ];
 
 // Aruba Central API endpoint catalog.
