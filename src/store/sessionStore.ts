@@ -28,6 +28,7 @@ interface SessionState {
   showSftp: boolean;
   showTunnels: boolean;
   showIntent: boolean;
+  showHelp: boolean;
 
   // Actions
   addSession: (config: ConnectionConfig, sessionId: string) => void;
@@ -52,6 +53,7 @@ interface SessionState {
   setShowSftp: (show: boolean) => void;
   setShowTunnels: (show: boolean) => void;
   setShowIntent: (show: boolean) => void;
+  setShowHelp: (show: boolean) => void;
   showConfigEditor: boolean;
   toggleConfigEditor: () => void;
   toggleApiExplorer: () => void;
@@ -98,6 +100,7 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
   showSftp: false,
   showTunnels: false,
   showIntent: false,
+  showHelp: false,
 
   addSession: (config, sessionId) =>
     set((state) => {
@@ -166,6 +169,7 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
   setShowSftp: (show) => set({ showSftp: show }),
   setShowTunnels: (show) => set({ showTunnels: show }),
   setShowIntent: (show) => set({ showIntent: show }),
+  setShowHelp: (show) => set({ showHelp: show }),
   toggleConfigEditor: () => set((state) => ({ showConfigEditor: !state.showConfigEditor })),
   // Panels coexist — Editor, API, and AI can all be open side-by-side (each is
   // independently resizable), with the terminal always present.

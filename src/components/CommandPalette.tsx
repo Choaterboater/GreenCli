@@ -16,6 +16,7 @@ import {
   Moon,
   ShieldCheck,
   HardDrive,
+  HelpCircle,
   X,
   CornerDownLeft,
 } from 'lucide-react';
@@ -81,6 +82,7 @@ export default function CommandPalette({ onConnect, onLocalShell }: CommandPalet
       { id: 'toggle-sidebar', label: 'Toggle Sidebar', hint: 'Ctrl+B', icon: <PanelLeft size={14} />, run: store.toggleSidebar },
       { id: 'search', label: 'Search in Terminal', hint: 'Ctrl+F', icon: <Search size={14} />, run: () => store.setShowSearch(true) },
       { id: 'settings', label: 'Open Settings', hint: 'Ctrl+,', icon: <SettingsIcon size={14} />, run: () => store.setShowSettings(true) },
+      { id: 'help', label: 'Help & Documentation', hint: 'F1', keywords: 'help docs guide setup how to configure', icon: <HelpCircle size={14} />, run: () => store.setShowHelp(true) },
       {
         id: 'vault',
         label: store.vaultUnlocked ? 'Lock credential vault' : 'Unlock credential vault',

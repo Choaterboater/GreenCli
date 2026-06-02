@@ -127,6 +127,7 @@ npm run tauri-build -- --target x86_64-unknown-linux-gnu
 | `Ctrl+W` | Close Active Tab |
 | `Ctrl+F` | Search Terminal |
 | `Ctrl+,` | Open Settings |
+| `F1` | Help & documentation (in-app) |
 | `Ctrl+B` | Toggle Sidebar |
 
 ## Aruba Syntax Highlighting
