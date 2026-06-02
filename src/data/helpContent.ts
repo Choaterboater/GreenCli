@@ -41,7 +41,9 @@ export interface HelpTopic {
   summary: string;
   keywords: string[];
   blocks: HelpBlock[];
-  action?: { label: string; id: HelpActionId };
+  /** Optional quick action. `focus` (with id 'open-settings') deep-links to a
+   *  Settings section anchor (`set-<focus>`) and flashes it. */
+  action?: { label: string; id: HelpActionId; focus?: string };
 }
 
 export const HELP_TOPICS: HelpTopic[] = [
@@ -117,7 +119,7 @@ export const HELP_TOPICS: HelpTopic[] = [
       },
       { kind: 'note', text: 'Responses stream token-by-token; **Stop** actually aborts the provider request, not just the UI.' },
     ],
-    action: { label: 'Open AI assistant', id: 'open-ai' },
+    action: { label: 'Set up AI provider', id: 'open-settings', focus: 'ai' },
   },
   {
     id: 'mcp',
@@ -138,7 +140,7 @@ export const HELP_TOPICS: HelpTopic[] = [
       },
       { kind: 'note', text: 'Example: the centralmcp server exposes 145 Aruba Central / GLP / monitoring / NAC / ops tools. Tool names are namespaced `mcp__<server>__<tool>`.' },
     ],
-    action: { label: 'Open MCP settings', id: 'open-settings' },
+    action: { label: 'Open MCP settings', id: 'open-settings', focus: 'mcp' },
   },
   {
     id: 'central',
@@ -150,7 +152,7 @@ export const HELP_TOPICS: HelpTopic[] = [
       { kind: 'p', text: 'Settings → **Aruba Central**: enter a Base URL + Client ID/Secret (OAuth), or paste an access **token** (SSO).' },
       { kind: 'bullets', items: ['Save/load/delete named **accounts** (loading then Save updates in place, no duplicate).', 'Reach Central data via the **API Explorer** (target = Central) or via centralmcp.'] },
     ],
-    action: { label: 'Open Central settings', id: 'open-settings' },
+    action: { label: 'Open Central settings', id: 'open-settings', focus: 'central' },
   },
   {
     id: 'apstra',
@@ -162,7 +164,7 @@ export const HELP_TOPICS: HelpTopic[] = [
       { kind: 'bullets', items: ['**AOS-CX / AOS-8 / AOS-S** — the AI auto-logs in with the active session’s SSH creds; enable *Assistant tools → Aruba device REST APIs*.', '**Juniper Apstra** — Settings → Juniper Apstra: host, username, password (token auth, auto-refresh); enable *Assistant tools → Juniper Apstra*.'] },
       { kind: 'p', text: 'Explore the same endpoints interactively in the **API Explorer** (target = device or apstra).' },
     ],
-    action: { label: 'Open API Explorer', id: 'open-api' },
+    action: { label: 'Set up Apstra', id: 'open-settings', focus: 'apstra' },
   },
   {
     id: 'tls',
@@ -174,7 +176,7 @@ export const HELP_TOPICS: HelpTopic[] = [
       { kind: 'p', text: 'Settings → **Device REST security → Verify device TLS certificates**. Off by default because field gear usually ships a self-signed cert.' },
       { kind: 'note', text: 'Turn it **on** to reject untrusted certs across AOS-CX/AOS-8/AOS-S/Apstra. The API Explorer’s per-login Verify-TLS checkbox defaults from this setting.' },
     ],
-    action: { label: 'Open Settings', id: 'open-settings' },
+    action: { label: 'Open TLS setting', id: 'open-settings', focus: 'tls' },
   },
   {
     id: 'intent',

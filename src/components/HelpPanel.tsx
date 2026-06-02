@@ -132,10 +132,14 @@ export default function HelpPanel() {
 
   const active = filtered.find((t) => t.id === activeId) || filtered[0] || HELP_TOPICS[0];
 
-  const runAction = (id: HelpActionId) => {
+  const runAction = (action: { id: HelpActionId; focus?: string }) => {
     setShowHelp(false);
-    switch (id) {
-      case 'open-settings': store.setShowSettings(true); break;
+    switch (action.id) {
+      case 'open-settings':
+        // Deep-link: Settings scrolls to + flashes the `set-<focus>` section.
+        store.setSettingsFocus(action.focus ?? null);
+        store.setShowSettings(true);
+        break;
       case 'open-quick-connect': store.setShowQuickConnect(true); break;
       case 'open-ai': store.setShowAiAssistant(true); break;
       case 'open-api': store.setShowApiExplorer(true); break;
@@ -234,7 +238,7 @@ export default function HelpPanel() {
             </div>
             {active.action && (
               <button
-                onClick={() => runAction(active.action!.id)}
+                onClick={() => runAction(active.action!)}
                 className="btn-accent mt-5 flex items-center gap-1.5 h-8 px-3.5 text-[12px]"
               >
                 {active.action.label}

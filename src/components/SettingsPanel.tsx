@@ -11,8 +11,24 @@ import TriggersSettings from './TriggersSettings';
 import CentralSettings from './CentralSettings';
 
 export default function SettingsPanel() {
-  const { showSettings, setShowSettings } = useSessionStore();
+  const { showSettings, setShowSettings, settingsFocus, setSettingsFocus } = useSessionStore();
   const settings = useSettingsStore();
+
+  // When opened via a Help deep-link, scroll the targeted section into view and
+  // flash it so the user sees exactly which field to edit.
+  useEffect(() => {
+    if (!showSettings || !settingsFocus) return;
+    const id = setTimeout(() => {
+      const el = document.getElementById(`set-${settingsFocus}`);
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        el.classList.add('help-flash');
+        setTimeout(() => el.classList.remove('help-flash'), 1600);
+      }
+      setSettingsFocus(null);
+    }, 120);
+    return () => clearTimeout(id);
+  }, [showSettings, settingsFocus, setSettingsFocus]);
   const [showApiKey, setShowApiKey] = useState(false);
   const [keyInput, setKeyInput] = useState('');
   const [keySaved, setKeySaved] = useState(false);
@@ -317,7 +333,7 @@ export default function SettingsPanel() {
           <div className="border-t border-[var(--bg-tertiary)]" />
 
           {/* AI */}
-          <section>
+          <section id="set-ai">
             <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-3">
               AI Assistant
             </h3>
@@ -560,17 +576,21 @@ export default function SettingsPanel() {
           <div className="border-t border-[var(--bg-tertiary)]" />
 
           {/* MCP servers (external tools for the AI) */}
-          <McpServers />
+          <div id="set-mcp">
+            <McpServers />
+          </div>
 
           <div className="border-t border-[var(--bg-tertiary)]" />
 
           {/* Aruba Central (cloud API) — multi-account + token */}
-          <CentralSettings />
+          <div id="set-central">
+            <CentralSettings />
+          </div>
 
           <div className="border-t border-[var(--bg-tertiary)]" />
 
           {/* Juniper Apstra (DC fabric) */}
-          <section>
+          <section id="set-apstra">
             <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-3">Juniper Apstra</h3>
             <div className="space-y-3">
               <div>
@@ -611,7 +631,7 @@ export default function SettingsPanel() {
           </section>
 
           {/* Device REST security */}
-          <section>
+          <section id="set-tls">
             <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-3">Device REST security</h3>
             <label className="flex items-center justify-between cursor-pointer gap-3">
               <span className="min-w-0">
