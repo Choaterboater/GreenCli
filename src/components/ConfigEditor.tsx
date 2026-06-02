@@ -284,6 +284,67 @@ set snmp view all oid .1
 set system syslog host 10.0.0.10 any info
 set system syslog host 10.0.0.10 source-address 10.10.10.1
 `,
+
+  // ─── Juniper Validated Design starters (Junos) — edit ids/addresses ───
+  'JVD: EVPN-VXLAN leaf (ERB)': `/* JVD EVPN-VXLAN — leaf (edge-routed bridging). Replace ASNs/IPs/VNIs. */
+set chassis aggregated-devices ethernet device-count 2
+set interfaces lo0 unit 0 family inet address 10.1.1.1/32
+/* Underlay: eBGP to spines */
+set protocols bgp group UNDERLAY type external
+set protocols bgp group UNDERLAY local-as 65001
+set protocols bgp group UNDERLAY family inet unicast
+set protocols bgp group UNDERLAY export LO0
+set protocols bgp group UNDERLAY neighbor 10.0.0.0 peer-as 65000
+/* Overlay: eBGP EVPN to spines (loopback) */
+set protocols bgp group OVERLAY type external
+set protocols bgp group OVERLAY multihop ttl 2
+set protocols bgp group OVERLAY local-address 10.1.1.1
+set protocols bgp group OVERLAY family evpn signaling
+set protocols bgp group OVERLAY neighbor 10.2.2.2 peer-as 65000
+/* EVPN-VXLAN */
+set protocols evpn encapsulation vxlan
+set protocols evpn default-gateway no-gateway-community
+set switch-options vtep-source-interface lo0.0
+set switch-options route-distinguisher 10.1.1.1:1
+set switch-options vrf-target target:65000:1
+set vlans V100 vlan-id 100
+set vlans V100 vxlan vni 10100
+`,
+
+  'JVD: EVPN-VXLAN spine (route-reflector)': `/* JVD EVPN-VXLAN — spine (underlay + EVPN route-reflector). */
+set interfaces lo0 unit 0 family inet address 10.2.2.2/32
+set protocols bgp group UNDERLAY type external
+set protocols bgp group UNDERLAY local-as 65000
+set protocols bgp group UNDERLAY family inet unicast
+set protocols bgp group UNDERLAY neighbor 10.0.0.1 peer-as 65001
+set protocols bgp group OVERLAY type external
+set protocols bgp group OVERLAY multihop ttl 2
+set protocols bgp group OVERLAY local-address 10.2.2.2
+set protocols bgp group OVERLAY family evpn signaling
+set protocols bgp group OVERLAY cluster 10.2.2.2
+set protocols bgp group OVERLAY neighbor 10.1.1.1 peer-as 65001
+`,
+
+  'JVD: AI fabric RoCE QoS (PFC+ECN)': `/* JVD AI/GPU fabric — lossless RoCEv2: PFC on priority 3, ECN marking. */
+set class-of-service classifiers dscp ROCE forwarding-class NO-LOSS loss-priority low code-points 011010
+set class-of-service forwarding-classes class NO-LOSS queue-num 3 no-loss
+set class-of-service congestion-notification-profile ECN input ieee-802.1 code-point 011 pfc
+set class-of-service interfaces et-0/0/0 congestion-notification-profile ECN
+set class-of-service interfaces et-0/0/0 unit 0 classifiers dscp ROCE
+set class-of-service drop-profiles ECN-DP interpolate fill-level 30 drop-probability 0
+set class-of-service drop-profiles ECN-DP interpolate fill-level 100 drop-probability 100
+set class-of-service forwarding-classes class NO-LOSS explicit-congestion-notification
+`,
+
+  'JVD: EVPN campus access (EX)': `/* JVD EVPN campus — access switch VLAN/VNI + uplink. */
+set interfaces ge-0/0/0 unit 0 family ethernet-switching interface-mode access vlan members V100
+set interfaces ae0 unit 0 family ethernet-switching interface-mode trunk vlan members all
+set vlans V100 vlan-id 100
+set vlans V100 vxlan vni 10100
+set switch-options vtep-source-interface lo0.0
+set protocols evpn encapsulation vxlan
+set protocols evpn extended-vni-list all
+`,
 };
 
 const ARUBA_KEYWORDS = [

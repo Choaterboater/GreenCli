@@ -10,6 +10,23 @@ import HostsManager from './HostsManager';
 import TriggersSettings from './TriggersSettings';
 import CentralSettings from './CentralSettings';
 
+// Curated best-practices the AI should apply, distilled from Juniper Validated
+// Designs (JVDs). Appended to the references field on request.
+const JVD_REFERENCES = `# Juniper Validated Design (JVD) best-practices
+- EVPN-VXLAN data center: eBGP IP-fabric underlay (lo0 reachability), eBGP EVPN
+  overlay with family evpn signaling; prefer ERB (edge-routed bridging) with IRB
+  anycast gateways; consistent route-targets/VNIs; MTU/jumbo on fabric links.
+- AI/GPU (RoCEv2) fabric: lossless Ethernet — PFC on the RoCE priority + ECN
+  marking (WRED), rail-optimized topology, no oversubscription on GPU-facing links;
+  verify no tail drops / PFC pause storms.
+- EVPN campus: collapsed/distributed EVPN, map VLANs to VNIs, ESI-LAG for
+  multihoming, Mist Wired Assurance for SLE/health.
+- WAN/SD-WAN: Mist WAN Assurance + application-aware routing; redundant edges.
+- Verification (operational intent): underlay/overlay BGP all Established, EVPN
+  routes present (bgp.evpn.0), VXLAN VTEPs up, no interface errors/drops.
+- General: out-of-band mgmt, RFC5549 or lo0 /32s, config via Apstra where managed,
+  golden config + commit confirmed.`;
+
 export default function SettingsPanel() {
   const { showSettings, setShowSettings, settingsFocus, setSettingsFocus } = useSessionStore();
   const settings = useSettingsStore();
@@ -554,9 +571,22 @@ export default function SettingsPanel() {
 
               {/* References / standards — lightweight grounding for the AI */}
               <div>
-                <label className="block text-xs text-[var(--text-secondary)] mb-1.5">
-                  Best-practice references / standards
-                </label>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="block text-xs text-[var(--text-secondary)]">
+                    Best-practice references / standards
+                  </label>
+                  <button
+                    onClick={() => {
+                      if (settings.aiReferences.includes('Juniper Validated Design')) return;
+                      const cur = settings.aiReferences.trimEnd();
+                      settings.setAiReferences((cur ? cur + '\n\n' : '') + JVD_REFERENCES);
+                    }}
+                    className="text-[10px] px-2 py-0.5 rounded bg-[var(--bg-tertiary)] hover:bg-[var(--border-strong)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+                    title="Append Juniper Validated Design best-practices"
+                  >
+                    + JVD best-practices
+                  </button>
+                </div>
                 <textarea
                   value={settings.aiReferences}
                   onChange={(e) => settings.setAiReferences(e.target.value)}
