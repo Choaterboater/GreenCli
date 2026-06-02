@@ -71,6 +71,7 @@ interface SessionState {
   updateFolder: (folderId: string, updates: Partial<SessionFolder>) => void;
   addSessionToFolder: (folderId: string, config: ConnectionConfig) => void;
   removeSessionFromFolder: (folderId: string, sessionId: string) => void;
+  moveSessionToFolder: (sessionId: string, fromFolderId: string, toFolderId: string) => void;
 }
 
 export const useSessionStore = create<SessionState>()((set, get) => ({
@@ -227,4 +228,24 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
           : f
       ),
     })),
+
+  moveSessionToFolder: (sessionId, fromFolderId, toFolderId) =>
+    set((state) => {
+      if (fromFolderId === toFolderId) return state;
+      const moved = state.folders
+        .find((f) => f.id === fromFolderId)
+        ?.items.find((s) => s.id === sessionId);
+      if (!moved) return state;
+      return {
+        folders: state.folders.map((f) => {
+          if (f.id === fromFolderId) {
+            return { ...f, items: f.items.filter((s) => s.id !== sessionId) };
+          }
+          if (f.id === toFolderId) {
+            return { ...f, items: [...f.items, moved] };
+          }
+          return f;
+        }),
+      };
+    }),
 }));
