@@ -6,6 +6,8 @@ One cockpit for **HPE Networking — Aruba · Juniper · Mist**. A modern, cross
 > running, and configuring every feature (SSH/vault, AI providers, MCP, Aruba Central,
 > Juniper Apstra, on-prem REST, network intent, TLS, screenshots).
 
+![HPE Network Terminal — home](docs/screenshots/01-home.png)
+
 ## Features
 
 - **SSH, Telnet, Serial & Local PTY** connections (with jump-host / ProxyJump)
