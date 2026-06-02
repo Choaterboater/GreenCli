@@ -33,11 +33,41 @@ import {
   ApiConnection,
   ApiEndpoint,
   ApiResponse,
+  DeviceApiKind,
   DEFAULT_ENDPOINTS,
+  AOSS_ENDPOINTS,
+  AOS8_ENDPOINTS,
   CENTRAL_ENDPOINTS,
   APSTRA_ENDPOINTS,
   CENTRAL_DOCS,
 } from '../types';
+
+// Per-device-REST flavour: label, default base URL, endpoint catalog, and the
+// backend login/request commands.
+const DEVICE_KINDS: Record<
+  DeviceApiKind,
+  { label: string; base: (host: string) => string; endpoints: ApiEndpoint[]; loginCmd: string }
+> = {
+  cx: { label: 'AOS-CX', base: (h) => `https://${h}/rest/v10.09`, endpoints: DEFAULT_ENDPOINTS, loginCmd: 'api_login' },
+  aoss: { label: 'AOS-S', base: (h) => `https://${h}/rest/v7`, endpoints: AOSS_ENDPOINTS, loginCmd: 'aoss_login' },
+  aos8: { label: 'AOS-8', base: (h) => `https://${h}:4343`, endpoints: AOS8_ENDPOINTS, loginCmd: 'aos8_login' },
+};
+
+/** Map a connected session's device type to a device REST flavour (best effort). */
+function kindForDeviceType(dt?: string): DeviceApiKind | null {
+  switch (dt) {
+    case 'aruba-cx': return 'cx';
+    case 'aruba-aos-s': return 'aoss';
+    case 'aruba-controller': return 'aos8';
+    default: return null;
+  }
+}
+
+/** Default Base URL field for a kind (full URL if a host is known, else a hint). */
+function defaultBase(k: DeviceApiKind, host?: string): string {
+  if (host) return DEVICE_KINDS[k].base(host);
+  return k === 'cx' ? '/rest/v10.09' : k === 'aoss' ? '/rest/v7' : '';
+}
 
 const IS_TAURI = typeof window !== 'undefined' && '__TAURI_IPC__' in window;
 
@@ -140,6 +170,8 @@ export default function ApiExplorer() {
   // Default this per-login checkbox from the global "Verify device TLS" setting.
   const [verifyTls, setVerifyTls] = useState(verifyDeviceTls);
   const [target, setTarget] = useState<'device' | 'central' | 'apstra'>('device');
+  // Which on-box device REST flavour the "Device REST" target speaks.
+  const [deviceKind, setDeviceKind] = useState<DeviceApiKind>('cx');
   const bodyRef = useRef<HTMLTextAreaElement>(null);
 
   // Collapsible / Resizable panel state
@@ -158,13 +190,21 @@ export default function ApiExplorer() {
       setNewConnHost(host);
       setNewConnName(activeSession.config.name || host);
       setNewConnUser(activeSession.config.username || '');
-      setUrl(`https://${host}/rest/v10.09`);
+      // Adapt the REST flavour + base URL to the connected device type instead of
+      // always defaulting to AOS-CX /rest/v10.09.
+      const k = kindForDeviceType(activeSession.config.deviceType) ?? deviceKind;
+      setDeviceKind(k);
+      setUrl(DEVICE_KINDS[k].base(host));
     }
   };
 
   // Group endpoints by category (switches catalog based on target)
   const activeEndpoints =
-    target === 'central' ? CENTRAL_ENDPOINTS : target === 'apstra' ? APSTRA_ENDPOINTS : DEFAULT_ENDPOINTS;
+    target === 'central'
+      ? CENTRAL_ENDPOINTS
+      : target === 'apstra'
+      ? APSTRA_ENDPOINTS
+      : DEVICE_KINDS[deviceKind].endpoints;
   const groupedEndpoints = activeEndpoints.reduce((acc, ep) => {
     if (!acc[ep.category]) acc[ep.category] = [];
     acc[ep.category].push(ep);
@@ -221,10 +261,26 @@ export default function ApiExplorer() {
               if (!activeConnection) {
                 throw new Error('Connect to a device first (use the Connect button above).');
               }
-              // Honour the editable Base URL: when it's a full URL, send the
-              // absolute endpoint so the REST version / port the user typed is
-              // actually used (the Rust client treats an http(s) path as absolute,
-              // and the session cookie still applies to the same host).
+              const kind = activeConnection.kind ?? deviceKind;
+              if (kind === 'aos8') {
+                // AOS-8 is showcommand-based — the endpoint "path" holds the CLI command.
+                const out = await invoke<unknown>('aos8_show', {
+                  host: activeConnection.host,
+                  command: endpointPath,
+                });
+                return { status: 200, body: out };
+              }
+              if (kind === 'aoss') {
+                // AOS-S client prepends /rest/v7 to a relative path.
+                return invoke<{ status: number; body: unknown }>('aoss_request', {
+                  host: activeConnection.host,
+                  method,
+                  path: endpointPath,
+                  body,
+                });
+              }
+              // AOS-CX: honour the editable Base URL (absolute path passthrough),
+              // and the session cookie still applies to the same host.
               const base = url.trim().replace(/\/+$/, '');
               const reqPath = /^https?:\/\//i.test(base) ? base + endpointPath : endpointPath;
               return invoke<{ status: number; body: unknown }>('api_request', {
@@ -253,7 +309,7 @@ export default function ApiExplorer() {
     } finally {
       setLoading(false);
     }
-  }, [endpointPath, method, requestBody, activeConnection, target, url]);
+  }, [endpointPath, method, requestBody, activeConnection, target, url, deviceKind]);
 
   const handleLogin = async () => {
     if (!newConnHost || !newConnUser) return;
@@ -262,14 +318,17 @@ export default function ApiExplorer() {
       if (!IS_TAURI) {
         throw new Error('Login requires the desktop app (the browser can\'t reach the switch directly).');
       }
-      // Honour the REST version/base the user typed in the Base URL field so the
-      // session (and all later relative requests) use it — otherwise the version
-      // was silently dropped and everything went to the default v10.09.
+      // Honour the REST version/base the user typed in the Base URL field, else use
+      // the flavour's default — so AOS-S goes to /rest/v7, AOS-8 to the controller,
+      // and AOS-CX to v10.09, instead of everything defaulting to CX v10.09.
       const raw = url.trim().replace(/\/+$/, '');
-      const basePath = raw && raw.startsWith('/') ? raw : '/rest/v10.09';
-      const fullBase = /^https?:\/\//i.test(raw) ? raw : `https://${newConnHost}${basePath}`;
-      // Rust client logs in (cookie stored server-side; self-signed certs OK).
-      await invoke('api_login', {
+      const fullBase = /^https?:\/\//i.test(raw)
+        ? raw
+        : raw && raw.startsWith('/')
+        ? `https://${newConnHost}${raw}`
+        : DEVICE_KINDS[deviceKind].base(newConnHost);
+      // Rust logs in via the right client for this flavour (cookie stored server-side).
+      await invoke(DEVICE_KINDS[deviceKind].loginCmd, {
         request: {
           host: newConnHost,
           username: newConnUser,
@@ -287,6 +346,7 @@ export default function ApiExplorer() {
         username: newConnUser,
         baseUrl: fullBase,
         connected: true,
+        kind: deviceKind,
       };
 
       setConnections((prev) => [...prev, newConn]);
@@ -308,7 +368,7 @@ export default function ApiExplorer() {
     setConnections((prev) => prev.filter((c) => c.id !== id));
     if (activeConnectionId === id) {
       setActiveConnectionId(null);
-      setUrl('/rest/v10.09');
+      setUrl(defaultBase(deviceKind));
     }
   };
 
@@ -377,10 +437,40 @@ export default function ApiExplorer() {
                 : 'bg-[var(--bg-primary)] border-[var(--border)] text-[var(--text-secondary)]'
             }`}
           >
-            {t === 'device' ? 'Device REST' : t === 'central' ? 'Aruba Central' : 'Apstra'}
+            {t === 'device' ? 'Device REST' : t === 'central' ? 'Aruba Central' : 'Juniper (Apstra)'}
           </button>
         ))}
       </div>
+
+      {/* Device REST flavour: AOS-CX (switch) · AOS-S (switch) · AOS-8 (controller) */}
+      {target === 'device' && (
+        <div className="flex gap-1 px-3 py-2 border-b border-[var(--bg-tertiary)] bg-[var(--bg-secondary)]">
+          {(['cx', 'aoss', 'aos8'] as const).map((k) => (
+            <button
+              key={k}
+              onClick={() => {
+                setDeviceKind(k);
+                setUrl(defaultBase(k, activeConnection?.host || newConnHost || undefined));
+              }}
+              className={`flex-1 py-1 text-[11px] rounded border transition-colors ${
+                deviceKind === k
+                  ? 'bg-[var(--bg-tertiary)] border-[var(--accent)] text-[var(--text-primary)]'
+                  : 'bg-[var(--bg-primary)] border-[var(--border)] text-[var(--text-secondary)]'
+              }`}
+            >
+              {DEVICE_KINDS[k].label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* AOS-8 hint */}
+      {target === 'device' && deviceKind === 'aos8' && (
+        <div className="px-3 py-2 border-b border-[var(--bg-tertiary)] bg-[var(--bg-secondary)] text-[10px] text-[var(--text-muted)]">
+          AOS-8 controllers are queried by <span className="text-[var(--text-secondary)]">showcommand</span> — pick a
+          <code className="text-[var(--accent)] mx-1">show …</code>command (or type your own in the endpoint field).
+        </div>
+      )}
 
       {/* Apstra hint */}
       {target === 'apstra' && (
@@ -415,7 +505,10 @@ export default function ApiExplorer() {
                 const id = e.target.value;
                 setActiveConnectionId(id || null);
                 const conn = connections.find((c) => c.id === id);
-                if (conn) setUrl(conn.baseUrl);
+                if (conn) {
+                  setUrl(conn.baseUrl);
+                  if (conn.kind) setDeviceKind(conn.kind);
+                }
               }}
               className="flex-1 text-xs bg-[var(--bg-primary)] border border-[var(--border)] rounded px-2 py-1 text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)]"
             >
