@@ -66,7 +66,7 @@ export default function CommandPalette({ onConnect, onLocalShell }: CommandPalet
       { id: 'toggle-editor', label: 'Toggle Config Editor', hint: 'Ctrl+Shift+E', icon: <FileCode size={14} />, run: store.toggleConfigEditor },
       { id: 'toggle-api', label: 'Toggle API Explorer', hint: 'Ctrl+Shift+A', icon: <Globe size={14} />, run: store.toggleApiExplorer },
       { id: 'toggle-ai', label: 'Toggle AI Assistant', hint: 'Ctrl+Shift+I', icon: <Sparkles size={14} />, run: store.toggleAiAssistant },
-      { id: 'toggle-broadcast', label: 'Toggle Broadcast', keywords: 'send all', icon: <Radio size={14} />, run: store.toggleBroadcast },
+      { id: 'toggle-broadcast', label: 'Toggle Multi-send', keywords: 'send all multiple sessions broadcast subset', icon: <Radio size={14} />, run: store.toggleBroadcast },
       { id: 'bulk-runner', label: 'Bulk Command Runner', keywords: 'run all devices batch collect csv', icon: <Radio size={14} />, run: () => store.setShowBulkRunner(true) },
       { id: 'sftp', label: 'SFTP File Transfer', keywords: 'sftp upload download file transfer scp', icon: <HardDrive size={14} />, run: () => store.setShowSftp(true) },
       {
