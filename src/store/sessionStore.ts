@@ -21,7 +21,9 @@ interface SessionState {
   broadcastMode: boolean;
   showCommandPalette: boolean;
   splitView: boolean;
-  secondarySessionId: string | null;
+  /** Sessions shown alongside the active one in split view (pane 2..N, max 3
+   *  extras → 4 columns). The active session is always pane 1. */
+  splitPanes: string[];
   /** Sessions currently popped out into their own OS window — hidden in the
    *  main window (terminal stays mounted so scrollback survives pop-in). */
   poppedSessions: string[];
@@ -71,7 +73,9 @@ interface SessionState {
   toggleAiAssistant: () => void;
   toggleBroadcast: () => void;
   toggleSplitView: () => void;
-  setSecondarySession: (sessionId: string | null) => void;
+  addSplitPane: () => void;
+  removeSplitPane: (sessionId: string) => void;
+  setSplitPaneAt: (index: number, sessionId: string) => void;
   markPoppedOut: (sessionId: string) => void;
   restorePoppedOut: (sessionId: string) => void;
   markUnseenOutput: (sessionId: string) => void;
@@ -108,7 +112,7 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
   broadcastMode: false,
   showCommandPalette: false,
   splitView: false,
-  secondarySessionId: null,
+  splitPanes: [],
   poppedSessions: [],
   unseenOutput: [],
   showVaultUnlock: false,
@@ -144,6 +148,7 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
   removeSession: (sessionId) =>
     set((state) => {
       const filtered = state.sessions.filter((s) => s.sessionId !== sessionId);
+      const splitPanes = state.splitPanes.filter((id) => id !== sessionId);
       return {
         sessions: filtered,
         // Closing a popped-out session's tab must not leak its tracking state.
@@ -155,9 +160,9 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
               ? filtered[filtered.length - 1].sessionId
               : null
             : state.activeSessionId,
-        // Don't leave the split-pane pointing at a destroyed session.
-        secondarySessionId:
-          state.secondarySessionId === sessionId ? null : state.secondarySessionId,
+        // Don't leave a split pane pointing at a destroyed session.
+        splitPanes,
+        splitView: splitPanes.length > 0 ? state.splitView : false,
       };
     }),
 
@@ -216,24 +221,39 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
   toggleBroadcast: () => set((state) => ({ broadcastMode: !state.broadcastMode })),
   toggleSplitView: () =>
     set((state) => {
-      const turningOn = !state.splitView;
-      let secondary = state.secondarySessionId;
-      // When enabling, default the second pane to another open session —
-      // skipping popped-out ones (they render in their own window, so picking
-      // one here would leave Pane 2 blank).
-      const eligible = (id: string) => !state.poppedSessions.includes(id);
-      if (
-        turningOn &&
-        (!secondary || secondary === state.activeSessionId || !eligible(secondary))
-      ) {
-        secondary =
-          state.sessions.find(
-            (s) => s.sessionId !== state.activeSessionId && eligible(s.sessionId),
-          )?.sessionId ?? null;
-      }
-      return { splitView: turningOn, secondarySessionId: secondary };
+      if (state.splitView) return { splitView: false, splitPanes: [] };
+      // When enabling, seed pane 2 with another open session — skipping
+      // popped-out ones (they render in their own window, so picking one
+      // here would leave the pane blank).
+      const next = state.sessions.find(
+        (s) =>
+          s.sessionId !== state.activeSessionId &&
+          !state.poppedSessions.includes(s.sessionId),
+      );
+      return { splitView: true, splitPanes: next ? [next.sessionId] : [] };
     }),
-  setSecondarySession: (sessionId) => set({ secondarySessionId: sessionId }),
+  addSplitPane: () =>
+    set((state) => {
+      if (!state.splitView || state.splitPanes.length >= 3) return state;
+      const used = new Set([state.activeSessionId, ...state.splitPanes]);
+      const next = state.sessions.find(
+        (s) => !used.has(s.sessionId) && !state.poppedSessions.includes(s.sessionId),
+      );
+      return next ? { splitPanes: [...state.splitPanes, next.sessionId] } : state;
+    }),
+  removeSplitPane: (sessionId) =>
+    set((state) => {
+      const splitPanes = state.splitPanes.filter((id) => id !== sessionId);
+      // Removing the last extra pane exits split view.
+      return { splitPanes, splitView: splitPanes.length > 0 ? state.splitView : false };
+    }),
+  setSplitPaneAt: (index, sessionId) =>
+    set((state) => {
+      if (index < 0 || index >= state.splitPanes.length) return state;
+      const splitPanes = [...state.splitPanes];
+      splitPanes[index] = sessionId;
+      return { splitPanes };
+    }),
 
   markPoppedOut: (sessionId) =>
     set((state) => {
@@ -251,9 +271,8 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
           state.activeSessionId === sessionId
             ? remaining[remaining.length - 1]?.sessionId ?? null
             : state.activeSessionId,
-        // Don't leave the split pane pointing at a popped-out session.
-        secondarySessionId:
-          state.secondarySessionId === sessionId ? null : state.secondarySessionId,
+        // Don't leave a split pane pointing at a popped-out session.
+        splitPanes: state.splitPanes.filter((id) => id !== sessionId),
       };
     }),
   restorePoppedOut: (sessionId) =>

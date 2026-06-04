@@ -16,13 +16,15 @@ import {
   Target,
   HelpCircle,
   Network,
+  X,
+  Plus,
 } from 'lucide-react';
 
 import { useSessionStore } from './store/sessionStore';
 import { useSettingsStore } from './store/settingsStore';
 import { loadSecrets, persistSecrets } from './utils/secretVault';
 import { useTheme } from './hooks/useTheme';
-import { ConnectionConfig, Protocol, DeviceType } from './types';
+import { ConnectionConfig, Protocol, DeviceType, vendorColor } from './types';
 import { generateId, shellQuote } from './utils';
 import { listen } from '@tauri-apps/api/event';
 import { notify } from './store/toastStore';
@@ -94,9 +96,11 @@ function App() {
     broadcastMode,
     toggleBroadcast,
     splitView,
-    secondarySessionId,
+    splitPanes,
     toggleSplitView,
-    setSecondarySession,
+    addSplitPane,
+    removeSplitPane,
+    setSplitPaneAt,
     poppedSessions,
     markPoppedOut,
     restorePoppedOut,
@@ -130,7 +134,7 @@ function App() {
   // one that was hidden had its fit skipped while it had zero size.
   useEffect(() => {
     refitTerminals();
-  }, [activeSessionId, splitView, secondarySessionId, poppedSessions]);
+  }, [activeSessionId, splitView, splitPanes, poppedSessions]);
 
   // Pop a session out into its own OS window. The main-window terminal stays
   // mounted but hidden (scrollback survives); only the pop-out fits the PTY, so
@@ -173,6 +177,38 @@ function App() {
   }, []);
 
   const [broadcastInput, setBroadcastInput] = useState('');
+
+  // Split-view column widths (fractions summing to 1, one per pane). Dragging
+  // the divider between pane i and i+1 trades width between just those two.
+  const [paneRatios, setPaneRatios] = useState<number[]>([1]);
+  const [splitDragIdx, setSplitDragIdx] = useState<number | null>(null);
+  const MIN_PANE = 0.15;
+  const startSplitDrag = (i: number) => (e: React.MouseEvent) => {
+    e.preventDefault();
+    const container = (e.currentTarget as HTMLElement).parentElement;
+    if (!container) return;
+    const rect = container.getBoundingClientRect();
+    const start = paneRatios.slice();
+    const pairSum = start[i] + start[i + 1];
+    const prefix = start.slice(0, i).reduce((a, b) => a + b, 0);
+    setSplitDragIdx(i);
+    const move = (ev: MouseEvent) => {
+      const boundary = (ev.clientX - rect.left) / rect.width;
+      const left = Math.min(pairSum - MIN_PANE, Math.max(MIN_PANE, boundary - prefix));
+      const next = start.slice();
+      next[i] = left;
+      next[i + 1] = pairSum - left;
+      setPaneRatios(next);
+    };
+    const up = () => {
+      setSplitDragIdx(null);
+      window.removeEventListener('mousemove', move);
+      window.removeEventListener('mouseup', up);
+      refitTerminals();
+    };
+    window.addEventListener('mousemove', move);
+    window.addEventListener('mouseup', up);
+  };
   // Multi-send targeting: send to 'all' connected sessions, or a chosen 'selected' subset.
   const [targetMode, setTargetMode] = useState<'all' | 'selected'>('all');
   const [selectedTargets, setSelectedTargets] = useState<Set<string>>(new Set());
@@ -336,15 +372,47 @@ function App() {
 
   const activeSession = sessions.find((s) => s.sessionId === activeSessionId);
 
-  // Second pane for split view: the chosen secondary session, or any other open
-  // session — never the one shown on the left, and never a popped-out session
-  // (those render in their own window; selecting one would blank Pane 2).
-  const splitEligible = (s: { sessionId: string }) =>
-    s.sessionId !== activeSessionId && !poppedSessions.includes(s.sessionId);
-  const secondarySession =
-    sessions.find((s) => s.sessionId === secondarySessionId && splitEligible(s)) ||
-    sessions.find(splitEligible);
-  const canSplit = splitView && !!activeSession && !!secondarySession;
+  // Split view panes: the active session is always pane 1; splitPanes holds
+  // panes 2..N. Popped-out sessions never render here (they live in their own
+  // window) and the active session can't double up in a side pane.
+  const paneSessions = [
+    ...(activeSession && !poppedSessions.includes(activeSession.sessionId)
+      ? [activeSession]
+      : []),
+    ...splitPanes
+      .map((id) => sessions.find((s) => s.sessionId === id))
+      .filter(
+        (s): s is NonNullable<typeof s> =>
+          !!s &&
+          s.sessionId !== activeSessionId &&
+          !poppedSessions.includes(s.sessionId),
+      ),
+  ];
+  const canSplit = splitView && paneSessions.length >= 2;
+  // Sessions that could still be added/selected into a pane.
+  const paneCandidates = sessions.filter(
+    (s) => !poppedSessions.includes(s.sessionId) && s.sessionId !== activeSessionId,
+  );
+  const unusedPaneCandidates = paneCandidates.filter(
+    (s) => !splitPanes.includes(s.sessionId),
+  );
+
+  // Reset column widths to equal whenever the pane count changes.
+  const paneCount = canSplit ? paneSessions.length : 1;
+  useEffect(() => {
+    setPaneRatios(Array(paneCount).fill(1 / paneCount));
+    refitTerminals();
+  }, [paneCount]);
+
+  // Ratio helpers tolerate the one render where paneRatios hasn't synced to a
+  // new pane count yet (the effect above lands a tick later).
+  const ratioAt = (i: number) =>
+    paneRatios.length === paneSessions.length ? paneRatios[i] : 1 / Math.max(1, paneSessions.length);
+  const paneOffset = (i: number) => {
+    let o = 0;
+    for (let k = 0; k < i; k++) o += ratioAt(k);
+    return o;
+  };
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -657,24 +725,32 @@ function App() {
         backgroundImage: theme === 'dark' ? 'var(--app-bg-gradient)' : 'none',
       }}
     >
-      {/* Title Bar */}
+      {/* Title Bar — data-tauri-drag-region is what actually makes it draggable
+          (Tauri ignores -webkit-app-region; that's an Electron-ism). The
+          attribute only fires when the mousedown TARGET carries it, so it's
+          repeated on the static children; buttons/selects stay interactive. */}
       <div
+        data-tauri-drag-region
         className="flex items-center justify-between h-11 pr-2 bg-[var(--bg-secondary)] border-b border-[var(--border)] drag-region select-none"
         style={{ paddingLeft: isTauriMac ? 80 : 12 }}
       >
         {/* Left: brand + sidebar toggle */}
-        <div className="flex items-center gap-2.5 min-w-0">
-          <div className="flex items-center gap-2">
+        <div data-tauri-drag-region className="flex items-center gap-2.5 min-w-0">
+          <div data-tauri-drag-region className="flex items-center gap-2">
             <div
+              data-tauri-drag-region
               className="flex items-center justify-center w-[26px] h-[26px] rounded-md flex-shrink-0"
               style={{
                 background: 'linear-gradient(135deg, var(--accent-hover), var(--accent))',
                 boxShadow: 'var(--elevation-1)',
               }}
             >
-              <PromptGlyph size={16} style={{ color: 'var(--accent-fg)' }} />
+              <PromptGlyph size={16} style={{ color: 'var(--accent-fg)', pointerEvents: 'none' }} />
             </div>
-            <span className="text-[13px] font-semibold text-[var(--text-primary)] tracking-tight whitespace-nowrap">
+            <span
+              data-tauri-drag-region
+              className="text-[13px] font-semibold text-[var(--text-primary)] tracking-tight whitespace-nowrap"
+            >
               GreenCLI
             </span>
           </div>
@@ -929,44 +1005,113 @@ function App() {
                   // (and avoids disposing an xterm mid-render). Active = left/full,
                   // secondary = right half in split, the rest are display:none.
                   <div className="h-full w-full relative">
-                    {canSplit && secondarySession && (
-                      <div className="absolute top-0 right-0 w-1/2 z-10 flex items-center gap-2 h-7 px-2 bg-[var(--bg-secondary)] border-b border-l border-[var(--bg-tertiary)]">
-                        <span className="text-[10px] text-[var(--text-secondary)]">Pane 2</span>
-                        <select
-                          value={secondarySession.sessionId}
-                          onChange={(e) => {
-                            setSecondarySession(e.target.value);
-                            refitTerminals();
-                          }}
-                          className="flex-1 text-[11px] bg-[var(--bg-primary)] border border-[var(--border)] rounded px-1 py-0.5 text-[var(--text-primary)] focus:outline-none focus:border-[#58a6ff]"
-                        >
-                          {sessions
-                            .filter(splitEligible)
-                            .map((s) => (
-                              <option key={s.sessionId} value={s.sessionId}>
-                                {s.config.name || s.config.host || 'Session'}
-                              </option>
-                            ))}
-                        </select>
-                      </div>
+                    {canSplit && (
+                      <>
+                        {/* Pane headers — pane 1 is the active session; panes
+                            2..N carry a session picker, a close button, and the
+                            last pane an add-pane button (max 4 columns). */}
+                        {paneSessions.map((p, i) => {
+                          const accent = vendorColor(p.config.deviceType);
+                          return (
+                            <div
+                              key={`pane-h-${p.sessionId}`}
+                              className="absolute top-0 z-10 flex items-center gap-2 h-7 px-2.5 bg-[var(--bg-secondary)] border-b border-[var(--border)]"
+                              style={{
+                                left: `${paneOffset(i) * 100}%`,
+                                width: `${ratioAt(i) * 100}%`,
+                              }}
+                            >
+                              <span
+                                className="vendor-dot flex-shrink-0"
+                                style={{ background: accent, color: accent }}
+                              />
+                              {i === 0 ? (
+                                <span className="flex-1 min-w-0 text-[11px] font-medium text-[var(--text-primary)] truncate">
+                                  {p.config.name || p.config.host || 'Session'}
+                                </span>
+                              ) : (
+                                <select
+                                  value={p.sessionId}
+                                  onChange={(e) => {
+                                    setSplitPaneAt(i - 1, e.target.value);
+                                    refitTerminals();
+                                  }}
+                                  className="flex-1 min-w-0 text-[11px] bg-transparent border-0 text-[var(--text-primary)] focus:outline-none cursor-pointer"
+                                >
+                                  {paneCandidates
+                                    .filter(
+                                      (c) =>
+                                        c.sessionId === p.sessionId ||
+                                        !splitPanes.includes(c.sessionId),
+                                    )
+                                    .map((c) => (
+                                      <option key={c.sessionId} value={c.sessionId}>
+                                        {c.config.name || c.config.host || 'Session'}
+                                      </option>
+                                    ))}
+                                </select>
+                              )}
+                              {i === paneSessions.length - 1 &&
+                                paneSessions.length < 4 &&
+                                unusedPaneCandidates.length > 0 && (
+                                  <button
+                                    onClick={addSplitPane}
+                                    className="p-0.5 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors flex-shrink-0"
+                                    title="Add pane"
+                                  >
+                                    <Plus size={12} />
+                                  </button>
+                                )}
+                              {i > 0 && (
+                                <button
+                                  onClick={() => {
+                                    removeSplitPane(p.sessionId);
+                                    refitTerminals();
+                                  }}
+                                  className="p-0.5 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors flex-shrink-0"
+                                  title="Close pane"
+                                >
+                                  <X size={12} />
+                                </button>
+                              )}
+                            </div>
+                          );
+                        })}
+                        {/* Draggable dividers between adjacent panes */}
+                        {paneSessions.slice(1).map((p, i) => (
+                          <div
+                            key={`pane-d-${p.sessionId}`}
+                            onMouseDown={startSplitDrag(i)}
+                            className={`absolute top-0 bottom-0 z-20 w-1.5 -ml-[3px] cursor-col-resize transition-colors ${
+                              splitDragIdx === i
+                                ? 'bg-[#58a6ff]'
+                                : 'bg-transparent hover:bg-[#58a6ff60]'
+                            }`}
+                            style={{ left: `${paneOffset(i + 1) * 100}%` }}
+                          />
+                        ))}
+                      </>
                     )}
                     {sessions.map((s) => {
                       const isPopped = poppedSessions.includes(s.sessionId);
+                      const paneIdx = canSplit
+                        ? paneSessions.findIndex((p) => p.sessionId === s.sessionId)
+                        : -1;
                       const isActive = s.sessionId === activeSessionId && !isPopped;
-                      const isSecondary =
-                        canSplit && !isActive && !isPopped && secondarySession?.sessionId === s.sessionId;
-                      const visible = isActive || isSecondary;
+                      const visible = canSplit ? paneIdx >= 0 : isActive;
                       const style: React.CSSProperties = !visible
                         ? { display: 'none' }
                         : canSplit
                         ? {
                             position: 'absolute',
-                            top: isSecondary ? 28 : 0,
+                            top: 28,
                             bottom: 0,
-                            left: isActive ? 0 : 'auto',
-                            right: isSecondary ? 0 : 'auto',
-                            width: '50%',
-                            borderRight: isActive ? '1px solid var(--bg-tertiary)' : undefined,
+                            left: `${paneOffset(paneIdx) * 100}%`,
+                            width: `${ratioAt(paneIdx) * 100}%`,
+                            borderRight:
+                              paneIdx < paneSessions.length - 1
+                                ? '1px solid var(--border)'
+                                : undefined,
                           }
                         : { position: 'absolute', inset: 0 };
                       return (

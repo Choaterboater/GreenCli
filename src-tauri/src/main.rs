@@ -880,8 +880,13 @@ fn write_file_text(path: String, contents: String) -> Result<(), String> {
 /// renders a terminal-only view for that session. Terminal data is emitted via
 /// emit_all, so the new window receives the stream with no extra routing. When
 /// the pop-out closes, `popout_closed` tells the main window to restore the tab.
+///
+/// Deliberately NOT async: async commands run on the async runtime's thread
+/// pool, but macOS requires NSWindow creation on the main thread — an
+/// off-thread WindowBuilder yields a window that can't be moved/managed.
+/// Sync commands run on the main thread.
 #[tauri::command]
-async fn pop_out_session(
+fn pop_out_session(
     session_id: String,
     title: Option<String>,
     app: AppHandle,
