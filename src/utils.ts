@@ -81,3 +81,13 @@ export function fuzzyScore(query: string, target: string): number {
 export function fuzzyMatch(query: string, target: string): boolean {
   return !query.trim() || fuzzyScore(query, target) >= 0;
 }
+
+/**
+ * POSIX shell-quote a path so it can be inserted into a terminal command line
+ * (iTerm2-style file drop). Plain paths pass through; anything with spaces or
+ * shell metacharacters gets single-quoted, with embedded quotes escaped.
+ */
+export function shellQuote(path: string): string {
+  if (/^[A-Za-z0-9_\-./~:@%+=]+$/.test(path)) return path;
+  return `'${path.replace(/'/g, `'\\''`)}'`;
+}

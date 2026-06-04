@@ -147,6 +147,27 @@ The headline assurance feature — declare desired state, evaluate live complian
 
 _Still not exercised against real hardware (no gear/keys here): AOS-8/AOS-S/Apstra REST, ssh-agent, keyboard-interactive, MCP, CX REST, and the new concurrency/capture paths — reasoned, not runtime-proven._
 
+## ✅ Done — Pass 12 (terminal UX: iTerm2-class ergonomics, 2026-06-03)
+
+- **Resizable left sidebar** — drag the right edge (170–560px), width persists via settings (`sidebarWidth`). `useResizablePanel` gained `edge`/`onCommit` opts (right-side panels unchanged).
+- **Terminal zoom** — trackpad pinch (ctrl+wheel), Cmd/Ctrl +/− and Cmd/Ctrl 0 reset, clamped 8–24pt; propagates live to every open terminal via the existing fontSize effect.
+- **File drop → path insert** — dropping a file on the terminal inserts its shell-quoted path at the cursor (iTerm2-style; trailing space, no newline) — built for AI-CLI workflows. SFTP browser keeps drop priority while open; dashed-border hint overlay on hover.
+- **Pop-out session windows** — tab button pops a session into its own OS window (`pop_out_session` + `popout-<id>` label routing in `main.tsx` → `PopOutTerminal`). Scrollback seeds from the captured output tail; main-window terminal stays mounted-but-hidden so pop-in restores full history; only the pop-out fits the PTY (no cols/rows fights). Tab shows popped state; click focuses the window; closing it restores the tab.
+- **Paste guard** — multi-line pastes confirm first (line count + warning), then go through `term.paste()` so bracketed-paste TUIs still work.
+- **Tab activity dots** — background tabs pulse a vendor-colored dot when new output lands (`unseenOutput`), cleared on view.
+
+### iTerm2/xterm parity backlog (from the 2026-06-03 sweep)
+Already had: search overlay, multi-send/broadcast, vault (≈password manager), profiles/tags, WebGL-class renderer, URL clicking, scrollback/cursor settings, **session logging** (`start_session_log`), **output triggers** (`triggersStore`).
+- **Paste history** (Cmd+Shift+H) — ring buffer of recent pastes/sends.
+- **Semantic history** — Cmd-click a file path in output to open it in the editor panel.
+- **Regex toggle in search overlay** (SearchAddon supports it).
+- **Smart selection** — tune `wordSeparator` so double-click grabs IPs/paths cleanly.
+- **Restore window arrangement** — reopen last session set + pane layout on launch.
+- **3+ split panes / grid** — replace the 2-pane model with a flat pane list (research notes in Pass-12 planning); resizable dividers.
+- **Drag a tab out → pop-out window** (today it's a button; iTerm2 does both).
+- **Paste-guard setting** — per-user toggle + line-count threshold.
+- **Silence/activity notifications** — notify when a long command finishes on a background tab.
+
 ## ⏭️ Next — remaining backlog
 
 1. **SSH config import (`~/.ssh/config`) + host-key management UI** — impact HIGH, effort M. Parse user's SSH config into saved sessions; a UI to view/approve/pin/remove known_hosts fingerprints (TOFU store already exists in `ssh/known_hosts.rs`).

@@ -875,6 +875,37 @@ fn write_file_text(path: String, contents: String) -> Result<(), String> {
     std::fs::write(&path, contents).map_err(|e| format!("Failed to write {}: {}", path, e))
 }
 
+/// Pop a session out into its own OS window. The new window loads the same
+/// React app; the frontend sees the `popout-<sessionId>` window label and
+/// renders a terminal-only view for that session. Terminal data is emitted via
+/// emit_all, so the new window receives the stream with no extra routing. When
+/// the pop-out closes, `popout_closed` tells the main window to restore the tab.
+#[tauri::command]
+async fn pop_out_session(
+    session_id: String,
+    title: Option<String>,
+    app: AppHandle,
+) -> Result<(), String> {
+    let label = format!("popout-{}", session_id);
+    if let Some(w) = app.get_window(&label) {
+        let _ = w.set_focus();
+        return Ok(());
+    }
+    let win = tauri::WindowBuilder::new(&app, &label, tauri::WindowUrl::App("index.html".into()))
+        .title(title.unwrap_or_else(|| "GreenCli".into()))
+        .inner_size(960.0, 600.0)
+        .min_inner_size(480.0, 320.0)
+        .build()
+        .map_err(|e| e.to_string())?;
+    let notify_app = app.clone();
+    win.on_window_event(move |ev| {
+        if let WindowEvent::Destroyed = ev {
+            let _ = notify_app.emit_all("popout_closed", &session_id);
+        }
+    });
+    Ok(())
+}
+
 /// Recent captured output for a session (used by the AI assistant to read back
 /// command results). Returns the bounded tail buffer, or empty if none.
 #[tauri::command]
@@ -1836,6 +1867,7 @@ fn main() {
             vault_is_initialized,
             list_serial_ports,
             get_terminal_output,
+            pop_out_session,
             start_session_log,
             stop_session_log,
             is_session_logging,

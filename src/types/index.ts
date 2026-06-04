@@ -104,6 +104,8 @@ export interface TerminalSettings {
   keepAliveInterval: number;
   syntaxHighlighting: boolean;
   wordWrap: boolean;
+  /** Width of the left session sidebar in px (drag the divider to resize). */
+  sidebarWidth: number;
   anthropicApiKey: string;
   aiModel: string;
   aiProvider: AiProvider;
@@ -236,6 +238,7 @@ export const DEFAULT_SETTINGS: TerminalSettings = {
   keepAliveInterval: 30,
   syntaxHighlighting: true,
   wordWrap: false,
+  sidebarWidth: 256,
   anthropicApiKey: '',
   aiModel: 'claude-sonnet-4-6',
   aiProvider: 'ollama',

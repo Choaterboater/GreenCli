@@ -15,6 +15,7 @@ interface SettingsState extends TerminalSettings {
   setKeepAliveInterval: (seconds: number) => void;
   setSyntaxHighlighting: (enabled: boolean) => void;
   setWordWrap: (enabled: boolean) => void;
+  setSidebarWidth: (width: number) => void;
   setAnthropicApiKey: (key: string) => void;
   setAiModel: (model: string) => void;
   setAiProvider: (provider: AiProvider) => void;
@@ -49,6 +50,7 @@ export const useSettingsStore = create<SettingsState>()(
       setKeepAliveInterval: (keepAliveInterval) => set({ keepAliveInterval }),
       setSyntaxHighlighting: (syntaxHighlighting) => set({ syntaxHighlighting }),
       setWordWrap: (wordWrap) => set({ wordWrap }),
+      setSidebarWidth: (sidebarWidth) => set({ sidebarWidth }),
       setAnthropicApiKey: (anthropicApiKey) => set({ anthropicApiKey }),
       setAiModel: (aiModel) => set({ aiModel }),
       setAiProvider: (aiProvider) => set({ aiProvider }),

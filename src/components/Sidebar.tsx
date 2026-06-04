@@ -25,6 +25,7 @@ import {
 import { invoke } from '@tauri-apps/api/tauri';
 import { useSessionStore } from '../store/sessionStore';
 import { useSettingsStore } from '../store/settingsStore';
+import { useResizablePanel } from '../hooks/useResizablePanel';
 import { ConnectionConfig, deviceMeta, vendorColor } from '../types';
 import { fuzzyMatch } from '../utils';
 import { askPrompt, askConfirm } from '../store/dialogStore';
@@ -63,6 +64,16 @@ export default function Sidebar({ onConnect }: SidebarProps) {
   const aiAgents = useSettingsStore((s) => s.aiAgents) ?? [];
   const sessionAgents = useSettingsStore((s) => s.sessionAgents) ?? {};
   const setSessionAgent = useSettingsStore((s) => s.setSessionAgent);
+  const sidebarWidth = useSettingsStore((s) => s.sidebarWidth) ?? 256;
+  const setSidebarWidth = useSettingsStore((s) => s.setSidebarWidth);
+  const {
+    width: panelWidth,
+    onDragStart: handleResizeStart,
+    handleClass: resizeHandleClass,
+  } = useResizablePanel(sidebarWidth, 170, 560, {
+    edge: 'right',
+    onCommit: setSidebarWidth,
+  });
   const agentFor = (sessionId: string) => aiAgents.find((a) => a.id === sessionAgents[sessionId]);
 
   const [query, setQuery] = useState('');
@@ -231,7 +242,12 @@ export default function Sidebar({ onConnect }: SidebarProps) {
   };
 
   return (
-    <div className="w-64 flex-shrink-0 flex flex-col bg-[var(--bg-secondary)] border-r border-[var(--border)] overflow-hidden">
+    <div
+      className="relative flex-shrink-0 flex flex-col bg-[var(--bg-secondary)] border-r border-[var(--border)] overflow-hidden"
+      style={{ width: panelWidth }}
+    >
+      {/* Drag handle — right edge */}
+      <div className={resizeHandleClass} onMouseDown={handleResizeStart} />
       {/* Header */}
       <div className="flex items-center justify-between h-10 px-3 border-b border-[var(--border)]">
         <span className="text-[11px] font-semibold text-[var(--text-secondary)] uppercase tracking-wider">

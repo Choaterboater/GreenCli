@@ -22,6 +22,12 @@ interface SessionState {
   showCommandPalette: boolean;
   splitView: boolean;
   secondarySessionId: string | null;
+  /** Sessions currently popped out into their own OS window — hidden in the
+   *  main window (terminal stays mounted so scrollback survives pop-in). */
+  poppedSessions: string[];
+  /** Background sessions that produced output since they were last viewed
+   *  (drives the activity dot on their tab). */
+  unseenOutput: string[];
   showVaultUnlock: boolean;
   vaultUnlocked: boolean;
   showBulkRunner: boolean;
@@ -66,6 +72,9 @@ interface SessionState {
   toggleBroadcast: () => void;
   toggleSplitView: () => void;
   setSecondarySession: (sessionId: string | null) => void;
+  markPoppedOut: (sessionId: string) => void;
+  restorePoppedOut: (sessionId: string) => void;
+  markUnseenOutput: (sessionId: string) => void;
 
   setFolders: (folders: SessionFolder[]) => void;
   addFolder: (folder: SessionFolder) => void;
@@ -100,6 +109,8 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
   showCommandPalette: false,
   splitView: false,
   secondarySessionId: null,
+  poppedSessions: [],
+  unseenOutput: [],
   showVaultUnlock: false,
   vaultUnlocked: false,
   showBulkRunner: false,
@@ -135,6 +146,9 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
       const filtered = state.sessions.filter((s) => s.sessionId !== sessionId);
       return {
         sessions: filtered,
+        // Closing a popped-out session's tab must not leak its tracking state.
+        poppedSessions: state.poppedSessions.filter((id) => id !== sessionId),
+        unseenOutput: state.unseenOutput.filter((id) => id !== sessionId),
         activeSessionId:
           state.activeSessionId === sessionId
             ? filtered.length > 0
@@ -147,7 +161,21 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
       };
     }),
 
-  setActiveSession: (sessionId) => set({ activeSessionId: sessionId }),
+  setActiveSession: (sessionId) =>
+    set((state) => ({
+      activeSessionId: sessionId,
+      // Viewing a session clears its activity dot.
+      unseenOutput: sessionId
+        ? state.unseenOutput.filter((id) => id !== sessionId)
+        : state.unseenOutput,
+    })),
+
+  markUnseenOutput: (sessionId) =>
+    set((state) =>
+      state.unseenOutput.includes(sessionId)
+        ? state
+        : { unseenOutput: [...state.unseenOutput, sessionId] },
+    ),
 
   updateSessionConnection: (sessionId, connected) =>
     set((state) => ({
@@ -190,13 +218,53 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
     set((state) => {
       const turningOn = !state.splitView;
       let secondary = state.secondarySessionId;
-      // When enabling, default the second pane to another open session.
-      if (turningOn && (!secondary || secondary === state.activeSessionId)) {
-        secondary = state.sessions.find((s) => s.sessionId !== state.activeSessionId)?.sessionId ?? null;
+      // When enabling, default the second pane to another open session —
+      // skipping popped-out ones (they render in their own window, so picking
+      // one here would leave Pane 2 blank).
+      const eligible = (id: string) => !state.poppedSessions.includes(id);
+      if (
+        turningOn &&
+        (!secondary || secondary === state.activeSessionId || !eligible(secondary))
+      ) {
+        secondary =
+          state.sessions.find(
+            (s) => s.sessionId !== state.activeSessionId && eligible(s.sessionId),
+          )?.sessionId ?? null;
       }
       return { splitView: turningOn, secondarySessionId: secondary };
     }),
   setSecondarySession: (sessionId) => set({ secondarySessionId: sessionId }),
+
+  markPoppedOut: (sessionId) =>
+    set((state) => {
+      if (state.poppedSessions.includes(sessionId)) return state;
+      const remaining = state.sessions.filter(
+        (s) => s.sessionId !== sessionId && !state.poppedSessions.includes(s.sessionId),
+      );
+      return {
+        poppedSessions: [...state.poppedSessions, sessionId],
+        // A popped session's tab is never "viewed" here — clear (and stop
+        // accruing) its activity dot; the data listener skips popped sessions.
+        unseenOutput: state.unseenOutput.filter((id) => id !== sessionId),
+        // Hand the active tab to another visible session.
+        activeSessionId:
+          state.activeSessionId === sessionId
+            ? remaining[remaining.length - 1]?.sessionId ?? null
+            : state.activeSessionId,
+        // Don't leave the split pane pointing at a popped-out session.
+        secondarySessionId:
+          state.secondarySessionId === sessionId ? null : state.secondarySessionId,
+      };
+    }),
+  restorePoppedOut: (sessionId) =>
+    set((state) => ({
+      poppedSessions: state.poppedSessions.filter((id) => id !== sessionId),
+      unseenOutput: state.unseenOutput.filter((id) => id !== sessionId),
+      // Bring the returning session to the front if it still exists.
+      activeSessionId: state.sessions.some((s) => s.sessionId === sessionId)
+        ? sessionId
+        : state.activeSessionId,
+    })),
 
   setFolders: (folders) => set({ folders }),
 
