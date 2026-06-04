@@ -9,6 +9,7 @@ import { useSettingsStore } from '../store/settingsStore';
 import { useSessionStore } from '../store/sessionStore';
 import { useTriggersStore } from '../store/triggersStore';
 import { notify } from '../store/toastStore';
+import { askConfirm } from '../store/dialogStore';
 import { useTheme } from '../hooks/useTheme';
 import { DeviceType } from '../types';
 import { ArubaHighlighter, AnsiProcessor } from '../syntax';
@@ -20,9 +21,13 @@ interface TerminalProps {
   deviceType: DeviceType;
   onData?: (data: string) => void;
   onSend?: (data: string) => void;
+  /** Pop-out windows: replay the session's captured output tail so the new
+   *  window isn't blank. Fetched AFTER the data listener attaches (live chunks
+   *  queue behind the replay) so output during window startup isn't lost. */
+  seedFromBuffer?: boolean;
 }
 
-export default function Terminal({ sessionId, deviceType, onSend }: TerminalProps) {
+export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer }: TerminalProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<XTerm | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
@@ -122,6 +127,27 @@ export default function Terminal({ sessionId, deviceType, onSend }: TerminalProp
 
     fitAddon.fit();
 
+    // Paste guard (iTerm2-style): blasting a multi-line clipboard at a live
+    // device is how configs land on the wrong box. Intercept the DOM paste on
+    // xterm's textarea and confirm first; term.paste() then takes the normal
+    // path (LF→CR conversion + bracketed paste for TUIs that requested it).
+    const pasteGuard = (e: ClipboardEvent) => {
+      const text = e.clipboardData?.getData('text') ?? '';
+      if (!text.includes('\n')) return; // single-line pastes flow through
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      const lines = text.split('\n').filter((l) => l.length > 0).length;
+      askConfirm({
+        title: `Paste ${lines} lines into the terminal?`,
+        message:
+          'Multi-line pastes run each line as a command on the connected device.',
+        confirmLabel: 'Paste',
+      }).then((ok) => {
+        if (ok) terminalRef.current?.paste(text);
+      });
+    };
+    term.textarea?.addEventListener('paste', pasteGuard, true);
+
     // Handle input
     term.onData((data) => {
       onSend?.(data);
@@ -155,9 +181,29 @@ export default function Terminal({ sessionId, deviceType, onSend }: TerminalProp
     ro.observe(containerRef.current);
     const initialFit = setTimeout(handleResize, 100);
 
+    // Pinch-to-zoom: macOS trackpads report pinch as wheel events with
+    // ctrlKey=true (also catches Ctrl+scroll on all platforms). Throttled so a
+    // single pinch gesture steps smoothly instead of jumping 8→24 in one go.
+    // The fontSize useEffect below propagates the change + refits every terminal.
+    const zoomEl = containerRef.current;
+    let lastZoomAt = 0;
+    const handleWheelZoom = (e: WheelEvent) => {
+      if (!e.ctrlKey) return;
+      e.preventDefault();
+      const now = performance.now();
+      if (e.deltaY === 0 || now - lastZoomAt < 50) return;
+      lastZoomAt = now;
+      const s = useSettingsStore.getState();
+      const next = Math.max(8, Math.min(24, s.fontSize + (e.deltaY > 0 ? -1 : 1)));
+      if (next !== s.fontSize) s.setFontSize(next);
+    };
+    zoomEl.addEventListener('wheel', handleWheelZoom, { passive: false });
+
     return () => {
       clearTimeout(initialFit); // don't fit()/resize a disposed xterm after a fast unmount
       window.removeEventListener('resize', handleResize);
+      zoomEl.removeEventListener('wheel', handleWheelZoom);
+      term.textarea?.removeEventListener('paste', pasteGuard, true);
       ro.disconnect();
       unregisterSearchAdapter(sessionId);
       term.dispose();
@@ -184,6 +230,8 @@ export default function Terminal({ sessionId, deviceType, onSend }: TerminalProp
         const pending: Uint8Array[] = [];
         let pendingSize = 0;
         let flushTimer: ReturnType<typeof setTimeout> | null = null;
+        // Pop-out windows gate live chunks behind the scrollback-tail replay.
+        let holdFlush = seedFromBuffer === true;
 
         const processText = (text: string) => {
           if (!terminalRef.current) return;
@@ -271,6 +319,9 @@ export default function Terminal({ sessionId, deviceType, onSend }: TerminalProp
 
         const flush = () => {
           flushTimer = null;
+          // While the pop-out seed replay is in flight, queued live chunks wait
+          // behind it so the scrollback stays in order.
+          if (holdFlush) return;
           if (!terminalRef.current || pending.length === 0) {
             pending.length = 0;
             pendingSize = 0;
@@ -296,6 +347,18 @@ export default function Terminal({ sessionId, deviceType, onSend }: TerminalProp
           (event) => {
             if (cancelled) return;
             if (event.payload.sessionId !== sessionId) return;
+            // Activity dot on background tabs: flag output landing on a session
+            // the user isn't looking at (cleared when its tab is activated).
+            // Popped-out sessions are skipped — they live in their own window,
+            // and a dot here would be unclearable (their tab is never active).
+            const ss = useSessionStore.getState();
+            if (
+              ss.activeSessionId !== sessionId &&
+              !ss.unseenOutput.includes(sessionId) &&
+              !ss.poppedSessions.includes(sessionId)
+            ) {
+              ss.markUnseenOutput(sessionId);
+            }
             pending.push(new Uint8Array(event.payload.data));
             pendingSize += event.payload.data.length;
             // Flush immediately on a large burst, else batch ~8ms of chunks.
@@ -307,6 +370,24 @@ export default function Terminal({ sessionId, deviceType, onSend }: TerminalProp
             }
           }
         );
+
+        // Pop-out seeding: replay the captured tail AFTER the listener is
+        // attached so chunks emitted during window startup aren't lost — they
+        // queue behind the replay (holdFlush) and write in order. A chunk
+        // landing in the snapshot→write gap can render twice (it's in the tail
+        // AND the queue); rare, cosmetic, and strictly better than dropping it.
+        if (seedFromBuffer) {
+          try {
+            const tail = await invoke<string>('get_terminal_output', { sessionId });
+            if (!cancelled && tail && terminalRef.current) {
+              terminalRef.current.write(tail);
+            }
+          } catch {
+            /* no captured tail — start blank */
+          }
+          holdFlush = false;
+          if (!cancelled && pending.length > 0) flush();
+        }
 
         unlistenFn = () => {
           if (flushTimer != null) clearTimeout(flushTimer);
@@ -331,7 +412,7 @@ export default function Terminal({ sessionId, deviceType, onSend }: TerminalProp
         /* ignore */
       }
     };
-  }, [sessionId]);
+  }, [sessionId, seedFromBuffer]);
 
   // Listen for connection status changes (connect/disconnect/reconnect) from
   // the backend and reflect them in the session store so tabs and the status

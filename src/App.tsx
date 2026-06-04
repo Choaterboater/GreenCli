@@ -23,7 +23,8 @@ import { useSettingsStore } from './store/settingsStore';
 import { loadSecrets, persistSecrets } from './utils/secretVault';
 import { useTheme } from './hooks/useTheme';
 import { ConnectionConfig, Protocol, DeviceType } from './types';
-import { generateId } from './utils';
+import { generateId, shellQuote } from './utils';
+import { listen } from '@tauri-apps/api/event';
 import { notify } from './store/toastStore';
 import Toaster from './components/Toaster';
 import DialogHost from './components/DialogHost';
@@ -96,6 +97,9 @@ function App() {
     secondarySessionId,
     toggleSplitView,
     setSecondarySession,
+    poppedSessions,
+    markPoppedOut,
+    restorePoppedOut,
     vaultUnlocked,
     setVaultUnlocked,
     setShowVaultUnlock,
@@ -126,7 +130,47 @@ function App() {
   // one that was hidden had its fit skipped while it had zero size.
   useEffect(() => {
     refitTerminals();
-  }, [activeSessionId, splitView, secondarySessionId]);
+  }, [activeSessionId, splitView, secondarySessionId, poppedSessions]);
+
+  // Pop a session out into its own OS window. The main-window terminal stays
+  // mounted but hidden (scrollback survives); only the pop-out fits the PTY, so
+  // the two windows never fight over cols/rows. Closing the pop-out restores
+  // the tab here.
+  const popOutSession = useCallback((sessionId: string) => {
+    const s = useSessionStore.getState().sessions.find((x) => x.sessionId === sessionId);
+    if (!s) return;
+    try {
+      localStorage.setItem(
+        `popout-meta-${sessionId}`,
+        JSON.stringify({ deviceType: s.config.deviceType, name: s.config.name }),
+      );
+    } catch {
+      /* meta is best-effort; pop-out falls back to generic highlighting */
+    }
+    useSessionStore.getState().markPoppedOut(sessionId);
+    invoke('pop_out_session', {
+      sessionId,
+      title: s.config.name || s.config.host || 'GreenCli',
+    }).catch((err) => {
+      useSessionStore.getState().restorePoppedOut(sessionId);
+      notify.error('Pop-out failed', String(err));
+    });
+  }, []);
+
+  useEffect(() => {
+    const un = listen<string>('popout_closed', (e) => {
+      useSessionStore.getState().restorePoppedOut(e.payload);
+      // The handover metadata has served its purpose.
+      try {
+        localStorage.removeItem(`popout-meta-${e.payload}`);
+      } catch {
+        /* ignore */
+      }
+    });
+    return () => {
+      un.then((f) => f());
+    };
+  }, []);
 
   const [broadcastInput, setBroadcastInput] = useState('');
   // Multi-send targeting: send to 'all' connected sessions, or a chosen 'selected' subset.
@@ -293,10 +337,13 @@ function App() {
   const activeSession = sessions.find((s) => s.sessionId === activeSessionId);
 
   // Second pane for split view: the chosen secondary session, or any other open
-  // session, but never the same one shown on the left.
+  // session — never the one shown on the left, and never a popped-out session
+  // (those render in their own window; selecting one would blank Pane 2).
+  const splitEligible = (s: { sessionId: string }) =>
+    s.sessionId !== activeSessionId && !poppedSessions.includes(s.sessionId);
   const secondarySession =
-    sessions.find((s) => s.sessionId === secondarySessionId && s.sessionId !== activeSessionId) ||
-    sessions.find((s) => s.sessionId !== activeSessionId);
+    sessions.find((s) => s.sessionId === secondarySessionId && splitEligible(s)) ||
+    sessions.find(splitEligible);
   const canSplit = splitView && !!activeSession && !!secondarySession;
 
   // Keyboard shortcuts
@@ -369,11 +416,53 @@ function App() {
         e.preventDefault();
         toggleConfigEditor();
       }
+      // Ctrl/Cmd +/− /0: zoom terminal font (pinch on the trackpad works too)
+      if ((e.ctrlKey || e.metaKey) && (e.key === '=' || e.key === '+')) {
+        e.preventDefault();
+        const s = useSettingsStore.getState();
+        s.setFontSize(Math.min(24, s.fontSize + 1));
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key === '-') {
+        e.preventDefault();
+        const s = useSettingsStore.getState();
+        s.setFontSize(Math.max(8, s.fontSize - 1));
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key === '0') {
+        e.preventDefault();
+        useSettingsStore.getState().setFontSize(14);
+      }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [activeSessionId, sessions, removeSession, setShowSearch, setShowSettings, toggleApiExplorer, toggleAiAssistant, toggleConfigEditor]);
+
+  // iTerm2-style file drop: while the SFTP browser is closed, dropping a file
+  // on the window inserts its shell-quoted path into the active terminal at the
+  // cursor (trailing space, no newline) — handy for AI CLIs and scp/sftp typing.
+  // The SFTP browser keeps drop priority for uploads whenever it is open.
+  const [fileDropHint, setFileDropHint] = useState(false);
+  useEffect(() => {
+    const unlisteners = [
+      listen<string[]>('tauri://file-drop', (e) => {
+        setFileDropHint(false);
+        const st = useSessionStore.getState();
+        if (st.showSftp) return; // SftpBrowser owns the drop while open
+        const sid = st.activeSessionId;
+        if (!sid || !e.payload?.length) return;
+        const data = e.payload.map(shellQuote).join(' ') + ' ';
+        invoke('send_data', { sessionId: sid, data }).catch(() => {});
+      }),
+      listen('tauri://file-drop-hover', () => {
+        const st = useSessionStore.getState();
+        if (!st.showSftp && st.activeSessionId) setFileDropHint(true);
+      }),
+      listen('tauri://file-drop-cancelled', () => setFileDropHint(false)),
+    ];
+    return () => {
+      unlisteners.forEach((p) => p.then((un) => un()));
+    };
+  }, []);
 
   const handleConnect = useCallback(
     async (config: ConnectionConfig) => {
@@ -720,7 +809,7 @@ function App() {
         {/* Terminal Area */}
         <div className="flex-1 flex flex-col min-w-0">
           {/* Tabs */}
-          <TerminalTabs />
+          <TerminalTabs onPopOut={popOutSession} />
 
           {/* Multi-send bar — run one command on all connected sessions or a subset */}
           {broadcastMode && (() => {
@@ -827,6 +916,13 @@ function App() {
                 the area and works as a standalone text editor. */}
             <div className={`flex-1 flex flex-col min-w-0 ${!activeSession && showConfigEditor ? 'hidden' : ''}`}>
               <div className="flex-1 relative overflow-hidden">
+                {fileDropHint && activeSession && (
+                  <div className="absolute inset-2 z-20 pointer-events-none rounded-lg border-2 border-dashed border-[var(--accent)] bg-[var(--bg-primary)]/60 flex items-center justify-center">
+                    <span className="text-sm text-[var(--text-primary)] bg-[var(--bg-secondary)] px-3 py-1.5 rounded-md border border-[var(--border)]">
+                      Drop to insert file path
+                    </span>
+                  </div>
+                )}
                 {activeSession ? (
                   // Every session's terminal stays MOUNTED — we only show/hide it via
                   // CSS — so switching tabs preserves each terminal's screen + scrollback
@@ -845,7 +941,7 @@ function App() {
                           className="flex-1 text-[11px] bg-[var(--bg-primary)] border border-[var(--border)] rounded px-1 py-0.5 text-[var(--text-primary)] focus:outline-none focus:border-[#58a6ff]"
                         >
                           {sessions
-                            .filter((s) => s.sessionId !== activeSessionId)
+                            .filter(splitEligible)
                             .map((s) => (
                               <option key={s.sessionId} value={s.sessionId}>
                                 {s.config.name || s.config.host || 'Session'}
@@ -855,9 +951,10 @@ function App() {
                       </div>
                     )}
                     {sessions.map((s) => {
-                      const isActive = s.sessionId === activeSessionId;
+                      const isPopped = poppedSessions.includes(s.sessionId);
+                      const isActive = s.sessionId === activeSessionId && !isPopped;
                       const isSecondary =
-                        canSplit && !isActive && secondarySession?.sessionId === s.sessionId;
+                        canSplit && !isActive && !isPopped && secondarySession?.sessionId === s.sessionId;
                       const visible = isActive || isSecondary;
                       const style: React.CSSProperties = !visible
                         ? { display: 'none' }
