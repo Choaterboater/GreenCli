@@ -38,7 +38,7 @@ One cockpit for **Aruba · Juniper · Mist**. A modern, cross-platform terminal,
 ## Project Structure
 
 ```
-aruba-terminal-pro/
+green-cli/
 ├── src/                          # React frontend
 │   ├── components/               # UI components
 │   │   ├── Terminal.tsx          # xterm.js wrapper

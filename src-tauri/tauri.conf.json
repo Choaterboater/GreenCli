@@ -39,7 +39,7 @@
     "bundle": {
       "active": true,
       "category": "DeveloperTool",
-      "copyright": "© 2026 Aruba Terminal Pro",
+      "copyright": "© 2026 ChoateLabs",
       "deb": {
         "depends": []
       },
@@ -51,7 +51,7 @@
         "icons/icon.icns",
         "icons/icon.ico"
       ],
-      "identifier": "com.greencli.app",
+      "identifier": "com.choatelabs.greencli",
       "longDescription": "One cockpit for Aruba, Juniper, and Mist. A premium SSH/Telnet/Serial terminal with multi-vendor syntax highlighting, config tooling, REST API explorer, and an AI assistant for network engineers.",
       "macOS": {
         "entitlements": null,

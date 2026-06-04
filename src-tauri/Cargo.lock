@@ -145,35 +145,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "aruba-terminal-pro"
-version = "1.0.0"
-dependencies = [
- "aes-gcm",
- "argon2",
- "async-trait",
- "base64 0.21.7",
- "env_logger",
- "futures",
- "log",
- "portable-pty",
- "rand 0.8.6",
- "reqwest",
- "russh",
- "russh-keys",
- "russh-sftp",
- "serde",
- "serde_json",
- "serialport",
- "sha2",
- "tauri",
- "tauri-build",
- "thiserror 1.0.69",
- "tokio",
- "tokio-serial",
- "zeroize",
-]
-
-[[package]]
 name = "async-trait"
 version = "0.1.89"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1663,6 +1634,35 @@ dependencies = [
  "glib-sys",
  "libc",
  "system-deps 6.2.2",
+]
+
+[[package]]
+name = "green-cli"
+version = "1.0.0"
+dependencies = [
+ "aes-gcm",
+ "argon2",
+ "async-trait",
+ "base64 0.21.7",
+ "env_logger",
+ "futures",
+ "log",
+ "portable-pty",
+ "rand 0.8.6",
+ "reqwest",
+ "russh",
+ "russh-keys",
+ "russh-sftp",
+ "serde",
+ "serde_json",
+ "serialport",
+ "sha2",
+ "tauri",
+ "tauri-build",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-serial",
+ "zeroize",
 ]
 
 [[package]]
