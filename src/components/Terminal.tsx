@@ -181,11 +181,28 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
     ro.observe(containerRef.current);
     const initialFit = setTimeout(handleResize, 100);
 
-    // Pinch-to-zoom: macOS trackpads report pinch as wheel events with
-    // ctrlKey=true (also catches Ctrl+scroll on all platforms). Throttled so a
-    // single pinch gesture steps smoothly instead of jumping 8→24 in one go.
-    // The fontSize useEffect below propagates the change + refits every terminal.
+    // Pinch-to-zoom. WKWebView (Tauri on macOS) reports trackpad pinches via
+    // proprietary GestureEvents (gesturestart/gesturechange) — NOT ctrl+wheel,
+    // which is a Chromium convention. Handle both: gestures for the trackpad,
+    // ctrl+wheel for external mice / other platforms. preventDefault also stops
+    // WebKit's page-level pinch zoom. The fontSize useEffect below propagates
+    // the change + refits every terminal.
     const zoomEl = containerRef.current;
+    const clampFont = (n: number) => Math.max(8, Math.min(24, n));
+    let pinchStartFont = 0;
+    const onGestureStart = (e: Event) => {
+      e.preventDefault();
+      pinchStartFont = useSettingsStore.getState().fontSize;
+    };
+    const onGestureChange = (e: Event) => {
+      e.preventDefault();
+      const scale = (e as unknown as { scale?: number }).scale;
+      if (!scale) return;
+      const s = useSettingsStore.getState();
+      const next = clampFont(Math.round(pinchStartFont * scale));
+      if (next !== s.fontSize) s.setFontSize(next);
+    };
+    const onGestureEnd = (e: Event) => e.preventDefault();
     let lastZoomAt = 0;
     const handleWheelZoom = (e: WheelEvent) => {
       if (!e.ctrlKey) return;
@@ -194,14 +211,20 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
       if (e.deltaY === 0 || now - lastZoomAt < 50) return;
       lastZoomAt = now;
       const s = useSettingsStore.getState();
-      const next = Math.max(8, Math.min(24, s.fontSize + (e.deltaY > 0 ? -1 : 1)));
+      const next = clampFont(s.fontSize + (e.deltaY > 0 ? -1 : 1));
       if (next !== s.fontSize) s.setFontSize(next);
     };
+    zoomEl.addEventListener('gesturestart', onGestureStart);
+    zoomEl.addEventListener('gesturechange', onGestureChange);
+    zoomEl.addEventListener('gestureend', onGestureEnd);
     zoomEl.addEventListener('wheel', handleWheelZoom, { passive: false });
 
     return () => {
       clearTimeout(initialFit); // don't fit()/resize a disposed xterm after a fast unmount
       window.removeEventListener('resize', handleResize);
+      zoomEl.removeEventListener('gesturestart', onGestureStart);
+      zoomEl.removeEventListener('gesturechange', onGestureChange);
+      zoomEl.removeEventListener('gestureend', onGestureEnd);
       zoomEl.removeEventListener('wheel', handleWheelZoom);
       term.textarea?.removeEventListener('paste', pasteGuard, true);
       ro.disconnect();

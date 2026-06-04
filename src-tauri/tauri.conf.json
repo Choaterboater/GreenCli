@@ -34,6 +34,12 @@
       },
       "os": {
         "all": true
+      },
+      "window": {
+        "all": false,
+        "startDragging": true,
+        "setFocus": true,
+        "close": true
       }
     },
     "bundle": {
