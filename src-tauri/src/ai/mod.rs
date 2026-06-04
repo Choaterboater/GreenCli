@@ -352,6 +352,33 @@ pub async fn cli_passthrough(command: &str, prompt: &str) -> Result<String, AppE
         }
     };
 
+    // claude CLI: keep one-shot `-p` runs fast and cheap. Without an explicit
+    // --model it inherits the user's Claude Code default (often Opus — slow and
+    // pricey for a chat sidekick), and at startup it connects to every MCP
+    // server in the user's Claude config (which can be dozens of tools and many
+    // seconds) — pure overhead here, since GreenCli pipes a prompt and reads
+    // text back. Both injections defer to anything the user set explicitly in
+    // the command string.
+    let command = {
+        let is_claude = command
+            .split_whitespace()
+            .next()
+            .map(|p| p == "claude" || p.ends_with("/claude"))
+            .unwrap_or(false);
+        if is_claude {
+            let mut c = command;
+            if !c.contains("--model") {
+                c.push_str(" --model haiku");
+            }
+            if !c.contains("--mcp-config") && !c.contains("--strict-mcp-config") {
+                c.push_str(" --strict-mcp-config");
+            }
+            c
+        } else {
+            command
+        }
+    };
+
     // Cap prompt to prevent flooding CLIs with huge stdin.
     // Walk back from byte 4000 to the nearest UTF-8 char boundary so we never
     // slice inside a multi-byte character (which would panic at runtime).
