@@ -1,10 +1,10 @@
 [package]
-name = "aruba-terminal-pro"
+name = "green-cli"
 version = "1.0.0"
-description = "SecureCRT replacement with Aruba syntax highlighting"
-authors = ["Aruba Terminal Pro"]
+description = "Multi-vendor SSH/Telnet/Serial terminal for network engineers"
+authors = ["ChoateLabs"]
 license = "MIT"
-repository = ""
+repository = "https://github.com/Choaterboater/green-cli"
 edition = "2021"
 rust-version = "1.70"
 
