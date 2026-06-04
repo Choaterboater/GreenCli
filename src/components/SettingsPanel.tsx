@@ -501,6 +501,9 @@ export default function SettingsPanel() {
                   <p className="text-[10px] text-[var(--text-muted)] mt-1">
                     Runs a locally-installed CLI one-shot with the prompt on stdin — <span className="text-[var(--accent-success)]">no API key needed</span> (the CLI uses its own login). E.g. <code className="text-[var(--text-primary)]">claude -p</code> or <code className="text-[var(--text-primary)]">kimi</code>.
                   </p>
+                  <p className="text-[10px] text-[var(--text-muted)] mt-1">
+                    For <code className="text-[var(--text-primary)]">claude</code>, a fast model (<code className="text-[var(--text-primary)]">--model haiku</code>) and <code className="text-[var(--text-primary)]">--strict-mcp-config</code> (skip your MCP servers at startup) are added automatically — pass your own <code className="text-[var(--text-primary)]">--model</code> / <code className="text-[var(--text-primary)]">--mcp-config</code> to override.
+                  </p>
                 </div>
               )}
 
