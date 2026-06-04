@@ -4,7 +4,7 @@ version = "1.0.0"
 description = "Multi-vendor SSH/Telnet/Serial terminal for network engineers"
 authors = ["ChoateLabs"]
 license = "MIT"
-repository = "https://github.com/Choaterboater/green-cli"
+repository = "https://github.com/Choaterboater/GreenCli"
 edition = "2021"
 rust-version = "1.70"
 
