@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { X, Plug, Monitor, Server, Wifi, RadioTower, Cloud, Network, TerminalSquare } from 'lucide-react';
+import { X, Plug, Monitor, Server, Wifi, RadioTower, Cloud, Network, TerminalSquare, FolderOpen } from 'lucide-react';
+import { open as openDialog } from '@tauri-apps/api/dialog';
 import { useSessionStore } from '../store/sessionStore';
 import {
   ConnectionConfig,
@@ -41,6 +42,8 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
   const [startupCommands, setStartupCommands] = useState('');
   const [cliPresetId, setCliPresetId] = useState('shell');
   const [customCommand, setCustomCommand] = useState('');
+  // Working directory the local shell/CLI starts in (empty => home/default).
+  const [cwd, setCwd] = useState('');
   const [showJump, setShowJump] = useState(false);
   const [jumpHost, setJumpHost] = useState('');
   const [jumpPort, setJumpPort] = useState(22);
@@ -68,6 +71,7 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
     setStartupCommands('');
     setCliPresetId('shell');
     setCustomCommand('');
+    setCwd('');
     setShowJump(false);
     setJumpHost('');
     setJumpPort(22);
@@ -108,6 +112,7 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
         deviceType: protocol === 'local' ? 'generic' : deviceType,
         command: localCommand,
         args: protocol === 'local' ? preset?.args : undefined,
+        cwd: protocol === 'local' && cwd.trim() ? cwd.trim() : undefined,
         jumpHost: protocol === 'ssh' && jumpHost ? jumpHost : undefined,
         jumpPort: protocol === 'ssh' && jumpHost ? jumpPort : undefined,
         jumpUsername: protocol === 'ssh' && jumpHost ? jumpUsername : undefined,
@@ -361,6 +366,44 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
                   placeholder="e.g. gh copilot — overrides the preset above"
                   className={inputCls}
                 />
+              </div>
+              <div>
+                <label className="block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-secondary)] mb-1.5">
+                  Start folder (optional)
+                </label>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={cwd}
+                    onChange={(e) => setCwd(e.target.value)}
+                    placeholder={'e.g. C:\\Projects  or  /Users/me/code'}
+                    className={`${inputCls} flex-1 font-mono`}
+                  />
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      try {
+                        const dir = await openDialog({
+                          directory: true,
+                          multiple: false,
+                          title: 'Choose start folder',
+                          defaultPath: cwd.trim() || undefined,
+                        });
+                        if (typeof dir === 'string') setCwd(dir);
+                      } catch {
+                        /* native dialog unavailable (e.g. browser mode) — keep manual entry */
+                      }
+                    }}
+                    className="flex items-center gap-1.5 h-9 px-3 text-sm rounded-[var(--radius)] bg-[var(--bg-tertiary)] hover:bg-[var(--border-strong)] text-[var(--text-primary)] transition-colors flex-shrink-0"
+                    title="Browse for a folder"
+                  >
+                    <FolderOpen size={15} />
+                    Browse
+                  </button>
+                </div>
+                <p className="text-[10px] text-[var(--text-muted)] mt-1">
+                  The shell starts in this directory. Leave blank to use your home/default.
+                </p>
               </div>
             </div>
           )}
