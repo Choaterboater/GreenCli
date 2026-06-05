@@ -120,7 +120,7 @@ export default function CentralSettings() {
             list="central-regions"
             value={s.centralBaseUrl}
             onChange={(e) => s.updateSettings({ centralBaseUrl: e.target.value })}
-            placeholder="https://us4.api.central.arubanetworks.com"
+            placeholder="https://apigw-prod2.central.arubanetworks.com"
             className={input}
           />
           <datalist id="central-regions">

@@ -161,14 +161,25 @@ export interface CentralAccount {
   mode: 'creds' | 'token';
 }
 
-// Aruba Central regional API base URLs.
+// Aruba Central API Gateway base URLs, one per geographical cluster. These are
+// the *classic* Central gateways used by the OAuth2 client-credentials flow
+// (POST {base}/oauth2/token) the backend implements. The previous values
+// (us1/us2/us4.api.central…) did not exist and broke every Central request.
+// Source: aruba/pycentral constants.py (the official Central Python SDK).
 export const CENTRAL_REGIONS = [
-  'https://internal.api.central.arubanetworks.com',
-  'https://us1.api.central.arubanetworks.com',
-  'https://us2.api.central.arubanetworks.com',
-  'https://us4.api.central.arubanetworks.com',
-  'https://eu1.api.central.arubanetworks.com',
-  'https://apac1.api.central.arubanetworks.com',
+  'https://app1-apigw.central.arubanetworks.com',     // US-1 (US West / Oregon)
+  'https://apigw-prod2.central.arubanetworks.com',    // US-2
+  'https://apigw-us-east-1.central.arubanetworks.com',// US-East-1
+  'https://apigw-uswest4.central.arubanetworks.com',  // US-West-4
+  'https://eu-apigw.central.arubanetworks.com',       // EU-1 (Frankfurt)
+  'https://apigw-eucentral2.central.arubanetworks.com', // EU-Central-2
+  'https://apigw-eucentral3.central.arubanetworks.com', // EU-Central-3
+  'https://apigw-ca.central.arubanetworks.com',       // Canada-1
+  'https://api-ap.central.arubanetworks.com',         // APAC-1 (Mumbai)
+  'https://apigw-apaceast.central.arubanetworks.com', // APAC-East-1
+  'https://apigw-apacsouth.central.arubanetworks.com',// APAC-South-1
+  'https://apigw-uaenorth1.central.arubanetworks.com',// UAE-North-1
+  'https://apigw.central.arubanetworks.com.cn',       // China-1
 ];
 
 export type AiProvider = 'anthropic' | 'openrouter' | 'moonshot' | 'ollama' | 'local-cli';
