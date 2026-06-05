@@ -248,7 +248,7 @@ function App() {
 
   // Load saved sessions from backend on mount
   useEffect(() => {
-    invoke<Array<{ id: string; name: string; items: Array<{ id: string; name: string; protocol: string; host?: string; port?: number; username?: string; authType?: string; deviceType: string; serialPort?: string; baudRate?: number; dataBits?: number; parity?: string; stopBits?: number; startupCommands?: string; tags?: string[]; jumpHost?: string; jumpPort?: number; jumpUsername?: string }>; expanded: boolean }>>('list_folders')
+    invoke<Array<{ id: string; name: string; items: Array<{ id: string; name: string; protocol: string; host?: string; port?: number; username?: string; authType?: string; deviceType: string; serialPort?: string; baudRate?: number; dataBits?: number; parity?: string; stopBits?: number; startupCommands?: string; tags?: string[]; command?: string; args?: string[]; cwd?: string; jumpHost?: string; jumpPort?: number; jumpUsername?: string }>; expanded: boolean }>>('list_folders')
       .then((folders) => {
         setFolders(
           folders.map((f) => ({
@@ -271,6 +271,11 @@ function App() {
               stopBits: s.stopBits,
               startupCommands: s.startupCommands,
               tags: s.tags,
+              // Local-shell launch details, so a saved shell reconnects with the
+              // same command/args and start folder instead of a bare default shell.
+              command: s.command,
+              args: s.args,
+              cwd: s.cwd,
               jumpHost: s.jumpHost,
               jumpPort: s.jumpPort,
               jumpUsername: s.jumpUsername,

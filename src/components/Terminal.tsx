@@ -50,6 +50,11 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
   // Tail of the previous decoded chunk, prepended to the next so an output trigger
   // whose match straddles a chunk boundary is still detected.
   const triggerCarryRef = useRef<string>('');
+  // Keyboard text selection (Shift+Arrow / Home / End): anchor + moving focus as
+  // absolute cell indices into the buffer (row * cols + col). Null when no
+  // keyboard selection is in progress.
+  const selAnchorRef = useRef<number | null>(null);
+  const selFocusRef = useRef<number | null>(null);
 
   // Short audible blip, reusing the shared AudioContext.
   const beep = () => {
@@ -159,6 +164,94 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
       if (useSettingsStore.getState().bell) beep();
     });
 
+    // ── Keyboard text selection ──────────────────────────────────────────
+    // xterm only selects with the mouse out of the box. Wire Shift+Arrow /
+    // Home / End to extend a selection (and Ctrl/Cmd+C to copy it) so the
+    // keyboard behaves like a normal editor. Scoped to the *normal* screen
+    // buffer so full-screen TUIs (claude/kimi/vim/htop) in the alternate
+    // buffer still receive their own keys untouched.
+    const NAV = new Set(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End']);
+    term.attachCustomKeyEventHandler((event) => {
+      if (event.type !== 'keydown') return true;
+      if (term.buffer.active.type === 'alternate') return true;
+
+      // Copy: Cmd+C (macOS) / Ctrl+C (Win/Linux) copies the selection when one
+      // exists; with no selection it falls through so Ctrl+C still sends SIGINT.
+      if (
+        (event.key === 'c' || event.key === 'C') &&
+        (event.metaKey || (event.ctrlKey && !event.altKey)) &&
+        term.hasSelection()
+      ) {
+        const sel = term.getSelection();
+        if (sel) navigator.clipboard?.writeText(sel).catch(() => {});
+        return false;
+      }
+
+      // Shift + navigation extends the keyboard selection.
+      if (event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey && NAV.has(event.key)) {
+        const buf = term.buffer.active;
+        const cols = term.cols;
+        const total = buf.length * cols; // exclusive upper bound (one past last cell)
+        if (selAnchorRef.current == null || selFocusRef.current == null) {
+          const cur = (buf.baseY + buf.cursorY) * cols + buf.cursorX;
+          selAnchorRef.current = cur;
+          selFocusRef.current = cur;
+        }
+        let f = selFocusRef.current;
+        switch (event.key) {
+          case 'ArrowLeft': f = Math.max(0, f - 1); break;
+          case 'ArrowRight': f = Math.min(total, f + 1); break;
+          case 'ArrowUp': f = Math.max(0, f - cols); break;
+          case 'ArrowDown': f = Math.min(total, f + cols); break;
+          case 'Home': f = Math.floor(f / cols) * cols; break;
+          case 'End': f = Math.floor(f / cols) * cols + cols; break;
+        }
+        selFocusRef.current = f;
+        const start = Math.min(selAnchorRef.current, f);
+        const end = Math.max(selAnchorRef.current, f);
+        if (end - start <= 0) {
+          term.clearSelection();
+        } else {
+          term.select(start % cols, Math.floor(start / cols), end - start);
+        }
+        // Keep the moving end of the selection on screen.
+        const focusRow = Math.min(buf.length - 1, Math.floor(f / cols));
+        if (focusRow < buf.baseY) term.scrollToLine(focusRow);
+        else if (focusRow > buf.baseY + term.rows - 1) term.scrollToLine(focusRow - term.rows + 1);
+        return false;
+      }
+
+      // Escape clears an active keyboard selection.
+      if (event.key === 'Escape' && selAnchorRef.current != null) {
+        term.clearSelection();
+        selAnchorRef.current = null;
+        selFocusRef.current = null;
+        return false;
+      }
+
+      // Plain typing / unshifted navigation ends a keyboard selection: drop the
+      // anchor (so the next Shift+Arrow restarts at the cursor) and clear the
+      // highlight, like a normal editor. Pure modifiers don't reset it.
+      if (
+        selAnchorRef.current != null &&
+        !event.ctrlKey && !event.metaKey && !event.altKey &&
+        !['Shift', 'Control', 'Alt', 'Meta', 'CapsLock'].includes(event.key)
+      ) {
+        selAnchorRef.current = null;
+        selFocusRef.current = null;
+        term.clearSelection();
+      }
+      return true;
+    });
+
+    // A mouse press starts xterm's own (native) selection — forget our keyboard
+    // anchor so the next Shift+Arrow begins from the fresh cursor position.
+    const resetKbSelection = () => {
+      selAnchorRef.current = null;
+      selFocusRef.current = null;
+    };
+    containerRef.current.addEventListener('mousedown', resetKbSelection);
+
     terminalRef.current = term;
     fitAddonRef.current = fitAddon;
 
@@ -169,6 +262,10 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
       // when it becomes visible again.
       const el = containerRef.current;
       if (!el || el.clientWidth === 0 || el.clientHeight === 0) return;
+      // Column count may change — absolute cell indices from a keyboard selection
+      // would no longer line up, so drop the anchor (next Shift+Arrow restarts).
+      selAnchorRef.current = null;
+      selFocusRef.current = null;
       fitAddon.fit();
       const { cols, rows } = term;
       // Notify backend of resize
@@ -226,6 +323,7 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
       zoomEl.removeEventListener('gesturechange', onGestureChange);
       zoomEl.removeEventListener('gestureend', onGestureEnd);
       zoomEl.removeEventListener('wheel', handleWheelZoom);
+      zoomEl.removeEventListener('mousedown', resetKbSelection);
       term.textarea?.removeEventListener('paste', pasteGuard, true);
       ro.disconnect();
       unregisterSearchAdapter(sessionId);
