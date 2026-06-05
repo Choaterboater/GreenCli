@@ -487,16 +487,15 @@ export interface ApiResponse {
 
 export const DEFAULT_ENDPOINTS: ApiEndpoint[] = [
   { name: 'System Info', method: 'GET', path: '/system', description: 'Get system information', category: 'System' },
-  { name: 'System Status', method: 'GET', path: '/system/status', description: 'Get system status', category: 'System' },
-  { name: 'System CPU', method: 'GET', path: '/system/status/cpu', description: 'Get CPU utilization', category: 'System' },
-  { name: 'System Memory', method: 'GET', path: '/system/status/mem', description: 'Get memory utilization', category: 'System' },
+  { name: 'System State', method: 'GET', path: '/system?depth=2', description: 'Full system state (status fields are inline attributes, not a /status subresource)', category: 'System' },
+  { name: 'Resource Utilization', method: 'GET', path: '/system/subsystems?depth=2&attributes=resource_utilization', description: 'CPU + memory utilization per subsystem (AOS-CX has no /system/status/cpu|mem)', category: 'System' },
   { name: 'Interfaces', method: 'GET', path: '/system/interfaces', description: 'List all interfaces', category: 'Interfaces' },
-  { name: 'Interface Stats', method: 'GET', path: '/system/interfaces/{interface}/stats', description: 'Get interface statistics', category: 'Interfaces' },
+  { name: 'Interface Stats', method: 'GET', path: '/system/interfaces/{interface}?attributes=statistics', description: 'Interface counters (statistics is an attribute, not a /stats subresource)', category: 'Interfaces' },
   { name: 'VLANs', method: 'GET', path: '/system/vlans', description: 'List all VLANs', category: 'VLANs' },
   { name: 'VLAN Detail', method: 'GET', path: '/system/vlans/{vlan_id}', description: 'Get VLAN details', category: 'VLANs' },
   { name: 'LLDP Neighbors', method: 'GET', path: '/system/interfaces/{interface}/lldp_neighbors', description: 'LLDP neighbors per interface', category: 'LLDP' },
   { name: 'LLDP Neighbors (All)', method: 'GET', path: '/system/interfaces/*/lldp_neighbors', description: 'LLDP neighbors all interfaces', category: 'LLDP' },
-  { name: 'Configuration', method: 'GET', path: '/system/fullconfigs', description: 'Get running configuration', category: 'Configuration' },
+  { name: 'Configuration', method: 'GET', path: '/fullconfigs/running-config', description: 'Get running configuration (top-level resource, not under /system)', category: 'Configuration' },
   { name: 'Execute CLI', method: 'POST', path: '/cli', description: 'Execute CLI command', body: { command: [] }, category: 'CLI' },
   { name: 'Show CLI Command', method: 'POST', path: '/cli', description: 'Run show command', body: { command: ['show running-config'] }, category: 'CLI' },
 ];
@@ -573,11 +572,10 @@ export const CENTRAL_ENDPOINTS: ApiEndpoint[] = [
   // Monitoring — devices
   { name: 'List All APs',          method: 'GET', path: '/monitoring/v2/aps',           description: 'List all access points with status/stats', category: 'Monitoring' },
   { name: 'AP Details',            method: 'GET', path: '/monitoring/v1/aps/{serial}',  description: 'Get a single AP by serial number', category: 'Monitoring' },
-  { name: 'List Switches',         method: 'GET', path: '/monitoring/v2/switches',      description: 'List all switches (AOS-S / AOS-CX)', category: 'Monitoring' },
+  { name: 'List Switches',         method: 'GET', path: '/monitoring/v1/switches',      description: 'List all switches (AOS-S / AOS-CX) — no v2 of this list exists', category: 'Monitoring' },
   { name: 'Switch Details',        method: 'GET', path: '/monitoring/v1/switches/{serial}', description: 'Single switch details', category: 'Monitoring' },
-  { name: 'List Gateways',         method: 'GET', path: '/monitoring/v2/gateways',      description: 'List all gateways / controllers', category: 'Monitoring' },
+  { name: 'List Gateways',         method: 'GET', path: '/monitoring/v1/gateways',      description: 'List all gateways / controllers — no v2 of this list exists', category: 'Monitoring' },
   { name: 'Gateway Details',       method: 'GET', path: '/monitoring/v1/gateways/{serial}', description: 'Single gateway details', category: 'Monitoring' },
-  { name: 'Device Stats',          method: 'GET', path: '/monitoring/v1/devices/{serial}/stats', description: 'CPU/memory/uptime for a device', category: 'Monitoring' },
   // Monitoring — clients
   { name: 'List Clients',          method: 'GET', path: '/monitoring/v2/clients',        description: 'All connected clients', category: 'Clients' },
   { name: 'Wired Clients',         method: 'GET', path: '/monitoring/v1/clients/wired',  description: 'Wired client list', category: 'Clients' },
@@ -591,15 +589,13 @@ export const CENTRAL_ENDPOINTS: ApiEndpoint[] = [
   { name: 'Group Config',          method: 'GET', path: '/configuration/v2/groups/{group}', description: 'Group-level config', category: 'Config Groups' },
   { name: 'Device Config',         method: 'GET', path: '/configuration/v1/devices/{serial}/config', description: 'Device effective config (AOS-CX)', category: 'Config Groups' },
   { name: 'Template List',         method: 'GET', path: '/configuration/v1/groups/{group}/templates', description: 'Config templates in a group', category: 'Config Groups' },
-  { name: 'AP Settings',           method: 'GET', path: '/configuration/v2/ap_settings', description: 'AP radio/SSID settings', category: 'Config Groups' },
-  { name: 'WLAN List',             method: 'GET', path: '/configuration/v2/wlan_ssids',  description: 'All configured SSIDs', category: 'Config Groups' },
+  { name: 'AP Settings',           method: 'GET', path: '/configuration/v2/ap_settings/{serial}', description: 'Per-AP radio/SSID settings (serial required; no list-all variant)', category: 'Config Groups' },
+  { name: 'WLAN Config',           method: 'GET', path: '/configuration/v2/wlan/{group_name}',  description: 'WLAN/SSID config for a group (wlan_ssids is not a Central path)', category: 'Config Groups' },
   // Firmware
-  { name: 'Firmware Status',       method: 'GET', path: '/firmware/v1/status',            description: 'Firmware compliance for all devices', category: 'Firmware' },
-  { name: 'Firmware Upgrades',     method: 'GET', path: '/firmware/v2/upgrades',           description: 'Pending/in-progress firmware upgrades', category: 'Firmware' },
+  { name: 'Firmware Status',       method: 'GET', path: '/firmware/v1/status',            description: 'Firmware compliance/status for a device', category: 'Firmware' },
   { name: 'Available Versions',    method: 'GET', path: '/firmware/v1/versions',           description: 'Available firmware versions', category: 'Firmware' },
-  // Alerts
-  { name: 'Active Alerts',         method: 'GET', path: '/central/v1/alerts',              description: 'Current unresolved alerts', category: 'Alerts' },
-  { name: 'Alert Count',           method: 'GET', path: '/central/v1/alerts/count',        description: 'Count of active alerts by severity', category: 'Alerts' },
+  // Alerts / notifications
+  { name: 'Active Alerts',         method: 'GET', path: '/central/v1/notifications',       description: 'Active alerts/notifications (classic Central has no /central/v1/alerts)', category: 'Alerts' },
 ];
 
 // Juniper Apstra (AOS) endpoint catalog — paths relative to /api.
