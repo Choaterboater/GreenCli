@@ -54,6 +54,31 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      # Tauri v1's bundler hides notarytool's real stderr behind a generic
+      # "failed to upload app to Apple's notarization servers." — validate the
+      # Apple ID / app-specific password / Team ID triple up front so the
+      # actual Apple error (e.g. HTTP 401) shows in the log. Values are passed
+      # via env and never echoed; only their lengths are printed (an
+      # app-specific password is exactly 19 chars: xxxx-xxxx-xxxx-xxxx).
+      - name: Preflight - validate Apple notarization credentials
+        if: runner.os == 'macOS'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          : "${APPLE_ID:?APPLE_ID secret is empty or unset}"
+          : "${APPLE_PASSWORD:?APPLE_PASSWORD secret is empty or unset}"
+          : "${APPLE_TEAM_ID:?APPLE_TEAM_ID secret is empty or unset}"
+          echo "APPLE_ID length: ${#APPLE_ID}; APPLE_PASSWORD length: ${#APPLE_PASSWORD} (expect 19); APPLE_TEAM_ID length: ${#APPLE_TEAM_ID} (expect 10)"
+          # Real auth round-trip with Apple; prints Apple's native error on failure.
+          xcrun notarytool history \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID"
+          echo "Notarization credentials validated successfully."
+
       - name: Build + bundle (tauri-action)
         uses: tauri-apps/tauri-action@v0
         env:
