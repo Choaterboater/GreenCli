@@ -54,42 +54,54 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      # NOTARIZATION TEMPORARILY DISABLED (2026-06-06): the APPLE_ID /
+      # APPLE_PASSWORD secrets fail Apple auth with HTTP 401 (APPLE_PASSWORD is
+      # 20 chars; an app-specific password is exactly 19: xxxx-xxxx-xxxx-xxxx).
+      # Apps are still SIGNED with the Developer ID cert — users just have to
+      # approve the first launch via System Settings > Privacy & Security.
+      #
+      # To re-enable: regenerate an app-specific password at account.apple.com,
+      # re-set the APPLE_ID and APPLE_PASSWORD repo secrets (from the
+      # Choaterboater account), then uncomment this preflight step AND the
+      # three APPLE_ID/APPLE_PASSWORD/APPLE_TEAM_ID env lines on the
+      # tauri-action step below.
+      #
       # Tauri v1's bundler hides notarytool's real stderr behind a generic
-      # "failed to upload app to Apple's notarization servers." — validate the
-      # Apple ID / app-specific password / Team ID triple up front so the
-      # actual Apple error (e.g. HTTP 401) shows in the log. Values are passed
-      # via env and never echoed; only their lengths are printed (an
-      # app-specific password is exactly 19 chars: xxxx-xxxx-xxxx-xxxx).
-      - name: Preflight - validate Apple notarization credentials
-        if: runner.os == 'macOS'
-        env:
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: |
-          set -euo pipefail
-          : "${APPLE_ID:?APPLE_ID secret is empty or unset}"
-          : "${APPLE_PASSWORD:?APPLE_PASSWORD secret is empty or unset}"
-          : "${APPLE_TEAM_ID:?APPLE_TEAM_ID secret is empty or unset}"
-          echo "APPLE_ID length: ${#APPLE_ID}; APPLE_PASSWORD length: ${#APPLE_PASSWORD} (expect 19); APPLE_TEAM_ID length: ${#APPLE_TEAM_ID} (expect 10)"
-          # Real auth round-trip with Apple; prints Apple's native error on failure.
-          xcrun notarytool history \
-            --apple-id "$APPLE_ID" \
-            --password "$APPLE_PASSWORD" \
-            --team-id "$APPLE_TEAM_ID"
-          echo "Notarization credentials validated successfully."
+      # "failed to upload app to Apple's notarization servers." — this step
+      # validates the Apple ID / app-specific password / Team ID triple up
+      # front so the actual Apple error (e.g. HTTP 401) shows in the log.
+      # Values are passed via env and never echoed; only lengths are printed.
+      # - name: Preflight - validate Apple notarization credentials
+      #   if: runner.os == 'macOS'
+      #   env:
+      #     APPLE_ID: ${{ secrets.APPLE_ID }}
+      #     APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+      #     APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      #   run: |
+      #     set -euo pipefail
+      #     : "${APPLE_ID:?APPLE_ID secret is empty or unset}"
+      #     : "${APPLE_PASSWORD:?APPLE_PASSWORD secret is empty or unset}"
+      #     : "${APPLE_TEAM_ID:?APPLE_TEAM_ID secret is empty or unset}"
+      #     echo "APPLE_ID length: ${#APPLE_ID}; APPLE_PASSWORD length: ${#APPLE_PASSWORD} (expect 19); APPLE_TEAM_ID length: ${#APPLE_TEAM_ID} (expect 10)"
+      #     # Real auth round-trip with Apple; prints Apple's native error on failure.
+      #     xcrun notarytool history \
+      #       --apple-id "$APPLE_ID" \
+      #       --password "$APPLE_PASSWORD" \
+      #       --team-id "$APPLE_TEAM_ID"
+      #     echo "Notarization credentials validated successfully."
 
       - name: Build + bundle (tauri-action)
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # macOS signing + notarization
+          # macOS signing (notarization disabled — see comment above; presence
+          # of APPLE_ID/APPLE_PASSWORD is what makes Tauri attempt notarization)
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # APPLE_ID: ${{ secrets.APPLE_ID }}
+          # APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          # APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           # Windows code signing:
           # WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
           # WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
