@@ -581,12 +581,12 @@ export default function ConfigEditor() {
   // With no sessions open, fill the whole area so it works as a plain text editor.
   const fullWidth = sessions.length === 0;
 
-  const [content, setContent] = useState<string>(
-    '! Aruba CX Configuration\n! Start typing, open a file, or pick a template\n\n'
-  );
+  // Start blank in Plain Text — no vendor assumed until the user picks a
+  // language/template (or opens a file, which infers it from the extension).
+  const [content, setContent] = useState<string>('');
   const contentRef = useRef(content);
 
-  const [language, setLanguage] = useState('aruba-cx');
+  const [language, setLanguage] = useState('plaintext');
   const [currentFilePath, setCurrentFilePath] = useState<string | null>(null);
   const [isDirty, setIsDirty] = useState(false);
 
