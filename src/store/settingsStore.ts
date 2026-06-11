@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import { TerminalSettings, DEFAULT_SETTINGS, AiProvider, CentralAccount, AiAgent } from '../types';
+import { TerminalSettings, DEFAULT_SETTINGS, AiProvider, CentralAccount, AiAgent, DeviceProfile, DeviceType } from '../types';
 
 interface SettingsState extends TerminalSettings {
   // Actions
@@ -16,6 +16,11 @@ interface SettingsState extends TerminalSettings {
   setSyntaxHighlighting: (enabled: boolean) => void;
   setWordWrap: (enabled: boolean) => void;
   setSidebarWidth: (width: number) => void;
+  setLastUsedDeviceType: (deviceType: DeviceType) => void;
+  setLastUsedDeviceProfileId: (profileId: string) => void;
+  addDeviceProfile: (profile: DeviceProfile) => void;
+  updateDeviceProfile: (id: string, patch: Partial<DeviceProfile>) => void;
+  removeDeviceProfile: (id: string) => void;
   setAnthropicApiKey: (key: string) => void;
   setAiModel: (model: string) => void;
   setAiProvider: (provider: AiProvider) => void;
@@ -51,6 +56,8 @@ export const useSettingsStore = create<SettingsState>()(
       setSyntaxHighlighting: (syntaxHighlighting) => set({ syntaxHighlighting }),
       setWordWrap: (wordWrap) => set({ wordWrap }),
       setSidebarWidth: (sidebarWidth) => set({ sidebarWidth }),
+      setLastUsedDeviceType: (lastUsedDeviceType) => set({ lastUsedDeviceType }),
+      setLastUsedDeviceProfileId: (lastUsedDeviceProfileId) => set({ lastUsedDeviceProfileId }),
       setAnthropicApiKey: (anthropicApiKey) => set({ anthropicApiKey }),
       setAiModel: (aiModel) => set({ aiModel }),
       setAiProvider: (aiProvider) => set({ aiProvider }),
@@ -82,6 +89,28 @@ export const useSettingsStore = create<SettingsState>()(
           else delete sessionAgents[sessionId];
           return { sessionAgents };
         }),
+
+      addDeviceProfile: (profile) =>
+        set((s) => ({
+          customDeviceProfiles: [
+            ...(s.customDeviceProfiles ?? []).filter((p) => p.id !== profile.id),
+            profile,
+          ],
+        })),
+      updateDeviceProfile: (id, patch) =>
+        set((s) => ({
+          customDeviceProfiles: (s.customDeviceProfiles ?? []).map((p) =>
+            p.id === id ? { ...p, ...patch } : p
+          ),
+        })),
+      removeDeviceProfile: (id) =>
+        set((s) => ({
+          customDeviceProfiles: (s.customDeviceProfiles ?? []).filter((p) => p.id !== id),
+          lastUsedDeviceProfileId:
+            s.lastUsedDeviceProfileId === id ? 'builtin-generic' : s.lastUsedDeviceProfileId,
+          lastUsedDeviceType:
+            s.lastUsedDeviceProfileId === id ? 'generic' : s.lastUsedDeviceType,
+        })),
 
       resetToDefaults: () => set({ ...DEFAULT_SETTINGS }),
 

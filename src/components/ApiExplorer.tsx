@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useMemo } from 'react';
+import { useState, useRef, useCallback, useMemo, useEffect } from 'react';
 import { useResizablePanel } from '../hooks/useResizablePanel';
 import {
   X,
@@ -25,10 +25,13 @@ import {
   Table2,
   Braces,
   FileSpreadsheet,
+  Download,
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/tauri';
 import { useSessionStore } from '../store/sessionStore';
 import { useSettingsStore } from '../store/settingsStore';
+import { askConfirm } from '../store/dialogStore';
+import { notify } from '../store/toastStore';
 import {
   ApiConnection,
   ApiEndpoint,
@@ -74,6 +77,18 @@ function defaultBase(k: DeviceApiKind, host?: string): string {
 }
 
 const IS_TAURI = typeof window !== 'undefined' && '__TAURI_IPC__' in window;
+const SAVED_REQUESTS_KEY = 'greencli-api-saved-requests-v1';
+
+interface SavedApiRequest {
+  id: string;
+  name: string;
+  target: 'device' | 'central' | 'apstra' | 'mist';
+  deviceKind: DeviceApiKind;
+  method: 'GET' | 'POST' | 'PUT' | 'DELETE';
+  url: string;
+  endpointPath: string;
+  requestBody: string;
+}
 
 // ── Tabular view of a response body (cencli-style) ──
 type Row = Record<string, unknown>;
@@ -106,8 +121,22 @@ function cellText(v: unknown): string {
   return typeof v === 'object' ? JSON.stringify(v) : String(v);
 }
 function toCsv(rows: Row[], cols: string[]): string {
-  const esc = (s: string) => (/[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s);
+  const neutralizeFormula = (s: string) => (/^\s*[=+\-@]/.test(s) || /^[\t\r]/.test(s) ? `'${s}` : s);
+  const esc = (s: string) => {
+    const safe = neutralizeFormula(s);
+    return /[",\r\n]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe;
+  };
   return [cols.map(esc).join(','), ...rows.map((r) => cols.map((c) => esc(cellText(r[c]))).join(','))].join('\n');
+}
+
+function downloadText(filename: string, contents: string, type = 'text/plain') {
+  const blob = new Blob([contents], { type });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
 /** Max table rows / JSON chars to render — a huge list endpoint would otherwise
@@ -176,6 +205,9 @@ export default function ApiExplorer() {
   const [target, setTarget] = useState<'device' | 'central' | 'apstra' | 'mist'>('device');
   // Which on-box device REST flavour the "Device REST" target speaks.
   const [deviceKind, setDeviceKind] = useState<DeviceApiKind>('cx');
+  const [savedRequests, setSavedRequests] = useState<SavedApiRequest[]>([]);
+  const [showSavedRequests, setShowSavedRequests] = useState(false);
+  const requestInFlightRef = useRef(false);
   const bodyRef = useRef<HTMLTextAreaElement>(null);
 
   // Collapsible / Resizable panel state
@@ -185,6 +217,19 @@ export default function ApiExplorer() {
 
   const activeConnection = connections.find((c) => c.id === activeConnectionId);
   const activeSession = sessions.find((s) => s.sessionId === activeSessionId);
+
+  useEffect(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(SAVED_REQUESTS_KEY) || '[]') as SavedApiRequest[];
+      if (Array.isArray(saved)) setSavedRequests(saved);
+    } catch {
+      localStorage.removeItem(SAVED_REQUESTS_KEY);
+    }
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem(SAVED_REQUESTS_KEY, JSON.stringify(savedRequests.slice(0, 50)));
+  }, [savedRequests]);
 
   // Auto-fill from active session
   const handleAutofillSession = () => {
@@ -237,13 +282,25 @@ export default function ApiExplorer() {
   };
 
   const executeRequest = useCallback(async () => {
+    if (requestInFlightRef.current) return;
+    requestInFlightRef.current = true;
     setLoading(true);
-    setError(null);
-    setResponse(null);
-
-    const startTime = performance.now();
-
+    let startTime = performance.now();
     try {
+      if (method !== 'GET') {
+        const ok = await askConfirm({
+          title: `Run ${method} ${endpointPath}?`,
+          message:
+            'This API request may change device/cloud state. Review the endpoint and request body before continuing.',
+          confirmLabel: 'Run request',
+          danger: method === 'DELETE',
+        });
+        if (!ok) return;
+      }
+      setError(null);
+      setResponse(null);
+      startTime = performance.now();
+
       if (!IS_TAURI) {
         throw new Error('The API Explorer runs through the desktop backend — launch the app (not a browser tab).');
       }
@@ -328,9 +385,44 @@ export default function ApiExplorer() {
         duration: Math.round(performance.now() - startTime),
       });
     } finally {
+      requestInFlightRef.current = false;
       setLoading(false);
     }
   }, [endpointPath, method, requestBody, activeConnection, target, url, deviceKind]);
+
+  const saveCurrentRequest = () => {
+    if (!endpointPath.trim()) {
+      notify.warning('Endpoint required', 'Enter an endpoint path before saving a request.');
+      return;
+    }
+    const label = `${method} ${target}:${endpointPath}`;
+    const req: SavedApiRequest = {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      name: label,
+      target,
+      deviceKind,
+      method,
+      url,
+      endpointPath,
+      requestBody,
+    };
+    setSavedRequests((prev) => [req, ...prev.filter((item) => item.name !== label)].slice(0, 50));
+    notify.success('Request saved', label);
+  };
+
+  const loadSavedRequest = (req: SavedApiRequest) => {
+    setTarget(req.target);
+    setDeviceKind(req.deviceKind);
+    setMethod(req.method);
+    setUrl(req.url);
+    setEndpointPath(req.endpointPath);
+    setRequestBody(req.requestBody);
+    setShowSavedRequests(false);
+  };
+
+  const removeSavedRequest = (id: string) => {
+    setSavedRequests((prev) => prev.filter((req) => req.id !== id));
+  };
 
   const handleLogin = async () => {
     if (!newConnHost || !newConnUser) return;
@@ -403,6 +495,31 @@ export default function ApiExplorer() {
     navigator.clipboard.writeText(text);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  };
+
+  const exportResponse = (format: 'json' | 'csv') => {
+    if (!response) return;
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    if (format === 'csv') {
+      if (!tableRows) {
+        notify.warning('No table data', 'Switch to JSON export for this response shape.');
+        return;
+      }
+      downloadText(`greencli-api-${stamp}.csv`, toCsv(tableRows, tableCols), 'text/csv');
+      return;
+    }
+    downloadText(
+      `greencli-api-${stamp}.json`,
+      JSON.stringify(
+        {
+          request: { target, deviceKind, method, url, endpointPath },
+          response,
+        },
+        null,
+        2,
+      ),
+      'application/json',
+    );
   };
 
   if (!showApiExplorer) return null;
@@ -636,8 +753,17 @@ export default function ApiExplorer() {
       <div className="flex-1 overflow-y-auto border-b border-[var(--bg-tertiary)]">
         <div className="px-3 py-1.5 text-xs font-semibold text-[var(--text-secondary)] uppercase tracking-wider bg-[var(--bg-secondary)] flex items-center justify-between">
           <span>Endpoints</span>
-          {target === 'central' && (
-            <span className="flex items-center gap-1.5">
+          <span className="flex items-center gap-1.5">
+            <button
+              onClick={() => setShowSavedRequests((v) => !v)}
+              className="flex items-center gap-1 text-[10px] text-[var(--accent)] hover:underline"
+              title="Saved API requests"
+            >
+              <Save size={10} />
+              Saved {savedRequests.length ? `(${savedRequests.length})` : ''}
+            </button>
+            {target === 'central' && (
+              <>
               {CENTRAL_DOCS.map((d) => (
                 <a
                   key={d.url}
@@ -650,9 +776,33 @@ export default function ApiExplorer() {
                   {d.label.split(' ').slice(-2).join(' ')}
                 </a>
               ))}
-            </span>
-          )}
+              </>
+            )}
+          </span>
         </div>
+        {showSavedRequests && (
+          <div className="border-b border-[var(--border)] bg-[var(--bg-inset)]">
+            {savedRequests.length === 0 ? (
+              <p className="px-3 py-2 text-[11px] text-[var(--text-muted)]">No saved requests yet.</p>
+            ) : (
+              savedRequests.slice(0, 8).map((req) => (
+                <div key={req.id} className="group flex items-center gap-2 px-3 py-1.5 hover:bg-[var(--bg-tertiary)]">
+                  <button onClick={() => loadSavedRequest(req)} className="min-w-0 flex-1 text-left">
+                    <div className="truncate text-[11px] text-[var(--text-primary)]">{req.name}</div>
+                    <div className="truncate text-[10px] text-[var(--text-muted)]">{req.url}{req.endpointPath}</div>
+                  </button>
+                  <button
+                    onClick={() => removeSavedRequest(req.id)}
+                    className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-[var(--bg-primary)] text-[var(--text-muted)] hover:text-[var(--accent-danger)]"
+                    title="Delete saved request"
+                  >
+                    <Trash2 size={11} />
+                  </button>
+                </div>
+              ))
+            )}
+          </div>
+        )}
         {Object.entries(groupedEndpoints).map(([category, endpoints]) => (
           <div key={category}>
             <button
@@ -744,23 +894,34 @@ export default function ApiExplorer() {
             className="w-full text-xs bg-[var(--bg-secondary)] border border-[var(--border)] rounded px-2 py-1.5 text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)] font-mono resize-none"
           />
         )}
-        <button
-          onClick={executeRequest}
-          disabled={loading || !endpointPath}
-          className="flex items-center justify-center gap-2 w-full h-8 text-xs bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-50 disabled:hover:bg-[var(--accent)] text-white rounded transition-colors"
-        >
-          {loading ? (
-            <>
-              <Loader2 size={12} className="animate-spin" />
-              Executing...
-            </>
-          ) : (
-            <>
-              <Play size={12} />
-              Execute Request
-            </>
-          )}
-        </button>
+        <div className="grid grid-cols-[1fr_auto] gap-2">
+          <button
+            onClick={executeRequest}
+            disabled={loading || !endpointPath}
+            className="flex items-center justify-center gap-2 h-8 text-xs bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-50 disabled:hover:bg-[var(--accent)] text-white rounded transition-colors"
+          >
+            {loading ? (
+              <>
+                <Loader2 size={12} className="animate-spin" />
+                Executing...
+              </>
+            ) : (
+              <>
+                <Play size={12} />
+                Execute Request
+              </>
+            )}
+          </button>
+          <button
+            onClick={saveCurrentRequest}
+            disabled={!endpointPath}
+            className="flex items-center justify-center gap-1.5 h-8 px-2.5 text-xs rounded bg-[var(--bg-tertiary)] hover:bg-[var(--border-strong)] disabled:opacity-50 text-[var(--text-primary)]"
+            title="Save this request"
+          >
+            <Save size={12} />
+            Save
+          </button>
+        </div>
       </div>
 
       {/* Response Viewer */}
@@ -830,6 +991,24 @@ export default function ApiExplorer() {
                     </>
                   )}
                 </button>
+                <button
+                  onClick={() => exportResponse('json')}
+                  title="Export response as JSON"
+                  className="flex items-center gap-1 px-2 py-0.5 text-[10px] text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] rounded transition-colors"
+                >
+                  <Download size={10} />
+                  JSON
+                </button>
+                {tableRows && (
+                  <button
+                    onClick={() => exportResponse('csv')}
+                    title="Export response table as CSV"
+                    className="flex items-center gap-1 px-2 py-0.5 text-[10px] text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] rounded transition-colors"
+                  >
+                    <FileSpreadsheet size={10} />
+                    CSV
+                  </button>
+                )}
               </div>
             </div>
             <div className="flex-1 overflow-auto bg-[var(--bg-primary)]">

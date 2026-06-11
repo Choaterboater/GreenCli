@@ -1,4 +1,4 @@
-import { X, Plus, PictureInPicture2 } from 'lucide-react';
+import { X, Plus, PictureInPicture2, RefreshCw, Unplug, Wand2 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/tauri';
 import { WebviewWindow } from '@tauri-apps/api/window';
 import { useSessionStore } from '../store/sessionStore';
@@ -8,9 +8,15 @@ import { vendorColor } from '../types';
 interface TerminalTabsProps {
   /** Pop the session out into its own OS window. */
   onPopOut?: (sessionId: string) => void;
+  /** Reconnect a disconnected session. */
+  onReconnect?: (sessionId: string) => void;
+  /** Disconnect a connected session. */
+  onDisconnect?: (sessionId: string) => void;
+  /** Open the device mapping wizard. */
+  onMapDevice?: (sessionId: string) => void;
 }
 
-export default function TerminalTabs({ onPopOut }: TerminalTabsProps) {
+export default function TerminalTabs({ onPopOut, onReconnect, onDisconnect, onMapDevice }: TerminalTabsProps) {
   const {
     sessions,
     activeSessionId,
@@ -63,6 +69,9 @@ export default function TerminalTabs({ onPopOut }: TerminalTabsProps) {
           const isActive = session.sessionId === activeSessionId && !isPopped;
           const hasActivity = !isActive && unseenOutput.includes(session.sessionId);
           const accent = vendorColor(session.config.deviceType);
+          const connectionStatus =
+            session.connectionStatus ?? (session.connected ? 'connected' : 'disconnected');
+          const isBusy = connectionStatus === 'connecting' || connectionStatus === 'reconnecting';
           return (
             <div
               key={session.sessionId}
@@ -116,10 +125,66 @@ export default function TerminalTabs({ onPopOut }: TerminalTabsProps) {
               </span>
               <span
                 className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
-                  session.connected ? 'bg-[var(--accent-success)]' : 'bg-[var(--text-muted)]'
+                  session.connected
+                    ? 'bg-[var(--accent-success)]'
+                    : isBusy
+                      ? 'bg-[var(--accent-warning)]'
+                      : 'bg-[var(--text-muted)]'
                 }`}
-                title={session.connected ? 'Connected' : 'Disconnected'}
+                title={
+                  connectionStatus === 'reconnecting'
+                    ? 'Reconnecting'
+                    : connectionStatus === 'connecting'
+                      ? 'Connecting'
+                      : session.connected
+                        ? 'Connected'
+                        : 'Disconnected'
+                }
               />
+              {!isPopped && session.connected && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onDisconnect?.(session.sessionId);
+                  }}
+                  className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-[var(--border-strong)] transition-all flex-shrink-0"
+                  title="Disconnect"
+                >
+                  <Unplug size={12} />
+                </button>
+              )}
+              {!isPopped && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onMapDevice?.(session.sessionId);
+                  }}
+                  className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-[var(--border-strong)] transition-all flex-shrink-0"
+                  title="Map device/profile"
+                >
+                  <Wand2 size={12} />
+                </button>
+              )}
+              {!isPopped && isBusy && (
+                <span
+                  className="opacity-80 p-0.5 flex-shrink-0 text-[var(--accent-warning)]"
+                  title={connectionStatus === 'reconnecting' ? 'Auto-reconnect in progress' : 'Connecting'}
+                >
+                  <RefreshCw size={12} className="animate-spin" />
+                </span>
+              )}
+              {!isPopped && connectionStatus === 'disconnected' && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onReconnect?.(session.sessionId);
+                  }}
+                  className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-[var(--border-strong)] transition-all flex-shrink-0"
+                  title="Reconnect"
+                >
+                  <RefreshCw size={12} />
+                </button>
+              )}
               {!isPopped && (
                 <button
                   onClick={(e) => handlePopOut(e, session.sessionId)}

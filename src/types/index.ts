@@ -48,6 +48,8 @@ export interface ConnectionConfig {
   tags?: string[];
   /** Commands sent automatically right after the session connects. */
   startupCommands?: string;
+  /** Built-in or custom profile id used for mapping/highlighting/editor behavior. */
+  deviceProfileId?: string;
   // For protocol 'local': command to run in the PTY (undefined => default shell)
   command?: string;
   args?: string[];
@@ -62,6 +64,7 @@ export interface ConnectionConfig {
 export interface Session {
   config: ConnectionConfig;
   connected: boolean;
+  connectionStatus?: 'connected' | 'disconnected' | 'connecting' | 'reconnecting';
   sessionId: string;
   lastActivity?: number;
 }
@@ -104,8 +107,21 @@ export interface TerminalSettings {
   keepAliveInterval: number;
   syntaxHighlighting: boolean;
   wordWrap: boolean;
+  pasteGuardEnabled: boolean;
+  pasteGuardLineThreshold: number;
+  pasteHistoryEnabled: boolean;
+  smartTerminalLinks: boolean;
+  terminalActivityNotifications: boolean;
+  terminalSilenceNotifications: boolean;
+  terminalSilenceThresholdSeconds: number;
   /** Width of the left session sidebar in px (drag the divider to resize). */
   sidebarWidth: number;
+  /** Last selected device type/profile base used by Quick Connect. */
+  lastUsedDeviceType: DeviceType;
+  /** Last selected built-in/custom profile used by Quick Connect. */
+  lastUsedDeviceProfileId?: string;
+  /** User-authored device profiles for custom mapping/highlighting workflows. */
+  customDeviceProfiles: DeviceProfile[];
   anthropicApiKey: string;
   aiModel: string;
   aiProvider: AiProvider;
@@ -159,6 +175,23 @@ export interface CentralAccount {
   clientSecret: string;
   token: string;
   mode: 'creds' | 'token';
+}
+
+export interface DeviceProfile {
+  id: string;
+  name: string;
+  deviceType: DeviceType;
+  short: string;
+  color: string;
+  description?: string;
+  promptPatterns: string[];
+  fingerprints: string[];
+  commands: string[];
+  keywords: string[];
+  startupCommands?: string;
+  runningConfigCommand?: string;
+  pagingDisableCommand?: string;
+  pagingRestoreCommand?: string;
 }
 
 // Aruba Central API Gateway base URLs, one per geographical cluster. These are
@@ -249,7 +282,17 @@ export const DEFAULT_SETTINGS: TerminalSettings = {
   keepAliveInterval: 30,
   syntaxHighlighting: true,
   wordWrap: false,
+  pasteGuardEnabled: true,
+  pasteGuardLineThreshold: 2,
+  pasteHistoryEnabled: true,
+  smartTerminalLinks: true,
+  terminalActivityNotifications: true,
+  terminalSilenceNotifications: false,
+  terminalSilenceThresholdSeconds: 60,
   sidebarWidth: 256,
+  lastUsedDeviceType: 'generic',
+  lastUsedDeviceProfileId: 'builtin-generic',
+  customDeviceProfiles: [],
   anthropicApiKey: '',
   aiModel: 'claude-sonnet-4-6',
   aiProvider: 'ollama',
@@ -398,13 +441,13 @@ export interface DeviceTypeOption {
 }
 
 export const DEVICE_TYPES: DeviceTypeOption[] = [
+  { value: 'generic',          label: 'Normal Device',              short: 'GEN',   vendor: 'generic',  icon: 'Monitor' },
   { value: 'aruba-cx',         label: 'Aruba AOS-CX Switch',        short: 'CX',    vendor: 'aruba',    icon: 'Network' },
   { value: 'aruba-aos-s',      label: 'Aruba AOS-S Switch',          short: 'AOS-S', vendor: 'aruba',    icon: 'Network' },
   { value: 'aruba-ap',         label: 'Aruba Access Point',          short: 'AP',    vendor: 'aruba',    icon: 'Wifi' },
   { value: 'aruba-controller', label: 'Aruba Mobility Controller',   short: 'MC',    vendor: 'aruba',    icon: 'RadioTower' },
   { value: 'juniper-junos',    label: 'Juniper Junos (EX/QFX/SRX/MX)', short: 'JUNOS', vendor: 'juniper', icon: 'Server' },
   { value: 'mist',             label: 'Juniper Mist (cloud)',        short: 'MIST',  vendor: 'mist',     icon: 'Cloud' },
-  { value: 'generic',          label: 'Generic Device',              short: 'GEN',   vendor: 'generic',  icon: 'Monitor' },
 ];
 
 export const DEVICE_META: Record<DeviceType, DeviceTypeOption> = DEVICE_TYPES.reduce(

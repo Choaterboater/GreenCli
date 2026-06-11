@@ -15,6 +15,8 @@ pub struct StoredSession {
     pub username: Option<String>,
     pub auth_type: Option<String>, // "password" | "key" | "agent"
     pub device_type: String,       // "aruba-cx" | "aruba-ap" | "aruba-controller" | "generic"
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_profile_id: Option<String>,
     pub folder_id: Option<String>,
     pub tags: Vec<String>,
     pub notes: Option<String>,
@@ -126,6 +128,11 @@ impl SessionStore {
 
     pub fn add_session(&mut self, folder_id: &str, session: StoredSession) -> Result<(), AppError> {
         let mut data = self.load()?;
+        for folder in &mut data.folders {
+            folder.items.retain(|s| s.id != session.id);
+        }
+        data.sessions.retain(|s| s.id != session.id);
+
         for folder in &mut data.folders {
             if folder.id == folder_id {
                 folder.items.push(session);

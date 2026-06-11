@@ -50,6 +50,14 @@ impl CentralClient {
         self.token_expiry = None;
     }
 
+    pub fn clear(&mut self) {
+        self.base_url.clear();
+        self.client_id.clear();
+        self.client_secret.clear();
+        self.token = None;
+        self.token_expiry = None;
+    }
+
     pub fn is_configured(&self) -> bool {
         !self.base_url.is_empty()
             && (self.token.is_some() || (!self.client_id.is_empty() && !self.client_secret.is_empty()))

@@ -45,7 +45,12 @@ interface SessionState {
   addSession: (config: ConnectionConfig, sessionId: string) => void;
   removeSession: (sessionId: string) => void;
   setActiveSession: (sessionId: string | null) => void;
-  updateSessionConnection: (sessionId: string, connected: boolean) => void;
+  updateSessionConfig: (sessionId: string, updates: Partial<ConnectionConfig>) => void;
+  updateSessionConnection: (
+    sessionId: string,
+    connected: boolean,
+    connectionStatus?: Session['connectionStatus'],
+  ) => void;
   clearSessions: () => void;
   toggleSidebar: () => void;
   setSidebarVisible: (visible: boolean) => void;
@@ -138,6 +143,7 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
             config,
             sessionId,
             connected: false,
+            connectionStatus: 'connecting',
             lastActivity: Date.now(),
           },
         ],
@@ -175,6 +181,21 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
         : state.unseenOutput,
     })),
 
+  updateSessionConfig: (sessionId, updates) =>
+    set((state) => ({
+      sessions: state.sessions.map((s) =>
+        s.sessionId === sessionId
+          ? { ...s, config: { ...s.config, ...updates } }
+          : s
+      ),
+      folders: state.folders.map((f) => ({
+        ...f,
+        items: f.items.map((item) =>
+          item.id === sessionId ? { ...item, ...updates } : item
+        ),
+      })),
+    })),
+
   markUnseenOutput: (sessionId) =>
     set((state) =>
       state.unseenOutput.includes(sessionId)
@@ -182,11 +203,16 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
         : { unseenOutput: [...state.unseenOutput, sessionId] },
     ),
 
-  updateSessionConnection: (sessionId, connected) =>
+  updateSessionConnection: (sessionId, connected, connectionStatus) =>
     set((state) => ({
       sessions: state.sessions.map((s) =>
         s.sessionId === sessionId
-          ? { ...s, connected, lastActivity: Date.now() }
+          ? {
+              ...s,
+              connected,
+              connectionStatus: connectionStatus ?? (connected ? 'connected' : 'disconnected'),
+              lastActivity: Date.now(),
+            }
           : s
       ),
     })),

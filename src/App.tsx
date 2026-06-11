@@ -51,9 +51,26 @@ import ApstraBrowser from './components/ApstraBrowser';
 import VaultUnlock from './components/VaultUnlock';
 import BulkRunner from './components/BulkRunner';
 import SftpBrowser from './components/SftpBrowser';
+import DeviceMapper from './components/DeviceMapper';
 
 // Run a session's per-host startup commands once the shell is ready. Shared by the
 // direct-connect path and the auth-dialog retry path so behaviour is consistent.
+const WORKSPACE_KEY = 'greencli-workspace-v1';
+
+type WorkspaceSnapshot = {
+  activeSessionId: string | null;
+  sessions: Array<{ sessionId: string; config: ConnectionConfig }>;
+};
+
+function safeWorkspaceConfig(config: ConnectionConfig): ConnectionConfig {
+  const { password, jumpPassword, privateKey, keyPassphrase, ...safe } = config;
+  void password;
+  void jumpPassword;
+  void privateKey;
+  void keyPassphrase;
+  return safe;
+}
+
 function runStartupCommands(sessionId: string, startupCommands?: string) {
   const startup = startupCommands?.trim();
   if (!startup) return;
@@ -114,6 +131,9 @@ function App() {
 
   // Credential save deferred until the vault is unlocked.
   const pendingCredSave = useRef<{ key: string; value: string } | null>(null);
+  const connectingIdsRef = useRef<Set<string>>(new Set());
+  const [workspaceLoaded, setWorkspaceLoaded] = useState(false);
+  const [mappingSessionId, setMappingSessionId] = useState<string | null>(null);
 
   const credKey = (c: { host?: string; port?: number; username?: string }) =>
     `cred:${c.host ?? ''}:${c.port ?? 22}:${c.username ?? ''}`;
@@ -174,6 +194,69 @@ function App() {
     return () => {
       un.then((f) => f());
     };
+  }, []);
+
+  // Restore tabs after a WebView/app reload as disconnected, reconnectable tabs.
+  // This keeps the user's working context without silently reconnecting to devices.
+  useEffect(() => {
+    let cancelled = false;
+    const restoreWorkspace = async () => {
+      try {
+        const raw = localStorage.getItem(WORKSPACE_KEY);
+        const snapshot = raw ? (JSON.parse(raw) as WorkspaceSnapshot) : null;
+        if (snapshot?.sessions?.length && useSessionStore.getState().sessions.length === 0) {
+          await Promise.all(
+            snapshot.sessions.map(({ sessionId }) =>
+              invoke('disconnect', { sessionId }).catch(() => {})
+            )
+          );
+          if (cancelled) return;
+          snapshot.sessions.forEach(({ sessionId, config }) => {
+            addSession(config, sessionId);
+            useSessionStore.getState().updateSessionConnection(sessionId, false, 'disconnected');
+          });
+          if (snapshot.activeSessionId) {
+            useSessionStore.getState().setActiveSession(snapshot.activeSessionId);
+          }
+        }
+      } catch {
+        localStorage.removeItem(WORKSPACE_KEY);
+      } finally {
+        if (!cancelled) setWorkspaceLoaded(true);
+      }
+    };
+    void restoreWorkspace();
+    return () => {
+      cancelled = true;
+    };
+  }, [addSession]);
+
+  useEffect(() => {
+    if (!workspaceLoaded) return;
+    const snapshot: WorkspaceSnapshot = {
+      activeSessionId,
+      sessions: sessions.map((session) => ({
+        sessionId: session.sessionId,
+        config: safeWorkspaceConfig(session.config),
+      })),
+    };
+    try {
+      localStorage.setItem(WORKSPACE_KEY, JSON.stringify(snapshot));
+    } catch {
+      // Workspace persistence is best-effort; active sessions continue normally.
+    }
+  }, [activeSessionId, sessions, workspaceLoaded]);
+
+  // Browser/WebView reloads destroy the React state while backend sessions are
+  // still live. Block accidental navigation whenever session tabs are open.
+  useEffect(() => {
+    const preventSessionReload = (event: BeforeUnloadEvent) => {
+      if (useSessionStore.getState().sessions.length === 0) return;
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', preventSessionReload);
+    return () => window.removeEventListener('beforeunload', preventSessionReload);
   }, []);
 
   const [broadcastInput, setBroadcastInput] = useState('');
@@ -248,7 +331,7 @@ function App() {
 
   // Load saved sessions from backend on mount
   useEffect(() => {
-    invoke<Array<{ id: string; name: string; items: Array<{ id: string; name: string; protocol: string; host?: string; port?: number; username?: string; authType?: string; deviceType: string; serialPort?: string; baudRate?: number; dataBits?: number; parity?: string; stopBits?: number; startupCommands?: string; tags?: string[]; command?: string; args?: string[]; cwd?: string; jumpHost?: string; jumpPort?: number; jumpUsername?: string }>; expanded: boolean }>>('list_folders')
+    invoke<Array<{ id: string; name: string; items: Array<{ id: string; name: string; protocol: string; host?: string; port?: number; username?: string; authType?: string; deviceType: string; deviceProfileId?: string; serialPort?: string; baudRate?: number; dataBits?: number; parity?: string; stopBits?: number; startupCommands?: string; tags?: string[]; command?: string; args?: string[]; cwd?: string; jumpHost?: string; jumpPort?: number; jumpUsername?: string }>; expanded: boolean }>>('list_folders')
       .then((folders) => {
         setFolders(
           folders.map((f) => ({
@@ -264,6 +347,7 @@ function App() {
               username: s.username,
               authType: (s.authType ?? 'password') as 'password' | 'key' | 'agent',
               deviceType: (s.deviceType ?? 'generic') as DeviceType,
+              deviceProfileId: s.deviceProfileId,
               serialPort: s.serialPort,
               baudRate: s.baudRate,
               dataBits: s.dataBits,
@@ -300,10 +384,15 @@ function App() {
   const centralAuthMode = useSettingsStore((s) => s.centralAuthMode);
   const centralToken = useSettingsStore((s) => s.centralToken);
   useEffect(() => {
-    if (!centralBaseUrl) return;
+    if (!centralBaseUrl) {
+      invoke('central_clear').catch(() => {});
+      return;
+    }
     if (centralAuthMode === 'token') {
       if (centralToken) {
         invoke('central_set_token', { baseUrl: centralBaseUrl, token: centralToken }).catch(() => {});
+      } else {
+        invoke('central_clear').catch(() => {});
       }
     } else if (centralClientId && centralClientSecret) {
       invoke('central_configure', {
@@ -311,6 +400,8 @@ function App() {
         clientId: centralClientId,
         clientSecret: centralClientSecret,
       }).catch(() => {});
+    } else {
+      invoke('central_clear').catch(() => {});
     }
   }, [centralBaseUrl, centralClientId, centralClientSecret, centralAuthMode, centralToken]);
 
@@ -329,6 +420,8 @@ function App() {
         // param). Honour the user's TLS-verification setting.
         acceptInvalidCerts: !verifyDeviceTls,
       }).catch((e) => notify.error('Apstra configuration failed', String(e)));
+    } else {
+      invoke('apstra_clear').catch(() => {});
     }
   }, [apstraHost, apstraUsername, apstraPassword, verifyDeviceTls]);
 
@@ -342,6 +435,8 @@ function App() {
         token: mistToken,
         acceptInvalidCerts: false,
       }).catch(() => {});
+    } else {
+      invoke('mist_clear').catch(() => {});
     }
   }, [mistBaseUrl, mistToken]);
 
@@ -542,16 +637,32 @@ function App() {
       const sessionId = config.id || generateId();
       const fullConfig = { ...config, id: sessionId };
 
-      // A saved host carries a stable id. If its tab is already open AND connected,
-      // just focus it — don't run a second backend connect against the live session
-      // id (which orphans the first connection and duplicates terminal output).
+      // A saved host carries a stable id. If its tab is already connected or
+      // in-flight (manual connect/auth retry/backend auto-reconnect), just focus
+      // it — don't run a second backend connect against the same session id.
       const existing = useSessionStore.getState().sessions.find((s) => s.sessionId === sessionId);
-      if (existing?.connected) {
+      const existingStatus =
+        existing?.connectionStatus ?? (existing?.connected ? 'connected' : 'disconnected');
+      if (
+        existing?.connected ||
+        existingStatus === 'connecting' ||
+        existingStatus === 'reconnecting'
+      ) {
         useSessionStore.getState().setActiveSession(sessionId);
         return;
       }
+      if (connectingIdsRef.current.has(sessionId)) {
+        if (!existing) {
+          addSession(fullConfig, sessionId);
+          useSessionStore.getState().updateSessionConnection(sessionId, false, 'connecting');
+        }
+        useSessionStore.getState().setActiveSession(sessionId);
+        return;
+      }
+      connectingIdsRef.current.add(sessionId);
 
       addSession(fullConfig, sessionId);
+      useSessionStore.getState().updateSessionConnection(sessionId, false, 'connecting');
 
       // For SSH with no inline password, try a saved vault credential.
       let password = fullConfig.password;
@@ -584,6 +695,7 @@ function App() {
             parity: fullConfig.parity,
             stop_bits: fullConfig.stopBits,
             device_type: fullConfig.deviceType,
+            device_profile_id: fullConfig.deviceProfileId,
             keep_alive_interval: useSettingsStore.getState().keepAliveInterval,
             auto_reconnect: useSettingsStore.getState().autoReconnect,
             command: fullConfig.command,
@@ -599,12 +711,16 @@ function App() {
         // The SSH auth dialog only makes sense for credential-based protocols.
         const authBased = fullConfig.protocol === 'ssh' || fullConfig.protocol === 'telnet';
         if (!result.success) {
+          const stillOpen = useSessionStore
+            .getState()
+            .sessions.some((s) => s.sessionId === sessionId);
+          if (!stillOpen) return;
+          useSessionStore.getState().updateSessionConnection(sessionId, false);
           if (authBased) {
             setPendingConnection(fullConfig);
             setShowAuthDialog(true);
           } else {
             // local/serial: no auth to retry — surface the failure.
-            useSessionStore.getState().updateSessionConnection(sessionId, false);
             notify.error(
               `Could not start ${fullConfig.name || fullConfig.protocol}`,
               result.error || 'The connection failed to start.'
@@ -633,19 +749,46 @@ function App() {
       } catch (err) {
         console.error('Connection error:', err);
         // For local/serial there's no auth to retry — surface the failure.
+        const stillOpen = useSessionStore
+          .getState()
+          .sessions.some((s) => s.sessionId === sessionId);
+        if (!stillOpen) return;
+        useSessionStore.getState().updateSessionConnection(sessionId, false);
         if (fullConfig.protocol === 'ssh' || fullConfig.protocol === 'telnet') {
           setPendingConnection(fullConfig);
           setShowAuthDialog(true);
         } else {
-          useSessionStore.getState().updateSessionConnection(sessionId, false);
           notify.error(
             `Could not start ${fullConfig.name || fullConfig.protocol}`,
             String(err)
           );
         }
+      } finally {
+        connectingIdsRef.current.delete(sessionId);
       }
     },
     [addSession, setPendingConnection, setShowAuthDialog, vaultUnlocked]
+  );
+
+  const handleDisconnect = useCallback(async (sessionId: string) => {
+    const session = useSessionStore.getState().sessions.find((s) => s.sessionId === sessionId);
+    try {
+      await invoke('disconnect', { sessionId });
+      useSessionStore.getState().updateSessionConnection(sessionId, false);
+      notify.info('Disconnected', `${session?.config.name || session?.config.host || 'Session'} is offline.`);
+    } catch (err) {
+      notify.warning('Disconnect failed', String(err));
+    }
+  }, []);
+
+  const handleReconnect = useCallback(
+    (sessionId: string) => {
+      const session = useSessionStore.getState().sessions.find((s) => s.sessionId === sessionId);
+      if (!session) return;
+      useSessionStore.getState().setActiveSession(sessionId);
+      handleConnect(session.config);
+    },
+    [handleConnect]
   );
 
   // One-click local shell — a "normal terminal" running the user's default shell.
@@ -662,8 +805,11 @@ function App() {
     async (creds: AuthCredentials, saveCredential: boolean) => {
       const pending = useSessionStore.getState().pendingConnection;
       if (!pending) return;
+      if (connectingIdsRef.current.has(pending.id)) return;
+      connectingIdsRef.current.add(pending.id);
 
       try {
+        useSessionStore.getState().updateSessionConnection(pending.id, false, 'connecting');
         const result = await invoke<{
           success: boolean;
           error?: string;
@@ -684,6 +830,7 @@ function App() {
             serial_port: pending.serialPort,
             baud_rate: pending.baudRate,
             device_type: pending.deviceType,
+            device_profile_id: pending.deviceProfileId,
             keep_alive_interval: useSettingsStore.getState().keepAliveInterval,
             auto_reconnect: useSettingsStore.getState().autoReconnect,
             jump_host: pending.jumpHost,
@@ -692,6 +839,15 @@ function App() {
             jump_password: pending.jumpPassword,
           },
         });
+        const currentState = useSessionStore.getState();
+        const stillOpen = currentState.sessions.some((s) => s.sessionId === pending.id);
+        const stillCurrentAuth = currentState.pendingConnection?.id === pending.id;
+        if (!stillOpen || !stillCurrentAuth) {
+          if (result.success) {
+            invoke('disconnect', { sessionId: pending.id }).catch(() => {});
+          }
+          return;
+        }
 
         if (result.success) {
           useSessionStore.getState().updateSessionConnection(pending.id, true);
@@ -713,12 +869,30 @@ function App() {
               setShowVaultUnlock(true);
             }
           }
+        } else {
+          useSessionStore.getState().updateSessionConnection(pending.id, false);
+          setPendingConnection(pending);
+          setShowAuthDialog(true);
+          notify.error(
+            'Authentication failed',
+            result.error || 'The device rejected the supplied credentials.'
+          );
         }
       } catch (err) {
         console.error('Auth connection error:', err);
+        useSessionStore.getState().updateSessionConnection(pending.id, false);
+        const currentState = useSessionStore.getState();
+        const stillOpen = currentState.sessions.some((s) => s.sessionId === pending.id);
+        const stillCurrentAuth = currentState.pendingConnection?.id === pending.id;
+        if (!stillOpen || !stillCurrentAuth) return;
+        setPendingConnection(pending);
+        setShowAuthDialog(true);
+        notify.error('Authentication failed', String(err));
+      } finally {
+        connectingIdsRef.current.delete(pending.id);
       }
     },
-    [setShowAuthDialog, vaultUnlocked, setShowVaultUnlock]
+    [setPendingConnection, setShowAuthDialog, vaultUnlocked, setShowVaultUnlock]
   );
 
   return (
@@ -890,7 +1064,12 @@ function App() {
         {/* Terminal Area */}
         <div className="flex-1 flex flex-col min-w-0">
           {/* Tabs */}
-          <TerminalTabs onPopOut={popOutSession} />
+          <TerminalTabs
+            onPopOut={popOutSession}
+            onDisconnect={handleDisconnect}
+            onReconnect={handleReconnect}
+            onMapDevice={setMappingSessionId}
+          />
 
           {/* Multi-send bar — run one command on all connected sessions or a subset */}
           {broadcastMode && (() => {
@@ -1125,6 +1304,10 @@ function App() {
                             sessionId={s.sessionId}
                             deviceType={s.config.deviceType}
                             onSend={(data) => {
+                              const current = useSessionStore
+                                .getState()
+                                .sessions.find((session) => session.sessionId === s.sessionId);
+                              if (!current?.connected) return;
                               invoke('send_data', { sessionId: s.sessionId, data }).catch(console.error);
                             }}
                           />
@@ -1211,7 +1394,11 @@ function App() {
               </div>
 
               {/* Status Bar */}
-              <StatusBar />
+              <StatusBar
+                onDisconnect={handleDisconnect}
+                onReconnect={handleReconnect}
+                onMapDevice={setMappingSessionId}
+              />
             </div>
 
             {/* Config Editor Panel */}
@@ -1239,6 +1426,7 @@ function App() {
       <ApstraBrowser />
       <QuickConnect onConnect={handleConnect} />
       <SshAuthDialog onAuthenticate={handleAuthenticate} />
+      <DeviceMapper sessionId={mappingSessionId} onClose={() => setMappingSessionId(null)} />
       <SettingsPanel />
       <DialogHost />
       <Toaster />
