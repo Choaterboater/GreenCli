@@ -168,41 +168,56 @@ Already had: search overlay, multi-send/broadcast, vault (≈password manager), 
 - **Paste-guard setting** — per-user toggle + line-count threshold.
 - **Silence/activity notifications** — notify when a long command finishes on a background tab.
 
+## ✅ Done — Pass 13 (adversarial bug scrub #2 + features, 2026-06-11)
+
+A 49-agent review (8 finder dimensions, every finding adversarially verified) confirmed
+33 issues (27 other claims refuted); all 33 are fixed:
+
+### Critical / high correctness
+- **SSH dead-peer detection actually works now**: a retained `data_sender` clone kept every SSH output channel open forever, so server-side drops never EOF'd the supervisor — no "disconnected" event, no auto-reconnect, frozen tab showing connected. The handler now owns the only sender.
+- **One wedged session can no longer freeze every tab**: removed the outer `Arc<AsyncMutex<SessionManager>>` (manager has internal per-session locks); `send_data`/`resize`/`disconnect` no longer serialize behind a global lock held across network writes.
+- **Teardown can't wedge**: `remove_session` removes from the map first, then disconnects under a 5s timeout — a send blocked on an exhausted SSH window no longer makes Disconnect hang forever.
+- **Supervisor ownership generations**: reconnect-vs-user-reconnect races no longer let an old supervisor kill the new connection (generation tokens in `SessionManager`; `remove_session_if`/`contains_gen`).
+- **Port-forwards torn down on peer-close/reconnect** (zombie listeners on dead handles).
+- **`sendAndCapture` re-run bug**: running the same command twice with identical output returned an empty capture (tail-anchored `lastIndexOf`); Intent re-evaluation / Bulk Runner / AI captures now slice by length with a trim-aware fallback.
+- **AI panel unmount cancels the tool loop** — closing the panel mid-run no longer leaves the AI typing commands into the live device with no Stop button.
+- **`cli_passthrough` hardened**: 180s timeout + `kill_on_drop` (no more permanently hung AI chat / leaked shells); prompt truncation now keeps the tail (the user's question) instead of cutting it.
+- **Aruba Central creds mode**: client-credentials tokens are now minted from HPE GreenLake SSO (`sso.common.cloud.hpe.com`) with legacy fallback + an actionable error (classic apigw never supported `client_credentials` — the old code could never authenticate).
+- **Font-size zoom resizes the PTY** (`term.onResize` → `resize_terminal`); ANSI sequences split across highlight batches no longer corrupt colors.
+- **Confirm dialogs take keyboard focus** — Enter/Escape answer the dialog instead of leaking keystrokes (including that Enter!) to the live device behind the paste guard.
+
+### Medium / low
+- Backup import no longer silently drops AI agents + session-agent assignments; built-in snippets have stable IDs (+ persist migration) so merge-imports don't duplicate them.
+- Intent-pack matchers no longer always-violate on healthy devices (Junos BGP header, CX interface names) — per-line anchored regexes, validated against realistic output.
+- Crashed MCP servers are reaped (dead flag; status/tools reflect reality; pending-map leak fixed).
+- Telnet IAC carry: trailing `IAC IAC` escapes and split subnegotiations no longer corrupt/drop bytes.
+- Local-shell tabs reap their PTY children (no zombie processes); telnet/serial/local emit `connected` before the forwarder (no ghost-connected tab on instant death).
+- Popped-out sessions: Ctrl+1-9/Ctrl+Tab/palette skip or focus them (no blank main area); Ctrl+W can't disconnect under a live pop-out.
+- Split-pane sessions aren't flagged as "background activity"; `terminal_data` listener no longer leaks on fast unmount; semantic-link off-by-one fixed.
+- API Explorer: login failures render + toast with a busy spinner (were 100% silent); StrictMode no longer wipes saved requests; hover-white-on-white fixed.
+- Light theme: AI headings/bold and Monaco editor now follow the theme (`aruba-light`).
+- Settings/Bulk Runner/Device Mapper dismiss on Escape + backdrop click; paste-history popover got a click-away layer; intent delete asks for confirmation.
+
+### Features
+- **Telnet NAWS (RFC 1073)** — window size advertised on connect and on every resize (with IAC escaping).
+- **AOS-CX CSRF tokens** — captured at login, attached to all mutating REST requests (writes work on 10.09+ firmware; older firmware unaffected).
+- **Recent connections** — new `recentStore` (capped, deduped); hero shows the last 5 with vendor dots + relative time, palette gets "Recent:" entries; one click reconnects.
+- **Terminal color schemes** — Settings → Appearance: GreenCLI (follows app theme), Dracula, Nord, Solarized Dark/Light, Gruvbox Dark, One Dark.
+
+### Cleanup
+- Removed the dead app-as-MCP-server stub end-to-end (`mcp/server.rs`, 5 unused Tauri commands, `AppState.mcp_server`).
+- Removed the dead `anthropicApiKey` settings field and the no-op Word Wrap toggle.
+
+All green: `cargo check` + `tsc` + `vite build`; shell/Settings smoke-tested in-browser.
+
 ## ⏭️ Next — remaining backlog
 
-1. **SSH config import (`~/.ssh/config`) + host-key management UI** — impact HIGH, effort M. Parse user's SSH config into saved sessions; a UI to view/approve/pin/remove known_hosts fingerprints (TOFU store already exists in `ssh/known_hosts.rs`).
-2. **Session tags + searchable/filterable host list** — HIGH, M. Add tags to StoredSession; sidebar filter by tag/host.
-3. **SSH port forwarding / tunnels (-L / -R / -D SOCKS)** — HIGH, L. russh `channel_open_direct_tcpip` (jump-host already uses it); per-session forward config + a tunnels UI.
-4. **Streaming AI responses (token-by-token) + live tool-call status** — HIGH, L. SSE from Rust (`ai_chat` → events) for anthropic + OpenAI-compat stream:true.
-5. **AOS-8 (Mobility Conductor/Controller) + AOS-S structured REST tools** — HIGH, L. New Rust REST clients + AI tools (parallel to the AOS-CX tool).
-6. **Juniper Apstra integration** — HIGH, XL. Apstra AOS REST as a built-in tool and/or an Apstra MCP server (plugs into the new MCP client). Same tier as Aruba Central.
-7. **SFTP drag-drop + ops (mkdir/rename/delete/chmod)** — MEDIUM, M.
-8. **SSH agent auth** — finish the `AuthType::Agent` stub — MEDIUM, M.
+- **Vault auto-lock on idle** — MEDIUM, S.
+- **SFTP transfer progress/queue + cancel; chmod** — MEDIUM, M (rename/delete/mkdir/drag-drop ✅ done).
+- **Mist Cloud API catalog** in the API Explorer (token auth) + Junos NETCONF. _(Mist reachable via MCP today.)_
+- **Classic Central 3-leg OAuth** (username/password/customer_id → auth code → refresh) if creds-mode-on-classic is wanted; today: paste-token mode for classic, client-credentials for new Central/GLP.
+- **Parallel bulk execution** (Bulk Runner is deliberately sequential today).
+- iTerm2 parity leftovers: regex toggle in search, smart selection (`wordSeparator`), restore window arrangement, drag-tab-out, per-pane grid beyond 4.
+- cencli-inspired Central items (output formats/CSV, multi-account, device "do" actions via MCP, batch ops).
 
-## ⏭️ Next (earlier queue)
-
-### Correctness (remaining HIGH/CRITICAL)
-- AI tool-loop iteration cap discards already-gathered command output (`AiAssistant.tsx`) — return partial results instead of a generic error.
-- Config Editor "Pull": wrong paging command for AOS-CX + paging never restored; "Send" has no connected-check / confirm before pushing to a live device.
-- API Explorer Base-URL field is ignored (host/version hardcoded in Rust).
-- Stale SSH connection left in manager during reconnect backoff (send_data lost mid-backoff).
-- `StoredSession` drops jump-host / keep-alive / command on save (extend struct + load path).
-
-### Features (must-have for category leadership)
-- SSH **port forwarding / tunnels** (-L / -R / -D SOCKS).
-- Import `~/.ssh/config` + known_hosts/keys; **host-key management UI**.
-- SSH **agent** auth; keyboard-interactive / 2FA (RADIUS/TACACS+). _(key-file picker ✅ done)_
-- **Mist Cloud** API catalog in the API Explorer (token auth) + Junos NETCONF. _(Mist tools now reachable via MCP)_
-- **Juniper Apstra** integration — intent-based DC fabric controller (Apstra AOS REST). Same tier as Aruba Central; do it as an Apstra MCP server (plug into the new MCP client) or a built-in Apstra REST tool. _(Junos device CLI already covered via terminal.)_
-- **AOS-8 / AOS-S structured REST** tools (decided: build in-app REST tools); AOS-CX REST already exposed as an AI tool.
-- Streaming AI responses + cancel; parallel bulk execution.
-- Session tags + searchable host list; drag-and-drop org; recent-connections.
-
-## 🗒️ Backlog
-- Telnet NAWS; serial line settings (data/parity/stop) in UI; CX CSRF for writes.
-- MCP *server* stub (app-as-MCP-server) is still dead code — wire it to expose live sessions, or remove. (The MCP *client* — app using external MCP servers — is now done.)
-- Theme/color-scheme picker; settings import/export; vault auto-lock on idle.
-- SFTP rename/delete/mkdir + transfer progress/queue; drag-drop upload.
-- `anthropicApiKey` dead field cleanup; Word Wrap setting (no xterm equivalent — remove or repurpose).
-
-_Full per-finding detail lives in the audit output; ping to regenerate._
+_Full per-finding detail lives in the audit outputs; ping to regenerate._
