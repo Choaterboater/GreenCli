@@ -28,6 +28,7 @@ import { sleep, stripAnsi as stripAnsiUtil, hasAnsi, sendAndCapture } from '../u
 import { useResizablePanel } from '../hooks/useResizablePanel';
 import { askConfirm } from '../store/dialogStore';
 import { profileForSession } from '../utils/deviceProfiles';
+import { ArubaHighlighter } from '../syntax';
 import { useTheme } from '../hooks/useTheme';
 
 // ─── Tauri / browser file I/O ───
@@ -166,6 +167,15 @@ function detectLanguage(filePath: string): string {
 }
 
 // ─── Language list for picker ───
+
+// Same vendor detection the terminal uses, so pasting a device config into a
+// blank editor lights up with CLI-style colors without picking a language.
+const DEVICE_DETECTOR = ArubaHighlighter.forDeviceType('generic');
+function detectConfigLanguage(text: string): string | null {
+  if (text.length < 40) return null;
+  const detected = DEVICE_DETECTOR.detectDeviceType(text.slice(0, 16_000));
+  return detected === 'generic' ? null : detected;
+}
 
 const LANGUAGE_LIST = [
   { id: 'aruba-cx',         label: 'Aruba CX' },
@@ -583,10 +593,13 @@ export default function ConfigEditor() {
 
   // Start blank in Plain Text — no vendor assumed until the user picks a
   // language/template (or opens a file, which infers it from the extension).
+  // Typed/pasted device config still auto-detects (see onChange) unless the
+  // user explicitly chose a language from the picker.
   const [content, setContent] = useState<string>('');
   const contentRef = useRef(content);
 
   const [language, setLanguage] = useState('plaintext');
+  const langExplicitRef = useRef(false);
   const [currentFilePath, setCurrentFilePath] = useState<string | null>(null);
   const [isDirty, setIsDirty] = useState(false);
 
@@ -1107,7 +1120,7 @@ export default function ConfigEditor() {
                   {filteredLangs.map((l) => (
                     <button
                       key={l.id}
-                      onClick={() => { setLanguage(l.id); setShowLangPicker(false); }}
+                      onClick={() => { setLanguage(l.id); langExplicitRef.current = true; setShowLangPicker(false); }}
                       className={`flex items-center w-full px-3 py-1.5 text-xs text-left transition-colors ${
                         language === l.id
                           ? 'text-[var(--accent)] bg-[#58a6ff15]'
@@ -1294,7 +1307,15 @@ export default function ConfigEditor() {
           language={language}
           value={content}
           theme={editorTheme}
-          onChange={(v) => { setContent(v ?? ''); setIsDirty(true); }}
+          onChange={(v) => {
+            const next = v ?? '';
+            setContent(next);
+            setIsDirty(true);
+            if (language === 'plaintext' && !langExplicitRef.current) {
+              const detected = detectConfigLanguage(next);
+              if (detected) setLanguage(detected);
+            }
+          }}
           beforeMount={defineEditorThemes}
           onMount={handleEditorMount}
           options={{
