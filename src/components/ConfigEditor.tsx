@@ -19,6 +19,8 @@ import {
   Minimize2,
   ListTree,
   AlertTriangle,
+  Plus,
+  RefreshCw,
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/tauri';
 import { open as openDialog, save as saveDialog } from '@tauri-apps/api/dialog';
@@ -26,7 +28,8 @@ import { useSessionStore } from '../store/sessionStore';
 import { useSettingsStore } from '../store/settingsStore';
 import { sleep, stripAnsi as stripAnsiUtil, hasAnsi, sendAndCapture } from '../utils/terminal';
 import { useResizablePanel } from '../hooks/useResizablePanel';
-import { askConfirm } from '../store/dialogStore';
+import { askConfirm, askPrompt } from '../store/dialogStore';
+import { generateId } from '../utils';
 import { profileForSession } from '../utils/deviceProfiles';
 import { ArubaHighlighter } from '../syntax';
 import { useTheme } from '../hooks/useTheme';
@@ -99,6 +102,41 @@ function browserSave(content: string, filename: string) {
 
 function basename(path: string): string {
   return path.replace(/\\/g, '/').split('/').pop() || path;
+}
+
+// ─── Editor buffers (tabs) ───
+
+interface EditorBuffer {
+  id: string;
+  name: string;
+  content: string;
+  language: string;
+  filePath: string | null;
+  dirty: boolean;
+  /** True once the user picked a language by hand — suppresses auto-detect. */
+  langExplicit: boolean;
+}
+
+function makeBuffer(name: string, overrides: Partial<EditorBuffer> = {}): EditorBuffer {
+  return {
+    id: generateId(),
+    name,
+    content: '',
+    language: 'plaintext',
+    filePath: null,
+    dirty: false,
+    langExplicit: false,
+    ...overrides,
+  };
+}
+
+// "untitled", then "untitled 2", … skipping names already taken by open tabs.
+function untitledName(buffers: EditorBuffer[]): string {
+  const names = new Set(buffers.map((b) => b.name));
+  if (!names.has('untitled')) return 'untitled';
+  let n = 2;
+  while (names.has(`untitled ${n}`)) n += 1;
+  return `untitled ${n}`;
 }
 
 // ─── Language detection ───
@@ -460,6 +498,65 @@ set interfaces \${interface} unit 0 family ethernet-switching vlan members \${vl
   'Junos/Mist: commit confirmed': 'commit confirmed 5 comment "GreenCLI change"\n',
 };
 
+// ─── Pull menu (per device type) ───
+
+// Per-vendor paging control + running-config command. AOS-CX/AOS-S use
+// `no page` (NOT `no paging`); ArubaOS controllers use `no paging`; Junos
+// pipes `| no-more`. Paging is restored afterward so the live session
+// isn't left changed.
+const VENDOR_PAGING: Record<string, { disable?: string; restore?: string; show: string }> = {
+  'aruba-cx': { disable: 'no page', restore: 'page', show: 'show running-config' },
+  'aruba-aos-s': { disable: 'no page', restore: 'page', show: 'show running-config' },
+  'aruba-controller': { disable: 'no paging', restore: 'paging', show: 'show running-config' },
+  'aruba-ap': { show: 'show running-config' },
+  'juniper-junos': { show: 'show configuration | no-more' },
+  mist: { show: 'show configuration | no-more' },
+  generic: { show: 'show running-config' },
+};
+
+// `command: null` = the vendor's running-config pull (the split button's default
+// action — honors per-profile overrides and records the diff baseline).
+interface PullMenuItem {
+  label: string;
+  command: string | null;
+}
+
+const JUNOS_PULL_MENU: PullMenuItem[] = [
+  { label: 'Configuration (set)', command: 'show configuration | display set' },
+  { label: 'Configuration', command: 'show configuration' },
+  { label: 'Version', command: 'show version' },
+  { label: 'Interfaces', command: 'show interfaces terse' },
+];
+
+const PULL_MENU: Record<string, PullMenuItem[]> = {
+  'aruba-cx': [
+    { label: 'Running config', command: null },
+    { label: 'Startup config', command: 'show startup-config' },
+    { label: 'Version', command: 'show version' },
+    { label: 'Interfaces', command: 'show interface brief' },
+    { label: 'LLDP neighbors', command: 'show lldp neighbor-info' },
+    { label: 'VSX status', command: 'show vsx status' },
+  ],
+  'aruba-aos-s': [
+    { label: 'Running config', command: null },
+    { label: 'Startup config', command: 'show config' },
+    { label: 'Version', command: 'show version' },
+    { label: 'Interfaces', command: 'show interfaces brief' },
+  ],
+  'aruba-controller': [
+    { label: 'Running config', command: null },
+    { label: 'Version', command: 'show version' },
+    { label: 'AP database', command: 'show ap database' },
+  ],
+  'aruba-ap': [
+    { label: 'Running config', command: null },
+    { label: 'Version', command: 'show version' },
+  ],
+  'juniper-junos': JUNOS_PULL_MENU,
+  mist: JUNOS_PULL_MENU,
+  generic: [{ label: 'Running config', command: null }],
+};
+
 interface OutlineItem {
   line: number;
   label: string;
@@ -591,17 +688,58 @@ export default function ConfigEditor() {
   // With no sessions open, fill the whole area so it works as a plain text editor.
   const fullWidth = sessions.length === 0;
 
-  // Start blank in Plain Text — no vendor assumed until the user picks a
-  // language/template (or opens a file, which infers it from the extension).
-  // Typed/pasted device config still auto-detects (see onChange) unless the
-  // user explicitly chose a language from the picker.
-  const [content, setContent] = useState<string>('');
+  // Editor buffers (tabs). Each starts blank in Plain Text — no vendor assumed
+  // until the user picks a language/template (or opens a file, which infers it
+  // from the extension). Typed/pasted device config still auto-detects (see
+  // onChange) unless the user explicitly chose a language from the picker
+  // (per-buffer `langExplicit`). The original single-buffer names —
+  // content/language/currentFilePath/isDirty and their setters — are kept as
+  // derived views of the ACTIVE buffer so the existing call sites stay unchanged.
+  const [buffers, setBuffers] = useState<EditorBuffer[]>(() => [makeBuffer('untitled')]);
+  const [activeId, setActiveId] = useState<string>(() => buffers[0].id);
+  const active = buffers.find((b) => b.id === activeId) ?? buffers[0];
+  const content = active.content;
+  const language = active.language;
+  const currentFilePath = active.filePath;
+  const isDirty = active.dirty;
+
+  const buffersRef = useRef(buffers);
+  useEffect(() => { buffersRef.current = buffers; }, [buffers]);
+  const activeIdRef = useRef(active.id);
+  useEffect(() => { activeIdRef.current = active.id; }, [active.id]);
+  // If the active id ever dangles (its tab was closed), snap to the first buffer.
+  useEffect(() => {
+    if (!buffers.some((b) => b.id === activeId)) setActiveId(buffers[0].id);
+  }, [buffers, activeId]);
+
   const contentRef = useRef(content);
 
-  const [language, setLanguage] = useState('plaintext');
-  const langExplicitRef = useRef(false);
-  const [currentFilePath, setCurrentFilePath] = useState<string | null>(null);
-  const [isDirty, setIsDirty] = useState(false);
+  // Patch the ACTIVE buffer. The memoized handlers below resolve the target id
+  // through a ref so they never write into a stale tab.
+  const patchActive = useCallback(
+    (patch: Partial<EditorBuffer> | ((b: EditorBuffer) => Partial<EditorBuffer>)) => {
+      setBuffers((prev) =>
+        prev.map((b) =>
+          b.id === activeIdRef.current
+            ? { ...b, ...(typeof patch === 'function' ? patch(b) : patch) }
+            : b
+        )
+      );
+    },
+    []
+  );
+  const setContent = useCallback(
+    (next: string | ((prev: string) => string)) =>
+      patchActive((b) => ({ content: typeof next === 'function' ? next(b.content) : next })),
+    [patchActive]
+  );
+  const setLanguage = useCallback((lang: string) => patchActive({ language: lang }), [patchActive]);
+  const setIsDirty = useCallback((dirty: boolean) => patchActive({ dirty }), [patchActive]);
+  const setCurrentFilePath = useCallback(
+    (filePath: string | null) =>
+      patchActive((b) => ({ filePath, name: filePath ? basename(filePath) : b.name })),
+    [patchActive]
+  );
 
   // Guard any action that replaces the editor contents — this tool authors device
   // config, so silently discarding unsaved edits is real data loss. Read isDirty via
@@ -619,28 +757,68 @@ export default function ConfigEditor() {
       danger: true,
     }));
 
+  // Per-tab variant for closing a specific (possibly background) buffer.
+  const confirmDiscardBuf = async (buf: EditorBuffer): Promise<boolean> =>
+    !buf.dirty ||
+    (await askConfirm({
+      title: 'Discard unsaved changes?',
+      message: `"${buf.name}" has unsaved edits. They will be lost.`,
+      confirmLabel: 'Discard',
+      danger: true,
+    }));
+
   const [showTemplates, setShowTemplates] = useState(false);
   const [showSnippets, setShowSnippets] = useState(false);
   const [showOutline, setShowOutline] = useState(false);
   const [showLangPicker, setShowLangPicker] = useState(false);
+  const [showPullMenu, setShowPullMenu] = useState(false);
   const [langSearch, setLangSearch] = useState('');
 
   const [sending, setSending] = useState(false);
+  const [pulling, setPulling] = useState(false);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
   const sendingRef = useRef(false);
 
-  // Holds the original (uncleaned) text when an opened file had terminal escapes,
-  // so the user can toggle back to the raw capture.
-  const rawCaptureRef = useRef<string | null>(null);
-  const [viewingRaw, setViewingRaw] = useState(false);
+  // Holds the original (uncleaned) text per buffer when an opened file had
+  // terminal escapes, so the user can toggle back to the raw capture.
+  const rawCapturesRef = useRef<Map<string, string>>(new Map());
+  const [viewingRawIds, setViewingRawIds] = useState<Record<string, boolean>>({});
+  const viewingRaw = !!viewingRawIds[active.id];
 
   // Diff mode: compare current editor content against a loaded baseline.
   const [diffMode, setDiffMode] = useState(false);
   const [diffOriginal, setDiffOriginal] = useState('');
 
   const editorRef = useRef<MonacoEditor.IStandaloneCodeEditor | null>(null);
+  const monacoRef = useRef<typeof import('monaco-editor') | null>(null);
   const saveFileRef = useRef<(forcePicker?: boolean) => Promise<void>>();
   const openFileRef = useRef<() => Promise<void>>();
+
+  // path={buffer.id} gives each tab its own Monaco model, but the library never
+  // disposes detached models — without this, every closed tab's full text stays
+  // in monaco's global registry for the app's lifetime.
+  const disposeBufferModel = useCallback((id: string) => {
+    const monaco = monacoRef.current;
+    if (!monaco) return;
+    try {
+      const model =
+        monaco.editor.getModel(monaco.Uri.parse(id)) ??
+        monaco.editor.getModels().find((m) => m.uri.path === `/${id}` || m.uri.toString() === id) ??
+        null;
+      model?.dispose();
+    } catch {
+      // best effort — a leaked model is preferable to a crash on close
+    }
+  }, []);
+
+  // Panel close unmounts the component; Monaco only disposes the attached
+  // model, so sweep the rest here.
+  useEffect(
+    () => () => {
+      for (const b of buffersRef.current) disposeBufferModel(b.id);
+    },
+    [disposeBufferModel]
+  );
 
   const activeSession = sessions.find((s) => s.sessionId === activeSessionId);
   const outlineItems = useMemo(() => buildOutline(content), [content]);
@@ -653,60 +831,111 @@ export default function ConfigEditor() {
     setTimeout(() => setStatusMsg(null), 3000);
   };
 
+  // ─── Buffer (tab) operations ───
+
+  const openInNewTab = useCallback((buf: Omit<EditorBuffer, 'id'>) => {
+    const next: EditorBuffer = { id: generateId(), ...buf };
+    setBuffers((prev) => [...prev, next]);
+    setActiveId(next.id);
+    return next;
+  }, []);
+
+  const newTab = useCallback(() => {
+    openInNewTab({
+      name: untitledName(buffersRef.current),
+      content: '',
+      language: 'plaintext',
+      filePath: null,
+      dirty: false,
+      langExplicit: false,
+    });
+    // Move focus into the editor so the user can type immediately — leaving it
+    // on the + button means Space/Enter keeps spawning tabs.
+    setTimeout(() => editorRef.current?.focus(), 0);
+  }, [openInNewTab]);
+
+  const closeTab = useCallback(async (id: string) => {
+    const buf = buffersRef.current.find((b) => b.id === id);
+    if (!buf) return;
+    if (!(await confirmDiscardBuf(buf))) return;
+    disposeBufferModel(id);
+    rawCapturesRef.current.delete(id);
+    setViewingRawIds((prev) => {
+      if (!(id in prev)) return prev;
+      const { [id]: _closed, ...rest } = prev;
+      return rest;
+    });
+    const bufs = buffersRef.current;
+    const idx = bufs.findIndex((b) => b.id === id);
+    if (idx === -1) return;
+    let next = bufs.filter((b) => b.id !== id);
+    // Closing the last tab leaves a fresh blank one instead of an empty strip.
+    if (next.length === 0) next = [makeBuffer('untitled')];
+    setBuffers(next);
+    if (activeIdRef.current === id) setActiveId(next[Math.min(idx, next.length - 1)].id);
+  }, []);
+
   // ─── File open ───
 
-  // Apply terminal-capture cleaning if needed; returns the text to display.
-  const ingest = (name: string, text: string) => {
-    if (looksLikeTerminalCapture(text)) {
-      rawCaptureRef.current = text;
-      setViewingRaw(false);
-      const cleaned = stripTerminalSequences(text);
-      setContent(cleaned);
+  // Load opened text into the active buffer if it's blank and clean, otherwise
+  // into a new tab. Applies terminal-capture cleaning if needed.
+  const ingest = useCallback((name: string, filePath: string | null, text: string) => {
+    const isCapture = looksLikeTerminalCapture(text);
+    const patch = {
+      name,
+      filePath,
+      content: isCapture ? stripTerminalSequences(text) : text,
+      language: detectLanguage(name),
+      dirty: false,
+      langExplicit: false,
+    };
+    const activeBuf = buffersRef.current.find((b) => b.id === activeIdRef.current);
+    let targetId: string;
+    if (activeBuf && !activeBuf.dirty && activeBuf.content === '' && !activeBuf.filePath) {
+      targetId = activeBuf.id;
+      setBuffers((prev) => prev.map((b) => (b.id === targetId ? { ...b, ...patch } : b)));
+    } else {
+      targetId = openInNewTab(patch).id;
+    }
+    setViewingRawIds((prev) => (prev[targetId] ? { ...prev, [targetId]: false } : prev));
+    if (isCapture) {
+      rawCapturesRef.current.set(targetId, text);
       showStatus(`Opened ${name} — cleaned terminal escapes (toggle Raw to see original)`);
     } else {
-      rawCaptureRef.current = null;
-      setViewingRaw(false);
-      setContent(text);
+      rawCapturesRef.current.delete(targetId);
       showStatus(`Opened ${name}`);
     }
-  };
+  }, [openInNewTab]);
 
   const openFile = useCallback(async () => {
-    if (!(await confirmDiscard())) return;
     try {
       if (isTauri) {
         const path = await tauriOpen();
         if (!path) return;
         const text = await tauriReadText(path);
-        setLanguage(detectLanguage(path));
-        setCurrentFilePath(path);
-        setIsDirty(false);
-        ingest(basename(path), text);
+        ingest(basename(path), path, text);
       } else {
         const result = await browserOpen();
         if (!result) return;
-        setLanguage(detectLanguage(result.name));
-        setCurrentFilePath(result.name);
-        setIsDirty(false);
-        ingest(result.name, result.content);
+        ingest(result.name, result.name, result.content);
       }
     } catch (e) {
       showStatus(`Open failed: ${e}`);
     }
-  }, []);
+  }, [ingest]);
 
-  // Toggle between the cleaned view and the raw capture.
-  const toggleRaw = useCallback(() => {
-    const raw = rawCaptureRef.current;
+  // Toggle the active buffer between the cleaned view and the raw capture.
+  const toggleRaw = () => {
+    const raw = rawCapturesRef.current.get(active.id);
     if (raw == null) return;
     if (viewingRaw) {
       setContent(stripTerminalSequences(raw));
-      setViewingRaw(false);
+      setViewingRawIds((prev) => ({ ...prev, [active.id]: false }));
     } else {
       setContent(raw);
-      setViewingRaw(true);
+      setViewingRawIds((prev) => ({ ...prev, [active.id]: true }));
     }
-  }, [viewingRaw]);
+  };
 
   // Manually strip escapes from whatever is currently in the editor.
   const cleanCurrent = useCallback(() => {
@@ -751,61 +980,82 @@ export default function ConfigEditor() {
     setShowOutline(false);
   }, []);
 
-  // Pull the active device's running-config into the editor (terminal read-back).
-  const pullRunningConfig = useCallback(async () => {
+  // Pull a command's output from the active device into a NEW editor tab
+  // (terminal read-back, paging disabled/restored around the capture).
+  // `command == null` pulls the vendor running-config — honoring per-profile
+  // overrides — and records it as the diff baseline, like the old Pull button.
+  const pullCommand = useCallback(async (label: string, command: string | null) => {
     if (!activeSession?.connected) {
       showStatus('Connect a session first');
       return;
     }
-    if (!(await confirmDiscard())) return;
     const sid = activeSession.sessionId;
-    showStatus('Pulling running-config…');
+    showStatus(`Pulling ${label}…`);
+    setPulling(true);
     try {
-      // Per-vendor paging control + running-config command. AOS-CX/AOS-S use
-      // `no page` (NOT `no paging`); ArubaOS controllers use `no paging`; Junos
-      // pipes `| no-more`. Paging is restored afterward so the live session
-      // isn't left changed.
       const profile = profileForSession(activeSession.config, settings.customDeviceProfiles);
-      const PAGING: Record<string, { disable?: string; restore?: string; show: string }> = {
-        'aruba-cx': { disable: 'no page', restore: 'page', show: 'show running-config' },
-        'aruba-aos-s': { disable: 'no page', restore: 'page', show: 'show running-config' },
-        'aruba-controller': { disable: 'no paging', restore: 'paging', show: 'show running-config' },
-        'aruba-ap': { show: 'show running-config' },
-        'juniper-junos': { show: 'show configuration | no-more' },
-        mist: { show: 'show configuration | no-more' },
-        generic: { show: 'show running-config' },
-      };
-      const vp = {
-        ...(PAGING[profile.deviceType] ?? PAGING.generic),
-        show: profile.runningConfigCommand || (PAGING[profile.deviceType] ?? PAGING.generic).show,
-        disable: profile.pagingDisableCommand ?? (PAGING[profile.deviceType] ?? PAGING.generic).disable,
-        restore: profile.pagingRestoreCommand ?? (PAGING[profile.deviceType] ?? PAGING.generic).restore,
-      };
-      if (vp.disable) {
-        await invoke('send_data', { sessionId: sid, data: vp.disable + '\r' });
+      const base = VENDOR_PAGING[profile.deviceType] ?? VENDOR_PAGING.generic;
+      const disable = profile.pagingDisableCommand ?? base.disable;
+      const restore = profile.pagingRestoreCommand ?? base.restore;
+      let show = command ?? (profile.runningConfigCommand || base.show);
+      // Junos has no session paging toggle here — pipe `| no-more` like the
+      // built-in running-config pull does so long output isn't paged.
+      if (
+        command &&
+        (profile.deviceType === 'juniper-junos' || profile.deviceType === 'mist') &&
+        /^show\b/i.test(command) &&
+        !/\|\s*no-more\b/i.test(command)
+      ) {
+        show = `${command} | no-more`;
+      }
+      if (disable) {
+        await invoke('send_data', { sessionId: sid, data: disable + '\r' });
         await sleep(300);
       }
-      const out = await sendAndCapture(sid, vp.show);
-      if (vp.restore) {
-        await invoke('send_data', { sessionId: sid, data: vp.restore + '\r' });
+      const out = await sendAndCapture(sid, show);
+      if (restore) {
+        await invoke('send_data', { sessionId: sid, data: restore + '\r' });
         await sleep(150);
       }
       if (!out) {
         showStatus('No output captured');
         return;
       }
-      rawCaptureRef.current = null;
-      setViewingRaw(false);
-      setContent(out);
-      setDiffOriginal(out);
-      setLanguage(profile.deviceType === 'generic' ? 'plaintext' : profile.deviceType);
-      setCurrentFilePath(null);
-      setIsDirty(true);
-      showStatus('Running-config pulled; baseline saved');
+      // Device grammars highlight show output fine (same as the terminal), so
+      // show-command tabs get the session's device language too. dirty:true —
+      // the capture exists nowhere else, so closing/clearing it must confirm
+      // (same protection the old single-buffer pull had).
+      openInNewTab({
+        name: (command ?? show).replace(/\s*\|\s*no-more\s*$/i, '').trim() || label,
+        content: out,
+        language: profile.deviceType === 'generic' ? 'plaintext' : profile.deviceType,
+        filePath: null,
+        dirty: true,
+        langExplicit: false,
+      });
+      if (command == null) {
+        setDiffOriginal(out);
+        showStatus('Running-config pulled; baseline saved');
+      } else {
+        showStatus(`Pulled ${label}`);
+      }
     } catch (e) {
       showStatus(`Pull failed: ${e}`);
+    } finally {
+      setPulling(false);
     }
-  }, [activeSession, settings.customDeviceProfiles]);
+  }, [activeSession, settings.customDeviceProfiles, openInNewTab]);
+
+  const pullCustom = useCallback(async () => {
+    const cmd = (await askPrompt({
+      title: 'Pull custom command',
+      message: 'The command output is captured into a new editor tab.',
+      placeholder: 'show …',
+      confirmLabel: 'Pull',
+    }))?.trim();
+    if (!cmd) return;
+    await pullCommand(cmd, cmd);
+  }, [pullCommand]);
 
   // Open a baseline file and diff it against the current editor content.
   const openDiffAgainst = useCallback(async () => {
@@ -832,30 +1082,34 @@ export default function ConfigEditor() {
   // ─── File save ───
 
   const saveFile = useCallback(async (forcePicker = false) => {
+    // Capture the buffer being saved up front: the save dialog + IPC write are
+    // async, and the user may switch tabs mid-save — patch by id, not "active".
+    const targetId = activeIdRef.current;
     const text = contentRef.current;
+    const curPath = buffersRef.current.find((b) => b.id === targetId)?.filePath ?? null;
+    const patchTarget = (patch: Partial<EditorBuffer>) =>
+      setBuffers((prev) => prev.map((b) => (b.id === targetId ? { ...b, ...patch } : b)));
     try {
       if (isTauri) {
-        let path = currentFilePath && !forcePicker ? currentFilePath : null;
+        let path = curPath && !forcePicker ? curPath : null;
         if (!path) {
-          const defaultName = currentFilePath ? basename(currentFilePath) : 'untitled.txt';
+          const defaultName = curPath ? basename(curPath) : 'untitled.txt';
           path = await tauriSave(defaultName);
         }
         if (!path) return;
         await tauriWriteText(path, text);
-        setCurrentFilePath(path);
-        setLanguage(detectLanguage(path));
-        setIsDirty(false);
+        patchTarget({ filePath: path, name: basename(path), language: detectLanguage(path), dirty: false });
         showStatus(`Saved ${basename(path)}`);
       } else {
-        const name = currentFilePath ? basename(currentFilePath) : 'untitled.txt';
+        const name = curPath ? basename(curPath) : 'untitled.txt';
         browserSave(text, name);
-        setIsDirty(false);
+        patchTarget({ dirty: false });
         showStatus(`Downloaded ${name}`);
       }
     } catch (e) {
       showStatus(`Save failed: ${e}`);
     }
-  }, [currentFilePath]);
+  }, []);
 
   useEffect(() => { saveFileRef.current = saveFile; }, [saveFile]);
   useEffect(() => { openFileRef.current = openFile; }, [openFile]);
@@ -864,6 +1118,7 @@ export default function ConfigEditor() {
 
   const handleEditorMount: OnMount = (ed, monaco) => {
     editorRef.current = ed;
+    monacoRef.current = monaco;
 
     // Register network config languages. They share the same first-pass tokenizer;
     // profile-specific keywords/templates drive the safer workflows around it.
@@ -914,6 +1169,10 @@ export default function ConfigEditor() {
 
   const sendToTerminal = async () => {
     if (sendingRef.current) return;
+    if (pulling) {
+      showStatus('Pull in progress — wait for it to finish');
+      return;
+    }
     if (!activeSession || !content.trim()) return;
     if (!activeSession.connected) {
       showStatus('Not connected — connect the session first');
@@ -970,30 +1229,48 @@ export default function ConfigEditor() {
   };
 
   const loadTemplate = async (name: string) => {
-    if (!(await confirmDiscard())) return;
-    setContent(TEMPLATES[name]);
-    setLanguage(
-      name.startsWith('Junos') || name.startsWith('JVD') || name.startsWith('Apstra')
-        ? 'juniper-junos'
-        : name.startsWith('Mist')
-          ? 'mist'
-          : name.startsWith('AOS-S')
-            ? 'aruba-aos-s'
-            : name.startsWith('Aruba AP')
-              ? 'aruba-ap'
-              : name.startsWith('AOS8')
-                ? 'aruba-controller'
-                : 'aruba-cx'
-    );
-    setCurrentFilePath(null);
-    setIsDirty(false);
     setShowTemplates(false);
+    const buf = {
+      name,
+      content: TEMPLATES[name],
+      language:
+        name.startsWith('Junos') || name.startsWith('JVD') || name.startsWith('Apstra')
+          ? 'juniper-junos'
+          : name.startsWith('Mist')
+            ? 'mist'
+            : name.startsWith('AOS-S')
+              ? 'aruba-aos-s'
+              : name.startsWith('Aruba AP')
+                ? 'aruba-ap'
+                : name.startsWith('AOS8')
+                  ? 'aruba-controller'
+                  : 'aruba-cx',
+      filePath: null,
+      dirty: false,
+      langExplicit: false,
+    };
+    // Don't clobber a tab with content or a file identity — open the template
+    // in its own tab. Only a blank scratch tab is reused in place.
+    if (active.content.trim() !== '' || active.filePath) {
+      openInNewTab(buf);
+      return;
+    }
+    if (!(await confirmDiscard())) return; // dirty-but-blank still counts as edits
+    rawCapturesRef.current.delete(active.id);
+    setViewingRawIds((prev) => {
+      const { [active.id]: _, ...rest } = prev;
+      return rest;
+    });
+    patchActive(buf);
   };
 
 
   if (!showConfigEditor) return null;
 
-  const displayName = currentFilePath ? basename(currentFilePath) : null;
+  const pullMenuItems = activeSession
+    ? PULL_MENU[profileForSession(activeSession.config, settings.customDeviceProfiles).deviceType] ??
+      PULL_MENU.generic
+    : PULL_MENU.generic;
   const currentLangLabel = LANGUAGE_LIST.find((l) => l.id === language)?.label || language;
   const filteredLangs = LANGUAGE_LIST.filter((l) =>
     l.label.toLowerCase().includes(langSearch.toLowerCase()) ||
@@ -1021,19 +1298,34 @@ export default function ConfigEditor() {
           <span className="text-xs font-semibold text-[var(--text-primary)] uppercase tracking-wider flex-shrink-0">
             Editor
           </span>
-          {displayName ? (
-            <span className="text-[10px] text-[var(--text-secondary)] truncate max-w-[160px]" title={currentFilePath ?? ''}>
-              {isDirty && <span className="text-[var(--accent-warning)]">● </span>}{displayName}
-            </span>
-          ) : (
-            <span className="text-[10px] text-[var(--text-muted)]">untitled</span>
-          )}
+          <span
+            className={`text-[10px] truncate max-w-[160px] ${
+              currentFilePath ? 'text-[var(--text-secondary)]' : 'text-[var(--text-muted)]'
+            }`}
+            title={currentFilePath ?? active.name}
+          >
+            {isDirty && <span className="text-[var(--accent-warning)]">● </span>}{active.name}
+          </span>
         </div>
         <div className="flex items-center gap-1 flex-shrink-0">
           <button onClick={copyToClipboard} className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]" title="Copy all">
             <Copy size={13} />
           </button>
-          <button onClick={async () => { if (!(await confirmDiscard())) return; setContent(''); setCurrentFilePath(null); setIsDirty(false); }} className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--accent-danger)]" title="Clear">
+          <button
+            onClick={async () => {
+              if (!(await confirmDiscard())) return;
+              rawCapturesRef.current.delete(active.id);
+              setViewingRawIds((prev) => (prev[active.id] ? { ...prev, [active.id]: false } : prev));
+              patchActive({
+                content: '',
+                filePath: null,
+                dirty: false,
+                name: untitledName(buffersRef.current.filter((b) => b.id !== active.id)),
+              });
+            }}
+            className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--accent-danger)]"
+            title="Clear"
+          >
             <FileX size={13} />
           </button>
           <button
@@ -1043,10 +1335,87 @@ export default function ConfigEditor() {
           >
             {maximized ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
           </button>
-          <button onClick={async () => { if (!(await confirmDiscard())) return; toggleConfigEditor(); }} className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--accent-danger)]" title="Close">
+          <button
+            onClick={async () => {
+              // Closing the panel drops ALL buffers — confirm if any tab is dirty.
+              const dirtyCount = buffers.filter((b) => b.dirty).length;
+              if (
+                dirtyCount > 0 &&
+                !(await askConfirm({
+                  title: 'Discard unsaved changes?',
+                  message: `${dirtyCount} editor tab${dirtyCount === 1 ? ' has' : 's have'} unsaved edits. They will be lost.`,
+                  confirmLabel: 'Discard',
+                  danger: true,
+                }))
+              )
+                return;
+              toggleConfigEditor();
+            }}
+            className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--accent-danger)]"
+            title="Close"
+          >
             <X size={14} />
           </button>
         </div>
+      </div>
+
+      {/* Buffer tabs */}
+      <div
+        className="flex items-center h-8 px-1.5 gap-1 border-b border-[var(--bg-tertiary)] bg-[var(--bg-secondary)] overflow-x-auto scrollbar-none flex-shrink-0"
+        onWheel={(e) => {
+          // The scrollbar is hidden and a vertical wheel doesn't scroll a
+          // horizontal strip — translate it so overflowed tabs stay reachable.
+          if (e.deltaY !== 0) e.currentTarget.scrollLeft += e.deltaY;
+        }}
+      >
+        {buffers.map((buf) => {
+          const isActiveTab = buf.id === active.id;
+          return (
+            <div
+              key={buf.id}
+              ref={isActiveTab ? (el) => el?.scrollIntoView({ inline: 'nearest', block: 'nearest' }) : undefined}
+              onClick={() => {
+                setActiveId(buf.id);
+                setTimeout(() => editorRef.current?.focus(), 0);
+              }}
+              onAuxClick={(e) => {
+                // Middle-click close, like browser/terminal tabs.
+                if (e.button === 1) { e.preventDefault(); closeTab(buf.id); }
+              }}
+              title={buf.filePath ?? buf.name}
+              className={`group flex items-center gap-1.5 pl-2.5 pr-1 h-6 rounded-md cursor-pointer select-none flex-shrink-0 transition-all ${
+                isActiveTab
+                  ? 'bg-[var(--bg-tertiary)]'
+                  : 'text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)]'
+              }`}
+              style={isActiveTab ? { boxShadow: 'inset 0 0 0 1px var(--border-strong)' } : undefined}
+            >
+              <span className={`text-[11px] truncate max-w-[18ch] ${isActiveTab ? 'text-[var(--accent)]' : ''}`}>
+                {buf.name}
+              </span>
+              {buf.dirty && (
+                <span
+                  className="w-1.5 h-1.5 rounded-full bg-[var(--accent-warning)] flex-shrink-0"
+                  title="Unsaved changes"
+                />
+              )}
+              <button
+                onClick={(e) => { e.stopPropagation(); closeTab(buf.id); }}
+                className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-[var(--border-strong)] transition-all flex-shrink-0"
+                title="Close tab"
+              >
+                <X size={11} />
+              </button>
+            </div>
+          );
+        })}
+        <button
+          onClick={newTab}
+          className="flex items-center justify-center w-6 h-6 rounded-md hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors flex-shrink-0"
+          title="New tab"
+        >
+          <Plus size={13} />
+        </button>
       </div>
 
       {/* Toolbar */}
@@ -1077,7 +1446,7 @@ export default function ConfigEditor() {
           >
             <Eraser size={13} />
           </button>
-          {rawCaptureRef.current != null && (
+          {rawCapturesRef.current.has(active.id) && (
             <button
               onClick={toggleRaw}
               className={`px-1.5 py-1 text-[10px] rounded transition-colors ${
@@ -1095,7 +1464,7 @@ export default function ConfigEditor() {
         {/* Language picker */}
         <div className="relative">
           <button
-            onClick={() => { setShowLangPicker(!showLangPicker); setLangSearch(''); setShowTemplates(false); setShowSnippets(false); setShowOutline(false); }}
+            onClick={() => { setShowLangPicker(!showLangPicker); setLangSearch(''); setShowTemplates(false); setShowSnippets(false); setShowOutline(false); setShowPullMenu(false); }}
             className="flex items-center gap-1.5 px-2 py-1 text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] rounded transition-colors"
             title="Change language mode"
           >
@@ -1120,7 +1489,7 @@ export default function ConfigEditor() {
                   {filteredLangs.map((l) => (
                     <button
                       key={l.id}
-                      onClick={() => { setLanguage(l.id); langExplicitRef.current = true; setShowLangPicker(false); }}
+                      onClick={() => { patchActive({ language: l.id, langExplicit: true }); setShowLangPicker(false); }}
                       className={`flex items-center w-full px-3 py-1.5 text-xs text-left transition-colors ${
                         language === l.id
                           ? 'text-[var(--accent)] bg-[#58a6ff15]'
@@ -1144,7 +1513,7 @@ export default function ConfigEditor() {
         {/* Templates (Aruba + Junos) */}
         <div className="relative">
           <button
-            onClick={() => { setShowTemplates(!showTemplates); setShowLangPicker(false); setShowSnippets(false); setShowOutline(false); }}
+            onClick={() => { setShowTemplates(!showTemplates); setShowLangPicker(false); setShowSnippets(false); setShowOutline(false); setShowPullMenu(false); }}
             className="flex items-center gap-1.5 px-2 py-1 text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] rounded transition-colors"
           >
             <BookOpen size={12} />
@@ -1172,7 +1541,7 @@ export default function ConfigEditor() {
         {/* Snippets */}
         <div className="relative">
           <button
-            onClick={() => { setShowSnippets(!showSnippets); setShowTemplates(false); setShowLangPicker(false); setShowOutline(false); }}
+            onClick={() => { setShowSnippets(!showSnippets); setShowTemplates(false); setShowLangPicker(false); setShowOutline(false); setShowPullMenu(false); }}
             className="flex items-center gap-1.5 px-2 py-1 text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] rounded transition-colors"
             title="Insert common network config snippets"
           >
@@ -1201,7 +1570,7 @@ export default function ConfigEditor() {
         {/* Outline */}
         <div className="relative">
           <button
-            onClick={() => { setShowOutline(!showOutline); setShowTemplates(false); setShowLangPicker(false); setShowSnippets(false); }}
+            onClick={() => { setShowOutline(!showOutline); setShowTemplates(false); setShowLangPicker(false); setShowSnippets(false); setShowPullMenu(false); }}
             className="flex items-center gap-1.5 px-2 py-1 text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] rounded transition-colors"
             title="Jump to interfaces, VLANs, routing sections, or Junos set blocks"
           >
@@ -1234,16 +1603,53 @@ export default function ConfigEditor() {
 
         <div className="w-px h-4 bg-[var(--border)] mx-0.5" />
 
-        {/* Pull running-config from the active device */}
-        <button
-          onClick={pullRunningConfig}
-          disabled={!activeSession?.connected}
-          className="flex items-center gap-1.5 px-2 py-1 text-xs rounded transition-colors disabled:opacity-40 text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]"
-          title="Pull running-config from the active device"
-        >
-          <DownloadCloud size={12} />
-          Pull
-        </button>
+        {/* Pull from the active device — default click pulls the running-config;
+            the chevron opens per-vendor show commands. Output lands in a new tab. */}
+        <div className="relative flex items-stretch">
+          <button
+            onClick={() => pullCommand('Running config', null)}
+            disabled={!activeSession?.connected || pulling}
+            className="flex items-center gap-1.5 pl-2 pr-1.5 py-1 text-xs rounded-l transition-colors disabled:opacity-40 text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]"
+            title="Pull running-config from the active device"
+          >
+            {pulling ? <RefreshCw size={12} className="animate-spin" /> : <DownloadCloud size={12} />}
+            Pull
+          </button>
+          <button
+            onClick={() => { setShowPullMenu(!showPullMenu); setShowTemplates(false); setShowLangPicker(false); setShowSnippets(false); setShowOutline(false); }}
+            disabled={!activeSession?.connected || pulling}
+            className="flex items-center px-0.5 rounded-r transition-colors disabled:opacity-40 text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]"
+            title="Pull other command output"
+          >
+            <ChevronDown size={10} />
+          </button>
+          {showPullMenu && (
+            <>
+              <div className="fixed inset-0 z-20" onClick={() => setShowPullMenu(false)} />
+              <div className="absolute top-full left-0 mt-1 z-30 min-w-[210px] bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg shadow-xl py-1">
+                {pullMenuItems.map((item) => (
+                  <button
+                    key={item.label}
+                    onClick={() => { setShowPullMenu(false); pullCommand(item.label, item.command); }}
+                    className="grid grid-cols-[1fr_auto] items-center gap-3 w-full px-3 py-1.5 text-xs text-left text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]"
+                  >
+                    <span>{item.label}</span>
+                    <span className="text-[10px] text-[var(--text-muted)] font-mono truncate max-w-[150px]">
+                      {item.command ?? ''}
+                    </span>
+                  </button>
+                ))}
+                <div className="my-1 border-t border-[var(--bg-tertiary)]" />
+                <button
+                  onClick={() => { setShowPullMenu(false); pullCustom(); }}
+                  className="flex items-center w-full px-3 py-1.5 text-xs text-left text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]"
+                >
+                  Custom command…
+                </button>
+              </div>
+            </>
+          )}
+        </div>
 
         {/* Diff against a baseline file */}
         <button
@@ -1274,7 +1680,7 @@ export default function ConfigEditor() {
         {activeSession && (
           <button
             onClick={sendToTerminal}
-            disabled={sending || !activeSession?.connected}
+            disabled={sending || pulling || !activeSession?.connected}
             className="flex items-center gap-1.5 px-2.5 py-1 text-xs bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-40 text-white rounded transition-colors"
             title={activeSession ? 'Send lines to terminal' : 'No active session'}
           >
@@ -1304,6 +1710,8 @@ export default function ConfigEditor() {
           />
         ) : (
         <Editor
+          // One Monaco model per buffer — keeps undo history and view state per tab.
+          path={active.id}
           language={language}
           value={content}
           theme={editorTheme}
@@ -1311,7 +1719,7 @@ export default function ConfigEditor() {
             const next = v ?? '';
             setContent(next);
             setIsDirty(true);
-            if (language === 'plaintext' && !langExplicitRef.current) {
+            if (language === 'plaintext' && !active.langExplicit) {
               const detected = detectConfigLanguage(next);
               if (detected) setLanguage(detected);
             }
