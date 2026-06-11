@@ -1,6 +1,6 @@
 [package]
 name = "green-cli"
-version = "1.1.1"
+version = "1.2.0"
 description = "Multi-vendor SSH/Telnet/Serial terminal for network engineers"
 authors = ["ChoateLabs"]
 license = "MIT"
