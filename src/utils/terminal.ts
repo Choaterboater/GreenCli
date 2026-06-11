@@ -59,17 +59,21 @@ export async function sendAndCapture(
     }
   }
 
-  // Recover only the new output. Prefer slicing after the pre-command anchor — this
-  // survives a backend tail-trim that would make a length-based slice return stale,
-  // pre-command content. Fall back to length slicing, then to the whole tail.
+  // Recover only the new output. A length-based slice is exact unless the
+  // backend tail-trimmed the buffer mid-capture (it keeps a ~150KB tail once
+  // the buffer passes 200KB, cutting the head — detectable as a changed
+  // prefix or a shrunken buffer). Only then fall back to the anchor, searched
+  // from the FRONT: searching from the tail breaks when the same command is
+  // re-run with identical output, because the new output ends with the exact
+  // anchor text and the capture comes back empty.
   let delta: string;
-  const aIdx = anchor ? buf.lastIndexOf(anchor) : -1;
-  if (aIdx >= 0) {
-    delta = buf.slice(aIdx + anchor.length);
-  } else if (buf.length >= before) {
+  const untrimmed =
+    buf.length >= before && (before === 0 || buf.startsWith(beforeText.slice(0, 64)));
+  if (untrimmed) {
     delta = buf.slice(before);
   } else {
-    delta = buf; // buffer trimmed and the anchor scrolled off — best effort
+    const aIdx = anchor ? buf.indexOf(anchor) : -1;
+    delta = aIdx >= 0 ? buf.slice(aIdx + anchor.length) : buf; // best effort
   }
   return stripAnsi(delta).trim();
 }

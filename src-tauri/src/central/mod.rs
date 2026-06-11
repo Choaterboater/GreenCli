@@ -1,11 +1,85 @@
-// Aruba Central / "New Central" REST client using the OAuth2 client-credentials
-// grant. The user supplies a regional base URL (e.g.
-// https://us4.api.central.arubanetworks.com) plus a client id + secret; we
-// exchange those for a bearer token (cached until expiry) and proxy requests.
+// Aruba Central REST client.
+//
+// Two auth modes:
+//   - Token mode: the user pastes a (user-bound) access token; used as-is,
+//     never refreshed. This is the only mode that works against CLASSIC Aruba
+//     Central API gateways (the apigw-*.central.arubanetworks.com regions in
+//     the frontend's CENTRAL_REGIONS list) — classic gateways only support
+//     authorization_code/refresh_token at {base_url}/oauth2/token, NOT
+//     client_credentials.
+//   - Creds mode (client id + secret): minted via the OAuth2 client-credentials
+//     grant against the HPE GreenLake SSO endpoint
+//     (https://sso.common.cloud.hpe.com/as/token.oauth2), which is where "new
+//     Central" / GLP API-client credentials live. As a long shot we also fall
+//     back to the legacy {base_url}/oauth2/token for any tenant that might
+//     accept client_credentials there. Tokens are cached until shortly before
+//     `expires_in` and re-minted on expiry.
 
 use crate::error::AppError;
 use serde_json::Value;
 use std::time::{Duration, Instant};
+
+/// HPE GreenLake SSO token endpoint — the home of client-credentials tokens
+/// for new Central / GLP API clients.
+const GLP_SSO_TOKEN_URL: &str = "https://sso.common.cloud.hpe.com/as/token.oauth2";
+
+/// Trim an HTTP error body for inclusion in an error message (avoids dumping
+/// whole HTML pages), backing off to a char boundary.
+fn body_snippet(text: &str) -> String {
+    let t = text.trim();
+    if t.len() <= 300 {
+        return t.to_string();
+    }
+    let mut cut = 300;
+    while cut > 0 && !t.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    format!("{}…", &t[..cut])
+}
+
+/// POST a client-credentials grant to `url`; returns (access_token, expires_in).
+/// Errors are strings (not AppError) so the caller can combine both attempts
+/// into one actionable message.
+async fn token_request(
+    client: &reqwest::Client,
+    url: &str,
+    client_id: &str,
+    client_secret: &str,
+) -> Result<(String, u64), String> {
+    let params = [
+        ("grant_type", "client_credentials"),
+        ("client_id", client_id),
+        ("client_secret", client_secret),
+    ];
+    let resp = client
+        .post(url)
+        .form(&params)
+        .send()
+        .await
+        .map_err(|e| format!("{}: {}", url, e))?;
+    let status = resp.status();
+    let text = resp.text().await.map_err(|e| format!("{}: {}", url, e))?;
+    if !status.is_success() {
+        return Err(format!(
+            "{}: HTTP {}: {}",
+            url,
+            status.as_u16(),
+            body_snippet(&text)
+        ));
+    }
+    let json: Value =
+        serde_json::from_str(&text).map_err(|e| format!("{}: token parse: {}", url, e))?;
+    let token = json
+        .get("access_token")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| format!("{}: no access_token in token response", url))?
+        .to_string();
+    let expires = json
+        .get("expires_in")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(7200);
+    Ok((token, expires))
+}
 
 pub struct CentralClient {
     client: reqwest::Client,
@@ -81,42 +155,52 @@ impl CentralClient {
                     .into(),
             ));
         }
-        let url = format!("{}/oauth2/token", self.base_url);
-        let params = [
-            ("grant_type", "client_credentials"),
-            ("client_id", self.client_id.as_str()),
-            ("client_secret", self.client_secret.as_str()),
-        ];
-        let resp = self
-            .client
-            .post(&url)
-            .form(&params)
-            .send()
-            .await
-            .map_err(AppError::from)?;
-        let status = resp.status();
-        let text = resp.text().await.map_err(AppError::from)?;
-        if !status.is_success() {
-            return Err(AppError::ApiError(format!(
-                "Central token HTTP {}: {}",
-                status.as_u16(),
-                text
-            )));
-        }
-        let json: Value = serde_json::from_str(&text)
-            .map_err(|e| AppError::ApiError(format!("token parse: {}", e)))?;
-        let token = json
-            .get("access_token")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| AppError::ApiError("no access_token in token response".into()))?
-            .to_string();
-        let expires = json
-            .get("expires_in")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(7200);
+        // Client-credentials tokens are minted by the HPE GreenLake SSO (new
+        // Central / GLP API clients) — classic Central API gateways do not
+        // support this grant at {base_url}/oauth2/token. Try GreenLake SSO
+        // FIRST, then fall back to the legacy endpoint for any tenant where it
+        // might still work.
+        let sso_err = match token_request(
+            &self.client,
+            GLP_SSO_TOKEN_URL,
+            &self.client_id,
+            &self.client_secret,
+        )
+        .await
+        {
+            Ok((token, expires)) => return Ok(self.cache_token(token, expires)),
+            Err(e) => e,
+        };
+
+        let legacy_url = format!("{}/oauth2/token", self.base_url);
+        let legacy_err = match token_request(
+            &self.client,
+            &legacy_url,
+            &self.client_id,
+            &self.client_secret,
+        )
+        .await
+        {
+            Ok((token, expires)) => return Ok(self.cache_token(token, expires)),
+            Err(e) => e,
+        };
+
+        Err(AppError::ApiError(format!(
+            "Could not obtain a token with client credentials. Classic Central (apigw-*) \
+             requires a user-bound access token — paste one in Token mode; client \
+             credentials work with new Central (GLP API clients). \
+             [GreenLake SSO: {}] [Legacy gateway: {}]",
+            sso_err, legacy_err
+        )))
+    }
+
+    /// Cache a freshly minted token, expiring 60s before the server-side
+    /// `expires_in` so we never send a token that dies mid-request.
+    fn cache_token(&mut self, token: String, expires_in: u64) -> String {
         self.token = Some(token.clone());
-        self.token_expiry = Some(Instant::now() + Duration::from_secs(expires.saturating_sub(60)));
-        Ok(token)
+        self.token_expiry =
+            Some(Instant::now() + Duration::from_secs(expires_in.saturating_sub(60)));
+        token
     }
 
     /// Perform a Central request (path relative to base URL, or absolute).

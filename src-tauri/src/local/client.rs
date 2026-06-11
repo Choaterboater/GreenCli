@@ -173,12 +173,17 @@ impl Connection for LocalConnection {
     }
 
     async fn disconnect(&mut self) -> Result<(), AppError> {
-        if let Some(child) = &self.child {
-            let mut child = child.lock().await;
-            let _ = child.kill();
+        if let Some(child) = self.child.take() {
+            // kill() alone leaves a defunct process: portable-pty's unix Child
+            // doesn't reap on drop, so wait() on a blocking thread to collect
+            // it (also reaps shells that already exited on their own).
+            tokio::task::spawn_blocking(move || {
+                let mut child = child.blocking_lock();
+                let _ = child.kill();
+                let _ = child.wait();
+            });
         }
         self.connected = false;
-        self.child = None;
         self.writer = None;
         self.master = None;
         self.data_receiver = None;

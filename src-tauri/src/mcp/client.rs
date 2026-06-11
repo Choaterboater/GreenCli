@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
@@ -154,9 +155,16 @@ type Pending = Arc<Mutex<HashMap<i64, oneshot::Sender<Result<Value, String>>>>>;
 /// tool round-trip, so one slow tool never serialises the whole MCP subsystem.
 #[derive(Clone)]
 pub struct McpCaller {
+    /// Server name, for actionable error messages.
+    server: Arc<str>,
     stdin: Arc<Mutex<ChildStdin>>,
     pending: Pending,
     next_id: Arc<Mutex<i64>>,
+    /// Set by the reader task when the server's stdout hits EOF or a hard read
+    /// error (i.e. the process exited/crashed). Checked before every request so
+    /// callers get a clear "server has exited" error instead of a raw broken
+    /// pipe, and so the manager stops reporting the client as connected.
+    dead: Arc<AtomicBool>,
 }
 
 pub struct McpClient {
@@ -226,6 +234,8 @@ impl McpClient {
 
         let pending: Pending = Arc::new(Mutex::new(HashMap::new()));
         let pending_r = pending.clone();
+        let dead = Arc::new(AtomicBool::new(false));
+        let dead_r = dead.clone();
 
         // Reader task: dispatch responses to waiters; ignore notifications. A
         // transient read error (e.g. a non-UTF8 banner byte) skips that line
@@ -279,7 +289,10 @@ impl McpClient {
                     }
                 }
             }
-            // Stream closed — fail any outstanding requests.
+            // Stream closed — mark the client dead FIRST (so new requests are
+            // refused with an actionable error and status()/all_tools() stop
+            // advertising it), then fail any outstanding requests.
+            dead_r.store(true, Ordering::Relaxed);
             let mut p = pending_r.lock().await;
             for (_, tx) in p.drain() {
                 let _ = tx.send(Err("MCP server process exited".into()));
@@ -287,9 +300,11 @@ impl McpClient {
         });
 
         let caller = McpCaller {
+            server: Arc::from(def.name.as_str()),
             stdin: Arc::new(Mutex::new(stdin)),
             pending,
             next_id: Arc::new(Mutex::new(0)),
+            dead,
         };
 
         // Handshake.
@@ -346,6 +361,13 @@ impl McpClient {
         self.caller.clone()
     }
 
+    /// True once the server process has exited/crashed (reader saw EOF). The
+    /// client stays in the manager map until the user reconnects/removes it,
+    /// but must no longer be reported as connected or advertise its tools.
+    pub fn is_dead(&self) -> bool {
+        self.caller.dead.load(Ordering::Relaxed)
+    }
+
     pub async fn shutdown(mut self) {
         self.reader.abort();
         let _ = self.child.start_kill();
@@ -354,7 +376,18 @@ impl McpClient {
 }
 
 impl McpCaller {
+    /// Actionable error for a client whose server process has exited.
+    fn exited_error(&self) -> AppError {
+        AppError::ApiError(format!(
+            "MCP server '{}' has exited — reconnect it in Settings → MCP Servers",
+            self.server
+        ))
+    }
+
     async fn request(&self, method: &str, params: Value) -> Result<Value, AppError> {
+        if self.dead.load(Ordering::Relaxed) {
+            return Err(self.exited_error());
+        }
         let id = {
             let mut n = self.next_id.lock().await;
             *n += 1;
@@ -365,10 +398,22 @@ impl McpCaller {
 
         let msg = json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
         let line = format!("{}\n", serde_json::to_string(&msg)?);
-        {
+        let write_res: std::io::Result<()> = {
             let mut stdin = self.stdin.lock().await;
-            stdin.write_all(line.as_bytes()).await.map_err(AppError::from)?;
-            stdin.flush().await.map_err(AppError::from)?;
+            match stdin.write_all(line.as_bytes()).await {
+                Ok(()) => stdin.flush().await,
+                Err(e) => Err(e),
+            }
+        };
+        if let Err(e) = write_res {
+            // The request never reached the server, so no response will ever
+            // arrive — drop the waiter or it leaks in the pending map forever.
+            self.pending.lock().await.remove(&id);
+            return Err(if self.dead.load(Ordering::Relaxed) {
+                self.exited_error()
+            } else {
+                AppError::from(e)
+            });
         }
 
         match tokio::time::timeout(std::time::Duration::from_secs(60), rx).await {
@@ -383,6 +428,9 @@ impl McpCaller {
     }
 
     async fn notify(&self, method: &str, params: Value) -> Result<(), AppError> {
+        if self.dead.load(Ordering::Relaxed) {
+            return Err(self.exited_error());
+        }
         let msg = json!({ "jsonrpc": "2.0", "method": method, "params": params });
         let line = format!("{}\n", serde_json::to_string(&msg)?);
         let mut stdin = self.stdin.lock().await;
@@ -559,7 +607,13 @@ impl McpManager {
     }
 
     pub fn all_tools(&self) -> Vec<McpToolInfo> {
-        self.clients.values().flat_map(|c| c.tools.clone()).collect()
+        // Skip dead clients: advertising a crashed server's tools to the AI
+        // just produces doomed tool calls.
+        self.clients
+            .values()
+            .filter(|c| !c.is_dead())
+            .flat_map(|c| c.tools.clone())
+            .collect()
     }
 
     pub fn status(&self) -> Vec<Value> {
@@ -567,11 +621,14 @@ impl McpManager {
             .load()
             .iter()
             .map(|d| {
+                // A client whose process has exited is NOT connected, even if it
+                // is still sitting in the map awaiting a reconnect.
+                let live = self.clients.get(&d.name).filter(|c| !c.is_dead());
                 json!({
                     "name": d.name,
                     "enabled": d.enabled,
-                    "connected": self.clients.contains_key(&d.name),
-                    "toolCount": self.clients.get(&d.name).map(|c| c.tools.len()).unwrap_or(0),
+                    "connected": live.is_some(),
+                    "toolCount": live.map(|c| c.tools.len()).unwrap_or(0),
                 })
             })
             .collect()
@@ -579,6 +636,10 @@ impl McpManager {
 
     /// Clone a caller handle for a connected server so the command can drop the
     /// manager lock before awaiting the (up-to-60s) tool round-trip.
+    ///
+    /// Dead clients are deliberately NOT filtered here: the caller's own dead
+    /// check in `request()` yields the precise "server has exited — reconnect"
+    /// error, which beats the generic "not connected" the command would emit.
     pub fn caller_for(&self, server: &str) -> Option<McpCaller> {
         self.clients.get(server).map(|c| c.caller())
     }

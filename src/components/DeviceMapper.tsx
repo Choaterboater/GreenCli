@@ -4,6 +4,7 @@ import { invoke } from '@tauri-apps/api/tauri';
 import { open as openDialog, save as saveDialog } from '@tauri-apps/api/dialog';
 import { useSessionStore } from '../store/sessionStore';
 import { useSettingsStore } from '../store/settingsStore';
+import { useDialogStore } from '../store/dialogStore';
 import { DeviceProfile, DeviceType, DEVICE_TYPES } from '../types';
 import { generateId } from '../utils';
 import {
@@ -59,6 +60,18 @@ export default function DeviceMapper({ sessionId, onClose }: DeviceMapperProps) 
         setSelectedProfileId(session?.config.deviceProfileId || 'builtin-generic');
       });
   }, [sessionId, session?.config.deviceProfileId, settings.customDeviceProfiles]);
+
+  // Close on Escape — unless a confirm/prompt dialog is stacked above us.
+  useEffect(() => {
+    if (!sessionId) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      if (useDialogStore.getState().current) return;
+      onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [sessionId, onClose]);
 
   if (!sessionId || !session) return null;
 
@@ -174,7 +187,12 @@ export default function DeviceMapper({ sessionId, onClose }: DeviceMapperProps) 
   };
 
   return (
-    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/55 backdrop-blur-sm">
+    <div
+      className="fixed inset-0 z-[70] flex items-center justify-center bg-black/55 backdrop-blur-sm"
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
       <div className="w-[620px] max-w-[94vw] max-h-[86vh] overflow-hidden surface-elevated flex flex-col">
         <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--border)]">
           <div className="flex items-center gap-2">

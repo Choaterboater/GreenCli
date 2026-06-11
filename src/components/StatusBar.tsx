@@ -35,6 +35,14 @@ export default function StatusBar({ onReconnect, onDisconnect, onMapDevice }: St
     ? pasteHistory.filter((entry) => entry.sessionId === activeSession.sessionId).slice(0, 8)
     : [];
 
+  // Auto-close the paste-history popover when the history empties (e.g. after
+  // removing every entry) — otherwise the disabled toggle leaves it stuck open.
+  useEffect(() => {
+    if (showPasteHistory && activePasteHistory.length === 0) {
+      setShowPasteHistory(false);
+    }
+  }, [showPasteHistory, activePasteHistory.length]);
+
   // Reflect logging state when the active session changes.
   useEffect(() => {
     setLogHint(null);
@@ -194,54 +202,57 @@ export default function StatusBar({ onReconnect, onDisconnect, onMapDevice }: St
               </button>
 
               {showPasteHistory && activeSession && (
-                <div className="absolute bottom-7 right-0 z-50 w-80 max-h-80 overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] shadow-2xl">
-                  <div className="flex items-center justify-between px-3 py-2 border-b border-[var(--border)]">
-                    <span className="text-xs font-semibold text-[var(--text-primary)]">Paste history</span>
-                    <button
-                      onClick={() => {
-                        clearPasteHistory(activeSession.sessionId);
-                        setShowPasteHistory(false);
-                      }}
-                      className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--accent-danger)]"
-                      title="Clear this session's paste history"
-                    >
-                      <Trash2 size={12} />
-                    </button>
-                  </div>
-                  <div className="max-h-64 overflow-y-auto py-1">
-                    {activePasteHistory.map((entry) => (
-                      <div
-                        key={entry.id}
-                        className="group flex items-start gap-2 px-2 py-1.5 hover:bg-[var(--bg-tertiary)]"
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setShowPasteHistory(false)} />
+                  <div className="absolute bottom-7 right-0 z-50 w-80 max-h-80 overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] shadow-2xl">
+                    <div className="flex items-center justify-between px-3 py-2 border-b border-[var(--border)]">
+                      <span className="text-xs font-semibold text-[var(--text-primary)]">Paste history</span>
+                      <button
+                        onClick={() => {
+                          clearPasteHistory(activeSession.sessionId);
+                          setShowPasteHistory(false);
+                        }}
+                        className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--accent-danger)]"
+                        title="Clear this session's paste history"
                       >
-                        <button
-                          onClick={() => pasteFromHistory(entry.text)}
-                          className="min-w-0 flex-1 text-left"
-                          title="Paste this entry"
+                        <Trash2 size={12} />
+                      </button>
+                    </div>
+                    <div className="max-h-64 overflow-y-auto py-1">
+                      {activePasteHistory.map((entry) => (
+                        <div
+                          key={entry.id}
+                          className="group flex items-start gap-2 px-2 py-1.5 hover:bg-[var(--bg-tertiary)]"
                         >
-                          <div className="flex items-center justify-between gap-2">
-                            <span className="text-[10px] text-[var(--text-muted)]">
-                              {entry.lineCount} line{entry.lineCount === 1 ? '' : 's'}
-                            </span>
-                            <span className="text-[10px] text-[var(--text-muted)]">
-                              {new Date(entry.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                            </span>
-                          </div>
-                          <pre className="mt-0.5 max-h-12 overflow-hidden whitespace-pre-wrap break-words font-mono text-[10px] leading-snug text-[var(--text-secondary)]">
-                            {entry.text.slice(0, 260)}
-                          </pre>
-                        </button>
-                        <button
-                          onClick={() => removePaste(entry.id)}
-                          className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-[var(--bg-primary)] text-[var(--text-muted)] hover:text-[var(--accent-danger)]"
-                          title="Remove entry"
-                        >
-                          <Trash2 size={11} />
-                        </button>
-                      </div>
-                    ))}
+                          <button
+                            onClick={() => pasteFromHistory(entry.text)}
+                            className="min-w-0 flex-1 text-left"
+                            title="Paste this entry"
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="text-[10px] text-[var(--text-muted)]">
+                                {entry.lineCount} line{entry.lineCount === 1 ? '' : 's'}
+                              </span>
+                              <span className="text-[10px] text-[var(--text-muted)]">
+                                {new Date(entry.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                              </span>
+                            </div>
+                            <pre className="mt-0.5 max-h-12 overflow-hidden whitespace-pre-wrap break-words font-mono text-[10px] leading-snug text-[var(--text-secondary)]">
+                              {entry.text.slice(0, 260)}
+                            </pre>
+                          </button>
+                          <button
+                            onClick={() => removePaste(entry.id)}
+                            className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-[var(--bg-primary)] text-[var(--text-muted)] hover:text-[var(--accent-danger)]"
+                            title="Remove entry"
+                          >
+                            <Trash2 size={11} />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
                   </div>
-                </div>
+                </>
               )}
             </div>
             <button

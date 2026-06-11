@@ -875,7 +875,7 @@ function renderMarkdown(text: string) {
       continue;
     }
     if (line.startsWith('# ')) {
-      result.push(<h3 key={key++} className="text-sm font-bold text-white mt-2 mb-1">{line.slice(2)}</h3>);
+      result.push(<h3 key={key++} className="text-sm font-bold text-[var(--text-primary)] mt-2 mb-1">{line.slice(2)}</h3>);
       i++;
       continue;
     }
@@ -913,7 +913,7 @@ function renderInline(text: string): (JSX.Element | string)[] {
     if (m.index > last) parts.push(text.slice(last, m.index));
     const tok = m[0];
     if (tok.startsWith('**')) {
-      parts.push(<strong key={k++} className="text-white font-semibold">{tok.slice(2, -2)}</strong>);
+      parts.push(<strong key={k++} className="text-[var(--text-primary)] font-semibold">{tok.slice(2, -2)}</strong>);
     } else if (tok.startsWith('`')) {
       parts.push(<code key={k++} className="px-1 py-0.5 bg-[var(--bg-primary)] border border-[var(--border)] rounded text-[#d29922] text-[10px] font-mono">{tok.slice(1, -1)}</code>);
     } else if (tok.startsWith('*')) {
@@ -1357,6 +1357,24 @@ export default function AiAssistant() {
         : prev
     );
   }, []);
+
+  // App renders this panel conditionally, so toggling it off UNMOUNTS the
+  // component mid-request. Without this cleanup the in-flight tool loop keeps
+  // running commands on the live device with no UI attached (shouldCancel reads
+  // requestSeq, which nothing would bump). Mirrors cancelRequest, minus the
+  // state updates that are meaningless on an unmounted component.
+  useEffect(
+    () => () => {
+      requestSeq.current++;
+      if (rafRef.current) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = 0;
+      }
+      pendingTextRef.current = null;
+      cancelActiveAiStreams();
+    },
+    []
+  );
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {

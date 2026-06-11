@@ -6,14 +6,20 @@ export default function DialogHost() {
   const close = useDialogStore((s) => s.close);
   const [value, setValue] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
+  const confirmRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     if (current) {
       setValue(current.defaultValue ?? '');
-      // Focus + select after mount.
+      // Focus + select after mount. Confirm dialogs focus the confirm button so
+      // Enter/Escape act on the dialog instead of the terminal behind it.
       setTimeout(() => {
-        inputRef.current?.focus();
-        inputRef.current?.select();
+        if (current.type === 'prompt') {
+          inputRef.current?.focus();
+          inputRef.current?.select();
+        } else {
+          confirmRef.current?.focus();
+        }
       }, 30);
     }
   }, [current]);
@@ -41,7 +47,22 @@ export default function DialogHost() {
         if (e.target === e.currentTarget) finish(null);
       }}
     >
-      <div className="surface-elevated animate-scale-in w-[420px] max-w-[90vw] p-5">
+      <div
+        className="surface-elevated animate-scale-in w-[420px] max-w-[90vw] p-5"
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            // Let a focused button other than confirm (e.g. Cancel) handle Enter natively.
+            if (e.target instanceof HTMLButtonElement && e.target !== confirmRef.current) return;
+            e.preventDefault();
+            e.stopPropagation();
+            onConfirm();
+          } else if (e.key === 'Escape') {
+            e.preventDefault();
+            e.stopPropagation();
+            finish(null);
+          }
+        }}
+      >
         <h3 className="text-[15px] font-semibold text-[var(--text-primary)]">{current.title}</h3>
         {current.message && (
           <p className="mt-1.5 text-[13px] text-[var(--text-secondary)] leading-relaxed">
@@ -54,13 +75,6 @@ export default function DialogHost() {
             ref={inputRef}
             value={value}
             onChange={(e) => setValue(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                e.preventDefault();
-                onConfirm();
-              }
-              if (e.key === 'Escape') finish(null);
-            }}
             placeholder={current.placeholder}
             className="input-field mt-4 w-full h-10 px-3 text-sm"
           />
@@ -74,6 +88,7 @@ export default function DialogHost() {
             {current.cancelLabel ?? 'Cancel'}
           </button>
           <button
+            ref={confirmRef}
             onClick={onConfirm}
             className="px-4 h-9 text-[13px] font-semibold rounded-[var(--radius)] text-white transition-colors"
             style={{

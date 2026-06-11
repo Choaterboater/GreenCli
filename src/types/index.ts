@@ -97,6 +97,8 @@ export interface AiAgent {
 
 export interface TerminalSettings {
   theme: 'dark' | 'light';
+  /** Terminal color scheme; 'greencli' follows the app theme (dark/light). */
+  colorScheme: TerminalColorScheme;
   fontSize: number;
   fontFamily: string;
   bell: boolean;
@@ -106,7 +108,6 @@ export interface TerminalSettings {
   autoReconnect: boolean;
   keepAliveInterval: number;
   syntaxHighlighting: boolean;
-  wordWrap: boolean;
   pasteGuardEnabled: boolean;
   pasteGuardLineThreshold: number;
   pasteHistoryEnabled: boolean;
@@ -122,7 +123,6 @@ export interface TerminalSettings {
   lastUsedDeviceProfileId?: string;
   /** User-authored device profiles for custom mapping/highlighting workflows. */
   customDeviceProfiles: DeviceProfile[];
-  anthropicApiKey: string;
   aiModel: string;
   aiProvider: AiProvider;
   ollamaUrl: string;
@@ -272,6 +272,7 @@ export const BUILTIN_AGENTS: AiAgent[] = [
 
 export const DEFAULT_SETTINGS: TerminalSettings = {
   theme: 'dark',
+  colorScheme: 'greencli',
   fontSize: 14,
   fontFamily: 'JetBrains Mono, Consolas, monospace',
   bell: false,
@@ -281,7 +282,6 @@ export const DEFAULT_SETTINGS: TerminalSettings = {
   autoReconnect: true,
   keepAliveInterval: 30,
   syntaxHighlighting: true,
-  wordWrap: false,
   pasteGuardEnabled: true,
   pasteGuardLineThreshold: 2,
   pasteHistoryEnabled: true,
@@ -293,7 +293,6 @@ export const DEFAULT_SETTINGS: TerminalSettings = {
   lastUsedDeviceType: 'generic',
   lastUsedDeviceProfileId: 'builtin-generic',
   customDeviceProfiles: [],
-  anthropicApiKey: '',
   aiModel: 'claude-sonnet-4-6',
   aiProvider: 'ollama',
   ollamaUrl: 'http://localhost:11434',
@@ -429,6 +428,102 @@ export const LIGHT_TERMINAL_THEME: TerminalTheme = {
   brightCyan: '#3192aa',
   brightWhite: '#8c959f',
 };
+
+/** Terminal color schemes. 'greencli' follows the app theme; the rest are fixed palettes. */
+export type TerminalColorScheme =
+  | 'greencli'
+  | 'dracula'
+  | 'nord'
+  | 'solarized-dark'
+  | 'solarized-light'
+  | 'gruvbox-dark'
+  | 'one-dark';
+
+export const TERMINAL_SCHEMES: { id: TerminalColorScheme; label: string; theme: TerminalTheme | null }[] = [
+  { id: 'greencli', label: 'GreenCLI (follows app theme)', theme: null },
+  {
+    id: 'dracula',
+    label: 'Dracula',
+    theme: {
+      foreground: '#f8f8f2', background: '#282a36', cursor: '#f8f8f2', cursorAccent: '#282a36',
+      selectionBackground: 'rgba(68,71,90,0.60)',
+      black: '#21222c', red: '#ff5555', green: '#50fa7b', yellow: '#f1fa8c',
+      blue: '#bd93f9', magenta: '#ff79c6', cyan: '#8be9fd', white: '#f8f8f2',
+      brightBlack: '#6272a4', brightRed: '#ff6e6e', brightGreen: '#69ff94', brightYellow: '#ffffa5',
+      brightBlue: '#d6acff', brightMagenta: '#ff92df', brightCyan: '#a4ffff', brightWhite: '#ffffff',
+    },
+  },
+  {
+    id: 'nord',
+    label: 'Nord',
+    theme: {
+      foreground: '#d8dee9', background: '#2e3440', cursor: '#d8dee9', cursorAccent: '#2e3440',
+      selectionBackground: 'rgba(136,192,208,0.30)',
+      black: '#3b4252', red: '#bf616a', green: '#a3be8c', yellow: '#ebcb8b',
+      blue: '#81a1c1', magenta: '#b48ead', cyan: '#88c0d0', white: '#e5e9f0',
+      brightBlack: '#4c566a', brightRed: '#bf616a', brightGreen: '#a3be8c', brightYellow: '#ebcb8b',
+      brightBlue: '#81a1c1', brightMagenta: '#b48ead', brightCyan: '#8fbcbb', brightWhite: '#eceff4',
+    },
+  },
+  {
+    id: 'solarized-dark',
+    label: 'Solarized Dark',
+    theme: {
+      foreground: '#839496', background: '#002b36', cursor: '#839496', cursorAccent: '#002b36',
+      selectionBackground: 'rgba(88,110,117,0.45)',
+      black: '#073642', red: '#dc322f', green: '#859900', yellow: '#b58900',
+      blue: '#268bd2', magenta: '#d33682', cyan: '#2aa198', white: '#eee8d5',
+      brightBlack: '#586e75', brightRed: '#cb4b16', brightGreen: '#859900', brightYellow: '#b58900',
+      brightBlue: '#268bd2', brightMagenta: '#6c71c4', brightCyan: '#2aa198', brightWhite: '#fdf6e3',
+    },
+  },
+  {
+    id: 'solarized-light',
+    label: 'Solarized Light',
+    theme: {
+      foreground: '#657b83', background: '#fdf6e3', cursor: '#657b83', cursorAccent: '#fdf6e3',
+      selectionBackground: 'rgba(147,161,161,0.40)',
+      black: '#073642', red: '#dc322f', green: '#859900', yellow: '#b58900',
+      blue: '#268bd2', magenta: '#d33682', cyan: '#2aa198', white: '#eee8d5',
+      brightBlack: '#586e75', brightRed: '#cb4b16', brightGreen: '#859900', brightYellow: '#b58900',
+      brightBlue: '#268bd2', brightMagenta: '#6c71c4', brightCyan: '#2aa198', brightWhite: '#fdf6e3',
+    },
+  },
+  {
+    id: 'gruvbox-dark',
+    label: 'Gruvbox Dark',
+    theme: {
+      foreground: '#ebdbb2', background: '#282828', cursor: '#ebdbb2', cursorAccent: '#282828',
+      selectionBackground: 'rgba(146,131,116,0.40)',
+      black: '#282828', red: '#cc241d', green: '#98971a', yellow: '#d79921',
+      blue: '#458588', magenta: '#b16286', cyan: '#689d6a', white: '#a89984',
+      brightBlack: '#928374', brightRed: '#fb4934', brightGreen: '#b8bb26', brightYellow: '#fabd2f',
+      brightBlue: '#83a598', brightMagenta: '#d3869b', brightCyan: '#8ec07c', brightWhite: '#ebdbb2',
+    },
+  },
+  {
+    id: 'one-dark',
+    label: 'One Dark',
+    theme: {
+      foreground: '#abb2bf', background: '#282c34', cursor: '#abb2bf', cursorAccent: '#282c34',
+      selectionBackground: 'rgba(62,68,81,0.60)',
+      black: '#282c34', red: '#e06c75', green: '#98c379', yellow: '#e5c07b',
+      blue: '#61afef', magenta: '#c678dd', cyan: '#56b6c2', white: '#abb2bf',
+      brightBlack: '#5c6370', brightRed: '#e06c75', brightGreen: '#98c379', brightYellow: '#d19a66',
+      brightBlue: '#61afef', brightMagenta: '#c678dd', brightCyan: '#56b6c2', brightWhite: '#ffffff',
+    },
+  },
+];
+
+/** Resolve the xterm theme for the current app theme + selected scheme. */
+export function resolveTerminalTheme(
+  appTheme: 'dark' | 'light',
+  scheme: TerminalColorScheme | string | undefined
+): TerminalTheme {
+  const found = TERMINAL_SCHEMES.find((s) => s.id === scheme);
+  if (found?.theme) return found.theme;
+  return appTheme === 'dark' ? DARK_TERMINAL_THEME : LIGHT_TERMINAL_THEME;
+}
 
 export interface DeviceTypeOption {
   value: DeviceType;

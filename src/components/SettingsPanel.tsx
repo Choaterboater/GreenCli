@@ -4,8 +4,8 @@ import { invoke } from '@tauri-apps/api/tauri';
 import { open as openDialog, save as saveDialog } from '@tauri-apps/api/dialog';
 import { useSessionStore } from '../store/sessionStore';
 import { useSettingsStore } from '../store/settingsStore';
-import { askConfirm } from '../store/dialogStore';
-import { AI_PROVIDERS, AI_CLI_PRESETS, TerminalSettings, DeviceType, DEVICE_TYPES, DeviceProfile, SessionFolder } from '../types';
+import { askConfirm, useDialogStore } from '../store/dialogStore';
+import { AI_PROVIDERS, AI_CLI_PRESETS, TerminalSettings, TerminalColorScheme, TERMINAL_SCHEMES, DeviceType, DEVICE_TYPES, DeviceProfile, SessionFolder } from '../types';
 import { notify } from '../store/toastStore';
 import McpServers from './McpServers';
 import AiAgents from './AiAgents';
@@ -54,6 +54,19 @@ export default function SettingsPanel() {
     }, 120);
     return () => clearTimeout(id);
   }, [showSettings, settingsFocus, setSettingsFocus]);
+
+  // Close on Escape — unless a nested confirm dialog (e.g. settings reset) is
+  // open; the dialog owns Escape in that case.
+  useEffect(() => {
+    if (!showSettings) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      if (useDialogStore.getState().current) return;
+      setShowSettings(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [showSettings, setShowSettings]);
   const [showApiKey, setShowApiKey] = useState(false);
   const [keyInput, setKeyInput] = useState('');
   const [keySaved, setKeySaved] = useState(false);
@@ -228,7 +241,12 @@ export default function SettingsPanel() {
   if (!showSettings) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm"
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) setShowSettings(false);
+      }}
+    >
       <div className="w-[520px] max-h-[80vh] bg-[var(--bg-secondary)] border border-[var(--border)] rounded-xl shadow-2xl flex flex-col">
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--bg-tertiary)]">
@@ -302,6 +320,24 @@ export default function SettingsPanel() {
                   Light
                 </button>
               </div>
+            </div>
+
+            {/* Terminal color scheme */}
+            <div className="mb-3">
+              <label className="block text-xs text-[var(--text-secondary)] mb-1.5">
+                Terminal Color Scheme
+              </label>
+              <select
+                value={settings.colorScheme}
+                onChange={(e) => settings.setColorScheme(e.target.value as TerminalColorScheme)}
+                className="w-full px-3 py-2 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)]"
+              >
+                {TERMINAL_SCHEMES.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.label}
+                  </option>
+                ))}
+              </select>
             </div>
 
             {/* Font */}
@@ -421,11 +457,6 @@ export default function SettingsPanel() {
                   label: 'Bell',
                   value: settings.bell,
                   onChange: settings.setBell,
-                },
-                {
-                  label: 'Word Wrap',
-                  value: settings.wordWrap,
-                  onChange: settings.setWordWrap,
                 },
                 {
                   label: 'Syntax Highlighting',

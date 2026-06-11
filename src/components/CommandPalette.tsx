@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/tauri';
+import { WebviewWindow } from '@tauri-apps/api/window';
 import { fuzzyScore } from '../utils';
 import {
   Search,
@@ -17,11 +18,13 @@ import {
   ShieldCheck,
   HardDrive,
   HelpCircle,
+  History,
   X,
   CornerDownLeft,
 } from 'lucide-react';
 import { useSessionStore } from '../store/sessionStore';
 import { useSettingsStore } from '../store/settingsStore';
+import { useRecentStore, timeAgo, RecentConnection } from '../store/recentStore';
 import { ConnectionConfig } from '../types';
 
 interface PaletteAction {
@@ -36,17 +39,20 @@ interface PaletteAction {
 interface CommandPaletteProps {
   onConnect: (config: ConnectionConfig) => void;
   onLocalShell: () => void;
+  onConnectRecent: (recent: RecentConnection) => void;
 }
 
-export default function CommandPalette({ onConnect, onLocalShell }: CommandPaletteProps) {
+export default function CommandPalette({ onConnect, onLocalShell, onConnectRecent }: CommandPaletteProps) {
   const store = useSessionStore();
   const { theme, setTheme } = useSettingsStore();
+  const recents = useRecentStore((s) => s.recents);
   const {
     showCommandPalette,
     setShowCommandPalette,
     folders,
     sessions,
     activeSessionId,
+    poppedSessions,
   } = store;
 
   const [query, setQuery] = useState('');
@@ -105,6 +111,18 @@ export default function CommandPalette({ onConnect, onLocalShell }: CommandPalet
       },
     ];
 
+    // Recent connections → reconnect actions (below the built-in commands)
+    for (const r of recents.slice(0, 5)) {
+      a.push({
+        id: `recent-${r.id}`,
+        label: `Recent: ${r.name}`,
+        hint: timeAgo(r.lastConnectedAt),
+        keywords: `recent connection ${r.host ?? ''} ${r.username ?? ''} ${r.protocol}`,
+        icon: <History size={14} className="text-[var(--accent)]" />,
+        run: () => onConnectRecent(r),
+      });
+    }
+
     // Saved sessions → connect actions
     for (const folder of folders) {
       for (const item of folder.items) {
@@ -119,20 +137,30 @@ export default function CommandPalette({ onConnect, onLocalShell }: CommandPalet
       }
     }
 
-    // Open tabs → switch actions
+    // Open tabs → switch actions. Popped-out sessions live in their own OS
+    // window — activating them here would blank the terminal area, so focus
+    // their window instead (same guard as the tab strip).
     for (const s of sessions) {
       if (s.sessionId === activeSessionId) continue;
+      const isPopped = poppedSessions.includes(s.sessionId);
       a.push({
         id: `goto-${s.sessionId}`,
-        label: `Go to tab: ${s.config.name || s.config.host || 'Session'}`,
+        label: `${isPopped ? 'Focus window' : 'Go to tab'}: ${s.config.name || s.config.host || 'Session'}`,
         keywords: `tab switch ${s.config.host ?? ''}`,
         icon: <TerminalSquare size={14} className="text-[#58a6ff]" />,
-        run: () => store.setActiveSession(s.sessionId),
+        run: () => {
+          if (isPopped) {
+            WebviewWindow.getByLabel(`popout-${s.sessionId}`)?.setFocus();
+          } else {
+            store.setActiveSession(s.sessionId);
+          }
+        },
       });
     }
 
-    // Close current tab
-    if (activeSessionId) {
+    // Close current tab (not for popped-out sessions — closing from here would
+    // disconnect the backend while their pop-out window stays open)
+    if (activeSessionId && !poppedSessions.includes(activeSessionId)) {
       a.push({
         id: 'close-tab',
         label: 'Close Current Tab',
@@ -147,7 +175,7 @@ export default function CommandPalette({ onConnect, onLocalShell }: CommandPalet
 
     return a;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [folders, sessions, activeSessionId, theme, store.vaultUnlocked]);
+  }, [folders, sessions, activeSessionId, poppedSessions, theme, store.vaultUnlocked, recents]);
 
   const filtered = useMemo(() => {
     const q = query.trim();

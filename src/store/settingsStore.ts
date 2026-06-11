@@ -1,10 +1,11 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import { TerminalSettings, DEFAULT_SETTINGS, AiProvider, CentralAccount, AiAgent, DeviceProfile, DeviceType } from '../types';
+import { TerminalSettings, TerminalColorScheme, DEFAULT_SETTINGS, AiProvider, CentralAccount, AiAgent, DeviceProfile, DeviceType } from '../types';
 
 interface SettingsState extends TerminalSettings {
   // Actions
   setTheme: (theme: 'dark' | 'light') => void;
+  setColorScheme: (scheme: TerminalColorScheme) => void;
   setFontSize: (size: number) => void;
   setFontFamily: (family: string) => void;
   setBell: (enabled: boolean) => void;
@@ -14,14 +15,12 @@ interface SettingsState extends TerminalSettings {
   setAutoReconnect: (enabled: boolean) => void;
   setKeepAliveInterval: (seconds: number) => void;
   setSyntaxHighlighting: (enabled: boolean) => void;
-  setWordWrap: (enabled: boolean) => void;
   setSidebarWidth: (width: number) => void;
   setLastUsedDeviceType: (deviceType: DeviceType) => void;
   setLastUsedDeviceProfileId: (profileId: string) => void;
   addDeviceProfile: (profile: DeviceProfile) => void;
   updateDeviceProfile: (id: string, patch: Partial<DeviceProfile>) => void;
   removeDeviceProfile: (id: string) => void;
-  setAnthropicApiKey: (key: string) => void;
   setAiModel: (model: string) => void;
   setAiProvider: (provider: AiProvider) => void;
   setOllamaUrl: (url: string) => void;
@@ -45,6 +44,7 @@ export const useSettingsStore = create<SettingsState>()(
       ...DEFAULT_SETTINGS,
 
       setTheme: (theme) => set({ theme }),
+      setColorScheme: (colorScheme) => set({ colorScheme }),
       setFontSize: (fontSize) => set({ fontSize }),
       setFontFamily: (fontFamily) => set({ fontFamily }),
       setBell: (bell) => set({ bell }),
@@ -54,11 +54,9 @@ export const useSettingsStore = create<SettingsState>()(
       setAutoReconnect: (autoReconnect) => set({ autoReconnect }),
       setKeepAliveInterval: (keepAliveInterval) => set({ keepAliveInterval }),
       setSyntaxHighlighting: (syntaxHighlighting) => set({ syntaxHighlighting }),
-      setWordWrap: (wordWrap) => set({ wordWrap }),
       setSidebarWidth: (sidebarWidth) => set({ sidebarWidth }),
       setLastUsedDeviceType: (lastUsedDeviceType) => set({ lastUsedDeviceType }),
       setLastUsedDeviceProfileId: (lastUsedDeviceProfileId) => set({ lastUsedDeviceProfileId }),
-      setAnthropicApiKey: (anthropicApiKey) => set({ anthropicApiKey }),
       setAiModel: (aiModel) => set({ aiModel }),
       setAiProvider: (aiProvider) => set({ aiProvider }),
       setOllamaUrl: (ollamaUrl) => set({ ollamaUrl }),
@@ -124,7 +122,6 @@ export const useSettingsStore = create<SettingsState>()(
       // still persists, just without its secret material — re-enter on next load.
       partialize: (state) => {
         const {
-          anthropicApiKey: _k,
           centralToken: _t,
           centralClientSecret: _cs,
           apstraPassword: _ap,

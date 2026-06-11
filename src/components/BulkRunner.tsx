@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { X, Play, Download, Loader2, CheckCircle2, AlertCircle, Square, CheckSquare } from 'lucide-react';
 import { useSessionStore } from '../store/sessionStore';
+import { useDialogStore } from '../store/dialogStore';
 import { sendAndCapture } from '../utils/terminal';
 
 interface RunResult {
@@ -30,6 +31,18 @@ export default function BulkRunner() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showBulkRunner]);
+
+  // Close on Escape — unless a confirm/prompt dialog is stacked above us.
+  useEffect(() => {
+    if (!showBulkRunner) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      if (useDialogStore.getState().current) return;
+      setShowBulkRunner(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [showBulkRunner, setShowBulkRunner]);
 
   if (!showBulkRunner) return null;
 
@@ -102,7 +115,12 @@ export default function BulkRunner() {
   };
 
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm">
+    <div
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm"
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) setShowBulkRunner(false);
+      }}
+    >
       <div className="w-[720px] max-w-[92vw] max-h-[85vh] bg-[var(--bg-secondary)] border border-[var(--border)] rounded-xl shadow-2xl flex flex-col">
         <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--bg-tertiary)]">
           <h2 className="text-lg font-semibold text-[var(--text-primary)]">Bulk Command Runner</h2>
