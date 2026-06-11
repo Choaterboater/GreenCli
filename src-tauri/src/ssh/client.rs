@@ -37,7 +37,6 @@ pub struct SshConnection {
     pub config: ConnectionConfig,
     pub handle: Option<Arc<Mutex<client::Handle<ClientHandler>>>>,
     pub channel: Option<Arc<Mutex<Channel<client::Msg>>>>,
-    pub data_sender: Option<Sender<Vec<u8>>>,
     pub data_receiver: Option<tokio::sync::mpsc::Receiver<Vec<u8>>>,
     pub connected: bool,
     /// Held open for the session's lifetime when connecting via a jump host;
@@ -147,7 +146,6 @@ impl SshConnection {
             config,
             handle: None,
             channel: None,
-            data_sender: None,
             data_receiver: None,
             connected: false,
             jump_handle: None,
@@ -174,8 +172,10 @@ impl SshConnection {
             ..Default::default()
         });
 
+        // The handler owns the only sender: when the russh session task ends
+        // (server drop, keepalive_max exceeded) the channel closes, which is
+        // what signals EOF to the supervisor. Do NOT retain a clone here.
         let (data_tx, data_rx) = channel::<Vec<u8>>(1024);
-        self.data_sender = Some(data_tx.clone());
 
         let handler = ClientHandler {
             sender: data_tx,
@@ -462,7 +462,6 @@ impl SshConnection {
         self.connected = false;
         self.handle = None;
         self.channel = None;
-        self.data_sender = None;
         self.jump_handle = None;
         Ok(())
     }

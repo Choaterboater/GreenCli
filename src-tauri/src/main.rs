@@ -20,7 +20,7 @@ use api::{Aos8Client, ApstraClient, ArubaCxClient, AossClient, JunosClient, Mist
 use central::CentralClient;
 use error::AppError;
 use local::{LocalConfig, LocalConnection};
-use mcp::{McpClient, McpInitializeRequest, McpManager, McpResourceReadRequest, McpServer, McpServerDef, McpToolCallRequest};
+use mcp::{McpClient, McpManager, McpServerDef};
 use serde::{Deserialize, Serialize};
 use serial::{client::SerialConfig, SerialConnection};
 use session::{SessionFolder, SessionManager, SessionStore, StoredSession};
@@ -44,11 +44,14 @@ use tokio::sync::Mutex as AsyncMutex;
 
 // ─── Shared Application State ───
 
+/// Active SSH port-forwards keyed by forward id (meta + listener task).
+type ForwardsMap =
+    Arc<AsyncMutex<HashMap<String, (ssh::forward::ForwardMeta, tokio::task::JoinHandle<()>)>>>;
+
 struct AppState {
-    session_manager: Arc<AsyncMutex<SessionManager>>,
+    session_manager: Arc<SessionManager>,
     session_store: Arc<AsyncMutex<SessionStore>>,
     vault: Arc<Mutex<CredentialVault>>,
-    mcp_server: Arc<AsyncMutex<McpServer>>,
     /// Outbound MCP client manager — connects to external MCP servers so the AI
     /// assistant can use their tools (provider-agnostic).
     mcp_manager: Arc<AsyncMutex<McpManager>>,
@@ -71,7 +74,7 @@ struct AppState {
     /// Open session-log files keyed by session id (raw output streamed to disk).
     session_logs: Arc<AsyncMutex<HashMap<String, std::fs::File>>>,
     /// Active SSH port-forwards keyed by forward id (meta + listener task).
-    forwards: Arc<AsyncMutex<HashMap<String, (ssh::forward::ForwardMeta, tokio::task::JoinHandle<()>)>>>,
+    forwards: ForwardsMap,
     /// Cancellation flags for in-flight AI streams, keyed by stream id, so the
     /// frontend Stop button can actually abort the backend request/egress.
     ai_cancels: Arc<AsyncMutex<HashMap<String, Arc<std::sync::atomic::AtomicBool>>>>,
@@ -82,10 +85,9 @@ impl AppState {
     fn new(app_dir: std::path::PathBuf) -> Result<Self, AppError> {
         let vault_dir = app_dir.clone();
         Ok(Self {
-            session_manager: Arc::new(AsyncMutex::new(SessionManager::new())),
+            session_manager: Arc::new(SessionManager::new()),
             session_store: Arc::new(AsyncMutex::new(SessionStore::new(app_dir.clone())?)),
             vault: Arc::new(Mutex::new(CredentialVault::new(vault_dir)?)),
-            mcp_server: Arc::new(AsyncMutex::new(McpServer::new())),
             mcp_manager: Arc::new(AsyncMutex::new(McpManager::new(app_dir.clone()))),
             api_clients: Arc::new(AsyncMutex::new(HashMap::new())),
             aos8_clients: Arc::new(AsyncMutex::new(HashMap::new())),
@@ -223,12 +225,34 @@ async fn write_and_emit(
     );
 }
 
+/// Abort and remove every port-forward belonging to `session_id`. Used by the
+/// user-driven disconnect command and by the SSH supervisor when the peer
+/// closes the session or a reconnect swaps in a fresh handle — forward tasks
+/// hold a clone of the OLD russh handle, so they can never carry traffic again
+/// once that connection dies. (The Tunnels UI re-queries `ssh_list_forwards`
+/// each time it opens, so backend removal is enough to keep it accurate.)
+async fn close_session_forwards(forwards: &ForwardsMap, session_id: &str) {
+    let mut fwds = forwards.lock().await;
+    let ids: Vec<String> = fwds
+        .iter()
+        .filter(|(_, (meta, _))| meta.session_id == session_id)
+        .map(|(id, _)| id.clone())
+        .collect();
+    for id in ids {
+        if let Some((_, task)) = fwds.remove(&id) {
+            task.abort();
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn spawn_forwarder(
     app: AppHandle,
     buffers: Arc<AsyncMutex<HashMap<String, String>>>,
     logs: Arc<AsyncMutex<HashMap<String, std::fs::File>>>,
-    session_manager: Arc<AsyncMutex<SessionManager>>,
+    session_manager: Arc<SessionManager>,
     session_id: String,
+    generation: u64,
     mut rx: tokio::sync::mpsc::Receiver<Vec<u8>>,
     close_msg: &'static str,
 ) {
@@ -250,14 +274,16 @@ fn spawn_forwarder(
             }
             write_and_emit(&app, &buffers, &logs, &session_id, data).await;
         }
-        // The underlying stream (telnet/serial/local PTY) ended. If the session is
-        // still present, this is a peer-initiated close — drop the dead connection
-        // and announce it. If it's already gone, the user called disconnect() (which
-        // removes the session and emits its own status), so stay silent to avoid a
-        // duplicate "disconnected" notice.
-        let user_closed = !session_manager.lock().await.contains(&session_id).await;
-        let _ = session_manager.lock().await.remove_session(&session_id).await;
-        if !user_closed {
+        // The underlying stream (telnet/serial/local PTY) ended. If we still own
+        // the registered session (generation match), this is a peer-initiated
+        // close — drop the dead connection and announce it. If the entry is gone,
+        // the user called disconnect() (which emits its own status); if the
+        // generation changed, a newer connect replaced us and owns the session.
+        // In both of those cases stay silent and leave the registration alone.
+        let peer_closed = session_manager
+            .remove_session_if(&session_id, generation)
+            .await;
+        if peer_closed {
             let _ = app.emit_all(
                 "connection_status",
                 ConnectionStatusEvent {
@@ -279,9 +305,11 @@ fn spawn_ssh_supervisor(
     app: AppHandle,
     buffers: Arc<AsyncMutex<HashMap<String, String>>>,
     logs: Arc<AsyncMutex<HashMap<String, std::fs::File>>>,
-    session_manager: Arc<AsyncMutex<SessionManager>>,
+    session_manager: Arc<SessionManager>,
+    forwards: ForwardsMap,
     ssh_config: ConnectionConfig,
     session_id: String,
+    mut generation: u64,
     first_rx: tokio::sync::mpsc::Receiver<Vec<u8>>,
     auto_reconnect: bool,
 ) {
@@ -306,8 +334,11 @@ fn spawn_ssh_supervisor(
                 );
                 for _ in 0..backoff {
                     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                    if !session_manager.lock().await.contains(&session_id).await {
-                        return; // user disconnected during backoff
+                    if !session_manager.contains_gen(&session_id, generation).await {
+                        // User disconnected during backoff — or a fresh connect
+                        // replaced our registration (new generation). Either way
+                        // this supervisor no longer owns the session.
+                        return;
                     }
                 }
                 let mut conn = SshConnection::new(session_id.clone(), ssh_config.clone());
@@ -315,18 +346,27 @@ fn spawn_ssh_supervisor(
                     Ok(_) => match conn.take_data_receiver() {
                         Some(nrx) => {
                             // The connect() above can take seconds; if the user
-                            // hit Disconnect during it, the session is gone —
+                            // hit Disconnect during it (or a new connect replaced
+                            // our registration), the session is no longer ours —
                             // tear the new connection down instead of resurrecting
                             // an orphan, and stop the supervisor.
-                            if !session_manager.lock().await.contains(&session_id).await {
+                            if !session_manager.contains_gen(&session_id, generation).await {
                                 let _ = conn.disconnect().await;
                                 return;
                             }
-                            let _ = session_manager
-                                .lock()
-                                .await
+                            // Any port-forwards were cloned from the OLD (dead)
+                            // russh handle and can never carry traffic again —
+                            // tear them down before swapping in the new connection.
+                            close_session_forwards(&forwards, &session_id).await;
+                            match session_manager
                                 .add_session(session_id.clone(), Box::new(conn))
-                                .await;
+                                .await
+                            {
+                                // Adopt the generation of OUR new registration so
+                                // later ownership checks keep matching.
+                                Ok(gen) => generation = gen,
+                                Err(_) => return,
+                            }
                             rx = nrx;
                             let _ = app.emit_all(
                                 "connection_status",
@@ -341,7 +381,7 @@ fn spawn_ssh_supervisor(
                     },
                     Err(_) => {
                         backoff = (backoff * 2).min(30);
-                        if !session_manager.lock().await.contains(&session_id).await {
+                        if !session_manager.contains_gen(&session_id, generation).await {
                             return;
                         }
                         continue; // retry (backoff sleep happens at top)
@@ -364,17 +404,28 @@ fn spawn_ssh_supervisor(
                 write_and_emit(&app, &buffers, &logs, &session_id, data).await;
             }
 
-            // Stream closed — reconnect only if still wanted.
-            let still_present = session_manager.lock().await.contains(&session_id).await;
-            if !still_present || !auto_reconnect {
-                let _ = app.emit_all(
-                    "connection_status",
-                    ConnectionStatusEvent {
-                        session_id: session_id.clone(),
-                        status: "disconnected".to_string(),
-                        message: Some("SSH connection closed".to_string()),
-                    },
-                );
+            // Stream closed — reconnect only if the registration is still ours
+            // (a user disconnect removes it; a new connect bumps the generation).
+            if !auto_reconnect || !session_manager.contains_gen(&session_id, generation).await {
+                // Peer-initiated close with no auto-reconnect: if we still own
+                // the registration, drop the dead connection (mirrors
+                // spawn_forwarder) so the manager doesn't keep routing
+                // keystrokes/SFTP to a dead handle, and tear down this session's
+                // port-forwards — their tasks hold a clone of the dead handle.
+                if session_manager.remove_session_if(&session_id, generation).await {
+                    close_session_forwards(&forwards, &session_id).await;
+                    let _ = app.emit_all(
+                        "connection_status",
+                        ConnectionStatusEvent {
+                            session_id: session_id.clone(),
+                            status: "disconnected".to_string(),
+                            message: Some("SSH connection closed".to_string()),
+                        },
+                    );
+                }
+                // If the session is already gone (user disconnect — it emitted
+                // its own status and closed its forwards) or replaced by a new
+                // connect (the new owner manages it), stay silent.
                 return;
             }
             // Reset backoff only after a stable session; escalate if it flapped.
@@ -427,11 +478,8 @@ async fn connect(
             let response = connection.connect().await.map_err(|e| e.to_string())?;
             let rx_opt = connection.take_data_receiver();
 
-            state
-                .session_manager
-                .lock()
-                .await
-                .add_session(session_id.clone(), Box::new(connection))
+            let generation = state
+                .session_manager.add_session(session_id.clone(), Box::new(connection))
                 .await
                 .map_err(|e| e.to_string())?;
 
@@ -452,8 +500,10 @@ async fn connect(
                     state.terminal_buffers.clone(),
                     state.session_logs.clone(),
                     state.session_manager.clone(),
+                    state.forwards.clone(),
                     ssh_config,
                     session_id.clone(),
+                    generation,
                     rx,
                     auto_reconnect,
                 );
@@ -473,15 +523,25 @@ async fn connect(
             let rx_opt = connection.take_data_receiver();
 
             // Register the session BEFORE spawning the forwarder, so the forwarder's
-            // stream-end cleanup (remove_session) always runs after the session exists
-            // — otherwise an instantly-closing stream leaves a ghost "connected" tab.
-            state
-                .session_manager
-                .lock()
-                .await
-                .add_session(session_id.clone(), Box::new(connection))
+            // stream-end cleanup (remove_session_if) always runs after the session
+            // exists — otherwise an instantly-closing stream leaves a ghost
+            // "connected" tab.
+            let generation = state
+                .session_manager.add_session(session_id.clone(), Box::new(connection))
                 .await
                 .map_err(|e| e.to_string())?;
+
+            // Emit "connected" BEFORE spawning the forwarder (mirrors SSH), so an
+            // instantly-dying stream can't emit "disconnected" first and leave a
+            // ghost connected tab.
+            let _ = app.emit_all(
+                "connection_status",
+                ConnectionStatusEvent {
+                    session_id: session_id.clone(),
+                    status: "connected".to_string(),
+                    message: Some("Telnet connected".to_string()),
+                },
+            );
 
             // Forward Telnet data + capture output for AI read-back.
             if let Some(rx) = rx_opt {
@@ -491,19 +551,11 @@ async fn connect(
                     state.session_logs.clone(),
                     state.session_manager.clone(),
                     session_id.clone(),
+                    generation,
                     rx,
                     "Telnet connection closed",
                 );
             }
-
-            let _ = app.emit_all(
-                "connection_status",
-                ConnectionStatusEvent {
-                    session_id: session_id.clone(),
-                    status: "connected".to_string(),
-                    message: Some("Telnet connected".to_string()),
-                },
-            );
 
             Ok(response)
         }
@@ -522,13 +574,20 @@ async fn connect(
             let rx_opt = connection.take_data_receiver();
 
             // Register the session before spawning the forwarder (see telnet note).
-            state
-                .session_manager
-                .lock()
-                .await
-                .add_session(session_id.clone(), Box::new(connection))
+            let generation = state
+                .session_manager.add_session(session_id.clone(), Box::new(connection))
                 .await
                 .map_err(|e| e.to_string())?;
+
+            // Emit "connected" before spawning the forwarder (see telnet note).
+            let _ = app.emit_all(
+                "connection_status",
+                ConnectionStatusEvent {
+                    session_id: session_id.clone(),
+                    status: "connected".to_string(),
+                    message: Some("Serial connected".to_string()),
+                },
+            );
 
             // Forward serial data + capture output for AI read-back.
             if let Some(rx) = rx_opt {
@@ -538,19 +597,11 @@ async fn connect(
                     state.session_logs.clone(),
                     state.session_manager.clone(),
                     session_id.clone(),
+                    generation,
                     rx,
                     "Serial port closed",
                 );
             }
-
-            let _ = app.emit_all(
-                "connection_status",
-                ConnectionStatusEvent {
-                    session_id: session_id.clone(),
-                    status: "connected".to_string(),
-                    message: Some("Serial connected".to_string()),
-                },
-            );
 
             Ok(response)
         }
@@ -568,13 +619,20 @@ async fn connect(
 
             // Register the session before spawning the forwarder (see telnet note) —
             // especially important for `local`, where a bad command can exit instantly.
-            state
-                .session_manager
-                .lock()
-                .await
-                .add_session(session_id.clone(), Box::new(connection))
+            let generation = state
+                .session_manager.add_session(session_id.clone(), Box::new(connection))
                 .await
                 .map_err(|e| e.to_string())?;
+
+            // Emit "connected" before spawning the forwarder (see telnet note).
+            let _ = app.emit_all(
+                "connection_status",
+                ConnectionStatusEvent {
+                    session_id: session_id.clone(),
+                    status: "connected".to_string(),
+                    message: Some("Local shell started".to_string()),
+                },
+            );
 
             // Forward local PTY data + capture output for AI read-back.
             if let Some(rx) = rx_opt {
@@ -584,19 +642,11 @@ async fn connect(
                     state.session_logs.clone(),
                     state.session_manager.clone(),
                     session_id.clone(),
+                    generation,
                     rx,
                     "Local session ended",
                 );
             }
-
-            let _ = app.emit_all(
-                "connection_status",
-                ConnectionStatusEvent {
-                    session_id: session_id.clone(),
-                    status: "connected".to_string(),
-                    message: Some("Local shell started".to_string()),
-                },
-            );
 
             Ok(response)
         }
@@ -611,10 +661,7 @@ async fn disconnect(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     state
-        .session_manager
-        .lock()
-        .await
-        .remove_session(&session_id)
+        .session_manager.remove_session(&session_id)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -624,19 +671,7 @@ async fn disconnect(
     // Tear down any SSH port-forwards belonging to this session, so a disconnect
     // doesn't leave orphaned tunnels with the local port bound and stale entries
     // in the Tunnels UI. (forwards are keyed by forward id, not session id.)
-    {
-        let mut fwds = state.forwards.lock().await;
-        let ids: Vec<String> = fwds
-            .iter()
-            .filter(|(_, (meta, _))| meta.session_id == session_id)
-            .map(|(id, _)| id.clone())
-            .collect();
-        for id in ids {
-            if let Some((_, task)) = fwds.remove(&id) {
-                task.abort();
-            }
-        }
-    }
+    close_session_forwards(&state.forwards, &session_id).await;
 
     let _ = app.emit_all(
         "connection_status",
@@ -658,10 +693,7 @@ async fn send_data(
 ) -> Result<(), String> {
     let bytes = data.into_bytes();
     state
-        .session_manager
-        .lock()
-        .await
-        .send_to_session(&session_id, &bytes)
+        .session_manager.send_to_session(&session_id, &bytes)
         .await
         .map_err(|e| e.to_string())
 }
@@ -674,10 +706,7 @@ async fn resize_terminal(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     state
-        .session_manager
-        .lock()
-        .await
-        .resize_session(&session_id, cols, rows)
+        .session_manager.resize_session(&session_id, cols, rows)
         .await
         .map_err(|e| e.to_string())
 }
@@ -993,52 +1022,6 @@ fn generate_keypair() -> Result<HashMap<String, String>, String> {
     Ok(result)
 }
 
-// ─── MCP Commands ───
-
-#[tauri::command]
-async fn mcp_initialize(
-    request: McpInitializeRequest,
-    state: State<'_, AppState>,
-) -> Result<serde_json::Value, String> {
-    let server = state.mcp_server.lock().await;
-    let response = server.initialize(request);
-    serde_json::to_value(response).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-async fn mcp_tools_list(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
-    let server = state.mcp_server.lock().await;
-    let response = server.list_tools();
-    serde_json::to_value(response).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-async fn mcp_tools_call(
-    request: McpToolCallRequest,
-    state: State<'_, AppState>,
-) -> Result<serde_json::Value, String> {
-    let server = state.mcp_server.lock().await;
-    let response = server.call_tool(request);
-    serde_json::to_value(response).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-async fn mcp_resources_list(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
-    let server = state.mcp_server.lock().await;
-    let response = server.list_resources();
-    serde_json::to_value(response).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-async fn mcp_resources_read(
-    request: McpResourceReadRequest,
-    state: State<'_, AppState>,
-) -> Result<serde_json::Value, String> {
-    let server = state.mcp_server.lock().await;
-    let response = server.read_resource(request);
-    serde_json::to_value(response).map_err(|e| e.to_string())
-}
-
 // ─── Outbound MCP client commands (connect to external MCP servers) ───
 
 #[tauri::command]
@@ -1242,10 +1225,7 @@ async fn ssh_start_forward(
     state: State<'_, AppState>,
 ) -> Result<ssh::forward::ForwardMeta, String> {
     let handle = state
-        .session_manager
-        .lock()
-        .await
-        .get_ssh_handle(&session_id)
+        .session_manager.get_ssh_handle(&session_id)
         .await
         .ok_or("This session is not a connected SSH session")?;
 
@@ -1657,10 +1637,7 @@ async fn sftp_list_dir(
     state: State<'_, AppState>,
 ) -> Result<Vec<RemoteEntry>, String> {
     let handle = state
-        .session_manager
-        .lock()
-        .await
-        .get_ssh_handle(&session_id)
+        .session_manager.get_ssh_handle(&session_id)
         .await
         .ok_or_else(|| "No SSH handle for this session".to_string())?;
     let mut handle = handle.lock().await;
@@ -1678,10 +1655,7 @@ async fn sftp_download(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let handle = state
-        .session_manager
-        .lock()
-        .await
-        .get_ssh_handle(&session_id)
+        .session_manager.get_ssh_handle(&session_id)
         .await
         .ok_or_else(|| "No SSH handle for this session".to_string())?;
     let mut handle = handle.lock().await;
@@ -1703,10 +1677,7 @@ async fn sftp_upload(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let handle = state
-        .session_manager
-        .lock()
-        .await
-        .get_ssh_handle(&session_id)
+        .session_manager.get_ssh_handle(&session_id)
         .await
         .ok_or_else(|| "No SSH handle for this session".to_string())?;
     let mut handle = handle.lock().await;
@@ -1726,10 +1697,7 @@ async fn sftp_mkdir_cmd(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let handle = state
-        .session_manager
-        .lock()
-        .await
-        .get_ssh_handle(&session_id)
+        .session_manager.get_ssh_handle(&session_id)
         .await
         .ok_or_else(|| "No SSH handle for this session".to_string())?;
     let mut handle = handle.lock().await;
@@ -1745,10 +1713,7 @@ async fn sftp_delete(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let handle = state
-        .session_manager
-        .lock()
-        .await
-        .get_ssh_handle(&session_id)
+        .session_manager.get_ssh_handle(&session_id)
         .await
         .ok_or_else(|| "No SSH handle for this session".to_string())?;
     let mut handle = handle.lock().await;
@@ -1768,10 +1733,7 @@ async fn sftp_rename_cmd(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let handle = state
-        .session_manager
-        .lock()
-        .await
-        .get_ssh_handle(&session_id)
+        .session_manager.get_ssh_handle(&session_id)
         .await
         .ok_or_else(|| "No SSH handle for this session".to_string())?;
     let mut handle = handle.lock().await;
@@ -1905,11 +1867,6 @@ fn main() {
             read_file_text,
             write_file_text,
             generate_keypair,
-            mcp_initialize,
-            mcp_tools_list,
-            mcp_tools_call,
-            mcp_resources_list,
-            mcp_resources_read,
             api_login,
             api_get_interfaces,
             api_get_vlans,

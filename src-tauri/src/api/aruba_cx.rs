@@ -14,9 +14,15 @@ use crate::error::AppError;
 /// (the same client instance is reused for the life of the API session), so we
 /// never capture or re-send the `Set-Cookie` header by hand — doing so used to
 /// duplicate the cookie and ship its raw attributes as a malformed value.
+///
+/// Firmware 10.09+ additionally enables CSRF protection: the login response
+/// carries an `X-CSRF-Token` header that must be echoed back on every mutating
+/// request (POST/PUT/DELETE/PATCH). Older firmware sends no token, in which
+/// case `csrf_token` stays `None` and requests go out exactly as before.
 pub struct ArubaCxClient {
     client: reqwest::Client,
     base_url: String,
+    csrf_token: Option<String>,
 }
 
 /// Interface information.
@@ -96,7 +102,11 @@ impl ArubaCxClient {
             .filter(|u| !u.is_empty())
             .unwrap_or_else(|| format!("https://{}/rest/v10.09", host));
 
-        Self { client, base_url }
+        Self {
+            client,
+            base_url,
+            csrf_token: None,
+        }
     }
 
     /// Login to the switch using cookie-based authentication. The resulting
@@ -114,6 +124,15 @@ impl ArubaCxClient {
             .map_err(|e| AppError::ApiError(format!("Login request failed: {}", e)))?;
 
         if response.status().is_success() {
+            // REST v10.04+ returns a CSRF token in the login response header;
+            // it must accompany every mutating request on 10.09+ firmware.
+            // Absent header (older firmware) leaves this `None` and we keep
+            // the cookie-only behaviour.
+            self.csrf_token = response
+                .headers()
+                .get("x-csrf-token")
+                .and_then(|v| v.to_str().ok())
+                .map(String::from);
             Ok(())
         } else {
             Err(AppError::AuthError(format!(
@@ -254,7 +273,8 @@ impl ArubaCxClient {
             format!("{}{}", self.base_url, path)
         };
 
-        let mut builder = match method.to_uppercase().as_str() {
+        let method = method.to_uppercase();
+        let mut builder = match method.as_str() {
             "GET" => self.client.get(&url),
             "POST" => self.client.post(&url),
             "PUT" => self.client.put(&url),
@@ -262,6 +282,14 @@ impl ArubaCxClient {
             "PATCH" => self.client.patch(&url),
             other => return Err(AppError::ApiError(format!("Unsupported method: {}", other))),
         };
+
+        // Same CSRF rule as `authenticated_request` — the Explorer issues raw
+        // mutating requests that 10.09+ firmware would otherwise reject.
+        if let Some(token) = &self.csrf_token {
+            if Self::is_mutating(method.as_str()) {
+                builder = builder.header("X-CSRF-Token", token);
+            }
+        }
 
         if let Some(b) = body {
             if !b.trim().is_empty() {
@@ -282,14 +310,33 @@ impl ArubaCxClient {
 
     // ─── Internal helpers ───
 
+    /// Whether an HTTP method (upper-case) mutates state and therefore needs
+    /// the CSRF token on 10.09+ firmware.
+    fn is_mutating(method: &str) -> bool {
+        matches!(method, "POST" | "PUT" | "DELETE" | "PATCH")
+    }
+
     async fn authenticated_request<F>(&self, build: F) -> Result<reqwest::Response, AppError>
     where
         F: FnOnce(reqwest::Client) -> reqwest::RequestBuilder,
     {
-        let builder = build(self.client.clone());
+        let mut request = build(self.client.clone())
+            .build()
+            .map_err(|e| AppError::ApiError(format!("Failed to build request: {}", e)))?;
 
-        let response = builder
-            .send()
+        // CSRF-protected firmware (10.09+) rejects mutating requests that do
+        // not echo the token captured at login; reads never need it.
+        if let Some(token) = &self.csrf_token {
+            if Self::is_mutating(request.method().as_str()) {
+                if let Ok(value) = reqwest::header::HeaderValue::from_str(token) {
+                    request.headers_mut().insert("X-CSRF-Token", value);
+                }
+            }
+        }
+
+        let response = self
+            .client
+            .execute(request)
             .await
             .map_err(|e| AppError::ApiError(format!("Request failed: {}", e)))?;
 

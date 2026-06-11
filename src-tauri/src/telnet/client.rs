@@ -20,6 +20,7 @@ const SE: u8 = 240;
 // Telnet options
 const OPT_ECHO: u8 = 1;
 const OPT_SUPPRESS_GO_AHEAD: u8 = 3;
+const OPT_NAWS: u8 = 31; // Negotiate About Window Size (RFC 1073)
 
 #[derive(Clone, Debug, Serialize)]
 pub struct TelnetConfig {
@@ -36,6 +37,9 @@ pub struct TelnetConnection {
     pub data_receiver: Option<tokio::sync::mpsc::Receiver<Vec<u8>>>,
     pub reader_task: Option<tokio::task::JoinHandle<()>>,
     pub connected: bool,
+    /// Latest terminal size (cols, rows) — sent as a NAWS subnegotiation right
+    /// after option negotiation and re-sent on every resize.
+    pub size: Mutex<(u16, u16)>,
 }
 
 impl TelnetConnection {
@@ -48,6 +52,7 @@ impl TelnetConnection {
             data_receiver: None,
             reader_task: None,
             connected: false,
+            size: Mutex::new((80, 24)),
         }
     }
 
@@ -60,61 +65,85 @@ impl TelnetConnection {
         // we request `DO ECHO` (and `WONT ECHO` ourselves). Offering `WILL ECHO`
         // — as this used to — tells the server *we* will echo, which is
         // backwards and leaves typed input unechoed on many devices.
-        let negotiate = [
+        let mut negotiate = vec![
             IAC, WILL, OPT_SUPPRESS_GO_AHEAD,
             IAC, DO, OPT_SUPPRESS_GO_AHEAD,
             IAC, DO, OPT_ECHO,
             IAC, WONT, OPT_ECHO,
+            IAC, WILL, OPT_NAWS,
         ];
+        // The reader task strips all incoming negotiation, so we never see the
+        // server's `DO NAWS`. Instead — like most clients — send the window
+        // size unsolicited right after `WILL NAWS` (and again on every
+        // resize); devices accept it once NAWS has been offered.
+        let (cols, rows) = *self.size.lock().await;
+        negotiate.extend_from_slice(&Self::naws_subnegotiation(cols, rows));
         stream.write_all(&negotiate).await.map_err(AppError::from)?;
         stream.flush().await.map_err(AppError::from)?;
         Ok(())
+    }
+
+    /// Build an `IAC SB NAWS w-hi w-lo h-hi h-lo IAC SE` window-size
+    /// subnegotiation (RFC 1073). Any 0xFF byte in the payload (sizes whose
+    /// hi/lo byte is 255) must be escaped as `IAC IAC` per RFC 855.
+    fn naws_subnegotiation(cols: u16, rows: u16) -> Vec<u8> {
+        let mut buf = vec![IAC, SB, OPT_NAWS];
+        for byte in [
+            (cols >> 8) as u8,
+            (cols & 0xff) as u8,
+            (rows >> 8) as u8,
+            (rows & 0xff) as u8,
+        ] {
+            buf.push(byte);
+            if byte == IAC {
+                buf.push(IAC);
+            }
+        }
+        buf.extend_from_slice(&[IAC, SE]);
+        buf
     }
 
     /// Number of trailing bytes that form an INCOMPLETE telnet command sequence
     /// (an IAC negotiation split across two reads). Those bytes must be carried
     /// over to the next read instead of being treated as data.
     fn incomplete_tail_len(data: &[u8]) -> usize {
-        // Walk backwards to the last IAC that could start an unterminated seq.
+        // Forward scan with sequence context, so a trailing `IAC IAC` escape is
+        // recognized as COMPLETE (carrying its second byte would merge it with
+        // the next chunk and swallow a real data byte), and an open `IAC SB …`
+        // subnegotiation carries from its start, not just the final byte.
         let n = data.len();
-        if n == 0 {
-            return 0;
-        }
-        // Lone trailing IAC.
-        if data[n - 1] == IAC {
-            return 1;
-        }
-        // IAC + negotiation verb with the option byte still missing.
-        if n >= 2 && data[n - 2] == IAC && matches!(data[n - 1], WILL | WONT | DO | DONT) {
-            return 2;
-        }
-        // Unterminated sub-negotiation: an IAC SB with no following IAC SE.
         let mut i = 0;
         let mut sb_start: Option<usize> = None;
-        while i + 1 < n {
-            if data[i] == IAC {
-                match data[i + 1] {
-                    SB => {
-                        sb_start = Some(i);
-                        i += 2;
-                        continue;
-                    }
-                    SE => {
-                        sb_start = None;
-                        i += 2;
-                        continue;
-                    }
-                    WILL | WONT | DO | DONT => {
-                        i += 3;
-                        continue;
-                    }
-                    _ => {
-                        i += 2;
-                        continue;
-                    }
-                }
+        while i < n {
+            if data[i] != IAC {
+                i += 1;
+                continue;
             }
-            i += 1;
+            if i + 1 >= n {
+                // Lone trailing IAC — could begin any sequence.
+                return n - sb_start.unwrap_or(i);
+            }
+            match data[i + 1] {
+                IAC => i += 2, // escaped 0xFF data byte — complete pair
+                SB => {
+                    if sb_start.is_none() {
+                        sb_start = Some(i);
+                    }
+                    i += 2;
+                }
+                SE => {
+                    sb_start = None;
+                    i += 2;
+                }
+                WILL | WONT | DO | DONT => {
+                    if i + 2 >= n {
+                        // Verb present but option byte still missing.
+                        return n - sb_start.unwrap_or(i);
+                    }
+                    i += 3;
+                }
+                _ => i += 2,
+            }
         }
         sb_start.map(|s| n - s).unwrap_or(0)
     }
@@ -132,14 +161,25 @@ impl TelnetConnection {
                         continue;
                     }
                     SB => {
-                        // Skip until IAC SE
+                        // Skip subnegotiation payload until IAC SE. An IAC IAC
+                        // inside is an escaped payload byte, not a terminator
+                        // candidate; an unterminated SB (shouldn't happen with
+                        // the carry logic) is swallowed, not leaked as data.
                         i += 2;
-                        while i < data.len() - 1 {
-                            if data[i] == IAC && data[i + 1] == SE {
-                                i += 2;
+                        loop {
+                            if i + 1 >= data.len() {
+                                i = data.len();
                                 break;
                             }
-                            i += 1;
+                            if data[i] == IAC {
+                                if data[i + 1] == SE {
+                                    i += 2;
+                                    break;
+                                }
+                                i += 2;
+                            } else {
+                                i += 1;
+                            }
                         }
                         continue;
                     }
@@ -253,9 +293,21 @@ impl Connection for TelnetConnection {
         }
     }
 
-    async fn resize(&self, _cols: u16, _rows: u16) -> Result<(), AppError> {
-        // Telnet NAWS option would be sent here
-        Ok(())
+    async fn resize(&self, cols: u16, rows: u16) -> Result<(), AppError> {
+        // Remember the size so negotiate_options() re-sends it on (re)connect.
+        *self.size.lock().await = (cols, rows);
+        if let Some(ref wh) = self.write_half {
+            let mut w = wh.lock().await;
+            w.write_all(&Self::naws_subnegotiation(cols, rows))
+                .await
+                .map_err(|e| AppError::TelnetError(format!("Write error: {}", e)))?;
+            w.flush()
+                .await
+                .map_err(|e| AppError::TelnetError(format!("Flush error: {}", e)))?;
+            Ok(())
+        } else {
+            Err(AppError::TelnetError("Not connected".into()))
+        }
     }
 
     fn is_connected(&self) -> bool {

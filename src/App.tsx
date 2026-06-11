@@ -28,6 +28,7 @@ import { ConnectionConfig, Protocol, DeviceType, vendorColor } from './types';
 import { generateId, shellQuote } from './utils';
 import { listen } from '@tauri-apps/api/event';
 import { notify } from './store/toastStore';
+import { useRecentStore, timeAgo, RecentConnection } from './store/recentStore';
 import Toaster from './components/Toaster';
 import DialogHost from './components/DialogHost';
 
@@ -128,6 +129,9 @@ function App() {
     showSftp,
     setShowSftp,
   } = useSessionStore();
+
+  const recents = useRecentStore((s) => s.recents);
+  const clearRecents = useRecentStore((s) => s.clearRecents);
 
   // Credential save deferred until the vault is unlocked.
   const pendingCredSave = useRef<{ key: string; value: string } | null>(null);
@@ -533,26 +537,38 @@ function App() {
         e.preventDefault();
         useSessionStore.getState().setShowQuickConnect(true);
       }
-      // Ctrl+W: Close Tab
+      // Ctrl+W: Close Tab. Skip popped-out sessions — closing from here would
+      // disconnect the backend while their pop-out window stays open.
       if ((e.ctrlKey || e.metaKey) && e.key === 'w' && activeSessionId) {
         e.preventDefault();
-        invoke('disconnect', { sessionId: activeSessionId }).catch(() => {});
-        removeSession(activeSessionId);
+        if (!useSessionStore.getState().poppedSessions.includes(activeSessionId)) {
+          invoke('disconnect', { sessionId: activeSessionId }).catch(() => {});
+          removeSession(activeSessionId);
+        }
       }
-      // Ctrl+1..9: jump to tab N
+      // Ctrl+1..9: jump to tab N. Popped-out sessions live in their own window —
+      // activating one here blanks the whole terminal area, so skip them.
       if ((e.ctrlKey || e.metaKey) && /^[1-9]$/.test(e.key)) {
         const idx = parseInt(e.key, 10) - 1;
-        if (sessions[idx]) {
+        if (sessions[idx] && !useSessionStore.getState().poppedSessions.includes(sessions[idx].sessionId)) {
           e.preventDefault();
           useSessionStore.getState().setActiveSession(sessions[idx].sessionId);
         }
       }
-      // Ctrl+Tab: cycle to next tab
+      // Ctrl+Tab: cycle to the next tab still living in this window (popped-out
+      // sessions render in their own window, so cycle past them).
       if (e.ctrlKey && e.key === 'Tab' && sessions.length > 1) {
         e.preventDefault();
+        const popped = useSessionStore.getState().poppedSessions;
         const cur = sessions.findIndex((s) => s.sessionId === activeSessionId);
-        const next = sessions[(cur + 1) % sessions.length];
-        useSessionStore.getState().setActiveSession(next.sessionId);
+        for (let step = 1; step <= sessions.length; step++) {
+          const next = sessions[(cur + step) % sessions.length];
+          if (popped.includes(next.sessionId)) continue;
+          if (next.sessionId !== activeSessionId) {
+            useSessionStore.getState().setActiveSession(next.sessionId);
+          }
+          break;
+        }
       }
       // Ctrl+F: Search
       if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
@@ -630,6 +646,33 @@ function App() {
     return () => {
       unlisteners.forEach((p) => p.then((un) => un()));
     };
+  }, []);
+
+  // Remember a connection in the recents list — called only on SUCCESSFUL
+  // connects. Local shells collapse into a single generic "Local Shell" entry;
+  // serial ports stand in for the host so the row stays informative.
+  const recordRecent = useCallback((config: ConnectionConfig) => {
+    if (config.protocol === 'local') {
+      useRecentStore.getState().addRecent({
+        name: 'Local Shell',
+        protocol: 'local',
+        deviceType: config.deviceType ?? 'generic',
+      });
+      return;
+    }
+    if (!config.host && !config.serialPort) return; // nothing meaningful to recall
+    const saved = useSessionStore
+      .getState()
+      .folders.some((f) => f.items.some((i) => i.id === config.id));
+    useRecentStore.getState().addRecent({
+      name: config.name || config.host || config.serialPort || 'Session',
+      protocol: config.protocol,
+      host: config.host ?? config.serialPort,
+      port: config.port,
+      username: config.username,
+      deviceType: config.deviceType,
+      storedSessionId: saved ? config.id : undefined,
+    });
   }, []);
 
   const handleConnect = useCallback(
@@ -737,6 +780,7 @@ function App() {
             return;
           }
           useSessionStore.getState().updateSessionConnection(sessionId, true);
+          recordRecent(fullConfig);
           const where =
             fullConfig.protocol === 'local'
               ? fullConfig.command || 'local shell'
@@ -767,7 +811,7 @@ function App() {
         connectingIdsRef.current.delete(sessionId);
       }
     },
-    [addSession, setPendingConnection, setShowAuthDialog, vaultUnlocked]
+    [addSession, setPendingConnection, setShowAuthDialog, vaultUnlocked, recordRecent]
   );
 
   const handleDisconnect = useCallback(async (sessionId: string) => {
@@ -800,6 +844,46 @@ function App() {
       deviceType: 'generic',
     });
   }, [handleConnect]);
+
+  // Reconnect from a recents entry (hero list + command palette). Prefer the
+  // saved sidebar session (stable id, startup commands, serial settings); fall
+  // back to rebuilding an ad-hoc config, or Quick Connect when neither works.
+  const connectRecent = useCallback(
+    (recent: RecentConnection) => {
+      if (recent.storedSessionId) {
+        const saved = useSessionStore
+          .getState()
+          .folders.flatMap((f) => f.items)
+          .find((i) => i.id === recent.storedSessionId);
+        if (saved) {
+          handleConnect(saved);
+          return;
+        }
+      }
+      if (recent.protocol === 'local') {
+        openLocalShell();
+        return;
+      }
+      if (recent.host && recent.protocol !== 'serial') {
+        // Ad-hoc host: rebuild the config; missing credentials fall through to
+        // the vault / auth-dialog path inside handleConnect.
+        handleConnect({
+          id: generateId(),
+          name: recent.name,
+          protocol: recent.protocol,
+          host: recent.host,
+          port: recent.port,
+          username: recent.username,
+          deviceType: recent.deviceType,
+        });
+        return;
+      }
+      // Not enough to reconnect (e.g. a deleted saved serial host whose line
+      // settings are gone) — open Quick Connect instead (it takes no prefill).
+      useSessionStore.getState().setShowQuickConnect(true);
+    },
+    [handleConnect, openLocalShell]
+  );
 
   const handleAuthenticate = useCallback(
     async (creds: AuthCredentials, saveCredential: boolean) => {
@@ -851,6 +935,7 @@ function App() {
 
         if (result.success) {
           useSessionStore.getState().updateSessionConnection(pending.id, true);
+          recordRecent(pending);
           setShowAuthDialog(false);
 
           // Run per-host startup commands here too — this is the common SSH path
@@ -892,7 +977,7 @@ function App() {
         connectingIdsRef.current.delete(pending.id);
       }
     },
-    [setPendingConnection, setShowAuthDialog, vaultUnlocked, setShowVaultUnlock]
+    [setPendingConnection, setShowAuthDialog, vaultUnlocked, setShowVaultUnlock, recordRecent]
   );
 
   return (
@@ -1368,6 +1453,56 @@ function App() {
                       </button>
                     </div>
 
+                    {/* Recent connections — one click back into the last hosts */}
+                    {recents.length > 0 && (
+                      <div className="mt-7 w-full max-w-sm text-left animate-fade-in">
+                        <div className="flex items-center justify-between px-1 mb-1.5">
+                          <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+                            Recent
+                          </span>
+                          <button
+                            onClick={clearRecents}
+                            className="text-[10px] text-[var(--text-muted)] hover:text-[var(--text-secondary)] transition-colors"
+                            title="Clear recent connections"
+                          >
+                            Clear
+                          </button>
+                        </div>
+                        <div className="surface overflow-hidden divide-y divide-[var(--border)]">
+                          {recents.slice(0, 5).map((r) => {
+                            const accent = vendorColor(r.deviceType);
+                            const where = r.host
+                              ? `${r.username ? r.username + '@' : ''}${r.host}`
+                              : '';
+                            return (
+                              <button
+                                key={r.id}
+                                onClick={() => connectRecent(r)}
+                                className="group flex items-center gap-2.5 w-full px-3 py-2 text-left hover:bg-[var(--bg-tertiary)] transition-colors"
+                                title={`Reconnect (${r.protocol.toUpperCase()})`}
+                              >
+                                <span
+                                  className="vendor-dot flex-shrink-0"
+                                  style={{ background: accent, color: accent }}
+                                />
+                                <span className="text-[12px] text-[var(--text-primary)] truncate">
+                                  {r.name}
+                                </span>
+                                {where && where !== r.name && (
+                                  <span className="text-[11px] text-[var(--text-muted)] truncate">
+                                    {where}
+                                  </span>
+                                )}
+                                <span className="ml-auto pl-2 text-[10px] text-[var(--text-muted)] tabular-nums flex-shrink-0">
+                                  {timeAgo(r.lastConnectedAt)}
+                                </span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+
                     {/* Shortcut hints */}
                     <div className="mt-8 flex flex-wrap items-center justify-center gap-x-5 gap-y-2 max-w-md text-[11px] text-[var(--text-muted)]">
                       {([
@@ -1419,7 +1554,7 @@ function App() {
         <SftpBrowser sessionId={activeSessionId} onClose={() => setShowSftp(false)} />
       )}
       <VaultUnlock onUnlocked={flushPendingCredSave} />
-      <CommandPalette onConnect={handleConnect} onLocalShell={openLocalShell} />
+      <CommandPalette onConnect={handleConnect} onLocalShell={openLocalShell} onConnectRecent={connectRecent} />
       <TunnelsManager />
       <IntentPanel />
       <HelpPanel />

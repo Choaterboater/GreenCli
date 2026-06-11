@@ -4,6 +4,8 @@
 //
 // The matchers are intentionally simple (whole-output contains / regex) and meant
 // as a starting point — refine the command/value for your platform + software.
+// Regex matchers are evaluated with the 'im' flags (see utils/intent.ts), so
+// `$` anchors at end-of-line — use that to match table rows, not header text.
 
 import { MatcherKind } from '../utils/intent';
 
@@ -34,7 +36,7 @@ export const INTENT_PACKS: IntentPack[] = [
     deviceTypes: ['juniper-junos'],
     description: 'JVD IP fabric + EVPN-VXLAN overlay health (QFX/PTX leaf-spine).',
     templates: [
-      { name: 'BGP underlay — no down peers', kind: 'operational', severity: 'critical', command: 'show bgp summary', matcher: { kind: 'regexAbsent', value: '\\b(Active|Connect|Idle|OpenSent|OpenConfirm)\\b' }, description: 'No underlay BGP session stuck below Established.' },
+      { name: 'BGP underlay — no down peers', kind: 'operational', severity: 'critical', command: 'show bgp summary', matcher: { kind: 'regexAbsent', value: '\\s(Active|Connect|Idle|OpenSent|OpenConfirm)(\\s*\\([^)]*\\))?\\s*$' }, description: 'No underlay BGP session stuck below Established. Peer rows end in the state word; the header ("...#Active/Received/...") does not, so it is not a false match.' },
       { name: 'EVPN overlay routes present', kind: 'operational', severity: 'critical', command: 'show route table bgp.evpn.0 summary', matcher: { kind: 'regexAbsent', value: '0 destinations' }, description: 'bgp.evpn.0 has learned routes.' },
       { name: 'VXLAN remote VTEPs up', kind: 'operational', severity: 'warning', command: 'show ethernet-switching vxlan-tunnel-end-point remote', matcher: { kind: 'contains', value: 'RVTEP' }, description: 'Remote VTEPs are present.' },
       { name: 'EVPN database populated', kind: 'operational', severity: 'warning', command: 'show evpn database', matcher: { kind: 'regexAbsent', value: '0 entries' }, description: 'MAC/IP entries learned in the EVPN database.' },
@@ -61,7 +63,7 @@ export const INTENT_PACKS: IntentPack[] = [
     deviceTypes: ['juniper-junos'],
     description: 'JVD EVPN campus fabric: overlay up, VLANs/VNIs mapped, uplinks healthy.',
     templates: [
-      { name: 'EVPN/BGP overlay — no down peers', kind: 'operational', severity: 'critical', command: 'show bgp summary', matcher: { kind: 'regexAbsent', value: '\\b(Active|Connect|Idle)\\b' }, description: 'Campus EVPN sessions Established.' },
+      { name: 'EVPN/BGP overlay — no down peers', kind: 'operational', severity: 'critical', command: 'show bgp summary', matcher: { kind: 'regexAbsent', value: '\\s(Active|Connect|Idle)(\\s*\\([^)]*\\))?\\s*$' }, description: 'Campus EVPN sessions Established (down-peer rows end in the state word).' },
       { name: 'VLAN ↔ VNI mappings present', kind: 'config', severity: 'warning', command: 'show configuration vlans | match vxlan', matcher: { kind: 'contains', value: 'vni' }, description: 'VLANs mapped to VXLAN VNIs.' },
       { name: 'Uplinks up', kind: 'operational', severity: 'warning', command: 'show interfaces terse | match "ae|et-|xe-"', matcher: { kind: 'regexAbsent', value: '\\bdown\\b' }, description: 'No fabric/uplink interface down.' },
     ],
@@ -75,7 +77,7 @@ export const INTENT_PACKS: IntentPack[] = [
     templates: [
       { name: 'VSX in-sync', kind: 'operational', severity: 'critical', command: 'show vsx status', matcher: { kind: 'contains', value: 'In-Sync' }, description: 'VSX peers synchronized.' },
       { name: 'BGP — no down peers', kind: 'operational', severity: 'critical', command: 'show bgp all summary', matcher: { kind: 'regexAbsent', value: '\\b(Active|Connect|Idle|OpenSent)\\b' }, description: 'All BGP sessions Established.' },
-      { name: 'No interface errors', kind: 'operational', severity: 'warning', command: 'show interface error-statistics', matcher: { kind: 'regexAbsent', value: '\\b[1-9]\\d*\\b' }, description: 'No non-zero error counters (heuristic).' },
+      { name: 'No interface errors', kind: 'operational', severity: 'warning', command: 'show interface error-statistics', matcher: { kind: 'regexAbsent', value: '\\s[1-9]\\d*(\\s+\\d+)*\\s*$' }, description: 'No non-zero error counters: matches a row whose trailing count columns include a non-zero number, without tripping on interface names like 1/1/1 (heuristic).' },
     ],
   },
 ];

@@ -331,6 +331,21 @@ pub async fn chat_stream(
     Ok(())
 }
 
+/// Largest byte index `<= i` that lands on a UTF-8 char boundary of `s`
+/// (stable-Rust stand-in for `str::floor_char_boundary`). Slicing a String at
+/// an arbitrary byte offset panics mid-character, so all truncation cuts go
+/// through this.
+fn floor_char_boundary(s: &str, i: usize) -> usize {
+    if i >= s.len() {
+        return s.len();
+    }
+    let mut i = i;
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
 /// Local CLI passthrough: run `command` (whitespace-split into program + args)
 /// with the prompt supplied on stdin, and return captured stdout (+stderr).
 /// Useful for driving an installed agent CLI as the assistant backend.
@@ -379,17 +394,25 @@ pub async fn cli_passthrough(command: &str, prompt: &str) -> Result<String, AppE
         }
     };
 
-    // Cap prompt to prevent flooding CLIs with huge stdin.
-    // Walk back from byte 4000 to the nearest UTF-8 char boundary so we never
-    // slice inside a multi-byte character (which would panic at runtime).
+    // Cap prompt to prevent flooding CLIs with huge stdin. The prompt is piped
+    // on stdin (not argv), so the cap can be generous: 64 KiB. When over the
+    // cap, keep the HEAD *and* the TAIL — the frontend builds the prompt as
+    // "<device info>\n<paste>\n<question>", so the user's actual question is at
+    // the END; dropping the tail would silently discard it. Cuts are walked
+    // back to UTF-8 char boundaries so we never slice inside a multi-byte char.
+    const MAX_PROMPT_BYTES: usize = 64 * 1024;
+    const HEAD_BYTES: usize = 8 * 1024; // tail gets the remaining ~56 KiB
     let truncated;
-    let prompt = if prompt.len() > 4000 {
-        let mut cut = 4000;
-        while cut > 0 && !prompt.is_char_boundary(cut) {
-            cut -= 1;
-        }
-        truncated = &prompt[..cut];
-        truncated
+    let prompt = if prompt.len() > MAX_PROMPT_BYTES {
+        let head_end = floor_char_boundary(prompt, HEAD_BYTES);
+        let tail_start =
+            floor_char_boundary(prompt, prompt.len() - (MAX_PROMPT_BYTES - HEAD_BYTES));
+        truncated = format!(
+            "{}\n…[input truncated]…\n{}",
+            &prompt[..head_end],
+            &prompt[tail_start..]
+        );
+        truncated.as_str()
     } else {
         prompt
     };
@@ -428,6 +451,9 @@ pub async fn cli_passthrough(command: &str, prompt: &str) -> Result<String, AppE
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
+        // If this future is dropped (command cancelled / app teardown) or the
+        // timeout below fires, the spawned shell must not be left orphaned.
+        .kill_on_drop(true)
         .spawn()
         .map_err(|e| AppError::ApiError(format!("Failed to launch '{}': {}", command, e)))?;
 
@@ -437,14 +463,58 @@ pub async fn cli_passthrough(command: &str, prompt: &str) -> Result<String, AppE
         drop(stdin);
     }
 
-    let output = child
-        .wait_with_output()
-        .await
-        .map_err(|e| AppError::ApiError(format!("CLI error: {}", e)))?;
+    // Drain stdout/stderr on separate tasks so the child can never block on a
+    // full pipe while we wait on it, and so a timeout can abandon the reads.
+    let mut stdout_pipe = child.stdout.take();
+    let mut stderr_pipe = child.stderr.take();
+    let stdout_task = tokio::spawn(async move {
+        use tokio::io::AsyncReadExt;
+        let mut buf = Vec::new();
+        if let Some(s) = stdout_pipe.as_mut() {
+            let _ = s.read_to_end(&mut buf).await;
+        }
+        buf
+    });
+    let stderr_task = tokio::spawn(async move {
+        use tokio::io::AsyncReadExt;
+        let mut buf = Vec::new();
+        if let Some(s) = stderr_pipe.as_mut() {
+            let _ = s.read_to_end(&mut buf).await;
+        }
+        buf
+    });
 
-    let mut out = String::from_utf8_lossy(&output.stdout).to_string();
-    if !output.status.success() {
-        let err = String::from_utf8_lossy(&output.stderr);
+    // A CLI stuck on an OAuth/login prompt, interactive mode, or a blocking
+    // shell profile would otherwise hang the AI chat forever — and every retry
+    // would leak another shell. Bound the wait and kill on expiry.
+    //
+    // NOTE: start_kill() signals only the shell we spawned, not its whole
+    // process group (libc is not a dependency, so killpg isn't available).
+    // In practice shells exec a simple `-c` command, so the child usually IS
+    // the CLI; a grandchild that survives is the accepted limitation here.
+    const CLI_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
+    let status = match tokio::time::timeout(CLI_TIMEOUT, child.wait()).await {
+        Ok(res) => res.map_err(|e| AppError::ApiError(format!("CLI error: {}", e)))?,
+        Err(_) => {
+            let _ = child.start_kill();
+            let _ = child.wait().await; // reap; SIGKILL, so this returns promptly
+            stdout_task.abort();
+            stderr_task.abort();
+            return Err(AppError::ApiError(format!(
+                "Local CLI timed out after 180s — is it waiting for input/login? \
+                 Run `{}` once in a terminal to complete any login/setup, or switch \
+                 providers in Settings → AI Assistant.",
+                command
+            )));
+        }
+    };
+
+    let stdout_buf = stdout_task.await.unwrap_or_default();
+    let stderr_buf = stderr_task.await.unwrap_or_default();
+
+    let mut out = String::from_utf8_lossy(&stdout_buf).to_string();
+    if !status.success() {
+        let err = String::from_utf8_lossy(&stderr_buf);
         if out.trim().is_empty() {
             out = err.to_string();
         } else {

@@ -205,7 +205,12 @@ export default function ApiExplorer() {
   const [target, setTarget] = useState<'device' | 'central' | 'apstra' | 'mist'>('device');
   // Which on-box device REST flavour the "Device REST" target speaks.
   const [deviceKind, setDeviceKind] = useState<DeviceApiKind>('cx');
+  const [loggingIn, setLoggingIn] = useState(false);
   const [savedRequests, setSavedRequests] = useState<SavedApiRequest[]>([]);
+  // Don't persist until the initial localStorage read has landed — otherwise the
+  // first-commit persist writes [] over the saved requests (StrictMode replays
+  // the load effect and would then read back the wiped store).
+  const [savedRequestsLoaded, setSavedRequestsLoaded] = useState(false);
   const [showSavedRequests, setShowSavedRequests] = useState(false);
   const requestInFlightRef = useRef(false);
   const bodyRef = useRef<HTMLTextAreaElement>(null);
@@ -224,12 +229,15 @@ export default function ApiExplorer() {
       if (Array.isArray(saved)) setSavedRequests(saved);
     } catch {
       localStorage.removeItem(SAVED_REQUESTS_KEY);
+    } finally {
+      setSavedRequestsLoaded(true);
     }
   }, []);
 
   useEffect(() => {
+    if (!savedRequestsLoaded) return;
     localStorage.setItem(SAVED_REQUESTS_KEY, JSON.stringify(savedRequests.slice(0, 50)));
-  }, [savedRequests]);
+  }, [savedRequests, savedRequestsLoaded]);
 
   // Auto-fill from active session
   const handleAutofillSession = () => {
@@ -425,8 +433,9 @@ export default function ApiExplorer() {
   };
 
   const handleLogin = async () => {
-    if (!newConnHost || !newConnUser) return;
+    if (!newConnHost || !newConnUser || loggingIn) return;
     setError(null);
+    setLoggingIn(true);
     try {
       if (!IS_TAURI) {
         throw new Error('Login requires the desktop app (the browser can\'t reach the switch directly).');
@@ -474,6 +483,9 @@ export default function ApiExplorer() {
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Login failed';
       setError(msg);
+      notify.error('Login failed', msg);
+    } finally {
+      setLoggingIn(false);
     }
   };
 
@@ -738,11 +750,18 @@ export default function ApiExplorer() {
                 Verify TLS certificate (off = allow self-signed, default for switches)
               </span>
             </label>
+            {error && (
+              <div className="px-2 py-1.5 text-[11px] rounded text-[var(--accent-danger)] bg-[rgba(240,83,63,0.08)] border border-[rgba(240,83,63,0.3)]">
+                {error}
+              </div>
+            )}
             <button
               onClick={handleLogin}
-              className="w-full px-2 py-1.5 text-xs bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white rounded transition-colors"
+              disabled={loggingIn}
+              className="w-full flex items-center justify-center gap-1.5 px-2 py-1.5 text-xs bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white rounded transition-colors disabled:opacity-60"
             >
-              Login & Save
+              {loggingIn && <Loader2 size={12} className="animate-spin" />}
+              {loggingIn ? 'Logging in…' : 'Login & Save'}
             </button>
           </div>
         )}
@@ -843,7 +862,7 @@ export default function ApiExplorer() {
                     {ep.method}
                   </span>
                   <div className="flex-1 min-w-0">
-                    <div className="text-xs text-[var(--text-primary)] group-hover:text-white truncate">
+                    <div className="text-xs text-[var(--text-primary)] truncate">
                       {ep.name}
                     </div>
                     <div className="text-[10px] text-[var(--text-muted)] truncate">

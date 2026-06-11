@@ -79,7 +79,9 @@ function semanticLinksForLine(term: XTerm, bufferLineNumber: number): ILink[] | 
         text,
         range: {
           start: { x: startIndex + 1, y: bufferLineNumber },
-          end: { x: endIndex + 1, y: bufferLineNumber },
+          // IBufferRange.end is 1-based INCLUSIVE — the 0-based exclusive
+          // endIndex is already the 1-based index of the last character.
+          end: { x: endIndex, y: bufferLineNumber },
         },
         decorations: { pointerCursor: true, underline: true },
         activate: () => {
@@ -122,6 +124,10 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
   // Tail of the previous decoded chunk, prepended to the next so an output trigger
   // whose match straddles a chunk boundary is still detected.
   const triggerCarryRef = useRef<string>('');
+  // Trailing incomplete escape sequence held back from the previous flush batch
+  // and prepended to the next, so the raw-vs-highlight check doesn't mistake a
+  // split sequence (e.g. '\x1b[3' + '8;5;196m') for highlightable text.
+  const ansiCarryRef = useRef<string>('');
   // Keyboard text selection (Shift+Arrow / Home / End): anchor + moving focus as
   // absolute cell indices into the buffer (row * cols + col). Null when no
   // keyboard selection is in progress.
@@ -210,6 +216,15 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
     // busy claude/kimi TUI to open another shell) — a hard crash the onContextLoss
     // fallback can't catch. xterm's default renderer is stable and, combined with
     // the output coalescing here + in the backend forwarder, fast enough.
+
+    // Propagate EVERY cols/rows change to the backend PTY, no matter what
+    // triggered the fit() — font-size zoom (pinch / Ctrl+wheel / shortcuts)
+    // refits via the settings effect below, which never goes through
+    // handleResize. Without this the device CLI wraps at the stale column
+    // count and TUIs render garbled after zooming.
+    term.onResize(({ cols, rows }) => {
+      invoke('resize_terminal', { sessionId, cols, rows }).catch(() => {});
+    });
 
     fitAddon.fit();
 
@@ -408,7 +423,10 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
       selFocusRef.current = null;
       fitAddon.fit();
       const { cols, rows } = term;
-      // Notify backend of resize
+      // Notify backend of resize. term.onResize above already fires when fit()
+      // *changes* the dimensions; this unconditional invoke additionally syncs
+      // the PTY when fit() lands on the size xterm already had (e.g. the
+      // initial fit). Repeating the same dims is harmless.
       invoke('resize_terminal', { sessionId, cols, rows }).catch(() => {});
     };
 
@@ -499,6 +517,19 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
 
         const processText = (text: string) => {
           if (!terminalRef.current) return;
+          // Re-attach an escape sequence split across flush batches: hold back a
+          // trailing incomplete ESC/CSI/OSC prefix and prepend it to the next
+          // batch. Without this, a batch starting mid-sequence (e.g. '8;5;196m')
+          // has no ESC byte, takes the highlight path, and the injected SGR
+          // codes abort xterm's half-parsed sequence — the user sees raw junk.
+          text = ansiCarryRef.current + text;
+          ansiCarryRef.current = '';
+          const incompleteEscape = text.match(/\x1b(?:[\[\]][0-9;:?]*)?$/);
+          if (incompleteEscape) {
+            ansiCarryRef.current = incompleteEscape[0];
+            text = text.slice(0, -incompleteEscape[0].length);
+            if (!text) return;
+          }
           if (text.trim()) {
             outputSinceLastInputRef.current = true;
             if (silenceTimerRef.current) {
@@ -622,9 +653,13 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
             // the user isn't looking at (cleared when its tab is activated).
             // Popped-out sessions are skipped — they live in their own window,
             // and a dot here would be unclearable (their tab is never active).
+            // Sessions showing in a split pane are skipped too — the user is
+            // literally watching them, even though they aren't the active tab.
             const ss = useSessionStore.getState();
+            const visibleInPane = ss.splitView && ss.splitPanes.includes(sessionId);
             if (
               ss.activeSessionId !== sessionId &&
+              !visibleInPane &&
               !ss.unseenOutput.includes(sessionId) &&
               !ss.poppedSessions.includes(sessionId)
             ) {
@@ -650,6 +685,18 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
           }
         );
 
+        // If cleanup ran while `listen` was in flight (StrictMode double-mount,
+        // fast tab close), it saw unlistenFn === null — drop the registration
+        // here or the listener leaks forever.
+        if (cancelled) {
+          unlisten();
+          return;
+        }
+        unlistenFn = () => {
+          if (flushTimer != null) clearTimeout(flushTimer);
+          unlisten();
+        };
+
         // Pop-out seeding: replay the captured tail AFTER the listener is
         // attached so chunks emitted during window startup aren't lost — they
         // queue behind the replay (holdFlush) and write in order. A chunk
@@ -664,14 +711,10 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
           } catch {
             /* no captured tail — start blank */
           }
+          if (cancelled) return; // cleanup already ran unlistenFn during the await
           holdFlush = false;
-          if (!cancelled && pending.length > 0) flush();
+          if (pending.length > 0) flush();
         }
-
-        unlistenFn = () => {
-          if (flushTimer != null) clearTimeout(flushTimer);
-          unlisten();
-        };
       } catch (err) {
         console.error('Failed to setup terminal data listener:', err);
       }
@@ -690,6 +733,8 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
       } catch {
         /* ignore */
       }
+      // Drop any held-back partial escape — it belongs to the old stream.
+      ansiCarryRef.current = '';
     };
   }, [sessionId, seedFromBuffer]);
 
@@ -716,8 +761,9 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
         if (event.payload.status === 'connected' || event.payload.status === 'reconnecting') {
           // Fresh stream after a (re)connect — discard any partial multibyte bytes
           // the decoder held from before the drop so they can't corrupt the first
-          // bytes of the new connection.
+          // bytes of the new connection, and any held-back partial escape with them.
           decoderRef.current = new TextDecoder('utf-8', { fatal: false });
+          ansiCarryRef.current = '';
         }
         if (event.payload.message && terminalRef.current && !connected) {
           // Surface drops/reconnect notices inline in the terminal.

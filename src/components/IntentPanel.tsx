@@ -16,6 +16,7 @@ import {
   LayoutTemplate,
 } from 'lucide-react';
 import { useSessionStore } from '../store/sessionStore';
+import { askConfirm } from '../store/dialogStore';
 import { notify } from '../store/toastStore';
 import { generateId } from '../utils';
 import { Intent, IntentStatus, MatcherKind, evaluateIntent, evaluateAll } from '../utils/intent';
@@ -111,8 +112,15 @@ export default function IntentPanel() {
     }
   };
 
-  const remove = async (id: string) => {
-    await invoke('intent_delete', { id }).catch(() => {});
+  const remove = async (intent: Intent) => {
+    // The trash icon sits right next to Edit/Evaluate — confirm before deleting.
+    const ok = await askConfirm({
+      title: `Delete "${intent.name}"?`,
+      message: 'This removes the intent and its last evaluation results.',
+      danger: true,
+    });
+    if (!ok) return;
+    await invoke('intent_delete', { id: intent.id }).catch(() => {});
     refresh();
   };
 
@@ -306,7 +314,7 @@ export default function IntentPanel() {
                     <button onClick={() => startEdit(i)} className="p-1 rounded text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]" title="Edit">
                       <PencilLine size={13} />
                     </button>
-                    <button onClick={() => remove(i.id)} className="p-1 rounded text-[var(--text-muted)] hover:text-[var(--accent-danger)] hover:bg-[var(--bg-tertiary)]" title="Delete">
+                    <button onClick={() => remove(i)} className="p-1 rounded text-[var(--text-muted)] hover:text-[var(--accent-danger)] hover:bg-[var(--bg-tertiary)]" title="Delete">
                       <Trash2 size={13} />
                     </button>
                   </div>

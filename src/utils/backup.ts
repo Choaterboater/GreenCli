@@ -30,7 +30,6 @@ export interface BackupImportResult {
 }
 
 const SECRET_SETTING_KEYS = new Set<keyof TerminalSettings>([
-  'anthropicApiKey',
   'centralClientSecret',
   'centralToken',
   'apstraPassword',
@@ -46,8 +45,6 @@ const UNSAFE_IMPORT_SETTING_KEYS = new Set<keyof TerminalSettings>([
   'aiUseCxRest',
   'aiUseMcp',
   'aiUseApstra',
-  'aiAgents',
-  'sessionAgents',
   'verifyDeviceTls',
 ]);
 
