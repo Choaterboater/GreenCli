@@ -142,6 +142,26 @@ const PREBUILT_PROMPTS = [
   },
   { label: 'Interface status', prompt: 'Show me all interfaces — which are up/down, speeds, and descriptions.' },
   { label: 'VLAN config', prompt: 'Show the current VLAN configuration including names and port assignments.' },
+  {
+    label: '🚑 Outage triage',
+    prompt:
+      'Run a safe, read-only outage triage for the connected device. Identify the OS, then gather version/uptime, interface status, logs/events, LLDP neighbors, routes/default gateway, and any vendor-specific health commands. Summarize likely causes, impacted interfaces/VLANs/sites, and next safe checks. Do not run any config-changing commands.',
+  },
+  {
+    label: '🔍 Config drift check',
+    prompt:
+      'Compare the current running configuration against expected network hygiene. Pull read-only config/output, then report drift candidates: hostname/site naming, VLAN/interface descriptions, trunk/native VLANs, AAA, NTP, syslog, SNMP, spanning-tree protections, and Junos commit status when applicable. Provide findings and suggested commands only; do not apply changes.',
+  },
+  {
+    label: '🧪 Pre-change check',
+    prompt:
+      'Prepare a pre-change validation checklist for this connected device. Run only safe show/read commands to capture current state: version, uptime, interface summary, neighbors, routes, VLANs, logs, and any pending/uncommitted config. Return a concise go/no-go assessment and rollback checkpoints.',
+  },
+  {
+    label: '✅ Post-change validation',
+    prompt:
+      'Run a post-change validation using only safe read/show commands. Verify interface state, neighbors, routes, VLAN/client health, error counters, logs, and vendor-specific commit/deploy state. Summarize pass/fail items and any follow-up commands.',
+  },
   { label: 'Troubleshoot connectivity', prompt: 'Walk me through troubleshooting a connectivity issue step by step. Run diagnostic commands on the device.' },
   { label: 'BGP / routing status', prompt: 'Check the routing table and BGP/OSPF neighbor status if configured.' },
 ];

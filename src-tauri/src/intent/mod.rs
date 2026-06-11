@@ -119,9 +119,26 @@ impl IntentStore {
         }
     }
 
+    fn read_locked_strict(&self) -> Result<Vec<Intent>, AppError> {
+        let bytes = match fs::read(&self.path) {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(AppError::from(e)),
+        };
+        if bytes.is_empty() {
+            return Ok(Vec::new());
+        }
+        serde_json::from_slice::<Vec<Intent>>(&bytes).map_err(AppError::from)
+    }
+
     pub fn load(&self) -> Vec<Intent> {
         let _g = self.lock.lock().unwrap_or_else(|e| e.into_inner());
         self.read_locked()
+    }
+
+    pub fn load_strict(&self) -> Result<Vec<Intent>, AppError> {
+        let _g = self.lock.lock().unwrap_or_else(|e| e.into_inner());
+        self.read_locked_strict()
     }
 
     /// Atomic write: serialize to a sibling temp file then rename over the target.

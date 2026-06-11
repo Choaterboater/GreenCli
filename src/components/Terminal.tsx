@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { Terminal as XTerm } from 'xterm';
+import type { ILink } from 'xterm';
 import { FitAddon } from 'xterm-addon-fit';
 import { WebLinksAddon } from 'xterm-addon-web-links';
 import { SearchAddon } from 'xterm-addon-search';
@@ -14,6 +15,8 @@ import { useTheme } from '../hooks/useTheme';
 import { DeviceType } from '../types';
 import { ArubaHighlighter, AnsiProcessor } from '../syntax';
 import { registerSearchAdapter, unregisterSearchAdapter, createSearchAdapter } from '../utils/terminalSearch';
+import { registerTerminalActionAdapter, unregisterTerminalActionAdapter } from '../utils/terminalActions';
+import { countPasteLines, useTerminalToolsStore } from '../store/terminalToolsStore';
 import 'xterm/css/xterm.css';
 
 interface TerminalProps {
@@ -25,6 +28,71 @@ interface TerminalProps {
    *  window isn't blank. Fetched AFTER the data listener attaches (live chunks
    *  queue behind the replay) so output during window startup isn't lost. */
   seedFromBuffer?: boolean;
+}
+
+const SEMANTIC_LINK_PATTERNS: Array<{ kind: string; regex: RegExp; capture?: number }> = [
+  {
+    kind: 'IP',
+    regex: /\b(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)\b/g,
+  },
+  {
+    kind: 'MAC',
+    regex: /\b(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}\b/gi,
+  },
+  {
+    kind: 'Path',
+    regex: /(^|[\s"'(])((?:~\/|\.\.?\/|\/)[^\s"'<>]+)/g,
+    capture: 2,
+  },
+  {
+    kind: 'Interface',
+    regex: /\b(?:ge|xe|et|em|fxp|irb|lo|reth|vlan|lag|ae|mgmt|eth|ens|eno|bond|port-channel|ethernet|fastethernet|gigabitethernet|tengigabitethernet|1\/\d+)(?:[-\w./:]*\d)?\b/gi,
+  },
+];
+
+function sessionLabel(sessionId: string): string {
+  const session = useSessionStore.getState().sessions.find((s) => s.sessionId === sessionId);
+  return session?.config.name || session?.config.host || session?.config.serialPort || 'Session';
+}
+
+function semanticLinksForLine(term: XTerm, bufferLineNumber: number): ILink[] | undefined {
+  if (!useSettingsStore.getState().smartTerminalLinks) return undefined;
+  const line = term.buffer.active.getLine(bufferLineNumber - 1)?.translateToString(true);
+  if (!line) return undefined;
+
+  const links: ILink[] = [];
+  const occupied: Array<[number, number]> = [];
+  const overlaps = (start: number, end: number) =>
+    occupied.some(([usedStart, usedEnd]) => start < usedEnd && end > usedStart);
+
+  for (const { kind, regex, capture } of SEMANTIC_LINK_PATTERNS) {
+    regex.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = regex.exec(line))) {
+      const text = match[capture ?? 0];
+      if (!text) continue;
+      const startIndex = match.index + (capture ? match[0].indexOf(text) : 0);
+      const endIndex = startIndex + text.length;
+      if (overlaps(startIndex, endIndex)) continue;
+      occupied.push([startIndex, endIndex]);
+      links.push({
+        text,
+        range: {
+          start: { x: startIndex + 1, y: bufferLineNumber },
+          end: { x: endIndex + 1, y: bufferLineNumber },
+        },
+        decorations: { pointerCursor: true, underline: true },
+        activate: () => {
+          navigator.clipboard
+            .writeText(text)
+            .then(() => notify.info(`Copied ${kind}`, text))
+            .catch(() => notify.warning('Copy failed', text));
+        },
+      });
+    }
+  }
+
+  return links.length ? links : undefined;
 }
 
 export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer }: TerminalProps) {
@@ -47,6 +115,10 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
   const audioCtxRef = useRef<AudioContext | null>(null);
   // Debounce per-trigger alerts (id -> last-fired ms).
   const triggerFiredRef = useRef<Record<string, number>>({});
+  const onSendRef = useRef(onSend);
+  const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const outputSinceLastInputRef = useRef(true);
+  const lastBackgroundActivityNotifyRef = useRef(0);
   // Tail of the previous decoded chunk, prepended to the next so an output trigger
   // whose match straddles a chunk boundary is still detected.
   const triggerCarryRef = useRef<string>('');
@@ -84,6 +156,10 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
   const settings = useSettingsStore();
   const updateSessionConnection = useSessionStore((s) => s.updateSessionConnection);
 
+  useEffect(() => {
+    onSendRef.current = onSend;
+  }, [onSend]);
+
   // Update highlighter when device type changes
   useEffect(() => {
     deviceTypeRef.current = deviceType;
@@ -108,6 +184,7 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
       screenReaderMode: false,
       convertEol: false,
       overviewRulerWidth: 15,
+      wordSeparator: ' ()[]{}\'"`',
     });
 
     const fitAddon = new FitAddon();
@@ -117,6 +194,10 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
     term.loadAddon(fitAddon);
     term.loadAddon(searchAddon);
     term.loadAddon(linksAddon);
+    const semanticLinkProvider = term.registerLinkProvider({
+      provideLinks: (bufferLineNumber, callback) =>
+        callback(semanticLinksForLine(term, bufferLineNumber)),
+    });
 
     searchAddonRef.current = searchAddon;
     registerSearchAdapter(sessionId, createSearchAdapter(searchAddon));
@@ -132,30 +213,89 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
 
     fitAddon.fit();
 
+    const recordPaste = (text: string) => {
+      if (!useSettingsStore.getState().pasteHistoryEnabled) return;
+      useTerminalToolsStore.getState().addPaste({
+        sessionId,
+        sessionName: sessionLabel(sessionId),
+        text,
+        lineCount: countPasteLines(text),
+      });
+    };
+
+    registerTerminalActionAdapter(sessionId, {
+      paste: (text) => {
+        if (!text) return;
+        recordPaste(text);
+        term.focus();
+        term.paste(text);
+      },
+      copySelection: () => {
+        const selection = term.getSelection();
+        if (selection) {
+          navigator.clipboard.writeText(selection).catch(() => {});
+        }
+        return selection;
+      },
+      focus: () => term.focus(),
+    });
+
+    const clearSilenceTimer = () => {
+      if (silenceTimerRef.current) {
+        clearTimeout(silenceTimerRef.current);
+        silenceTimerRef.current = null;
+      }
+    };
+
+    const armSilenceTimer = () => {
+      const currentSettings = useSettingsStore.getState();
+      if (!currentSettings.terminalSilenceNotifications) return;
+      clearSilenceTimer();
+      outputSinceLastInputRef.current = false;
+      silenceTimerRef.current = setTimeout(() => {
+        if (!outputSinceLastInputRef.current) {
+          notify.info(
+            'Terminal is quiet',
+            `${sessionLabel(sessionId)} has had no output for ${currentSettings.terminalSilenceThresholdSeconds}s after input.`
+          );
+        }
+        silenceTimerRef.current = null;
+      }, currentSettings.terminalSilenceThresholdSeconds * 1000);
+    };
+
     // Paste guard (iTerm2-style): blasting a multi-line clipboard at a live
     // device is how configs land on the wrong box. Intercept the DOM paste on
     // xterm's textarea and confirm first; term.paste() then takes the normal
     // path (LF→CR conversion + bracketed paste for TUIs that requested it).
     const pasteGuard = (e: ClipboardEvent) => {
       const text = e.clipboardData?.getData('text') ?? '';
-      if (!text.includes('\n')) return; // single-line pastes flow through
+      if (!text) return;
+      const currentSettings = useSettingsStore.getState();
+      const lineCount = countPasteLines(text);
+      if (!currentSettings.pasteGuardEnabled || lineCount < currentSettings.pasteGuardLineThreshold) {
+        recordPaste(text);
+        return;
+      }
       e.preventDefault();
       e.stopImmediatePropagation();
-      const lines = text.split('\n').filter((l) => l.length > 0).length;
       askConfirm({
-        title: `Paste ${lines} lines into the terminal?`,
+        title: `Paste ${lineCount} lines into the terminal?`,
         message:
           'Multi-line pastes run each line as a command on the connected device.',
         confirmLabel: 'Paste',
       }).then((ok) => {
-        if (ok) terminalRef.current?.paste(text);
+        if (ok) {
+          recordPaste(text);
+          terminalRef.current?.paste(text);
+        }
       });
     };
     term.textarea?.addEventListener('paste', pasteGuard, true);
 
     // Handle input
     term.onData((data) => {
-      onSend?.(data);
+      if (data.includes('\r') || data.includes('\n')) armSilenceTimer();
+      onSendRef.current?.(data);
     });
 
     // Audible bell — gated on the live setting (xterm has no bell option, so we
@@ -325,6 +465,9 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
       zoomEl.removeEventListener('wheel', handleWheelZoom);
       zoomEl.removeEventListener('mousedown', resetKbSelection);
       term.textarea?.removeEventListener('paste', pasteGuard, true);
+      semanticLinkProvider.dispose();
+      unregisterTerminalActionAdapter(sessionId);
+      clearSilenceTimer();
       ro.disconnect();
       unregisterSearchAdapter(sessionId);
       term.dispose();
@@ -356,6 +499,13 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
 
         const processText = (text: string) => {
           if (!terminalRef.current) return;
+          if (text.trim()) {
+            outputSinceLastInputRef.current = true;
+            if (silenceTimerRef.current) {
+              clearTimeout(silenceTimerRef.current);
+              silenceTimerRef.current = null;
+            }
+          }
           bufferRef.current += text;
           if (bufferRef.current.length > 5000) {
             bufferRef.current = bufferRef.current.slice(-3000);
@@ -406,7 +556,7 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
 
           // Read the setting live (getState) instead of via a closure dep, so
           // toggling it does not re-subscribe the listener (which loses output).
-          if (useSettingsStore.getState().syntaxHighlighting) {
+          if (useSettingsStore.getState().syntaxHighlighting && !highlighterRef.current.isGeneric()) {
             // Detect control chars that would corrupt highlighting:
             // backspace (\x08), terminal control sequences, etc.
             // Allow: \t (0x09), \n (0x0a), \r (0x0d)
@@ -479,6 +629,14 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
               !ss.poppedSessions.includes(sessionId)
             ) {
               ss.markUnseenOutput(sessionId);
+              const now = Date.now();
+              if (
+                useSettingsStore.getState().terminalActivityNotifications &&
+                now - lastBackgroundActivityNotifyRef.current > 15_000
+              ) {
+                lastBackgroundActivityNotifyRef.current = now;
+                notify.info('Background activity', `${sessionLabel(sessionId)} produced new output.`);
+              }
             }
             pending.push(new Uint8Array(event.payload.data));
             pendingSize += event.payload.data.length;
@@ -548,7 +706,13 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
         if (cancelled) return;
         if (event.payload.sessionId !== sessionId) return;
         const connected = event.payload.status === 'connected';
-        updateSessionConnection(sessionId, connected);
+        const connectionStatus =
+          event.payload.status === 'reconnecting'
+            ? 'reconnecting'
+            : connected
+              ? 'connected'
+              : 'disconnected';
+        updateSessionConnection(sessionId, connected, connectionStatus);
         if (event.payload.status === 'connected' || event.payload.status === 'reconnecting') {
           // Fresh stream after a (re)connect — discard any partial multibyte bytes
           // the decoder held from before the drop so they can't corrupt the first

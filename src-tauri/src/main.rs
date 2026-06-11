@@ -131,6 +131,8 @@ pub struct ConnectionConfigRequest {
     pub startup_commands: Option<String>,
     pub device_type: String,
     #[serde(default)]
+    pub device_profile_id: Option<String>,
+    #[serde(default)]
     pub tags: Option<Vec<String>>,
     #[serde(default)]
     pub keep_alive_interval: Option<u64>,
@@ -714,6 +716,7 @@ async fn save_session(
         username: config.username,
         auth_type: config.auth_type,
         device_type: config.device_type,
+        device_profile_id: config.device_profile_id,
         folder_id: folder_id.clone(),
         tags: config.tags.unwrap_or_default(),
         notes: None,
@@ -1204,6 +1207,11 @@ fn intent_list(state: State<'_, AppState>) -> Result<Vec<intent::Intent>, String
 }
 
 #[tauri::command]
+fn intent_list_strict(state: State<'_, AppState>) -> Result<Vec<intent::Intent>, String> {
+    state.intents.load_strict().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn intent_save(intent: intent::Intent, state: State<'_, AppState>) -> Result<(), String> {
     state.intents.upsert(intent).map_err(|e| e.to_string())
 }
@@ -1465,6 +1473,12 @@ async fn apstra_configure(
 }
 
 #[tauri::command]
+async fn apstra_clear(state: State<'_, AppState>) -> Result<(), String> {
+    *state.apstra.lock().await = None;
+    Ok(())
+}
+
+#[tauri::command]
 async fn apstra_request(
     method: String,
     path: String,
@@ -1495,6 +1509,12 @@ async fn mist_configure(
 ) -> Result<(), String> {
     let client = MistClient::new(base_url, token, accept_invalid_certs.unwrap_or(false));
     *state.mist.lock().await = Some(client);
+    Ok(())
+}
+
+#[tauri::command]
+async fn mist_clear(state: State<'_, AppState>) -> Result<(), String> {
+    *state.mist.lock().await = None;
     Ok(())
 }
 
@@ -1595,6 +1615,12 @@ async fn central_set_token(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     state.central.lock().await.configure_token(base_url, token);
+    Ok(())
+}
+
+#[tauri::command]
+async fn central_clear(state: State<'_, AppState>) -> Result<(), String> {
+    state.central.lock().await.clear();
     Ok(())
 }
 
@@ -1896,13 +1922,16 @@ fn main() {
             aoss_login,
             aoss_request,
             apstra_configure,
+            apstra_clear,
             apstra_request,
             mist_configure,
+            mist_clear,
             mist_request,
             junos_login,
             junos_request,
             central_configure,
             central_set_token,
+            central_clear,
             central_is_configured,
             central_request,
             sftp_list_dir,
@@ -1934,6 +1963,7 @@ fn main() {
             ssh_stop_forward,
             ssh_list_forwards,
             intent_list,
+            intent_list_strict,
             intent_save,
             intent_delete,
             intent_set_result,

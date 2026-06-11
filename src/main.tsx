@@ -9,6 +9,24 @@ import "./styles/index.css";
 // but render a terminal-only view instead of the full app shell.
 const isPopOut = appWindow.label.startsWith("popout-");
 
+// Prevent default browser reload on Cmd+R / Ctrl+R / F5 / Cmd+Shift+R
+document.addEventListener("keydown", (e) => {
+  if (
+    ((e.key === "r" || e.key === "R") && (e.metaKey || e.ctrlKey)) ||
+    e.key === "F5"
+  ) {
+    e.preventDefault();
+  }
+});
+
+// Prevent the WebView's native context menu from exposing Reload. Keep Monaco's
+// editor menu working because users rely on it for editor actions.
+document.addEventListener("contextmenu", (e) => {
+  const target = e.target instanceof Element ? e.target : null;
+  if (target?.closest(".monaco-editor")) return;
+  e.preventDefault();
+});
+
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     {isPopOut ? <PopOutTerminal /> : <App />}

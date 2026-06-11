@@ -1,15 +1,20 @@
 import { useState, useEffect } from 'react';
-import { X, RotateCcw, Moon, Sun, Eye, EyeOff, CheckCircle2 } from 'lucide-react';
+import { X, RotateCcw, Moon, Sun, Eye, EyeOff, CheckCircle2, Download, Upload } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/tauri';
+import { open as openDialog, save as saveDialog } from '@tauri-apps/api/dialog';
 import { useSessionStore } from '../store/sessionStore';
 import { useSettingsStore } from '../store/settingsStore';
 import { askConfirm } from '../store/dialogStore';
-import { AI_PROVIDERS, AI_CLI_PRESETS, TerminalSettings } from '../types';
+import { AI_PROVIDERS, AI_CLI_PRESETS, TerminalSettings, DeviceType, DEVICE_TYPES, DeviceProfile, SessionFolder } from '../types';
+import { notify } from '../store/toastStore';
 import McpServers from './McpServers';
 import AiAgents from './AiAgents';
 import HostsManager from './HostsManager';
 import TriggersSettings from './TriggersSettings';
 import CentralSettings from './CentralSettings';
+import { generateId } from '../utils';
+import { BackupImportMode, createGreenCliBackup, GreenCliBackup, importGreenCliBackup } from '../utils/backup';
+import { sanitizeStandaloneImportedProfiles } from '../utils/deviceProfiles';
 
 // Curated best-practices the AI should apply, distilled from Juniper Validated
 // Designs (JVDs). Appended to the references field on request.
@@ -28,8 +33,10 @@ const JVD_REFERENCES = `# Juniper Validated Design (JVD) best-practices
 - General: out-of-band mgmt, RFC5549 or lo0 /32s, config via Apstra where managed,
   golden config + commit confirmed.`;
 
+const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
+
 export default function SettingsPanel() {
-  const { showSettings, setShowSettings, settingsFocus, setSettingsFocus } = useSessionStore();
+  const { showSettings, setShowSettings, settingsFocus, setSettingsFocus, setFolders } = useSessionStore();
   const settings = useSettingsStore();
 
   // When opened via a Help deep-link, scroll the targeted section into view and
@@ -50,6 +57,10 @@ export default function SettingsPanel() {
   const [showApiKey, setShowApiKey] = useState(false);
   const [keyInput, setKeyInput] = useState('');
   const [keySaved, setKeySaved] = useState(false);
+  const [profileName, setProfileName] = useState('');
+  const [profileBase, setProfileBase] = useState<DeviceType>('generic');
+  const [backupBusy, setBackupBusy] = useState<'export' | 'import' | null>(null);
+  const [backupMode, setBackupMode] = useState<BackupImportMode>('merge');
 
   const aiProvider = settings.aiProvider;
   const providerMeta = AI_PROVIDERS.find((p) => p.value === aiProvider);
@@ -74,6 +85,144 @@ export default function SettingsPanel() {
     invoke('ai_set_key', { provider: aiProvider, key: keyInput })
       .then(() => setKeySaved(true))
       .catch(() => {});
+  };
+
+  const addProfile = () => {
+    const name = profileName.trim();
+    if (!name) return;
+    const base = DEVICE_TYPES.find((d) => d.value === profileBase) ?? DEVICE_TYPES[0];
+    settings.addDeviceProfile({
+      id: `custom-${generateId()}`,
+      name,
+      deviceType: profileBase,
+      short: name.slice(0, 6).toUpperCase(),
+      color: `var(--vendor-${base.vendor})`,
+      description: `Custom profile based on ${base.label}.`,
+      promptPatterns: [],
+      fingerprints: [],
+      commands: [],
+      keywords: [],
+    });
+    setProfileName('');
+  };
+
+  const exportProfiles = () => {
+    const blob = new Blob([JSON.stringify(settings.customDeviceProfiles, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'greencli-device-profiles.json';
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const importProfiles = () => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'application/json';
+    input.onchange = () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        try {
+          const parsed = sanitizeStandaloneImportedProfiles(JSON.parse(String(reader.result || '[]')));
+          parsed.forEach((profile) => settings.addDeviceProfile(profile));
+        } catch {
+          // Ignore malformed imports; the mapper also surfaces import errors.
+        }
+      };
+      reader.readAsText(file);
+    };
+    input.click();
+  };
+
+  const exportBackup = async () => {
+    setBackupBusy('export');
+    try {
+      const backup = await createGreenCliBackup();
+      const contents = JSON.stringify(backup, null, 2);
+      const fileName = `greencli-backup-${new Date().toISOString().slice(0, 10)}.json`;
+      if (isTauri) {
+        const path = await saveDialog({
+          title: 'Export GreenCLI backup',
+          defaultPath: fileName,
+          filters: [{ name: 'JSON', extensions: ['json'] }],
+        });
+        if (!path) return;
+        await invoke('write_file_text', { path, contents });
+      } else {
+        const blob = new Blob([contents], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = fileName;
+        a.click();
+        URL.revokeObjectURL(url);
+      }
+      notify.success('Backup exported', 'Secrets and vault contents were not included.');
+    } catch (e) {
+      notify.error('Backup export failed', String(e));
+    } finally {
+      setBackupBusy(null);
+    }
+  };
+
+  const pickBackupText = async (): Promise<string | null> => {
+    if (isTauri) {
+      const picked = await openDialog({
+        title: 'Import GreenCLI backup',
+        multiple: false,
+        filters: [{ name: 'JSON', extensions: ['json'] }],
+      });
+      if (typeof picked !== 'string') return null;
+      return invoke<string>('read_file_text', { path: picked });
+    }
+
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'application/json';
+    return new Promise((resolve) => {
+      input.onchange = () => {
+        const file = input.files?.[0];
+        if (!file) return resolve(null);
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || ''));
+        reader.onerror = () => resolve(null);
+        reader.readAsText(file);
+      };
+      input.click();
+    });
+  };
+
+  const importBackup = async () => {
+    setBackupBusy('import');
+    try {
+      const text = await pickBackupText();
+      if (!text) return;
+      const backup = JSON.parse(text) as GreenCliBackup;
+      if (backupMode === 'replace') {
+        const ok = await askConfirm({
+          title: 'Replace existing GreenCLI data?',
+          message:
+            'This replaces snippets, triggers, saved sessions, and intents with the backup contents. Secrets and vault data are not imported.',
+          confirmLabel: 'Replace',
+          danger: true,
+        });
+        if (!ok) return;
+      }
+      const result = await importGreenCliBackup(backup, backupMode);
+      const folders = await invoke<SessionFolder[]>('list_folders').catch(() => []);
+      if (folders.length) setFolders(folders);
+      notify.success(
+        'Backup imported',
+        `${backupMode === 'replace' ? 'Replaced' : 'Merged'} ${result.sessions} sessions, ${result.intents} intents, ${result.snippets} snippets, and ${result.triggers} triggers.`
+      );
+    } catch (e) {
+      notify.error('Backup import failed', String(e));
+    } finally {
+      setBackupBusy(null);
+    }
   };
 
   if (!showSettings) return null;
@@ -288,6 +437,31 @@ export default function SettingsPanel() {
                   value: settings.autoReconnect,
                   onChange: settings.setAutoReconnect,
                 },
+                {
+                  label: 'Paste Guard',
+                  value: settings.pasteGuardEnabled,
+                  onChange: (value: boolean) => settings.updateSettings({ pasteGuardEnabled: value }),
+                },
+                {
+                  label: 'Paste History',
+                  value: settings.pasteHistoryEnabled,
+                  onChange: (value: boolean) => settings.updateSettings({ pasteHistoryEnabled: value }),
+                },
+                {
+                  label: 'Smart Click-to-Copy Links',
+                  value: settings.smartTerminalLinks,
+                  onChange: (value: boolean) => settings.updateSettings({ smartTerminalLinks: value }),
+                },
+                {
+                  label: 'Background Activity Alerts',
+                  value: settings.terminalActivityNotifications,
+                  onChange: (value: boolean) => settings.updateSettings({ terminalActivityNotifications: value }),
+                },
+                {
+                  label: 'Silence Alerts After Input',
+                  value: settings.terminalSilenceNotifications,
+                  onChange: (value: boolean) => settings.updateSettings({ terminalSilenceNotifications: value }),
+                },
               ].map(({ label, value, onChange }) => (
                 <label
                   key={label}
@@ -306,6 +480,165 @@ export default function SettingsPanel() {
                   </div>
                 </label>
               ))}
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 mt-4">
+              <div>
+                <label className="block text-xs text-[var(--text-secondary)] mb-1.5">
+                  Paste Guard Threshold
+                </label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="range"
+                    min={2}
+                    max={25}
+                    value={settings.pasteGuardLineThreshold}
+                    onChange={(e) => settings.updateSettings({ pasteGuardLineThreshold: Number(e.target.value) })}
+                    className="flex-1 accent-[var(--accent)]"
+                  />
+                  <span className="text-xs text-[var(--text-primary)] w-14 text-right">
+                    {settings.pasteGuardLineThreshold} lines
+                  </span>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs text-[var(--text-secondary)] mb-1.5">
+                  Silence Alert Delay
+                </label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="range"
+                    min={15}
+                    max={300}
+                    step={15}
+                    value={settings.terminalSilenceThresholdSeconds}
+                    onChange={(e) => settings.updateSettings({ terminalSilenceThresholdSeconds: Number(e.target.value) })}
+                    className="flex-1 accent-[var(--accent)]"
+                  />
+                  <span className="text-xs text-[var(--text-primary)] w-12 text-right">
+                    {settings.terminalSilenceThresholdSeconds}s
+                  </span>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <div className="border-t border-[var(--bg-tertiary)]" />
+
+          {/* Device profiles */}
+          <section id="set-device-profiles">
+            <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-3">
+              Device Profiles
+            </h3>
+            <div className="space-y-3">
+              <div className="grid grid-cols-[1fr_160px_auto] gap-2">
+                <input
+                  value={profileName}
+                  onChange={(e) => setProfileName(e.target.value)}
+                  placeholder="Custom profile name"
+                  className="input-field h-8 px-2 text-sm"
+                />
+                <select
+                  value={profileBase}
+                  onChange={(e) => setProfileBase(e.target.value as DeviceType)}
+                  className="input-field h-8 px-2 text-sm"
+                >
+                  {DEVICE_TYPES.map((dt) => (
+                    <option key={dt.value} value={dt.value}>
+                      {dt.short}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  onClick={addProfile}
+                  className="px-3 h-8 rounded bg-[var(--bg-tertiary)] hover:bg-[var(--border-strong)] text-xs text-[var(--text-primary)]"
+                >
+                  Add
+                </button>
+              </div>
+              <div className="flex items-center gap-2">
+                <button onClick={exportProfiles} className="px-2 py-1 rounded text-xs text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]">
+                  Export
+                </button>
+                <button onClick={importProfiles} className="px-2 py-1 rounded text-xs text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]">
+                  Import
+                </button>
+                <span className="text-[10px] text-[var(--text-muted)]">
+                  {settings.customDeviceProfiles.length} custom profile{settings.customDeviceProfiles.length === 1 ? '' : 's'}
+                </span>
+              </div>
+              <div className="space-y-1">
+                {settings.customDeviceProfiles.length === 0 ? (
+                  <p className="text-xs text-[var(--text-muted)]">
+                    Create custom profiles here or from Map Device. Built-in profiles remain available automatically.
+                  </p>
+                ) : (
+                  settings.customDeviceProfiles.map((profile) => (
+                    <div key={profile.id} className="flex items-center justify-between rounded-lg bg-[var(--bg-inset)] border border-[var(--border)] px-2 py-1.5">
+                      <span className="text-xs text-[var(--text-primary)]">
+                        {profile.name}
+                        <span className="ml-2 text-[10px] text-[var(--text-muted)]">{profile.short}</span>
+                      </span>
+                      <button
+                        onClick={() => settings.removeDeviceProfile(profile.id)}
+                        className="text-[10px] text-[var(--accent-danger)] hover:underline"
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </section>
+
+          <div className="border-t border-[var(--bg-tertiary)]" />
+
+          {/* Backup / transfer */}
+          <section id="set-backup">
+            <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-2">
+              Backup &amp; Transfer
+            </h3>
+            <p className="text-xs text-[var(--text-muted)] mb-3">
+              Export settings, snippets, device profiles, saved sessions, triggers, and intents. Secrets and vault data are never included.
+            </p>
+            <div className="flex items-center gap-2 mb-3">
+              {(['merge', 'replace'] as BackupImportMode[]).map((mode) => (
+                <button
+                  key={mode}
+                  onClick={() => setBackupMode(mode)}
+                  className={`px-2.5 py-1 rounded-md text-xs border capitalize transition-colors ${
+                    backupMode === mode
+                      ? 'border-[var(--accent)] text-[var(--accent)] bg-[var(--accent-soft)]'
+                      : 'border-[var(--border)] text-[var(--text-secondary)] hover:border-[var(--border-strong)]'
+                  }`}
+                  title={mode === 'merge' ? 'Add/update backup items without deleting local data' : 'Replace supported local data with the backup'}
+                >
+                  {mode}
+                </button>
+              ))}
+              <span className="text-[10px] text-[var(--text-muted)]">
+                {backupMode === 'merge' ? 'Import adds or updates matching IDs.' : 'Import clears supported local data first.'}
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={exportBackup}
+                disabled={backupBusy !== null}
+                className="flex items-center gap-1.5 px-3 h-8 rounded bg-[var(--bg-tertiary)] hover:bg-[var(--border-strong)] disabled:opacity-50 text-xs text-[var(--text-primary)]"
+              >
+                <Download size={13} />
+                {backupBusy === 'export' ? 'Exporting…' : 'Export backup'}
+              </button>
+              <button
+                onClick={importBackup}
+                disabled={backupBusy !== null}
+                className="flex items-center gap-1.5 px-3 h-8 rounded bg-[var(--bg-tertiary)] hover:bg-[var(--border-strong)] disabled:opacity-50 text-xs text-[var(--text-primary)]"
+              >
+                <Upload size={13} />
+                {backupBusy === 'import' ? 'Importing…' : 'Import backup'}
+              </button>
             </div>
           </section>
 

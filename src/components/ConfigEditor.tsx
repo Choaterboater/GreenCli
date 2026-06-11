@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import Editor, { DiffEditor, OnMount } from '@monaco-editor/react';
 import type { editor as MonacoEditor } from 'monaco-editor';
 import {
@@ -17,13 +17,17 @@ import {
   GitCompare,
   Maximize2,
   Minimize2,
+  ListTree,
+  AlertTriangle,
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/tauri';
 import { open as openDialog, save as saveDialog } from '@tauri-apps/api/dialog';
 import { useSessionStore } from '../store/sessionStore';
+import { useSettingsStore } from '../store/settingsStore';
 import { sleep, stripAnsi as stripAnsiUtil, hasAnsi, sendAndCapture } from '../utils/terminal';
 import { useResizablePanel } from '../hooks/useResizablePanel';
 import { askConfirm } from '../store/dialogStore';
+import { profileForSession } from '../utils/deviceProfiles';
 
 // ─── Tauri / browser file I/O ───
 
@@ -164,6 +168,12 @@ function detectLanguage(filePath: string): string {
 
 const LANGUAGE_LIST = [
   { id: 'aruba-cx',         label: 'Aruba CX' },
+  { id: 'aruba-aos-s',      label: 'Aruba AOS-S' },
+  { id: 'aruba-ap',         label: 'Aruba AP' },
+  { id: 'aruba-controller', label: 'Aruba AOS 8 / Controller' },
+  { id: 'juniper-junos',    label: 'Juniper Junos' },
+  { id: 'mist',             label: 'Juniper Mist / Junos' },
+  { id: 'generic',          label: 'Normal Device' },
   { id: 'plaintext',        label: 'Plain Text' },
   { id: 'shell',            label: 'Shell / Bash' },
   { id: 'python',           label: 'Python' },
@@ -241,6 +251,39 @@ radius-server host 10.0.0.100
 aaa authentication login default group radius local
 aaa authorization commands default group radius local
 `,
+  'AOS-S: VLAN + tagged uplink': `! Aruba AOS-S / ProVision
+vlan 10
+   name "MGMT"
+   tagged 1
+   ip address 10.0.10.2 255.255.255.0
+   exit
+vlan 20
+   name "USERS"
+   tagged 1
+   untagged 3-48
+   exit
+write memory
+`,
+  'Aruba AP: WLAN basics': `! Aruba Instant AP / VC
+wlan ssid-profile Example-SSID
+  enable
+  essid Example-SSID
+  opmode wpa2-psk-aes
+  wpa-passphrase <replace-me>
+exit
+commit apply
+`,
+  'AOS8: AP group WLAN': `! ArubaOS 8 Controller / Conductor
+configure terminal
+wlan ssid-profile Example-SSID
+  essid Example-SSID
+  opmode wpa2-psk-aes
+exit
+wlan virtual-ap Example-VAP
+  ssid-profile Example-SSID
+exit
+write memory
+`,
   'Junos: VLANs': `/* Juniper Junos — VLANs (set-style) */
 set vlans MGMT vlan-id 10
 set vlans USERS vlan-id 20
@@ -266,6 +309,14 @@ set protocols bgp group EBGP neighbor 10.0.0.2 description Core-Peer
   'Junos: OSPF': `/* Junos — OSPF */
 set protocols ospf area 0.0.0.0 interface ge-0/0/0.0 interface-type p2p
 set protocols ospf area 0.0.0.0 interface irb.10
+`,
+  'Mist/Junos: access switch baseline': `/* Mist-managed Junos switch baseline */
+set system host-name <switch-name>
+set system services ssh
+set vlans USERS vlan-id 20
+set interfaces ge-0/0/3 unit 0 family ethernet-switching interface-mode access
+set interfaces ge-0/0/3 unit 0 family ethernet-switching vlan members USERS
+commit confirmed 5 comment "GreenCLI staged access baseline"
 `,
   'Apstra configlet: NTP': `/* Apstra configlet (Junos) — NTP. Paste the body into an Apstra
    configlet (style "junos", section "system"); assign by role/tag. */
@@ -363,11 +414,104 @@ const ARUBA_KEYWORDS = [
   'inet', 'native-vlan-id', 'irb', 'p2p',
 ];
 
+const DANGEROUS_COMMANDS = [
+  /\berase\b/i,
+  /\bdelete\s+configuration\b/i,
+  /\bdelete\s+system\b/i,
+  /\bwrite\s+erase\b/i,
+  /\breload\b/i,
+  /\breboot\b/i,
+  /\bshutdown\b/i,
+  /\bno\s+interface\b/i,
+  /\bcommit\b/i,
+  /\bcopy\s+.*startup/i,
+];
+
+const EDITOR_SNIPPETS: Record<string, string> = {
+  'Common: hostname': 'hostname ${hostname}\n',
+  'Common: syslog + NTP': `logging \${syslog_server}
+ntp server \${ntp_server}
+`,
+  'AOS-CX: access port': `interface \${interface}
+    description \${description}
+    no shutdown
+    vlan access \${vlan_id}
+`,
+  'AOS-S: access port': `vlan \${vlan_id}
+   name "\${vlan_name}"
+   untagged \${port}
+   exit
+`,
+  'Junos: access port': `set vlans \${vlan_name} vlan-id \${vlan_id}
+set interfaces \${interface} unit 0 family ethernet-switching interface-mode access
+set interfaces \${interface} unit 0 family ethernet-switching vlan members \${vlan_name}
+`,
+  'Junos/Mist: commit confirmed': 'commit confirmed 5 comment "GreenCLI change"\n',
+};
+
+interface OutlineItem {
+  line: number;
+  label: string;
+}
+
+function buildOutline(text: string): OutlineItem[] {
+  const patterns = [
+    /^\s*(interface\s+\S+)/i,
+    /^\s*(vlan\s+\S+)/i,
+    /^\s*(router\s+\S+(?:\s+\S+)?)/i,
+    /^\s*(wlan\s+\S+(?:\s+\S+)?)/i,
+    /^\s*(aaa\s+\S+)/i,
+    /^\s*(set\s+(?:system|interfaces|vlans|protocols|routing-options|class-of-service)\b.*)/i,
+  ];
+  const items: OutlineItem[] = [];
+  text.split('\n').forEach((line, index) => {
+    for (const pattern of patterns) {
+      const match = line.match(pattern);
+      if (match?.[1]) {
+        items.push({ line: index + 1, label: match[1].trim() });
+        break;
+      }
+    }
+  });
+  return items.slice(0, 100);
+}
+
+function buildDiagnostics(text: string, language: string): string[] {
+  const diagnostics: string[] = [];
+  if (hasAnsi(text)) diagnostics.push('Terminal escape/control codes found.');
+  const lines = text.split('\n').map((line) => line.trim()).filter(Boolean);
+  const risky = lines.filter((line) => DANGEROUS_COMMANDS.some((pattern) => pattern.test(line)));
+  if (risky.length) diagnostics.push(`${risky.length} risky command${risky.length === 1 ? '' : 's'} detected.`);
+  if (/juniper|mist/.test(language) && lines.some((line) => /^(set|delete|replace)\b/i.test(line)) && !lines.some((line) => /^commit\b/i.test(line))) {
+    diagnostics.push('Junos-style edits do not include a commit line.');
+  }
+  if (/\$\{[^}]+\}|<replace-me>|<[^>\n]{2,}>/.test(text)) {
+    diagnostics.push('Template placeholders still need values.');
+  }
+  return diagnostics;
+}
+
+function summarizeLineDiff(original: string, next: string): string {
+  if (!original.trim()) return 'No baseline loaded; review the command preview before sending.';
+  const oldLines = original.split('\n').map((line) => line.trim()).filter(Boolean);
+  const newLines = next.split('\n').map((line) => line.trim()).filter(Boolean);
+  const oldSet = new Set(oldLines);
+  const newSet = new Set(newLines);
+  const added = newLines.filter((line) => !oldSet.has(line));
+  const removed = oldLines.filter((line) => !newSet.has(line));
+  const examples = [
+    ...added.slice(0, 3).map((line) => `+ ${line}`),
+    ...removed.slice(0, 3).map((line) => `- ${line}`),
+  ];
+  return `Diff vs baseline: +${added.length} / -${removed.length}${examples.length ? `\n${examples.join('\n')}` : ''}`;
+}
+
 // ─── Component ───
 
 export default function ConfigEditor() {
   const { showConfigEditor, toggleConfigEditor, activeSessionId, sessions } =
     useSessionStore();
+  const settings = useSettingsStore();
 
   const { width: panelWidth, onDragStart: handleDragStart, handleClass: dragHandleClass } =
     useResizablePanel(520, 300, 900);
@@ -401,11 +545,14 @@ export default function ConfigEditor() {
     }));
 
   const [showTemplates, setShowTemplates] = useState(false);
+  const [showSnippets, setShowSnippets] = useState(false);
+  const [showOutline, setShowOutline] = useState(false);
   const [showLangPicker, setShowLangPicker] = useState(false);
   const [langSearch, setLangSearch] = useState('');
 
   const [sending, setSending] = useState(false);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
+  const sendingRef = useRef(false);
 
   // Holds the original (uncleaned) text when an opened file had terminal escapes,
   // so the user can toggle back to the raw capture.
@@ -421,6 +568,8 @@ export default function ConfigEditor() {
   const openFileRef = useRef<() => Promise<void>>();
 
   const activeSession = sessions.find((s) => s.sessionId === activeSessionId);
+  const outlineItems = useMemo(() => buildOutline(content), [content]);
+  const diagnostics = useMemo(() => buildDiagnostics(content, language), [content, language]);
 
   useEffect(() => { contentRef.current = content; }, [content]);
 
@@ -491,6 +640,42 @@ export default function ConfigEditor() {
     showStatus('Stripped terminal escapes');
   }, []);
 
+  const insertSnippet = useCallback((name: string) => {
+    const snippet = EDITOR_SNIPPETS[name];
+    if (!snippet) return;
+    const editor = editorRef.current;
+    if (!editor) {
+      setContent((prev) => `${prev}${prev.endsWith('\n') ? '' : '\n'}${snippet}`);
+      setIsDirty(true);
+      return;
+    }
+    const model = editor.getModel();
+    if (!model) return;
+    const selection = editor.getSelection();
+    editor.executeEdits('greencli-snippet', [
+      {
+        range: selection ?? model.getFullModelRange(),
+        text: snippet,
+        forceMoveMarkers: true,
+      },
+    ]);
+    editor.focus();
+    const next = editor.getValue();
+    setContent(next);
+    setIsDirty(true);
+    setShowSnippets(false);
+    showStatus(`Inserted ${name}`);
+  }, []);
+
+  const jumpToOutlineItem = useCallback((item: OutlineItem) => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    editor.revealLineInCenter(item.line);
+    editor.setPosition({ lineNumber: item.line, column: 1 });
+    editor.focus();
+    setShowOutline(false);
+  }, []);
+
   // Pull the active device's running-config into the editor (terminal read-back).
   const pullRunningConfig = useCallback(async () => {
     if (!activeSession?.connected) {
@@ -505,6 +690,7 @@ export default function ConfigEditor() {
       // `no page` (NOT `no paging`); ArubaOS controllers use `no paging`; Junos
       // pipes `| no-more`. Paging is restored afterward so the live session
       // isn't left changed.
+      const profile = profileForSession(activeSession.config, settings.customDeviceProfiles);
       const PAGING: Record<string, { disable?: string; restore?: string; show: string }> = {
         'aruba-cx': { disable: 'no page', restore: 'page', show: 'show running-config' },
         'aruba-aos-s': { disable: 'no page', restore: 'page', show: 'show running-config' },
@@ -514,7 +700,12 @@ export default function ConfigEditor() {
         mist: { show: 'show configuration | no-more' },
         generic: { show: 'show running-config' },
       };
-      const vp = PAGING[activeSession.config.deviceType] ?? PAGING.generic;
+      const vp = {
+        ...(PAGING[profile.deviceType] ?? PAGING.generic),
+        show: profile.runningConfigCommand || (PAGING[profile.deviceType] ?? PAGING.generic).show,
+        disable: profile.pagingDisableCommand ?? (PAGING[profile.deviceType] ?? PAGING.generic).disable,
+        restore: profile.pagingRestoreCommand ?? (PAGING[profile.deviceType] ?? PAGING.generic).restore,
+      };
       if (vp.disable) {
         await invoke('send_data', { sessionId: sid, data: vp.disable + '\r' });
         await sleep(300);
@@ -531,14 +722,15 @@ export default function ConfigEditor() {
       rawCaptureRef.current = null;
       setViewingRaw(false);
       setContent(out);
-      setLanguage('aruba-cx');
+      setDiffOriginal(out);
+      setLanguage(profile.deviceType === 'generic' ? 'plaintext' : profile.deviceType);
       setCurrentFilePath(null);
       setIsDirty(true);
-      showStatus('Running-config pulled');
+      showStatus('Running-config pulled; baseline saved');
     } catch (e) {
       showStatus(`Pull failed: ${e}`);
     }
-  }, [activeSession]);
+  }, [activeSession, settings.customDeviceProfiles]);
 
   // Open a baseline file and diff it against the current editor content.
   const openDiffAgainst = useCallback(async () => {
@@ -598,9 +790,11 @@ export default function ConfigEditor() {
   const handleEditorMount: OnMount = (ed, monaco) => {
     editorRef.current = ed;
 
-    // Register custom Aruba CX language
-    monaco.languages.register({ id: 'aruba-cx' });
-    monaco.languages.setMonarchTokensProvider('aruba-cx', {
+    // Register network config languages. They share the same first-pass tokenizer;
+    // profile-specific keywords/templates drive the safer workflows around it.
+    const networkLanguageIds = ['aruba-cx', 'aruba-aos-s', 'aruba-ap', 'aruba-controller', 'juniper-junos', 'mist', 'generic'];
+    networkLanguageIds.forEach((id) => monaco.languages.register({ id }));
+    const networkTokenizer = {
       keywords: ARUBA_KEYWORDS,
       tokenizer: {
         root: [
@@ -617,7 +811,8 @@ export default function ConfigEditor() {
           [/'.*?'/, 'string'],
         ],
       },
-    } as Parameters<typeof monaco.languages.setMonarchTokensProvider>[1]);
+    } as Parameters<typeof monaco.languages.setMonarchTokensProvider>[1];
+    networkLanguageIds.forEach((id) => monaco.languages.setMonarchTokensProvider(id, networkTokenizer));
 
     monaco.editor.defineTheme('aruba-dark', {
       base: 'vs-dark',
@@ -671,13 +866,12 @@ export default function ConfigEditor() {
   // ─── Send to terminal ───
 
   const sendToTerminal = async () => {
+    if (sendingRef.current) return;
     if (!activeSession || !content.trim()) return;
     if (!activeSession.connected) {
       showStatus('Not connected — connect the session first');
       return;
     }
-    setSending(true);
-
     const lines = content
       .split('\n')
       .map((l) => l.trim())
@@ -687,8 +881,29 @@ export default function ConfigEditor() {
       // Drop pure comment lines for every supported vendor: Aruba/Cisco '!' '#',
       // now-empty comment-only lines, and lone Junos block delimiters.
       .filter((l) => l && !l.startsWith('!') && !l.startsWith('#') && !l.startsWith('/*') && !l.startsWith('*/'));
+    if (lines.length === 0) {
+      showStatus('Nothing to send');
+      return;
+    }
+
+    const risky = lines.filter((line) => DANGEROUS_COMMANDS.some((pattern) => pattern.test(line)));
+    const diffSummary = summarizeLineDiff(diffOriginal, content);
+    const preview = lines.slice(0, 12).join('\n');
+    sendingRef.current = true;
+    setSending(true);
 
     try {
+      const ok = await askConfirm({
+        title: `Send ${lines.length} line${lines.length === 1 ? '' : 's'} to ${activeSession.config.name || activeSession.config.host || 'device'}?`,
+        message:
+          `${risky.length ? `Potentially dangerous lines detected: ${risky.slice(0, 5).join(' | ')}\n\n` : ''}` +
+          `${diffSummary}\n\n` +
+          `Preview:\n${preview}${lines.length > 12 ? '\n…' : ''}`,
+        confirmLabel: 'Send',
+        danger: risky.length > 0,
+      });
+      if (!ok) return;
+
       for (const line of lines) {
         await invoke('send_data', { sessionId: activeSession.sessionId, data: line + '\r' });
         await new Promise((r) => setTimeout(r, 80));
@@ -697,6 +912,7 @@ export default function ConfigEditor() {
     } catch {
       showStatus('Send failed — is a session connected?');
     } finally {
+      sendingRef.current = false;
       setSending(false);
     }
   };
@@ -709,7 +925,19 @@ export default function ConfigEditor() {
   const loadTemplate = async (name: string) => {
     if (!(await confirmDiscard())) return;
     setContent(TEMPLATES[name]);
-    setLanguage('aruba-cx');
+    setLanguage(
+      name.startsWith('Junos') || name.startsWith('JVD') || name.startsWith('Apstra')
+        ? 'juniper-junos'
+        : name.startsWith('Mist')
+          ? 'mist'
+          : name.startsWith('AOS-S')
+            ? 'aruba-aos-s'
+            : name.startsWith('Aruba AP')
+              ? 'aruba-ap'
+              : name.startsWith('AOS8')
+                ? 'aruba-controller'
+                : 'aruba-cx'
+    );
     setCurrentFilePath(null);
     setIsDirty(false);
     setShowTemplates(false);
@@ -820,7 +1048,7 @@ export default function ConfigEditor() {
         {/* Language picker */}
         <div className="relative">
           <button
-            onClick={() => { setShowLangPicker(!showLangPicker); setLangSearch(''); setShowTemplates(false); }}
+            onClick={() => { setShowLangPicker(!showLangPicker); setLangSearch(''); setShowTemplates(false); setShowSnippets(false); setShowOutline(false); }}
             className="flex items-center gap-1.5 px-2 py-1 text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] rounded transition-colors"
             title="Change language mode"
           >
@@ -869,7 +1097,7 @@ export default function ConfigEditor() {
         {/* Templates (Aruba + Junos) */}
         <div className="relative">
           <button
-            onClick={() => { setShowTemplates(!showTemplates); setShowLangPicker(false); }}
+            onClick={() => { setShowTemplates(!showTemplates); setShowLangPicker(false); setShowSnippets(false); setShowOutline(false); }}
             className="flex items-center gap-1.5 px-2 py-1 text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] rounded transition-colors"
           >
             <BookOpen size={12} />
@@ -889,6 +1117,69 @@ export default function ConfigEditor() {
                     {name}
                   </button>
                 ))}
+              </div>
+            </>
+          )}
+        </div>
+
+        {/* Snippets */}
+        <div className="relative">
+          <button
+            onClick={() => { setShowSnippets(!showSnippets); setShowTemplates(false); setShowLangPicker(false); setShowOutline(false); }}
+            className="flex items-center gap-1.5 px-2 py-1 text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] rounded transition-colors"
+            title="Insert common network config snippets"
+          >
+            <Code2 size={12} />
+            Snippets
+            <ChevronDown size={10} />
+          </button>
+          {showSnippets && (
+            <>
+              <div className="fixed inset-0 z-20" onClick={() => setShowSnippets(false)} />
+              <div className="absolute top-full left-0 mt-1 z-30 min-w-[220px] bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg shadow-xl py-1">
+                {Object.keys(EDITOR_SNIPPETS).map((name) => (
+                  <button
+                    key={name}
+                    onClick={() => insertSnippet(name)}
+                    className="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] text-left"
+                  >
+                    {name}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+
+        {/* Outline */}
+        <div className="relative">
+          <button
+            onClick={() => { setShowOutline(!showOutline); setShowTemplates(false); setShowLangPicker(false); setShowSnippets(false); }}
+            className="flex items-center gap-1.5 px-2 py-1 text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] rounded transition-colors"
+            title="Jump to interfaces, VLANs, routing sections, or Junos set blocks"
+          >
+            <ListTree size={12} />
+            Outline
+            <ChevronDown size={10} />
+          </button>
+          {showOutline && (
+            <>
+              <div className="fixed inset-0 z-20" onClick={() => setShowOutline(false)} />
+              <div className="absolute top-full left-0 mt-1 z-30 w-72 max-h-64 overflow-y-auto bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg shadow-xl py-1">
+                {outlineItems.length === 0 ? (
+                  <p className="px-3 py-2 text-xs text-[var(--text-muted)]">No config sections found.</p>
+                ) : (
+                  outlineItems.map((item) => (
+                    <button
+                      key={`${item.line}-${item.label}`}
+                      onClick={() => jumpToOutlineItem(item)}
+                      className="grid grid-cols-[2.75rem_1fr] w-full px-3 py-1.5 text-xs text-left hover:bg-[var(--bg-tertiary)]"
+                    >
+                      <span className="text-[var(--text-muted)]">L{item.line}</span>
+                      <span className="truncate text-[var(--text-primary)]">{item.label}</span>
+                    </button>
+                  ))
+                )}
               </div>
             </>
           )}
@@ -921,10 +1212,19 @@ export default function ConfigEditor() {
 
         <div className="flex-1" />
 
+        {diagnostics.length > 0 && (
+          <span
+            className="flex items-center gap-1 text-[10px] text-[var(--accent-warning)] mr-1"
+            title={diagnostics.join('\n')}
+          >
+            <AlertTriangle size={11} />
+            {diagnostics.length}
+          </span>
+        )}
         {statusMsg && <span className="text-[10px] text-[var(--text-secondary)] mr-1">{statusMsg}</span>}
 
-        {/* Send to terminal — only shown for aruba-cx */}
-        {language === 'aruba-cx' && (
+        {/* Send to terminal — confirmed before every send */}
+        {activeSession && (
           <button
             onClick={sendToTerminal}
             disabled={sending || !activeSession?.connected}

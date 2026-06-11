@@ -24,6 +24,24 @@ const ANSI_FG_RESET = '\x1b[39m';
 
 type DetectedDevice = 'aruba-cx' | 'aruba-ap' | 'aruba-controller' | 'juniper-junos' | 'generic';
 
+const NO_MATCH = /a^/;
+const genericGrammar: Grammar = {
+  name: 'generic',
+  commands: [],
+  subcommands: [],
+  keywords: [],
+  operators: [],
+  flags: [],
+  values: {
+    ipAddress: NO_MATCH,
+    macAddress: NO_MATCH,
+    vlanId: NO_MATCH,
+    interfaceName: NO_MATCH,
+    number: NO_MATCH,
+  },
+  promptPattern: NO_MATCH,
+};
+
 // ─── Device Detection Patterns ───
 interface DevicePattern {
   type: DetectedDevice;
@@ -48,7 +66,6 @@ const DEVICE_PATTERNS: DevicePattern[] = [
       /^\(?[A-Za-z0-9][A-Za-z0-9-_]*\(config\)\s*#\s?/,
       /^\(?[A-Za-z0-9][A-Za-z0-9-_]*\(config-\w+\)\s*#\s?/,
       /^\(?(?:vsx-\w+)\)?\s*#\s?/,
-      /^[A-Za-z0-9][A-Za-z0-9-_]*#\s?/,
     ],
     commandFingerprints: ['vsx-sync', 'vsx-update', 'interface 1/', 'evpn', 'vxlan', 'evi ', 'vni '],
   },
@@ -90,6 +107,10 @@ export class ArubaHighlighter {
     this.sortedKeywords = [...grammar.keywords].sort((a, b) => b.length - a.length);
     this.sortedOperators = [...grammar.operators].sort((a, b) => b.length - a.length);
     this.sortedFlags = [...grammar.flags].sort((a, b) => b.length - a.length);
+  }
+
+  isGeneric(): boolean {
+    return this.grammar.name === 'generic';
   }
 
   // ─── Token Processing ───
@@ -295,7 +316,7 @@ export class ArubaHighlighter {
       case 'mist':
         return junosGrammar;
       default:
-        return arubaCxGrammar;
+        return genericGrammar;
     }
   }
 

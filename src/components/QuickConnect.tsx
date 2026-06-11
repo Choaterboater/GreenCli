@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { X, Plug, Monitor, Server, Wifi, RadioTower, Cloud, Network, TerminalSquare, FolderOpen } from 'lucide-react';
 import { open as openDialog } from '@tauri-apps/api/dialog';
 import { useSessionStore } from '../store/sessionStore';
@@ -15,6 +15,8 @@ import {
 import { generateId } from '../utils';
 import { invoke } from '@tauri-apps/api/tauri';
 import { notify } from '../store/toastStore';
+import { useSettingsStore } from '../store/settingsStore';
+import { allDeviceProfiles, profileForDeviceType, saveSessionPayload } from '../utils/deviceProfiles';
 
 const LUCIDE: Record<string, typeof Monitor> = { Network, Wifi, RadioTower, Server, Cloud, Monitor };
 
@@ -29,11 +31,17 @@ interface QuickConnectProps {
 
 export default function QuickConnect({ onConnect }: QuickConnectProps) {
   const { showQuickConnect, setShowQuickConnect } = useSessionStore();
+  const settings = useSettingsStore();
+  const profiles = useMemo(
+    () => allDeviceProfiles(settings.customDeviceProfiles),
+    [settings.customDeviceProfiles],
+  );
   const [protocol, setProtocol] = useState<Protocol>('ssh');
   const [host, setHost] = useState('');
   const [port, setPort] = useState(22);
   const [username, setUsername] = useState('');
-  const [deviceType, setDeviceType] = useState<DeviceType>('aruba-cx');
+  const [deviceType, setDeviceType] = useState<DeviceType>('generic');
+  const [deviceProfileId, setDeviceProfileId] = useState('builtin-generic');
   const [serialPort, setSerialPort] = useState('');
   const [baudRate, setBaudRate] = useState(9600);
   const [dataBits, setDataBits] = useState(8);
@@ -53,6 +61,17 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
   const [connecting, setConnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const lastUsedProfile = () =>
+    profiles.find((profile) => profile.id === settings.lastUsedDeviceProfileId) ??
+    profileForDeviceType(settings.lastUsedDeviceType);
+
+  useEffect(() => {
+    if (!showQuickConnect) return;
+    const profile = lastUsedProfile();
+    setDeviceType(profile.deviceType);
+    setDeviceProfileId(profile.id);
+  }, [showQuickConnect, settings.lastUsedDeviceType, settings.lastUsedDeviceProfileId, profiles]);
+
   if (!showQuickConnect) return null;
 
   const isHostBased = protocol === 'ssh' || protocol === 'telnet';
@@ -62,7 +81,9 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
     setHost('');
     setPort(22);
     setUsername('');
-    setDeviceType('aruba-cx');
+    const profile = lastUsedProfile();
+    setDeviceType(profile.deviceType);
+    setDeviceProfileId(profile.id);
     setSerialPort('');
     setBaudRate(9600);
     setDataBits(8);
@@ -110,6 +131,7 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
         stopBits: protocol === 'serial' ? stopBits : undefined,
         startupCommands: startupCommands.trim() || undefined,
         deviceType: protocol === 'local' ? 'generic' : deviceType,
+        deviceProfileId: protocol === 'local' ? 'builtin-generic' : deviceProfileId,
         command: localCommand,
         args: protocol === 'local' ? preset?.args : undefined,
         cwd: protocol === 'local' && cwd.trim() ? cwd.trim() : undefined,
@@ -118,34 +140,14 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
         jumpUsername: protocol === 'ssh' && jumpHost ? jumpUsername : undefined,
         jumpPassword: protocol === 'ssh' && jumpHost ? jumpPassword : undefined,
       };
+      if (protocol !== 'local') {
+        settings.setLastUsedDeviceType(config.deviceType);
+        settings.setLastUsedDeviceProfileId(config.deviceProfileId || 'builtin-generic');
+      }
 
       if (saveSession) {
         const saved = await invoke('save_session', {
-          config: {
-            id: config.id,
-            name: config.name,
-            protocol: config.protocol,
-            host: config.host,
-            port: config.port,
-            username: config.username,
-            auth_type: config.authType || 'password',
-            device_type: config.deviceType,
-            serial_port: config.serialPort,
-            baud_rate: config.baudRate,
-            data_bits: config.dataBits,
-            parity: config.parity,
-            stop_bits: config.stopBits,
-            startup_commands: config.startupCommands,
-            // Local CLI launch command and SSH jump-host (ProxyJump), so a saved
-            // session reconnects the same way instead of dropping its command /
-            // bastion. (StoredSession persists all of these.)
-            command: config.command,
-            args: config.args,
-            cwd: config.cwd,
-            jump_host: config.jumpHost,
-            jump_port: config.jumpPort,
-            jump_username: config.jumpUsername,
-          },
+          config: saveSessionPayload(config),
           folderId: 'default',
         })
           .then(() => true)
@@ -178,6 +180,14 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
   const handleProtocolChange = (p: Protocol) => {
     setProtocol(p);
     setPort(p === 'ssh' ? 22 : p === 'telnet' ? 23 : 9600);
+  };
+
+  const chooseProfile = (profileId: string) => {
+    const profile = profiles.find((p) => p.id === profileId) ?? profiles[0];
+    setDeviceProfileId(profile.id);
+    setDeviceType(profile.deviceType);
+    settings.setLastUsedDeviceType(profile.deviceType);
+    settings.setLastUsedDeviceProfileId(profile.id);
   };
 
   const inputCls = 'input-field w-full h-9 px-3 text-sm';
@@ -481,15 +491,15 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
                 Device Type
               </label>
               <div className="grid grid-cols-4 gap-2">
-                {DEVICE_TYPES.map((dt) => {
-                  const active = deviceType === dt.value;
-                  const color = vendorColor(dt.value);
+                {profiles.map((profile) => {
+                  const active = deviceProfileId === profile.id || (!deviceProfileId && deviceType === profile.deviceType);
+                  const color = profile.color || vendorColor(profile.deviceType);
                   return (
                     <button
-                      key={dt.value}
+                      key={profile.id}
                       type="button"
-                      onClick={() => setDeviceType(dt.value)}
-                      title={dt.label}
+                      onClick={() => chooseProfile(profile.id)}
+                      title={profile.name}
                       className={`flex flex-col items-center gap-1 py-2.5 rounded-[var(--radius)] border transition-all ${
                         active
                           ? 'bg-[var(--bg-tertiary)]'
@@ -498,9 +508,9 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
                       style={active ? { borderColor: color, color } : undefined}
                     >
                       <span style={{ color }}>
-                        <DeviceGlyph deviceType={dt.value} />
+                        <DeviceGlyph deviceType={profile.deviceType} />
                       </span>
-                      <span className="text-[10px] font-semibold">{dt.short}</span>
+                      <span className="text-[10px] font-semibold">{profile.short}</span>
                     </button>
                   );
                 })}
