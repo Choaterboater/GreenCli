@@ -1089,7 +1089,7 @@ async fn mcp_connect(name: String, state: State<'_, AppState>) -> Result<usize, 
     // 2) unlocked: spawn + handshake (connect the NEW client before touching the
     //    old one, so a failed reconnect leaves the existing connection intact).
     let client = McpClient::connect(&def).await.map_err(|e| e.to_string())?;
-    let count = client.tools.len();
+    let count = client.tools.lock().map(|g| g.len()).unwrap_or(0);
     // 3) brief lock: swap in; shut down any displaced client outside the lock.
     let old = {
         let mut mgr = state.mcp_manager.lock().await;
