@@ -473,6 +473,13 @@ export default function ApiExplorer() {
         : raw && raw.startsWith('/')
         ? `https://${newConnHost}${raw}`
         : DEVICE_KINDS[deviceKind].base(newConnHost);
+      // Junos REST defaults to :3443 backend-side, but the user's editable
+      // Base URL can specify a different port (e.g. https://host:8443) — parse
+      // it out and pass it along, or JunosClient always used 3443 regardless
+      // of what the field actually said.
+      const explicitPort = /^https?:\/\//i.test(fullBase)
+        ? Number(new URL(fullBase).port) || undefined
+        : undefined;
       // Rust logs in via the right client for this flavour (cookie stored server-side).
       await invoke(DEVICE_KINDS[deviceKind].loginCmd, {
         request: {
@@ -481,6 +488,7 @@ export default function ApiExplorer() {
           password: newConnPass,
           accept_invalid_certs: !verifyTls,
           base_url: fullBase,
+          ...(deviceKind === 'junos' && explicitPort ? { port: explicitPort } : {}),
         },
       });
 
