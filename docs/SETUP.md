@@ -155,26 +155,38 @@ backend request (the provider stops generating), not just the UI.
 
 ## 6. MCP servers (external tools for the AI)
 
-The app is an **MCP client**: it launches external MCP servers over stdio and exposes
-their tools to the AI for **every** provider.
+The app is an **MCP client**: it connects to external MCP servers and exposes
+their tools to the AI for **every** provider. Two transports:
 
-Settings → **MCP Servers** → *Add server*:
+- **Stdio** (default) — the app launches the server as a child process per
+  connect, keyed off Command/Args/Env/Working dir.
+- **Streamable HTTP** — point at a server that's already running (e.g.
+  centralmcp's `run_http_router.sh`); one process can then serve multiple
+  clients/machines instead of being spawned per launch.
 
-| Field | Example |
-|-------|---------|
-| Name | `centralmcp` |
-| Command | `python` (or `uv`, `node`, …) |
-| Args | one per line, e.g. `-m`, `centralmcp` |
-| Env | `KEY=VALUE` per line |
-| Working dir | optional |
-| Credentials env var | env var name the server reads its creds path from (default `CREDS_PATH`) |
-| Credentials content | pasted secret (e.g. a `credentials.yaml`) — materialised to a `0600` file and injected via the env var above |
+Settings → **MCP Servers** → *Add server*. Click **Paste config JSON instead**
+to auto-fill from a setup wizard / Claude-Desktop-style snippet — either a
+bare `{"command": "...", "args": [...]}` / `{"url": "..."}` object, or the
+same wrapped in `{"mcpServers": {"name": {...}}}`. Otherwise, fill in by hand:
+
+| Field | Applies to | Example |
+|-------|-----------|---------|
+| Name | both | `centralmcp` |
+| Command | stdio | `python` (or `uv`, `node`, …) |
+| Args | stdio | one per line, e.g. `-m`, `centralmcp` |
+| Env | stdio | `KEY=VALUE` per line |
+| Working dir | stdio | optional |
+| Server URL | http | `http://127.0.0.1:8010/mcp` |
+| Credentials env var | stdio | env var name the server reads its creds path from (default `CREDS_PATH`) |
+| Credentials content | stdio | pasted secret (e.g. a `credentials.yaml`) — materialised to a `0600` file and injected via the env var above (meaningless for HTTP — the app doesn't launch that server) |
 
 Click **Connect**; the tool count appears in the AI panel. Example target: the
 author's [`centralmcp`](https://github.com/secure-ssid/centralmcp) (Aruba
-Central / GLP / monitoring / NAC / ops — 145 tools). Tool names are namespaced
-`mcp__<server>__<tool>`. Renaming a server moves it (no orphaned duplicate); removing
-one deletes its materialised creds file.
+Central / GLP / monitoring / NAC / ops / RAG, hundreds of backend tools behind
+a compact router — `find_tool` / `invoke_read_tool` / `invoke_tool` in its
+default minimal mode). Tool names are namespaced `mcp__<server>__<tool>`.
+Renaming a server moves it (no orphaned duplicate); removing one deletes its
+materialised creds file.
 
 ---
 

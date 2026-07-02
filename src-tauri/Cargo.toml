@@ -35,7 +35,7 @@ serialport = "4.3"
 portable-pty = "0.8"
 # chrono = "0.4"  # unused
 # directories-next = "2.0"  # unused
-reqwest = { version = "0.12", features = ["json", "cookies"] }
+reqwest = { version = "0.12", features = ["json", "cookies", "stream"] }
 
 [features]
 default = ["custom-protocol"]
