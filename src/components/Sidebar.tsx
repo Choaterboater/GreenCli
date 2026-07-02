@@ -319,7 +319,10 @@ export default function Sidebar({ onConnect }: SidebarProps) {
               {/* Folder header */}
               <div
                 className="group/folder flex items-center gap-1.5 w-full px-1.5 py-1.5 rounded-md text-left hover:bg-[var(--bg-tertiary)] transition-colors cursor-pointer"
-                onClick={() => toggleExpand(folder.id, !expanded)}
+                // While searching, folders are force-expanded for the results —
+                // toggling then would invisibly persist a collapse with zero
+                // visual feedback, so make the header inert until the query clears.
+                onClick={() => { if (!q) toggleExpand(folder.id, !expanded); }}
               >
                 {expanded ? (
                   <ChevronDown size={14} className="text-[var(--text-muted)] flex-shrink-0" />
@@ -477,7 +480,11 @@ export default function Sidebar({ onConnect }: SidebarProps) {
           <div className="fixed inset-0 z-40" onClick={() => setContextMenu(null)} onContextMenu={(e) => { e.preventDefault(); setContextMenu(null); }} />
           <div
             className="surface-elevated fixed z-50 min-w-[150px] py-1 animate-scale-in"
-            style={{ top: contextMenu.y, left: contextMenu.x }}
+            // Clamp so a right/bottom-edge click doesn't render the menu off-screen.
+            style={{
+              top: Math.max(4, Math.min(contextMenu.y, window.innerHeight - 220)),
+              left: Math.max(4, Math.min(contextMenu.x, window.innerWidth - 170)),
+            }}
           >
             <button
               onClick={handleCtxConnect}
@@ -531,8 +538,12 @@ export default function Sidebar({ onConnect }: SidebarProps) {
             }}
           />
           <div
-            className="surface-elevated fixed z-50 min-w-[180px] max-w-[240px] py-1 animate-scale-in"
-            style={{ top: agentMenu.y, left: agentMenu.x }}
+            className="surface-elevated fixed z-50 min-w-[180px] max-w-[240px] py-1 animate-scale-in overflow-y-auto max-h-[60vh]"
+            // Clamp so a right/bottom-edge click doesn't render the picker off-screen.
+            style={{
+              top: Math.max(4, Math.min(agentMenu.y, window.innerHeight - 300)),
+              left: Math.max(4, Math.min(agentMenu.x, window.innerWidth - 260)),
+            }}
           >
             <div className="px-3 py-1 text-[10px] uppercase tracking-wider text-[var(--text-muted)]">
               AI agent for this session

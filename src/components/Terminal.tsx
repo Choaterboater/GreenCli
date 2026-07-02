@@ -17,7 +17,12 @@ import { ArubaHighlighter, AnsiProcessor } from '../syntax';
 import { registerSearchAdapter, unregisterSearchAdapter, createSearchAdapter } from '../utils/terminalSearch';
 import { registerTerminalActionAdapter, unregisterTerminalActionAdapter } from '../utils/terminalActions';
 import { countPasteLines, useTerminalToolsStore } from '../store/terminalToolsStore';
+import { appWindow } from '@tauri-apps/api/window';
 import 'xterm/css/xterm.css';
+
+// Pop-out windows render one session in a fresh store — the background-activity
+// logic below only makes sense in the main window with its tab strip.
+const isPopOutWindow = appWindow.label.startsWith('popout-');
 
 interface TerminalProps {
   sessionId: string;
@@ -158,7 +163,7 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
   };
 
 
-  const { terminalTheme, isDark } = useTheme();
+  const { terminalTheme } = useTheme();
   const settings = useSettingsStore();
   const updateSessionConnection = useSessionStore((s) => s.updateSessionConnection);
 
@@ -369,10 +374,12 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
         } else {
           term.select(start % cols, Math.floor(start / cols), end - start);
         }
-        // Keep the moving end of the selection on screen.
+        // Keep the moving end of the selection on screen. viewportY is the
+        // actual scroll position; baseY is the bottom-anchored page and would
+        // cause wrong jumps whenever the user has scrolled up into scrollback.
         const focusRow = Math.min(buf.length - 1, Math.floor(f / cols));
-        if (focusRow < buf.baseY) term.scrollToLine(focusRow);
-        else if (focusRow > buf.baseY + term.rows - 1) term.scrollToLine(focusRow - term.rows + 1);
+        if (focusRow < buf.viewportY) term.scrollToLine(focusRow);
+        else if (focusRow > buf.viewportY + term.rows - 1) term.scrollToLine(focusRow - term.rows + 1);
         return false;
       }
 
@@ -655,9 +662,13 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
             // and a dot here would be unclearable (their tab is never active).
             // Sessions showing in a split pane are skipped too — the user is
             // literally watching them, even though they aren't the active tab.
+            // Pop-out WINDOWS skip all of this: their fresh store has no active
+            // session, which read as "background output" and toasted the user
+            // about the very session they were watching.
             const ss = useSessionStore.getState();
             const visibleInPane = ss.splitView && ss.splitPanes.includes(sessionId);
             if (
+              !isPopOutWindow &&
               ss.activeSessionId !== sessionId &&
               !visibleInPane &&
               !ss.unseenOutput.includes(sessionId) &&
@@ -812,7 +823,10 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
     <div
       ref={containerRef}
       className="w-full h-full"
-      style={{ background: isDark ? 'var(--bg-primary)' : '#ffffff' }}
+      // Match the xterm theme's own background — hardcoding dark/light left
+      // mismatched fringes around the cell grid on fixed schemes (Dracula,
+      // Nord, Solarized, …).
+      style={{ background: terminalTheme.background }}
     />
   );
 }

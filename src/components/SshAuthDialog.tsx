@@ -29,6 +29,17 @@ export default function SshAuthDialog({ onAuthenticate }: SshAuthDialogProps) {
 
   if (!showAuthDialog || !pendingConnection) return null;
 
+  // Dismissing the dialog must drop the typed secrets — the next prompt can be
+  // for a DIFFERENT host, and pre-filling it with the previous host's
+  // password/key is both a surprise and a leak.
+  const dismiss = () => {
+    setPassword('');
+    setPrivateKey('');
+    setKeyName(null);
+    setKeyPassphrase('');
+    setShowAuthDialog(false);
+  };
+
   const browseForKey = async () => {
     try {
       const picked = await openDialog({
@@ -88,7 +99,7 @@ export default function SshAuthDialog({ onAuthenticate }: SshAuthDialogProps) {
     <div
       className="fixed inset-0 z-50 flex items-center justify-center modal-backdrop animate-fade-in"
       onMouseDown={(e) => {
-        if (e.target === e.currentTarget) setShowAuthDialog(false);
+        if (e.target === e.currentTarget) dismiss();
       }}
     >
       <div className="surface-elevated w-[440px] max-w-[94vw] animate-scale-in">
@@ -101,7 +112,7 @@ export default function SshAuthDialog({ onAuthenticate }: SshAuthDialogProps) {
             <h2 className="text-[16px] font-semibold text-[var(--text-primary)]">Authentication</h2>
           </div>
           <button
-            onClick={() => setShowAuthDialog(false)}
+            onClick={dismiss}
             className="p-1.5 rounded-md hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
           >
             <X size={18} />
@@ -234,7 +245,7 @@ export default function SshAuthDialog({ onAuthenticate }: SshAuthDialogProps) {
           <div className="flex items-center gap-3 pt-1">
             <button
               type="button"
-              onClick={() => setShowAuthDialog(false)}
+              onClick={dismiss}
               className="flex-1 h-10 text-sm rounded-[var(--radius)] bg-[var(--bg-tertiary)] hover:bg-[var(--border-strong)] text-[var(--text-primary)] transition-colors"
             >
               Cancel
