@@ -144,6 +144,13 @@ export default function McpServers() {
       credentialsEnvVar: form.credsEnvVar.trim() || undefined,
       enabled: form.enabled,
     };
+    // Saving under a name that already belongs to ANOTHER server silently
+    // overwrites its config (upsert matches by name) — guard both the
+    // new-server path and an edit that retypes the name to collide.
+    if (def.name !== editingName && servers.some((s) => s.name === def.name)) {
+      notify.warning('Name already in use', `An MCP server named "${def.name}" already exists.`);
+      return;
+    }
     try {
       // A rename must migrate, not delete-and-recreate: the old save-new +
       // delete-old flow silently wiped the stored credentials (keyed by name)
@@ -179,7 +186,9 @@ export default function McpServers() {
             setForm({ ...blankForm });
             setCredsSaved(false);
             setEditingName(null);
-            setShowForm((v) => !v);
+            // Not a toggle: clicking "Add server" while an EDIT form is open
+            // must open a blank add form, not close the edit form it just reset.
+            setShowForm(true);
           }}
           className="flex items-center gap-1.5 px-2.5 py-1 text-[11px] rounded-md bg-[var(--bg-tertiary)] hover:bg-[var(--border-strong)] text-[var(--text-primary)] transition-colors"
         >

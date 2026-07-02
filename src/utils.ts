@@ -61,7 +61,10 @@ export function fuzzyScore(query: string, target: string): number {
   const t = norm(target);
   if (!q) return 0;
   const idx = t.indexOf(q);
-  if (idx >= 0) return 1000 - idx - (t.length - q.length); // contiguous match wins
+  // Contiguous match wins. Clamped to 0: for a long target with the match
+  // near the end, the raw formula can go negative — fuzzyMatch's `score >= 0`
+  // then rejected a genuine substring hit as "no match".
+  if (idx >= 0) return Math.max(0, 1000 - idx - (t.length - q.length));
   // Subsequence: every query char appears in order; reward adjacency.
   let qi = 0;
   let streak = 0;

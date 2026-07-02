@@ -130,6 +130,13 @@ async fn socks5(mut sock: TcpStream, handle: Handle) -> std::io::Result<()> {
     }
     let mut methods = vec![0u8; head[1] as usize];
     sock.read_exact(&mut methods).await?;
+    // RFC 1928: replying [5, 0] ("no auth") when the client never offered
+    // method 0 is a protocol violation some clients police strictly. If 0x00
+    // isn't in the client's list, reply 0xFF (no acceptable methods) and close.
+    if !methods.contains(&0x00) {
+        sock.write_all(&[5, 0xFF]).await?;
+        return Ok(());
+    }
     sock.write_all(&[5, 0]).await?; // choose "no auth"
 
     // Request: VER, CMD, RSV, ATYP
