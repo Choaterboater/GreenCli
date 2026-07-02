@@ -73,8 +73,11 @@ export default function StatusBar({ onReconnect, onDisconnect, onMapDevice }: St
         setLogHint(`→ ${file}`);
         setTimeout(() => setLogHint(null), 4000);
       }
-    } catch {
-      notify.warning('Session logging unavailable', 'Logging requires the desktop app.');
+    } catch (e) {
+      // The generic "requires the desktop app" message masked real causes
+      // (permission denied, disk full, bad log directory) behind one that's
+      // only true when there's no Tauri backend at all.
+      notify.warning('Session logging unavailable', String(e));
     }
   };
 

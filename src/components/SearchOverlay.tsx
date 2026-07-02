@@ -88,12 +88,28 @@ export default function SearchOverlay() {
     }
   }, [showSearch, adapter]);
 
-  // Re-run search when regex/case toggles change
+  // Re-run search when regex/case toggles change. Deliberately NOT keyed on
+  // `query`: keystrokes search via handleChange, and running here too searched
+  // twice per keystroke — landing on the 2nd match and drifting down the buffer.
   useEffect(() => {
     if (!query || !adapter) return;
+    // Clear first — the addon caches highlights by term, so an options-only
+    // change would otherwise keep decorations computed with the OLD options.
+    adapter.clearDecorations();
     safeFind('next', query, { regex: useRegex, caseSensitive });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [useRegex, caseSensitive, adapter, query]);
+  }, [useRegex, caseSensitive]);
+
+  // Switching tabs while the overlay is open must not leave stale highlights
+  // on the terminal we left; carry the search over to the new one instead.
+  useEffect(() => {
+    if (!adapter) return;
+    if (query) safeFind('next', query);
+    return () => {
+      adapter.clearDecorations();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [adapter]);
 
   const handleChange = (val: string) => {
     setQuery(val);
@@ -110,9 +126,14 @@ export default function SearchOverlay() {
   };
 
   const handleChip = (pattern: string) => {
-    setUseRegex(true);
     setQuery(pattern);
-    safeFind('next', pattern, { regex: true });
+    if (!useRegex) {
+      // The options effect re-runs the search once the toggle lands — a direct
+      // find here too would search twice and skip to the 2nd match.
+      setUseRegex(true);
+    } else {
+      safeFind('next', pattern, { regex: true });
+    }
     inputRef.current?.focus();
   };
 

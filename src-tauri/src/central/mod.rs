@@ -211,32 +211,44 @@ impl CentralClient {
         path: &str,
         body: Option<&str>,
     ) -> Result<(u16, String), AppError> {
-        let token = self.ensure_token().await?;
         let url = if path.starts_with("http") {
             path.to_string()
         } else {
             format!("{}{}", self.base_url, path)
         };
-        let mut rb = match method.to_uppercase().as_str() {
-            "GET" => self.client.get(&url),
-            "POST" => self.client.post(&url),
-            "PUT" => self.client.put(&url),
-            "DELETE" => self.client.delete(&url),
-            "PATCH" => self.client.patch(&url),
-            other => return Err(AppError::ApiError(format!("Unsupported method: {}", other))),
-        };
-        rb = rb.bearer_auth(token);
-        if let Some(b) = body {
-            if !b.trim().is_empty() {
-                rb = rb
-                    .header("Content-Type", "application/json")
-                    .body(b.to_string());
+        let mut retried = false;
+        loop {
+            let token = self.ensure_token().await?;
+            let mut rb = match method.to_uppercase().as_str() {
+                "GET" => self.client.get(&url),
+                "POST" => self.client.post(&url),
+                "PUT" => self.client.put(&url),
+                "DELETE" => self.client.delete(&url),
+                "PATCH" => self.client.patch(&url),
+                other => return Err(AppError::ApiError(format!("Unsupported method: {}", other))),
+            };
+            rb = rb.bearer_auth(token);
+            if let Some(b) = body {
+                if !b.trim().is_empty() {
+                    rb = rb
+                        .header("Content-Type", "application/json")
+                        .body(b.to_string());
+                }
             }
+            let resp = rb.send().await.map_err(AppError::from)?;
+            let status = resp.status().as_u16();
+            // In creds mode a 401 means the cached token died server-side (the
+            // local expiry check uses Instant, which freezes during system
+            // sleep, and tokens can be revoked) — re-mint once and retry.
+            if status == 401 && !retried && !self.client_id.is_empty() {
+                retried = true;
+                self.token = None;
+                self.token_expiry = None;
+                continue;
+            }
+            let text = resp.text().await.unwrap_or_default();
+            return Ok((status, text));
         }
-        let resp = rb.send().await.map_err(AppError::from)?;
-        let status = resp.status().as_u16();
-        let text = resp.text().await.unwrap_or_default();
-        Ok((status, text))
     }
 }
 

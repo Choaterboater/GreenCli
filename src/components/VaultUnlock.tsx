@@ -20,6 +20,13 @@ export default function VaultUnlock({ onUnlocked }: { onUnlocked?: () => void })
       invoke<boolean>('vault_is_initialized')
         .then((init) => setIsNew(!init))
         .catch(() => setIsNew(false));
+    } else {
+      // The typed master password must not survive a dismissed dialog — it
+      // would reappear (with any stale error) the next time it opens.
+      setPw('');
+      setConfirm('');
+      setErr(null);
+      setShow(false);
     }
   }, [showVaultUnlock]);
 

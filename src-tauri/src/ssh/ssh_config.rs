@@ -81,9 +81,16 @@ pub fn parse(content: &str) -> Vec<ImportedHost> {
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        // Keyword + value, separated by whitespace or '='.
+        // Keyword + value, separated by whitespace or '='. The split consumes
+        // only the FIRST separator, so `Keyword = value` leaves a leading '='
+        // on the value — strip it or hostnames become '= example.com' and
+        // numeric fields (Port) silently fail to parse.
         let (kw, val) = match line.split_once(|c: char| c.is_whitespace() || c == '=') {
-            Some((k, v)) => (k.trim().to_lowercase(), v.trim().trim_matches('"').to_string()),
+            Some((k, v)) => {
+                let v = v.trim_start();
+                let v = v.strip_prefix('=').unwrap_or(v);
+                (k.trim().to_lowercase(), v.trim().trim_matches('"').to_string())
+            }
             None => continue,
         };
         if val.is_empty() {

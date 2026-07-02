@@ -148,14 +148,35 @@ impl TelnetConnection {
         sb_start.map(|s| n - s).unwrap_or(0)
     }
 
-    fn process_telnet_data(data: &[u8]) -> Vec<u8> {
+    /// Strip telnet commands from `data`, returning the remaining terminal
+    /// bytes plus any negotiation REPLIES owed to the server. RFC 854 requires
+    /// refusing options we don't support — a server waiting on an answer to
+    /// `DO TERMINAL-TYPE` etc. can otherwise stall the session.
+    fn process_telnet_data(data: &[u8]) -> (Vec<u8>, Vec<u8>) {
         let mut result = Vec::with_capacity(data.len());
+        let mut replies: Vec<u8> = Vec::new();
         let mut i = 0;
         while i < data.len() {
             if data[i] == IAC && i + 1 < data.len() {
                 let cmd = data[i + 1];
                 match cmd {
                     WILL | WONT | DO | DONT => {
+                        if i + 2 < data.len() {
+                            let opt = data[i + 2];
+                            match cmd {
+                                // Options we advertised (WILL SGA/NAWS) or
+                                // requested (DO ECHO/SGA) at connect need no
+                                // further answer; refuse everything else. Only
+                                // ever replying with refusals avoids ack loops.
+                                DO if opt != OPT_SUPPRESS_GO_AHEAD && opt != OPT_NAWS => {
+                                    replies.extend_from_slice(&[IAC, WONT, opt]);
+                                }
+                                WILL if opt != OPT_ECHO && opt != OPT_SUPPRESS_GO_AHEAD => {
+                                    replies.extend_from_slice(&[IAC, DONT, opt]);
+                                }
+                                _ => {}
+                            }
+                        }
                         // Skip 3-byte command sequence
                         i += 3;
                         continue;
@@ -201,7 +222,7 @@ impl TelnetConnection {
             result.push(data[i]);
             i += 1;
         }
-        result
+        (result, replies)
     }
 }
 
@@ -217,6 +238,8 @@ impl Connection for TelnetConnection {
 
         let (read_half, write_half) = tokio::io::split(stream);
         let (data_tx, data_rx) = channel::<Vec<u8>>(1024);
+        let write_half = Arc::new(Mutex::new(write_half));
+        let writer_for_reader = write_half.clone();
 
         // Spawn background task to read from TCP stream and forward to channel.
         // `carry` holds the tail of a telnet command sequence that was split
@@ -236,7 +259,13 @@ impl Connection for TelnetConnection {
                         if keep > 0 {
                             carry = chunk[split..].to_vec();
                         }
-                        let processed = TelnetConnection::process_telnet_data(&chunk[..split]);
+                        let (processed, replies) =
+                            TelnetConnection::process_telnet_data(&chunk[..split]);
+                        if !replies.is_empty() {
+                            let mut w = writer_for_reader.lock().await;
+                            let _ = w.write_all(&replies).await;
+                            let _ = w.flush().await;
+                        }
                         if !processed.is_empty() && data_tx.send(processed).await.is_err() {
                             break;
                         }
@@ -247,7 +276,7 @@ impl Connection for TelnetConnection {
         });
 
         self.data_sender = None;
-        self.write_half = Some(Arc::new(Mutex::new(write_half)));
+        self.write_half = Some(write_half);
         self.data_receiver = Some(data_rx);
         self.reader_task = Some(reader_task);
         self.connected = true;
@@ -280,8 +309,24 @@ impl Connection for TelnetConnection {
 
     async fn send(&self, data: &[u8]) -> Result<(), AppError> {
         if let Some(ref wh) = self.write_half {
+            // RFC 854: a literal 0xFF data byte must be escaped as IAC IAC or
+            // the server reads it as the start of a command.
+            let escaped: Vec<u8>;
+            let payload: &[u8] = if data.contains(&IAC) {
+                let mut out = Vec::with_capacity(data.len() + 4);
+                for &b in data {
+                    out.push(b);
+                    if b == IAC {
+                        out.push(IAC);
+                    }
+                }
+                escaped = out;
+                &escaped
+            } else {
+                data
+            };
             let mut w = wh.lock().await;
-            w.write_all(data)
+            w.write_all(payload)
                 .await
                 .map_err(|e| AppError::TelnetError(format!("Write error: {}", e)))?;
             w.flush()
