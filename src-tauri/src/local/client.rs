@@ -74,10 +74,30 @@ impl Connection for LocalConnection {
         // PATH and can't find Homebrew/npm CLIs like `claude`/`kimi`/`copilot`.
         let shell = default_shell();
         let mut cmd = if let Some(ref command) = self.config.command {
+            // The command itself is treated as a shell string (users write e.g.
+            // "claude -p"), but each ARG is a single word — quote args so one
+            // containing spaces isn't split into several by the shell.
+            let quote = |a: &String| -> String {
+                if cfg!(windows) {
+                    if a.contains(char::is_whitespace) {
+                        format!("\"{}\"", a)
+                    } else {
+                        a.clone()
+                    }
+                } else if !a.is_empty()
+                    && a.chars()
+                        .all(|c| c.is_ascii_alphanumeric() || "-_./=:@%+,".contains(c))
+                {
+                    a.clone()
+                } else {
+                    format!("'{}'", a.replace('\'', r"'\''"))
+                }
+            };
             let full = if self.config.args.is_empty() {
                 command.clone()
             } else {
-                format!("{} {}", command, self.config.args.join(" "))
+                let quoted: Vec<String> = self.config.args.iter().map(quote).collect();
+                format!("{} {}", command, quoted.join(" "))
             };
             if cfg!(windows) {
                 let mut c = CommandBuilder::new("cmd.exe");
