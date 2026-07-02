@@ -581,16 +581,27 @@ export async function importGreenCliBackup(
       await invoke('intent_delete', { id: intent.id });
     }
   }
+  // intent_save upserts by id, and imported intents are sanitized (command
+  // cleared for review) — so in merge mode an id collision would overwrite the
+  // user's WORKING intent with a disabled copy. Keep the existing one instead.
+  const existingIntentIds = new Set(
+    mode === 'replace' ? [] : currentIntents.map((i) => i.id),
+  );
+  let intentsImported = 0;
   for (const intent of validated.intents) {
+    if (existingIntentIds.has(intent.id)) continue;
     await invoke('intent_save', { intent: sanitizeImportedIntent(intent) });
+    intentsImported++;
   }
 
   return {
     settings: true,
-    snippets: snippets.length,
-    triggers: triggers.length,
+    // Counts report what the BACKUP contributed, not the post-merge totals
+    // (which inflated the toast in merge mode).
+    snippets: validated.snippets.length,
+    triggers: validated.triggers.length,
     folders: sessionResult.folders,
     sessions: sessionResult.sessions,
-    intents: validated.intents.length,
+    intents: intentsImported,
   };
 }

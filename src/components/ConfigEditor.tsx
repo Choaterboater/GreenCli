@@ -1086,7 +1086,8 @@ export default function ConfigEditor() {
     // async, and the user may switch tabs mid-save — patch by id, not "active".
     const targetId = activeIdRef.current;
     const text = contentRef.current;
-    const curPath = buffersRef.current.find((b) => b.id === targetId)?.filePath ?? null;
+    const targetBuf = buffersRef.current.find((b) => b.id === targetId);
+    const curPath = targetBuf?.filePath ?? null;
     const patchTarget = (patch: Partial<EditorBuffer>) =>
       setBuffers((prev) => prev.map((b) => (b.id === targetId ? { ...b, ...patch } : b)));
     try {
@@ -1098,7 +1099,14 @@ export default function ConfigEditor() {
         }
         if (!path) return;
         await tauriWriteText(path, text);
-        patchTarget({ filePath: path, name: basename(path), language: detectLanguage(path), dirty: false });
+        patchTarget({
+          filePath: path,
+          name: basename(path),
+          // A hand-picked language survives the save — only auto-detected
+          // buffers re-detect from the (possibly new) extension.
+          ...(targetBuf?.langExplicit ? {} : { language: detectLanguage(path) }),
+          dirty: false,
+        });
         showStatus(`Saved ${basename(path)}`);
       } else {
         const name = curPath ? basename(curPath) : 'untitled.txt';
