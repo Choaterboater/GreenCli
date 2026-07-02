@@ -170,11 +170,18 @@ pub struct McpCaller {
 pub struct McpClient {
     child: Child,
     caller: McpCaller,
-    pub tools: Vec<McpToolInfo>,
+    /// std::sync::Mutex (not tokio's): only ever locked for a quick clone/replace,
+    /// never held across an await, so a cheap sync lock is enough and lets
+    /// `all_tools()`/`status()` stay non-async.
+    pub tools: Arc<std::sync::Mutex<Vec<McpToolInfo>>>,
     /// Server name/version from the handshake (kept for future UI display).
     #[allow(dead_code)]
     pub server_info: Value,
     reader: tokio::task::JoinHandle<()>,
+    /// Refetches the tool list when the server sends `notifications/tools/list_changed`
+    /// (e.g. centralmcp enabling a new capability mid-session) — without this the
+    /// AI keeps using a stale tool list until the user manually reconnects.
+    refresher: tokio::task::JoinHandle<()>,
 }
 
 /// GUI apps inherit a minimal PATH; add the usual user/tool bin dirs so things
@@ -199,6 +206,56 @@ fn augment_path(cmd: &mut Command) {
         }
         cmd.env("PATH", parts.join(":"));
     }
+}
+
+/// Fetch every tool from a connected server, following `nextCursor` pagination
+/// — a large server (e.g. centralmcp's ~145 tools) may page its list, and
+/// taking only the first page would silently hide the rest from the AI.
+async fn fetch_all_tools(caller: &McpCaller, server_name: &str) -> Result<Vec<McpToolInfo>, AppError> {
+    let mut tools: Vec<McpToolInfo> = Vec::new();
+    let mut cursor: Option<String> = None;
+    for _page in 0..64 {
+        let params = match &cursor {
+            Some(c) => json!({ "cursor": c }),
+            None => json!({}),
+        };
+        let tools_res = caller.request("tools/list", params).await?;
+        tools.extend(
+            tools_res
+                .get("tools")
+                .and_then(|t| t.as_array())
+                .cloned()
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|t| {
+                    let name = t.get("name").and_then(|n| n.as_str())?.to_string();
+                    Some(McpToolInfo {
+                        server: server_name.to_string(),
+                        name,
+                        description: t
+                            .get("description")
+                            .and_then(|d| d.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                        input_schema: t
+                            .get("inputSchema")
+                            .cloned()
+                            .unwrap_or_else(|| json!({ "type": "object" })),
+                    })
+                }),
+        );
+        let next = tools_res
+            .get("nextCursor")
+            .and_then(|c| c.as_str())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+        match next {
+            // A server echoing the same cursor forever would loop us — stop.
+            Some(n) if Some(&n) != cursor.as_ref() => cursor = Some(n),
+            _ => break,
+        }
+    }
+    Ok(tools)
 }
 
 impl McpClient {
@@ -265,6 +322,12 @@ impl McpClient {
         let stdin = Arc::new(Mutex::new(stdin));
         let stdin_r = stdin.clone();
 
+        // Signalled by the reader on `notifications/tools/list_changed`; the
+        // refresher task (spawned below, after the initial tools/list) drains
+        // it and refetches. The channel's only sender lives in the reader, so
+        // it closes (ending the refresher) exactly when the reader does.
+        let (tools_changed_tx, mut tools_changed_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+
         // Reader task: dispatch responses to waiters; answer server-initiated
         // requests (ping keep-alives especially) instead of leaving them hanging.
         // A transient read error (e.g. a non-UTF8 banner byte) skips that line
@@ -297,6 +360,9 @@ impl McpClient {
                 // can stall/tear down the session: reply to `ping`, politely refuse
                 // the rest. Notifications (no id) need no reply.
                 if let Some(method) = v.get("method").and_then(|m| m.as_str()) {
+                    if method == "notifications/tools/list_changed" {
+                        let _ = tools_changed_tx.send(());
+                    }
                     if let Some(req_id) = v.get("id") {
                         let resp = if method == "ping" {
                             json!({ "jsonrpc": "2.0", "id": req_id, "result": {} })
@@ -386,55 +452,39 @@ impl McpClient {
         let server_info = init.get("serverInfo").cloned().unwrap_or(Value::Null);
         caller.notify("notifications/initialized", json!({})).await?;
 
-        // Discover tools — following `nextCursor` pagination: a large server (e.g.
-        // centralmcp's ~145 tools) may page its list, and taking only the first
-        // page silently hides the rest from the AI.
-        let mut tools: Vec<McpToolInfo> = Vec::new();
-        let mut cursor: Option<String> = None;
-        for _page in 0..64 {
-            let params = match &cursor {
-                Some(c) => json!({ "cursor": c }),
-                None => json!({}),
-            };
-            let tools_res = match caller.request("tools/list", params).await {
-                Ok(v) => v,
-                Err(e) => return Err(with_stderr(e, &stderr_buf).await),
-            };
-            tools.extend(
-                tools_res
-                    .get("tools")
-                    .and_then(|t| t.as_array())
-                    .cloned()
-                    .unwrap_or_default()
-                    .iter()
-                    .filter_map(|t| {
-                        let name = t.get("name").and_then(|n| n.as_str())?.to_string();
-                        Some(McpToolInfo {
-                            server: def.name.clone(),
-                            name,
-                            description: t
-                                .get("description")
-                                .and_then(|d| d.as_str())
-                                .unwrap_or("")
-                                .to_string(),
-                            input_schema: t
-                                .get("inputSchema")
-                                .cloned()
-                                .unwrap_or_else(|| json!({ "type": "object" })),
-                        })
-                    }),
-            );
-            let next = tools_res
-                .get("nextCursor")
-                .and_then(|c| c.as_str())
-                .filter(|s| !s.is_empty())
-                .map(|s| s.to_string());
-            match next {
-                // A server echoing the same cursor forever would loop us — stop.
-                Some(n) if Some(&n) != cursor.as_ref() => cursor = Some(n),
-                _ => break,
-            }
-        }
+        // Discover tools (follows nextCursor pagination — see fetch_all_tools).
+        let tools = match fetch_all_tools(&caller, &def.name).await {
+            Ok(t) => t,
+            Err(e) => return Err(with_stderr(e, &stderr_buf).await),
+        };
+        let tools = Arc::new(std::sync::Mutex::new(tools));
+
+        // Refresher: on `notifications/tools/list_changed`, re-run the same
+        // paginated fetch and swap in the result. Debounced so a burst of
+        // notifications (a server flipping several capabilities at once)
+        // triggers one refetch, not one per notification. Ends on its own when
+        // the reader's sender drops (server exit).
+        let refresher = {
+            let caller = caller.clone();
+            let tools = tools.clone();
+            let server_name = def.name.clone();
+            tokio::spawn(async move {
+                while tools_changed_rx.recv().await.is_some() {
+                    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                    while tools_changed_rx.try_recv().is_ok() {}
+                    match fetch_all_tools(&caller, &server_name).await {
+                        Ok(new_tools) => {
+                            if let Ok(mut guard) = tools.lock() {
+                                *guard = new_tools;
+                            }
+                        }
+                        Err(e) => {
+                            log::warn!("MCP '{}': tools/list refresh failed: {}", server_name, e)
+                        }
+                    }
+                }
+            })
+        };
 
         Ok(McpClient {
             child,
@@ -442,6 +492,7 @@ impl McpClient {
             tools,
             server_info,
             reader,
+            refresher,
         })
     }
 
@@ -459,6 +510,7 @@ impl McpClient {
 
     pub async fn shutdown(mut self) {
         self.reader.abort();
+        self.refresher.abort();
         let _ = self.child.start_kill();
         let _ = self.child.wait().await;
     }
@@ -706,9 +758,11 @@ impl McpManager {
         // The materialised creds file is keyed by name too; drop the old one (a
         // fresh one is written under the new name on next connect).
         let _ = fs::remove_file(self.app_dir.join("mcp_creds").join(sanitize_filename(from)));
-        if let Some(mut client) = self.clients.remove(from) {
-            for t in client.tools.iter_mut() {
-                t.server = to.to_string();
+        if let Some(client) = self.clients.remove(from) {
+            if let Ok(mut guard) = client.tools.lock() {
+                for t in guard.iter_mut() {
+                    t.server = to.to_string();
+                }
             }
             self.clients.insert(to.to_string(), client);
         }
@@ -789,7 +843,7 @@ impl McpManager {
         self.clients
             .values()
             .filter(|c| !c.is_dead())
-            .flat_map(|c| c.tools.clone())
+            .flat_map(|c| c.tools.lock().map(|g| g.clone()).unwrap_or_default())
             .collect()
     }
 
@@ -805,7 +859,9 @@ impl McpManager {
                     "name": d.name,
                     "enabled": d.enabled,
                     "connected": live.is_some(),
-                    "toolCount": live.map(|c| c.tools.len()).unwrap_or(0),
+                    "toolCount": live
+                        .map(|c| c.tools.lock().map(|g| g.len()).unwrap_or(0))
+                        .unwrap_or(0),
                 })
             })
             .collect()
