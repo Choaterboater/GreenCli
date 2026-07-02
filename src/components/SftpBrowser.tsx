@@ -30,10 +30,11 @@ interface Props {
 }
 
 function formatSize(bytes: number): string {
-  if (bytes === 0) return '—';
+  // '0 B' — an em dash made empty files indistinguishable from directories.
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1048576) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / 1048576).toFixed(1)} MB`;
+  if (bytes < 1073741824) return `${(bytes / 1048576).toFixed(1)} MB`;
+  return `${(bytes / 1073741824).toFixed(2)} GB`;
 }
 
 const basename = (p: string) => p.split(/[\\/]/).pop() || 'file';
