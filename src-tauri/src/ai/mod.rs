@@ -31,6 +31,32 @@ fn restrict_perms(path: &Path) {
     let _ = path;
 }
 
+/// Write a secrets file owner-only WITHOUT a world-readable window: create with
+/// mode 0600 directly on Unix, rather than fs::write (umask 0644) then chmod —
+/// which leaves raw provider API keys readable to other local users in between
+/// (mirrors mcp::client::write_secret_file).
+fn write_key_file(path: &Path, content: &[u8]) -> Result<(), AppError> {
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut f = fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .mode(0o600)
+            .open(path)
+            .map_err(AppError::from)?;
+        f.write_all(content).map_err(AppError::from)?;
+    }
+    #[cfg(not(unix))]
+    {
+        fs::write(path, content).map_err(AppError::from)?;
+    }
+    restrict_perms(path); // also fixes perms if the file pre-existed
+    Ok(())
+}
+
 /// Simple on-disk key store kept in the app data dir (outside the webview, so
 /// not reachable from JS/localStorage). Not as strong as the password vault,
 /// but it avoids the vault's master-password unlock friction for AI keys.
@@ -56,10 +82,8 @@ impl AiKeyStore {
     }
 
     fn save(&self, m: &HashMap<String, String>) -> Result<(), AppError> {
-        fs::write(&self.path, serde_json::to_vec(m)?).map_err(AppError::from)?;
-        // Raw provider API keys — keep the file owner-only.
-        restrict_perms(&self.path);
-        Ok(())
+        // Raw provider API keys — write owner-only from the start.
+        write_key_file(&self.path, &serde_json::to_vec(m)?)
     }
 
     pub fn set(&self, provider: &str, key: &str) -> Result<(), AppError> {

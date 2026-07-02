@@ -268,7 +268,10 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
                   <input
                     type="number"
                     value={port}
-                    onChange={(e) => setPort(Number(e.target.value))}
+                    // Clearing the field makes Number('') = 0, which submit()
+                    // would send verbatim as a guaranteed-failing port 0 — fall
+                    // back to the last valid value instead of accepting it.
+                    onChange={(e) => setPort(Math.min(65535, Math.max(1, Number(e.target.value) || port)))}
                     min={1}
                     max={65535}
                     className={inputCls}
@@ -456,7 +459,7 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
                     <input
                       type="number"
                       value={jumpPort}
-                      onChange={(e) => setJumpPort(Number(e.target.value))}
+                      onChange={(e) => setJumpPort(Math.min(65535, Math.max(1, Number(e.target.value) || jumpPort)))}
                       placeholder="22"
                       className="input-field h-8 px-2 text-xs"
                     />

@@ -90,6 +90,19 @@ function vaultSecretForIdentity(
   return '';
 }
 
+/** Delete a removed Central account's vault-held secrets — persistSecrets only
+ *  ever writes entries for accounts currently in settings, so a removed
+ *  account's `set:central-acct:<id>:*` entries otherwise linger in the vault
+ *  forever. */
+export async function deleteAccountSecrets(id: string): Promise<void> {
+  await Promise.all([
+    put(acctSecretKey(id), ''),
+    put(acctSecretIdentityKey(id), ''),
+    put(acctTokenKey(id), ''),
+    put(acctTokenIdentityKey(id), ''),
+  ]);
+}
+
 /** Write the current Central/Apstra secrets (and each saved account's secrets) to the vault. */
 export async function persistSecrets(s: TerminalSettings): Promise<void> {
   await put(K_CLIENT_SECRET, s.centralClientSecret || '');
