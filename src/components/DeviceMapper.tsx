@@ -51,7 +51,10 @@ export default function DeviceMapper({ sessionId, onClose }: DeviceMapperProps) 
     invoke<string>('get_terminal_output', { sessionId })
       .then((tail) => {
         setOutput(tail);
-        const suggestion = detectProfileFromOutput(tail, settings.customDeviceProfiles);
+        const suggestion = detectProfileFromOutput(
+          tail,
+          useSettingsStore.getState().customDeviceProfiles,
+        );
         setSelectedProfileId(suggestion.id);
         setCustomBase(suggestion.deviceType);
       })
@@ -59,7 +62,11 @@ export default function DeviceMapper({ sessionId, onClose }: DeviceMapperProps) 
         setOutput('');
         setSelectedProfileId(session?.config.deviceProfileId || 'builtin-generic');
       });
-  }, [sessionId, session?.config.deviceProfileId, settings.customDeviceProfiles]);
+    // Keyed on sessionId ONLY: re-running when the profile list changes let the
+    // auto-suggestion asynchronously overwrite a just-created custom profile's
+    // selection.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId]);
 
   // Close on Escape — unless a confirm/prompt dialog is stacked above us.
   useEffect(() => {

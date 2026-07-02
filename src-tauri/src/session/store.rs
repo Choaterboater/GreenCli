@@ -115,7 +115,11 @@ impl SessionStore {
 
     pub fn save(&mut self, data: &SessionData) -> Result<(), AppError> {
         let json = serde_json::to_string_pretty(data).map_err(AppError::from)?;
-        fs::write(&self.store_path, json).map_err(AppError::from)?;
+        // Write-then-rename so a crash/power loss mid-write can't truncate the
+        // whole saved-session store (rename is atomic on the same filesystem).
+        let tmp = self.store_path.with_extension("json.tmp");
+        fs::write(&tmp, json).map_err(AppError::from)?;
+        fs::rename(&tmp, &self.store_path).map_err(AppError::from)?;
         self.cache = Some(data.clone());
         Ok(())
     }
@@ -166,11 +170,21 @@ impl SessionStore {
                 break;
             }
         }
+        // Legacy loose sessions (pre-folder data) live in data.sessions — they
+        // must be movable into folders too.
+        if moved.is_none() {
+            if let Some(pos) = data.sessions.iter().position(|s| s.id == session_id) {
+                moved = Some(data.sessions.remove(pos));
+            }
+        }
         if let Some(mut session) = moved {
-            session.folder_id = Some(folder_id.to_string());
             if let Some(target) = data.folders.iter_mut().find(|f| f.id == folder_id) {
+                session.folder_id = Some(folder_id.to_string());
                 target.items.push(session);
             } else if let Some(first) = data.folders.first_mut() {
+                // Target folder vanished — land in the first folder and record
+                // THAT id, not the nonexistent target's.
+                session.folder_id = Some(first.id.clone());
                 first.items.push(session);
             }
         }

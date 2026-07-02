@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { X, RotateCcw, Moon, Sun, Eye, EyeOff, CheckCircle2, Download, Upload } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/tauri';
 import { open as openDialog, save as saveDialog } from '@tauri-apps/api/dialog';
@@ -100,6 +100,20 @@ export default function SettingsPanel() {
       .catch(() => {});
   };
 
+  // The key otherwise saves only on blur — closing Settings with Escape
+  // unmounts the panel without a blur and silently discarded a typed key.
+  const keyFlushRef = useRef({ keyInput, aiProvider });
+  keyFlushRef.current = { keyInput, aiProvider };
+  useEffect(
+    () => () => {
+      const { keyInput: pending, aiProvider: provider } = keyFlushRef.current;
+      if (pending) {
+        invoke('ai_set_key', { provider, key: pending }).catch(() => {});
+      }
+    },
+    []
+  );
+
   const addProfile = () => {
     const name = profileName.trim();
     if (!name) return;
@@ -119,8 +133,21 @@ export default function SettingsPanel() {
     setProfileName('');
   };
 
-  const exportProfiles = () => {
-    const blob = new Blob([JSON.stringify(settings.customDeviceProfiles, null, 2)], { type: 'application/json' });
+  const exportProfiles = async () => {
+    const contents = JSON.stringify(settings.customDeviceProfiles, null, 2);
+    // Blob-anchor downloads are a silent no-op in the Tauri webview (no
+    // download handler) — go through the native save dialog like exportBackup.
+    if (isTauri) {
+      const path = await saveDialog({
+        title: 'Export device profiles',
+        defaultPath: 'greencli-device-profiles.json',
+        filters: [{ name: 'JSON', extensions: ['json'] }],
+      }).catch(() => null);
+      if (!path) return;
+      await invoke('write_file_text', { path, contents }).catch(() => {});
+      return;
+    }
+    const blob = new Blob([contents], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;

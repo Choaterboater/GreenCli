@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/tauri';
 import { save, open } from '@tauri-apps/api/dialog';
 import { listen } from '@tauri-apps/api/event';
@@ -30,10 +30,11 @@ interface Props {
 }
 
 function formatSize(bytes: number): string {
-  if (bytes === 0) return '—';
+  // '0 B' — an em dash made empty files indistinguishable from directories.
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1048576) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / 1048576).toFixed(1)} MB`;
+  if (bytes < 1073741824) return `${(bytes / 1048576).toFixed(1)} MB`;
+  return `${(bytes / 1073741824).toFixed(2)} GB`;
 }
 
 const basename = (p: string) => p.split(/[\\/]/).pop() || 'file';
@@ -45,21 +46,28 @@ export default function SftpBrowser({ sessionId, onClose }: Props) {
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [dragging, setDragging] = useState(false);
+  // A slower listing (e.g. a big directory) can resolve after a faster one a
+  // user triggered afterward (rapid Up/refresh clicks) — last-RESOLVED would
+  // otherwise win and silently undo the newer navigation.
+  const listReqRef = useRef(0);
 
   const join = (path: string, name: string) => (path === '/' ? `/${name}` : `${path}/${name}`);
 
   const listDir = useCallback(
     async (path: string) => {
+      const myReq = ++listReqRef.current;
       setLoading(true);
       setError('');
       try {
         const result = await invoke<SftpEntry[]>('sftp_list_dir', { sessionId, path });
+        if (listReqRef.current !== myReq) return; // superseded by a newer listing
         setEntries(result);
         setCwd(path);
       } catch (e) {
+        if (listReqRef.current !== myReq) return;
         setError(String(e));
       } finally {
-        setLoading(false);
+        if (listReqRef.current === myReq) setLoading(false);
       }
     },
     [sessionId]
@@ -104,6 +112,13 @@ export default function SftpBrowser({ sessionId, onClose }: Props) {
   // is window-global (fires for a drop ANYWHERE in the app), so confirm the target
   // before uploading rather than silently pushing files to a remote device.
   useEffect(() => {
+    // uploadPath's identity changes with `cwd`, so this effect re-registers on
+    // every navigation. If cleanup runs before the listen() Promise.all below
+    // resolves (StrictMode double-mount, fast Up/refresh clicks), the OLD
+    // cleanup already ran against an empty `unlisteners` array — the `.then()`
+    // would then push handles nothing will ever call, leaking duplicate
+    // listeners (and duplicate upload-confirm dialogs on the next drop).
+    let cancelled = false;
     const unlisteners: Array<() => void> = [];
     Promise.all([
       listen<string[]>('tauri://file-drop', async (e) => {
@@ -122,9 +137,18 @@ export default function SftpBrowser({ sessionId, onClose }: Props) {
       listen('tauri://file-drop-hover', () => setDragging(true)),
       listen('tauri://file-drop-cancelled', () => setDragging(false)),
     ])
-      .then((uns) => uns.forEach((u) => unlisteners.push(u)))
+      .then((uns) => {
+        if (cancelled) {
+          uns.forEach((u) => u());
+          return;
+        }
+        uns.forEach((u) => unlisteners.push(u));
+      })
       .catch(() => {});
-    return () => unlisteners.forEach((u) => u());
+    return () => {
+      cancelled = true;
+      unlisteners.forEach((u) => u());
+    };
   }, [uploadPath]);
 
   const navigate = (entry: SftpEntry) => {

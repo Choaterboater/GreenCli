@@ -3,6 +3,7 @@ import { Bot, Plus, Trash2, ChevronDown, ChevronRight } from 'lucide-react';
 import { useSettingsStore } from '../store/settingsStore';
 import { AI_PROVIDERS, AI_CLI_PRESETS, AiProvider } from '../types';
 import { generateId } from '../utils';
+import { askConfirm } from '../store/dialogStore';
 
 // Chip/swatch palette for agents — kept small so the sidebar chips stay legible.
 const AGENT_COLORS = ['#22C55E', '#3B82F6', '#F59E0B', '#EF4444', '#A855F7', '#06B6D4', '#EC4899', '#84CC16'];
@@ -109,7 +110,14 @@ export default function AiAgents() {
                   )}
                 </button>
                 <button
-                  onClick={() => {
+                  onClick={async () => {
+                    const ok = await askConfirm({
+                      title: `Delete "${agent.name || 'Untitled'}"?`,
+                      message: 'This removes the agent persona and its instructions. This cannot be undone.',
+                      confirmLabel: 'Delete',
+                      danger: true,
+                    });
+                    if (!ok) return;
                     removeAiAgent(agent.id);
                     if (openId === agent.id) setOpenId(null);
                   }}

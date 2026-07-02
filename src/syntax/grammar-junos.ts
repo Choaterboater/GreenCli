@@ -42,14 +42,19 @@ export const junosGrammar: Grammar = {
     'aggregate', 'direct', 'local', 'access', 'trunk', 'tagged', 'untagged',
     'master', 'backup', 'candidate', 'committed', 'true', 'false', 'yes', 'no',
   ],
-  operators: ['|', 'match', 'except', 'count', 'display', 'last', 'no-more', 'find', 'trim', '>', '>>', '&&', '||', ';'],
+  // Symbols only: bare pipe-filter WORDS ('match', 'count', 'last', …) are
+  // ordinary English that shows up constantly in command OUTPUT and got
+  // colored as operators; the piped forms are covered by `flags` below.
+  operators: ['|', '>', '>>', '&&', '||', ';'],
   flags: ['detail', 'extensive', 'brief', 'terse', '| display set', '| display xml', '| match', '| no-more'],
   values: {
     ipAddress: /\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)(?:\/(?:[0-9]|[1-2][0-9]|3[0-2]))?\b/,
     macAddress: /\b(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}\b/,
     vlanId: /\bvlan-id\s+(?:[1-9][0-9]{0,3}|409[0-5])\b/,
     // Junos interface names: ge-0/0/0, xe-0/1/0.0, ae0, irb.100, lo0.0, et-0/0/0
-    interfaceName: /\b(?:ge|xe|et|fe|em|me|fxp|ae|irb|lo|reth|st|gr|ip|vt|fab|vcp|sxe|fti|pp)-?\d+(?:\/\d+){0,2}(?:\.\d+)?\b/,
+    // Either digits (ae0, ge-0/0/0[.unit]) or a bare unit ('irb.100') must
+    // follow the prefix — a lone prefix word ('ip', 'st') must NOT match.
+    interfaceName: /\b(?:ge|xe|et|fe|em|me|fxp|ae|irb|lo|reth|st|gr|ip|vt|fab|vcp|sxe|fti|pp)(?:-?\d+(?:\/\d+){0,2}(?:\.\d+)?|\.\d+)\b/,
     number: /\b\d+\b/,
   },
   // Junos prompts: user@host>  (operational)  user@host#  (config edit)

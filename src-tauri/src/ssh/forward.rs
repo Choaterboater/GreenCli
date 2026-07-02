@@ -51,10 +51,25 @@ pub async fn start_local(
         // in-flight tunnelled connection's channel is aborted too — otherwise
         // stopping a forward leaks live SSH channels that keep proxying traffic.
         let mut children = tokio::task::JoinSet::new();
+        let mut accept_errors = 0u32;
         loop {
             let (mut sock, _) = match listener.accept().await {
-                Ok(x) => x,
-                Err(_) => break,
+                Ok(x) => {
+                    accept_errors = 0;
+                    x
+                }
+                // Transient accept errors (ECONNABORTED, EMFILE) must not kill
+                // the loop — the forward would stay listed as active while
+                // silently refusing connections. Back off; give up only if the
+                // failure persists.
+                Err(_) => {
+                    accept_errors += 1;
+                    if accept_errors >= 5 {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                    continue;
+                }
             };
             while children.try_join_next().is_some() {} // reap finished connections
             let h = handle.clone();
@@ -80,10 +95,22 @@ pub async fn start_dynamic(handle: Handle, local_port: u16) -> Result<JoinHandle
         // See start_local: child tasks live in a JoinSet so stopping the forward
         // aborts every in-flight SOCKS connection's channel.
         let mut children = tokio::task::JoinSet::new();
+        let mut accept_errors = 0u32;
         loop {
             let (sock, _) = match listener.accept().await {
-                Ok(x) => x,
-                Err(_) => break,
+                Ok(x) => {
+                    accept_errors = 0;
+                    x
+                }
+                // Same transient-error tolerance as start_local above.
+                Err(_) => {
+                    accept_errors += 1;
+                    if accept_errors >= 5 {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                    continue;
+                }
             };
             while children.try_join_next().is_some() {} // reap finished connections
             let h = handle.clone();
@@ -103,6 +130,13 @@ async fn socks5(mut sock: TcpStream, handle: Handle) -> std::io::Result<()> {
     }
     let mut methods = vec![0u8; head[1] as usize];
     sock.read_exact(&mut methods).await?;
+    // RFC 1928: replying [5, 0] ("no auth") when the client never offered
+    // method 0 is a protocol violation some clients police strictly. If 0x00
+    // isn't in the client's list, reply 0xFF (no acceptable methods) and close.
+    if !methods.contains(&0x00) {
+        sock.write_all(&[5, 0xFF]).await?;
+        return Ok(());
+    }
     sock.write_all(&[5, 0]).await?; // choose "no auth"
 
     // Request: VER, CMD, RSV, ATYP

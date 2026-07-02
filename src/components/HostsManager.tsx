@@ -20,7 +20,9 @@ interface KnownHost {
   fingerprint: string;
 }
 
-// "user@host:port" -> parts (ssh_config ProxyJump form).
+// "user@host:port" -> parts (ssh_config ProxyJump form). IPv6 hosts use the
+// bracketed form "[::1]:22" — a bare "2001:db8::1" has no port, and blindly
+// splitting on the last ':' would eat its final hextet.
 function parseJump(j?: string): { host?: string; user?: string; port?: number } {
   if (!j) return {};
   let rest = j;
@@ -31,12 +33,20 @@ function parseJump(j?: string): { host?: string; user?: string; port?: number } 
     rest = rest.slice(at + 1);
   }
   let port: number | undefined;
-  const colon = rest.lastIndexOf(':');
-  if (colon >= 0) {
-    const p = Number(rest.slice(colon + 1));
-    if (!Number.isNaN(p)) {
-      port = p;
-      rest = rest.slice(0, colon);
+  const bracket = rest.match(/^\[([^\]]+)\](?::(\d+))?$/);
+  if (bracket) {
+    rest = bracket[1];
+    const p = Number(bracket[2]);
+    if (Number.isInteger(p) && p >= 1 && p <= 65535) port = p;
+  } else if (!rest.includes(':') || rest.indexOf(':') === rest.lastIndexOf(':')) {
+    // At most one ':' — hostname[:port]. Multiple colons = bare IPv6, no port.
+    const colon = rest.lastIndexOf(':');
+    if (colon >= 0) {
+      const p = Number(rest.slice(colon + 1));
+      if (Number.isInteger(p) && p >= 1 && p <= 65535) {
+        port = p;
+        rest = rest.slice(0, colon);
+      }
     }
   }
   return { host: rest, user, port };

@@ -4,6 +4,7 @@ import { useSettingsStore } from '../store/settingsStore';
 import { CENTRAL_REGIONS, CentralAccount } from '../types';
 import { askPrompt } from '../store/dialogStore';
 import { generateId } from '../utils';
+import { deleteAccountSecrets } from '../utils/secretVault';
 
 export default function CentralSettings() {
   const s = useSettingsStore();
@@ -53,6 +54,10 @@ export default function CentralSettings() {
   const deleteAccount = () => {
     if (!accountId) return;
     s.updateSettings({ centralAccounts: s.centralAccounts.filter((a) => a.id !== accountId) });
+    // Otherwise the account's encrypted secret + identity entries linger in
+    // the vault forever — persistSecrets only ever WRITES for accounts still
+    // present in settings, it never prunes removed ones.
+    deleteAccountSecrets(accountId).catch(() => {});
     setAccountId('');
   };
 

@@ -332,6 +332,14 @@ export class ArubaHighlighter {
   }
 
   private matchValues(line: string, pos: number): Token | null {
+    // Word boundary before pos (same rule as matchFromList): the fallback path
+    // advances one char at a time, so without this a digit run or IP-shaped
+    // substring INSIDE an identifier (e.g. 'abc123', 'fw10.0.0.1') gets colored
+    // as a value mid-word.
+    if (pos > 0 && /[a-zA-Z0-9_.\-]/.test(line[pos - 1])) {
+      return null;
+    }
+
     const remaining = line.slice(pos);
 
     // IP Address

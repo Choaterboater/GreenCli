@@ -23,9 +23,11 @@ export default function BulkRunner() {
   const [running, setRunning] = useState(false);
   const [results, setResults] = useState<RunResult[]>([]);
 
-  // Default to all connected sessions each time the modal opens.
+  // Default to all connected sessions each time the modal opens — unless a
+  // run is still executing (the component stays mounted while hidden, so a
+  // reopen mid-run would wipe the results the loop is writing into).
   useEffect(() => {
-    if (showBulkRunner) {
+    if (showBulkRunner && !running) {
       setSelected(new Set(sessions.filter((s) => s.connected).map((s) => s.sessionId)));
       setResults([]);
     }
@@ -136,7 +138,9 @@ export default function BulkRunner() {
           {/* Targets */}
           <div>
             <label className="block text-xs text-[var(--text-secondary)] mb-1.5">
-              Target sessions ({selected.size}/{connected.length} connected)
+              {/* Count only selections that are still connected — ids of sessions
+                  that dropped after the modal opened made this read "3/2". */}
+              Target sessions ({connected.filter((s) => selected.has(s.sessionId)).length}/{connected.length} connected)
             </label>
             {connected.length === 0 ? (
               <p className="text-xs text-[var(--text-muted)]">No connected sessions.</p>

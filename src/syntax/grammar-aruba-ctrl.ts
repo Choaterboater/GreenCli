@@ -19,7 +19,7 @@ export const arubaCtrlGrammar: Grammar = {
     'ap-group', 'ap-name', 'ap-system-profile', 'regulatory',
     'rfprotect', 'wip', 'cppm-server', 'disable-airgroup',
     'managed-device', 'master-redundancy', 'database',
-    'rap', ' rap-wizard', 'ids', 'wids',
+    'rap', 'rap-wizard', 'ids', 'wids',
   ],
   subcommands: [
     'profile', 'virtual-ap', 'aaa-profile', 'ssid-profile',
@@ -47,7 +47,7 @@ export const arubaCtrlGrammar: Grammar = {
     'preferred', 'master', 'local', 'backup', 'lms', 'blms',
     'flat', 'tunnel', 'bridge', 'split-tunnel', 'decrypt',
     'forward', 'drop', 'src-nat', 'dst-nat', 'redirect',
-    ' shaped', 'per-user', 'per-ap', 'per-ssid',
+    'shaped', 'per-user', 'per-ap', 'per-ssid',
     'trust', 'dscp', '802.1p', 'wmm', 'tos',
     'required', 'optional', 'init-state',
   ],

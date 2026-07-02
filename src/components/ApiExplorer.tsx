@@ -111,10 +111,19 @@ function extractRows(body: unknown): Row[] | null {
   }
   return null;
 }
+/** Columns for on-screen rendering: discovery sampled, count capped so a wide
+ *  response doesn't blow out the table. Export paths use `allColumns`. */
 function rowColumns(rows: Row[]): string[] {
   const cols: string[] = [];
   for (const r of rows.slice(0, 50)) for (const k of Object.keys(r)) if (!cols.includes(k)) cols.push(k);
   return cols.slice(0, 12);
+}
+/** Every column across every row — CSV export/copy must not silently drop data
+ *  the render caps hide (the UI explicitly promises "export to see all"). */
+function allColumns(rows: Row[]): string[] {
+  const cols: string[] = [];
+  for (const r of rows) for (const k of Object.keys(r)) if (!cols.includes(k)) cols.push(k);
+  return cols;
 }
 function cellText(v: unknown): string {
   if (v == null) return '';
@@ -129,7 +138,21 @@ function toCsv(rows: Row[], cols: string[]): string {
   return [cols.map(esc).join(','), ...rows.map((r) => cols.map((c) => esc(cellText(r[c]))).join(','))].join('\n');
 }
 
-function downloadText(filename: string, contents: string, type = 'text/plain') {
+async function downloadText(filename: string, contents: string, type = 'text/plain') {
+  // Blob-anchor downloads are a silent no-op in the Tauri webview (no download
+  // handler) — use the native save dialog there; blob path covers dev-in-browser.
+  if (typeof window !== 'undefined' && '__TAURI__' in window) {
+    const { save } = await import('@tauri-apps/api/dialog');
+    const ext = filename.split('.').pop() || 'txt';
+    const path = await save({
+      title: 'Export response',
+      defaultPath: filename,
+      filters: [{ name: ext.toUpperCase(), extensions: [ext] }],
+    }).catch(() => null);
+    if (!path) return;
+    await invoke('write_file_text', { path, contents }).catch(() => {});
+    return;
+  }
   const blob = new Blob([contents], { type });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -340,12 +363,13 @@ export default function ApiExplorer() {
               }
               const kind = activeConnection.kind ?? deviceKind;
               if (kind === 'aos8') {
-                // AOS-8 is showcommand-based — the endpoint "path" holds the CLI command.
-                const out = await invoke<unknown>('aos8_show', {
+                // AOS-8 is showcommand-based — the endpoint "path" holds the CLI
+                // command. aos8_show already returns { status, body }; wrapping
+                // it again hard-coded status 200 and nested the viewer output.
+                return invoke<{ status: number; body: unknown }>('aos8_show', {
                   host: activeConnection.host,
                   command: endpointPath,
                 });
-                return { status: 200, body: out };
               }
               if (kind === 'aoss') {
                 // AOS-S client prepends /rest/v7 to a relative path.
@@ -449,6 +473,13 @@ export default function ApiExplorer() {
         : raw && raw.startsWith('/')
         ? `https://${newConnHost}${raw}`
         : DEVICE_KINDS[deviceKind].base(newConnHost);
+      // Junos REST defaults to :3443 backend-side, but the user's editable
+      // Base URL can specify a different port (e.g. https://host:8443) — parse
+      // it out and pass it along, or JunosClient always used 3443 regardless
+      // of what the field actually said.
+      const explicitPort = /^https?:\/\//i.test(fullBase)
+        ? Number(new URL(fullBase).port) || undefined
+        : undefined;
       // Rust logs in via the right client for this flavour (cookie stored server-side).
       await invoke(DEVICE_KINDS[deviceKind].loginCmd, {
         request: {
@@ -457,6 +488,7 @@ export default function ApiExplorer() {
           password: newConnPass,
           accept_invalid_certs: !verifyTls,
           base_url: fullBase,
+          ...(deviceKind === 'junos' && explicitPort ? { port: explicitPort } : {}),
         },
       });
 
@@ -503,7 +535,7 @@ export default function ApiExplorer() {
 
   const copyResponse = () => {
     if (!response) return;
-    const text = showTable && tableRows ? toCsv(tableRows, tableCols) : JSON.stringify(response.body, null, 2);
+    const text = showTable && tableRows ? toCsv(tableRows, allColumns(tableRows)) : JSON.stringify(response.body, null, 2);
     navigator.clipboard.writeText(text);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
@@ -517,7 +549,7 @@ export default function ApiExplorer() {
         notify.warning('No table data', 'Switch to JSON export for this response shape.');
         return;
       }
-      downloadText(`greencli-api-${stamp}.csv`, toCsv(tableRows, tableCols), 'text/csv');
+      downloadText(`greencli-api-${stamp}.csv`, toCsv(tableRows, allColumns(tableRows)), 'text/csv');
       return;
     }
     downloadText(
@@ -800,11 +832,13 @@ export default function ApiExplorer() {
           </span>
         </div>
         {showSavedRequests && (
-          <div className="border-b border-[var(--border)] bg-[var(--bg-inset)]">
+          <div className="border-b border-[var(--border)] bg-[var(--bg-inset)] max-h-64 overflow-y-auto">
             {savedRequests.length === 0 ? (
               <p className="px-3 py-2 text-[11px] text-[var(--text-muted)]">No saved requests yet.</p>
             ) : (
-              savedRequests.slice(0, 8).map((req) => (
+              // Render them all in a scrollable list — a hard slice(0, 8) hid
+              // saved requests the counter said existed.
+              savedRequests.map((req) => (
                 <div key={req.id} className="group flex items-center gap-2 px-3 py-1.5 hover:bg-[var(--bg-tertiary)]">
                   <button onClick={() => loadSavedRequest(req)} className="min-w-0 flex-1 text-left">
                     <div className="truncate text-[11px] text-[var(--text-primary)]">{req.name}</div>

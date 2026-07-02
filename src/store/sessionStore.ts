@@ -155,17 +155,25 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
     set((state) => {
       const filtered = state.sessions.filter((s) => s.sessionId !== sessionId);
       const splitPanes = state.splitPanes.filter((id) => id !== sessionId);
+      // Promote a session that actually renders in this window — a popped-out
+      // one lives in its own OS window and would leave the tab area blank.
+      const inWindow = filtered.filter((s) => !state.poppedSessions.includes(s.sessionId));
+      const nextActive =
+        state.activeSessionId === sessionId
+          ? (inWindow.length > 0
+              ? inWindow[inWindow.length - 1].sessionId
+              : filtered.length > 0
+                ? filtered[filtered.length - 1].sessionId
+                : null)
+          : state.activeSessionId;
       return {
         sessions: filtered,
         // Closing a popped-out session's tab must not leak its tracking state.
         poppedSessions: state.poppedSessions.filter((id) => id !== sessionId),
-        unseenOutput: state.unseenOutput.filter((id) => id !== sessionId),
-        activeSessionId:
-          state.activeSessionId === sessionId
-            ? filtered.length > 0
-              ? filtered[filtered.length - 1].sessionId
-              : null
-            : state.activeSessionId,
+        // The newly-promoted session is now in view — clear its activity dot
+        // along with the removed session's.
+        unseenOutput: state.unseenOutput.filter((id) => id !== sessionId && id !== nextActive),
+        activeSessionId: nextActive,
         // Don't leave a split pane pointing at a destroyed session.
         splitPanes,
         splitView: splitPanes.length > 0 ? state.splitView : false,

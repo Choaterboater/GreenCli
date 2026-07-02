@@ -472,7 +472,24 @@ function App() {
       persistSecrets(useSettingsStore.getState());
     }, 400);
     return () => clearTimeout(t);
-  }, [vaultUnlocked, centralClientSecret, centralToken, apstraPassword, mistToken, centralAccounts]);
+    // The identity fields (base URL / client id / host / username) MUST be
+    // deps too: each secret's vault record embeds them, and editing an
+    // endpoint without retyping the secret left a stale identity behind —
+    // which loadSecrets treats as a mismatch on next launch, silently
+    // deleting the secret.
+  }, [
+    vaultUnlocked,
+    centralClientSecret,
+    centralToken,
+    apstraPassword,
+    mistToken,
+    centralAccounts,
+    centralBaseUrl,
+    centralClientId,
+    apstraHost,
+    apstraUsername,
+    mistBaseUrl,
+  ]);
 
   const activeSession = sessions.find((s) => s.sessionId === activeSessionId);
 
@@ -705,6 +722,12 @@ function App() {
       connectingIdsRef.current.add(sessionId);
 
       addSession(fullConfig, sessionId);
+      // addSession is a no-op for an existing (disconnected) tab — refresh its
+      // config with the saved host's current values and focus it explicitly.
+      if (existing) {
+        useSessionStore.getState().updateSessionConfig(sessionId, fullConfig);
+        useSessionStore.getState().setActiveSession(sessionId);
+      }
       useSessionStore.getState().updateSessionConnection(sessionId, false, 'connecting');
 
       // For SSH with no inline password, try a saved vault credential.
@@ -929,6 +952,11 @@ function App() {
         if (!stillOpen || !stillCurrentAuth) {
           if (result.success) {
             invoke('disconnect', { sessionId: pending.id }).catch(() => {});
+          }
+          // A still-open tab must not stay stuck on 'connecting' after we
+          // abandoned (and disconnected) this superseded attempt.
+          if (stillOpen) {
+            useSessionStore.getState().updateSessionConnection(pending.id, false, 'disconnected');
           }
           return;
         }
