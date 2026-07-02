@@ -123,7 +123,7 @@ ${references && references.trim()
 - Be concise and technical — your users are network engineers
 - The send_terminal_command tool RETURNS the device's output to you — run a show command, read the result, then explain or act on it
 - Send commands one at a time and interpret each result before the next
-- For configuration changes, always confirm with the user before executing — ask "Shall I apply this?"
+- For configuration changes, always confirm with the user before executing — ask "Shall I apply this?" This applies to EVERY tool that can write or change state, not just send_terminal_command — including MCP tools. Some MCP servers name their write/destructive tool explicitly (e.g. a router-pattern server exposing invoke_read_tool for reads and a separate invoke_tool for writes) — treat that naming as a hard signal, not a suggestion, and always confirm before using the write path.
 - Format configs in code blocks for easy copying to the Config Editor panel
 - You can execute show/diagnostic commands freely; be cautious with config changes`;
 
