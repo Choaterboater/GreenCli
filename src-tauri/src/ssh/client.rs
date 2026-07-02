@@ -42,6 +42,9 @@ pub struct SshConnection {
     /// Held open for the session's lifetime when connecting via a jump host;
     /// dropping it tears down the tunnel.
     pub jump_handle: Option<Arc<Mutex<client::Handle<ClientHandler>>>>,
+    /// Last terminal size from the frontend, re-applied on (re)connect so the
+    /// remote PTY doesn't reset to 80x24 after an auto-reconnect.
+    pub last_size: Mutex<(u16, u16)>,
 }
 
 #[derive(Clone, Debug)]
@@ -86,6 +89,10 @@ pub struct ClientHandler {
     sender: Sender<Vec<u8>>,
     host_port: String,
     known_hosts_path: Option<PathBuf>,
+    /// Why check_server_key rejected the host key, so connect() can surface
+    /// the mismatch details (possible MITM / re-imaged device) instead of
+    /// russh's opaque "unknown key" error.
+    reject_reason: Arc<std::sync::Mutex<Option<String>>>,
 }
 
 #[async_trait]
@@ -104,6 +111,9 @@ impl Handler for ClientHandler {
                     Ok(accepted) => Ok(accepted),
                     Err(reason) => {
                         log::warn!("Rejected SSH host key: {}", reason);
+                        if let Ok(mut g) = self.reject_reason.lock() {
+                            *g = Some(reason.to_string());
+                        }
                         Ok(false)
                     }
                 }
@@ -149,6 +159,7 @@ impl SshConnection {
             data_receiver: None,
             connected: false,
             jump_handle: None,
+            last_size: Mutex::new((80, 24)),
         }
     }
 
@@ -177,10 +188,30 @@ impl SshConnection {
         // what signals EOF to the supervisor. Do NOT retain a clone here.
         let (data_tx, data_rx) = channel::<Vec<u8>>(1024);
 
+        let reject_reason: Arc<std::sync::Mutex<Option<String>>> =
+            Arc::new(std::sync::Mutex::new(None));
+        // Turn a host-key rejection into an actionable error: russh only says
+        // "unknown key", but the handler records WHY (mismatch = possible MITM
+        // or re-imaged device, and how to clear the old entry).
+        let key_error = {
+            let reject_reason = reject_reason.clone();
+            move |prefix: &str, e: russh::Error| -> AppError {
+                let detail = reject_reason.lock().ok().and_then(|g| g.clone());
+                match detail {
+                    Some(d) => AppError::SshError(format!(
+                        "{}: {} — {} (manage saved host keys in Settings → Known Hosts)",
+                        prefix, e, d
+                    )),
+                    None => AppError::SshError(format!("{}: {}", prefix, e)),
+                }
+            }
+        };
+
         let handler = ClientHandler {
             sender: data_tx,
             host_port: format!("{}:{}", self.config.host, self.config.port),
             known_hosts_path: self.config.known_hosts_path.clone(),
+            reject_reason: reject_reason.clone(),
         };
 
         // Connect directly, or tunnel through a jump host (ProxyJump) when set.
@@ -193,6 +224,7 @@ impl SshConnection {
                 sender: jdtx,
                 host_port: format!("{}:{}", jump_host, jump_port),
                 known_hosts_path: self.config.known_hosts_path.clone(),
+                reject_reason: reject_reason.clone(),
             };
             let mut jump = russh::client::connect(
                 client_config.clone(),
@@ -200,7 +232,7 @@ impl SshConnection {
                 jump_handler,
             )
             .await
-            .map_err(|e| AppError::SshError(format!("Jump host connect failed: {}", e)))?;
+            .map_err(|e| key_error("Jump host connect failed", e))?;
 
             // Authenticate to the bastion. A jump password is rarely set (especially
             // for ssh_config-imported ProxyJump), and most bastions are key/agent
@@ -268,9 +300,7 @@ impl SshConnection {
             let target =
                 russh::client::connect_stream(client_config.clone(), tunnel.into_stream(), handler)
                     .await
-                    .map_err(|e| {
-                        AppError::SshError(format!("Connect via jump host failed: {}", e))
-                    })?;
+                    .map_err(|e| key_error("Connect via jump host failed", e))?;
 
             // Keep the jump session alive for the lifetime of this connection.
             self.jump_handle = Some(Arc::new(Mutex::new(jump)));
@@ -282,7 +312,7 @@ impl SshConnection {
                 handler,
             )
             .await
-            .map_err(|e| AppError::SshError(format!("Connection failed: {}", e)))?
+            .map_err(|e| key_error("Connection failed", e))?
         };
 
         // Authenticate
@@ -334,7 +364,12 @@ impl SshConnection {
                                         }
                                     })
                                     .collect();
-                                first_round = false;
+                                // Servers often open with a zero-prompt banner
+                                // round — the password must stay armed for the
+                                // first round that actually asks something.
+                                if !prompts.is_empty() {
+                                    first_round = false;
+                                }
                                 res = handle
                                     .authenticate_keyboard_interactive_respond(answers)
                                     .await
@@ -422,8 +457,12 @@ impl SshConnection {
         // With false, a server that REFUSES them (restricted accounts, appliances,
         // forced-command keys) still resolves Ok and we'd report a connected-but-dead
         // session. A rejection now surfaces as a clear connect error.
+        // Request the PTY at the terminal's LAST KNOWN size — a hardcoded 80x24
+        // left every auto-reconnected session with a mis-sized remote PTY until
+        // the user happened to resize the window.
+        let (cols, rows) = *self.last_size.lock().await;
         channel
-            .request_pty(true, &self.get_term_type(), 80, 24, 0, 0, &[])
+            .request_pty(true, &self.get_term_type(), cols as u32, rows as u32, 0, 0, &[])
             .await
             .map_err(|_| {
                 AppError::SshError(
@@ -483,6 +522,8 @@ impl SshConnection {
     }
 
     pub async fn resize(&self, cols: u16, rows: u16) -> Result<(), AppError> {
+        // Remember the size so a reconnect requests the PTY at the right one.
+        *self.last_size.lock().await = (cols, rows);
         if let Some(ref channel_arc) = &self.channel {
             let channel = channel_arc.lock().await;
             channel

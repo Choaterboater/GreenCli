@@ -51,10 +51,25 @@ pub async fn start_local(
         // in-flight tunnelled connection's channel is aborted too — otherwise
         // stopping a forward leaks live SSH channels that keep proxying traffic.
         let mut children = tokio::task::JoinSet::new();
+        let mut accept_errors = 0u32;
         loop {
             let (mut sock, _) = match listener.accept().await {
-                Ok(x) => x,
-                Err(_) => break,
+                Ok(x) => {
+                    accept_errors = 0;
+                    x
+                }
+                // Transient accept errors (ECONNABORTED, EMFILE) must not kill
+                // the loop — the forward would stay listed as active while
+                // silently refusing connections. Back off; give up only if the
+                // failure persists.
+                Err(_) => {
+                    accept_errors += 1;
+                    if accept_errors >= 5 {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                    continue;
+                }
             };
             while children.try_join_next().is_some() {} // reap finished connections
             let h = handle.clone();
@@ -80,10 +95,22 @@ pub async fn start_dynamic(handle: Handle, local_port: u16) -> Result<JoinHandle
         // See start_local: child tasks live in a JoinSet so stopping the forward
         // aborts every in-flight SOCKS connection's channel.
         let mut children = tokio::task::JoinSet::new();
+        let mut accept_errors = 0u32;
         loop {
             let (sock, _) = match listener.accept().await {
-                Ok(x) => x,
-                Err(_) => break,
+                Ok(x) => {
+                    accept_errors = 0;
+                    x
+                }
+                // Same transient-error tolerance as start_local above.
+                Err(_) => {
+                    accept_errors += 1;
+                    if accept_errors >= 5 {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                    continue;
+                }
             };
             while children.try_join_next().is_some() {} // reap finished connections
             let h = handle.clone();

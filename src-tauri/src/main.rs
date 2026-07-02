@@ -846,10 +846,17 @@ async fn create_folder(name: String, state: State<'_, AppState>) -> Result<Strin
 // ─── Vault Commands ───
 
 #[tauri::command]
-fn vault_unlock(password: String, state: State<'_, AppState>) -> Result<bool, String> {
-    let vault = state.vault.lock().map_err(|e| e.to_string())?;
-    vault.unlock(&password).map_err(|e| e.to_string())?;
-    Ok(true)
+async fn vault_unlock(password: String, state: State<'_, AppState>) -> Result<bool, String> {
+    // The Argon2 KDF is deliberately slow; as a sync command it ran on the
+    // main thread and froze every window for the whole derivation.
+    let vault = state.vault.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let vault = vault.lock().map_err(|e| e.to_string())?;
+        vault.unlock(&password).map_err(|e| e.to_string())?;
+        Ok(true)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -895,16 +902,26 @@ fn vault_is_initialized(state: State<'_, AppState>) -> Result<bool, String> {
 /// allowlist, which is scope-limited), and decodes lossily so large terminal
 /// logs / captures with stray non-UTF8 bytes still open.
 #[tauri::command]
-fn read_file_text(path: String) -> Result<String, String> {
-    std::fs::read(&path)
-        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
-        .map_err(|e| format!("Failed to read {}: {}", path, e))
+async fn read_file_text(path: String) -> Result<String, String> {
+    // async: sync commands run on the main thread, and a multi-MB log/capture
+    // read froze the whole UI for its duration.
+    tauri::async_runtime::spawn_blocking(move || {
+        std::fs::read(&path)
+            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+            .map_err(|e| format!("Failed to read {}: {}", path, e))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Write text to any user-selected path (companion to read_file_text).
 #[tauri::command]
-fn write_file_text(path: String, contents: String) -> Result<(), String> {
-    std::fs::write(&path, contents).map_err(|e| format!("Failed to write {}: {}", path, e))
+async fn write_file_text(path: String, contents: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        std::fs::write(&path, contents).map_err(|e| format!("Failed to write {}: {}", path, e))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Pop a session out into its own OS window. The new window loads the same

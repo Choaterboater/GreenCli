@@ -70,7 +70,11 @@ pub async fn download(
     let len = tokio::io::copy(&mut remote_file, &mut local_file)
         .await
         .map_err(|e| AppError::SshError(format!("SFTP download '{}': {}", remote_path, e)))?;
-    local_file.flush().await.ok();
+    // A failed final write (disk full, quota) must not report success.
+    local_file
+        .flush()
+        .await
+        .map_err(|e| AppError::SshError(format!("Write local '{}': {}", local_path, e)))?;
     Ok(len)
 }
 
@@ -128,6 +132,11 @@ pub async fn upload(
     let len = tokio::io::copy(&mut local_file, &mut remote_file)
         .await
         .map_err(|e| AppError::SshError(format!("SFTP upload '{}': {}", remote_path, e)))?;
-    remote_file.shutdown().await.ok();
+    // shutdown() carries the SFTP flush/close status — ignoring it reported
+    // truncated/failed uploads as successful.
+    remote_file
+        .shutdown()
+        .await
+        .map_err(|e| AppError::SshError(format!("SFTP close '{}': {}", remote_path, e)))?;
     Ok(len)
 }
