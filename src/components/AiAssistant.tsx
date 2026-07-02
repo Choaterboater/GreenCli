@@ -45,6 +45,7 @@ interface AnthropicToolResultBlock {
   type: 'tool_result';
   tool_use_id: string;
   content: string;
+  is_error?: boolean;
 }
 
 type AnthropicContentBlock = AnthropicTextBlock | AnthropicToolUseBlock | AnthropicToolResultBlock;
@@ -58,6 +59,7 @@ interface ToolExecution {
   name: string;
   args: Record<string, unknown>;
   result: string;
+  isError?: boolean;
 }
 
 interface DisplayMessage extends ChatMessage {
@@ -318,13 +320,22 @@ function capToolResult(s: string, max = 12000): string {
   return s.length > max ? `${s.slice(0, max)}\n…(truncated ${s.length - max} more chars)` : s;
 }
 
+/** A tool call's outcome: the text fed back to the model, plus whether it was a
+ * failure — so the UI can stop painting errors with a green success check. */
+interface ToolOutcome {
+  text: string;
+  isError: boolean;
+}
+const toolOk = (text: string): ToolOutcome => ({ text, isError: false });
+const toolErr = (text: string): ToolOutcome => ({ text, isError: true });
+
 async function executeTool(
   name: string,
   args: Record<string, unknown>,
   activeSession: Session | undefined,
   mcpResolve?: McpResolve,
   shouldCancel?: () => boolean
-): Promise<string> {
+): Promise<ToolOutcome> {
   // Re-resolve the live session: a multi-step run can outlast the user switching
   // tabs or the device disconnecting, and the value captured at send time would
   // otherwise keep targeting a stale/dead session id.
@@ -333,75 +344,76 @@ async function executeTool(
       useSessionStore.getState().sessions.find((s) => s.sessionId === activeSession!.sessionId) ??
       activeSession;
   }
-  // Route MCP tools to the connected server.
+  // Route MCP tools to the connected server. Cap the result like every builtin
+  // tool — a 145-tool cloud server can return megabytes of JSON.
   const mcp = mcpResolve?.get(name);
   if (mcp) {
     try {
-      return await invoke<string>('mcp_call', { server: mcp.server, tool: mcp.tool, args });
+      return toolOk(capToolResult(await invoke<string>('mcp_call', { server: mcp.server, tool: mcp.tool, args })));
     } catch (e) {
-      return `MCP tool ${mcp.server}/${mcp.tool} failed: ${e}`;
+      return toolErr(`MCP tool ${mcp.server}/${mcp.tool} failed: ${e}`);
     }
   }
   // Aruba AOS-CX on-box REST (no Central). Auto-logs-in with the SSH creds.
   if (name === 'aruba_cx_rest') {
     const host = activeSession?.config.host;
-    if (!host) return 'Error: the active session has no host to query.';
+    if (!host) return toolErr('Error: the active session has no host to query.');
     const method = (args.method as string) || 'GET';
     const path = (args.path as string) || '';
     const body = (args.body as string) || undefined;
     const doReq = () => invoke('api_request', { host, method, path, body });
     try {
-      return capToolResult(JSON.stringify(await doReq(), null, 2));
+      return toolOk(capToolResult(JSON.stringify(await doReq(), null, 2)));
     } catch (e) {
       // Probably not logged into the REST API yet — try once with SSH creds.
       if (activeSession && (await tryDeviceLogin(activeSession, 'api_login'))) {
         try {
-          return capToolResult(JSON.stringify(await doReq(), null, 2));
+          return toolOk(capToolResult(JSON.stringify(await doReq(), null, 2)));
         } catch (e2) {
-          return `Aruba CX REST error: ${e2}`;
+          return toolErr(`Aruba CX REST error: ${e2}`);
         }
       }
-      return `Could not reach the switch REST API on ${host} (${e}). It may need REST enabled (\`https-server rest access-mode read-write\`) or a login in the API panel.`;
+      return toolErr(`Could not reach the switch REST API on ${host} (${e}). It may need REST enabled (\`https-server rest access-mode read-write\`) or a login in the API panel.`);
     }
   }
   // ArubaOS 8 controller/conductor — show command as JSON (no Central).
   if (name === 'aruba_aos8_show') {
     const host = activeSession?.config.host;
-    if (!host) return 'Error: the active session has no host to query.';
+    if (!host) return toolErr('Error: the active session has no host to query.');
     const command = (args.command as string) || '';
     const doReq = () => invoke('aos8_show', { host, command });
     try {
-      return capToolResult(JSON.stringify(await doReq(), null, 2));
+      return toolOk(capToolResult(JSON.stringify(await doReq(), null, 2)));
     } catch (e) {
       if (activeSession && (await tryDeviceLogin(activeSession, 'aos8_login'))) {
         try {
-          return capToolResult(JSON.stringify(await doReq(), null, 2));
+          return toolOk(capToolResult(JSON.stringify(await doReq(), null, 2)));
         } catch (e2) {
-          return `AOS-8 REST error: ${e2}`;
+          return toolErr(`AOS-8 REST error: ${e2}`);
         }
       }
-      return `Could not reach the AOS-8 controller API on ${host}:4343 (${e}).`;
+      return toolErr(`Could not reach the AOS-8 controller API on ${host}:4343 (${e}).`);
     }
   }
   // Aruba AOS-S switch on-box REST (no Central).
   if (name === 'aruba_aoss_rest') {
     const host = activeSession?.config.host;
-    if (!host) return 'Error: the active session has no host to query.';
+    if (!host) return toolErr('Error: the active session has no host to query.');
     const method = (args.method as string) || 'GET';
     const path = (args.path as string) || '';
     const body = (args.body as string) || undefined;
     const doReq = () => invoke('aoss_request', { host, method, path, body });
     try {
-      return capToolResult(JSON.stringify(await doReq(), null, 2));
+      return toolOk(capToolResult(JSON.stringify(await doReq(), null, 2)));
     } catch (e) {
       if (activeSession && (await tryDeviceLogin(activeSession, 'aoss_login'))) {
         try {
-          return capToolResult(JSON.stringify(await doReq(), null, 2));
+          return toolOk(capToolResult(JSON.stringify(await doReq(), null, 2)));
         } catch (e2) {
-          return `AOS-S REST error: ${e2}`;
+          return toolErr(`AOS-S REST error: ${e2}`);
         }
       }
-      return `Could not reach the AOS-S REST API on ${host} (${e}). It may need \`rest-interface\` enabled.`;
+      return toolErr(`Could not reach the AOS-S REST API on ${host} (${e}). It may need \`rest-interface\` enabled.`);
     }
   }
   // Juniper Apstra fabric controller (configured in Settings, not session-bound).
@@ -410,44 +422,44 @@ async function executeTool(
     const path = (args.path as string) || '';
     const body = (args.body as string) || undefined;
     try {
-      return capToolResult(JSON.stringify(await invoke('apstra_request', { method, path, body }), null, 2));
+      return toolOk(capToolResult(JSON.stringify(await invoke('apstra_request', { method, path, body }), null, 2)));
     } catch (e) {
-      return `Apstra error: ${e}. Configure the controller in Settings → Juniper Apstra.`;
+      return toolErr(`Apstra error: ${e}. Configure the controller in Settings → Juniper Apstra.`);
     }
   }
   // Evaluate desired-state intents against the live network.
   if (name === 'evaluate_network_intents') {
     try {
       const intents = await invoke<Intent[]>('intent_list');
-      if (!intents.length) return 'No network intents are defined yet (add them in the Intent panel — the Target icon).';
+      if (!intents.length) return toolErr('No network intents are defined yet (add them in the Intent panel — the Target icon).');
       const sessions = useSessionStore.getState().sessions;
       const updated = await evaluateAll(intents, sessions, shouldCancel);
-      if (shouldCancel?.()) return 'Intent evaluation cancelled.';
-      return summarize(updated);
+      if (shouldCancel?.()) return toolErr('Intent evaluation cancelled.');
+      return toolOk(summarize(updated));
     } catch (e) {
-      return `Intent evaluation failed: ${e}`;
+      return toolErr(`Intent evaluation failed: ${e}`);
     }
   }
   if (name === 'send_terminal_command') {
     const command = (args.command as string) || '';
     if (!activeSession) {
-      return 'Error: No active terminal session. Please connect to a device first.';
+      return toolErr('Error: No active terminal session. Please connect to a device first.');
     }
     if (!activeSession.connected) {
-      return 'Error: Terminal session exists but device is not connected.';
+      return toolErr('Error: Terminal session exists but device is not connected.');
     }
     try {
       const cleaned = await sendAndCapture(activeSession.sessionId, command);
       if (!cleaned) {
-        return `Command \`${command}\` sent — no output captured (may be interactive, paged, or still running).`;
+        return toolOk(`Command \`${command}\` sent — no output captured (may be interactive, paged, or still running).`);
       }
       // Cap to keep token usage sane; keep the tail (most relevant).
-      return cleaned.length > 12000 ? '…(truncated)…\n' + cleaned.slice(-12000) : cleaned;
+      return toolOk(cleaned.length > 12000 ? '…(truncated)…\n' + cleaned.slice(-12000) : cleaned);
     } catch (e) {
-      return `Failed to run command: ${e}`;
+      return toolErr(`Failed to run command: ${e}`);
     }
   }
-  return `Unknown tool: ${name}`;
+  return toolErr(`Unknown tool: ${name}`);
 }
 
 // ─── Streaming (token-by-token via Tauri events) ───
@@ -670,7 +682,9 @@ async function callAnthropicWithTools(
   for (let iter = 0; iter < 8; iter++) {
     if (shouldCancel()) throw new Error('cancelled');
     const round = await streamAnthropicOnce(
-      { model, max_tokens: 2048, system: systemPrompt, messages, tools: allTools },
+      // Anthropic rejects an empty tools array once tool blocks appear in the
+      // conversation — and an empty list has nothing to offer anyway.
+      { model, max_tokens: 2048, system: systemPrompt, messages, ...(allTools.length ? { tools: allTools } : {}) },
       (t) => onDelta(fullText + t)
     );
     fullText += round.text;
@@ -687,17 +701,31 @@ async function callAnthropicWithTools(
     const toolResults: AnthropicToolResultBlock[] = [];
     for (const tu of round.toolUses) {
       if (shouldCancel()) throw new Error('cancelled');
-      const result = await executeTool(tu.name, tu.input, activeSession, mcpResolve, shouldCancel);
-      onToolCall({ name: tu.name, args: tu.input, result });
-      toolResults.push({ type: 'tool_result', tool_use_id: tu.id, content: result });
+      const outcome = await executeTool(tu.name, tu.input, activeSession, mcpResolve, shouldCancel);
+      onToolCall({ name: tu.name, args: tu.input, result: outcome.text, isError: outcome.isError });
+      toolResults.push({
+        type: 'tool_result',
+        tool_use_id: tu.id,
+        content: outcome.text,
+        ...(outcome.isError ? { is_error: true } : {}),
+      });
     }
     messages.push({ role: 'user', content: toolResults });
   }
 
-  // Budget exhausted — one final streamed pass without tools so the model
-  // summarises rather than discarding everything gathered.
+  // Budget exhausted — one final streamed pass with tool use disabled so the
+  // model summarises rather than discarding everything gathered. `tools` must
+  // still be sent: the API rejects a conversation containing tool_use /
+  // tool_result blocks when the request omits it (so dropping it made this
+  // wrap-up 400 and silently fall through to the generic message below).
   const wrap = await streamAnthropicOnce(
-    { model, max_tokens: 2048, system: systemPrompt, messages },
+    {
+      model,
+      max_tokens: 2048,
+      system: systemPrompt,
+      messages,
+      ...(allTools.length ? { tools: allTools, tool_choice: { type: 'none' } } : {}),
+    },
     (t) => onDelta(fullText + t)
   ).catch(() => null);
   if (wrap) fullText += wrap.text;
@@ -754,8 +782,12 @@ async function callOpenAiCompatWithTools(
   let fullText = '';
   for (let iter = 0; iter < 8; iter++) {
     if (shouldCancel()) throw new Error('cancelled');
-    const round = await streamOpenAiOnce(provider, baseUrl, { model, messages, tools }, (t) =>
-      onDelta(fullText + t)
+    const round = await streamOpenAiOnce(
+      provider,
+      baseUrl,
+      // Several OpenAI-compatible backends 400 on an empty tools array — omit it.
+      { model, messages, ...(tools.length ? { tools } : {}) },
+      (t) => onDelta(fullText + t)
     );
     fullText += round.content;
 
@@ -781,14 +813,19 @@ async function callOpenAiCompatWithTools(
       } catch {
         /* ignore malformed args */
       }
-      const result = await executeTool(tc.name, args, activeSession, mcpResolve, shouldCancel);
-      onToolCall({ name: tc.name, args, result });
-      messages.push({ role: 'tool', tool_call_id: tc.id, content: result });
+      const outcome = await executeTool(tc.name, args, activeSession, mcpResolve, shouldCancel);
+      onToolCall({ name: tc.name, args, result: outcome.text, isError: outcome.isError });
+      messages.push({ role: 'tool', tool_call_id: tc.id, content: outcome.text });
     }
   }
 
-  const wrap = await streamOpenAiOnce(provider, baseUrl, { model, messages }, (t) =>
-    onDelta(fullText + t)
+  // Final pass with tool use disabled so the model summarises what it gathered
+  // instead of trying to call tools it can no longer use.
+  const wrap = await streamOpenAiOnce(
+    provider,
+    baseUrl,
+    { model, messages, ...(tools.length ? { tools, tool_choice: 'none' } : {}) },
+    (t) => onDelta(fullText + t)
   ).catch(() => null);
   if (wrap) fullText += wrap.content;
   return fullText || 'Reached the tool-call limit — see the command output above for what was gathered.';
@@ -823,6 +860,15 @@ async function callLocalCli(
   const prompt = `${device}\n${question}`;
 
   return await invoke<string>('ai_cli', { command, prompt });
+}
+
+// 'claude-sonnet-4-6' → 'sonnet 4.6', 'claude-haiku-4-5-20251001' → 'haiku 4.5'
+// (the old split('-').slice(1, 3) dropped the minor version: 'sonnet 4').
+function prettyClaudeModel(m: string): string {
+  const s = m.replace(/^claude-/, '').replace(/-\d{8}$/, '');
+  const vm = s.match(/^(.*?)-(\d+)-(\d+)$/);
+  if (vm) return `${vm[1].replace(/-/g, ' ')} ${vm[2]}.${vm[3]}`;
+  return s.replace(/-/g, ' ');
 }
 
 // ─── Build device context string ───
@@ -868,7 +914,12 @@ function renderMarkdown(text: string) {
       continue;
     }
 
-    // Heading
+    // Heading (### before ## so the longer prefix wins)
+    if (line.startsWith('### ')) {
+      result.push(<h5 key={key++} className="text-[11px] font-bold text-[var(--text-primary)] mt-2 mb-1">{line.slice(4)}</h5>);
+      i++;
+      continue;
+    }
     if (line.startsWith('## ')) {
       result.push(<h4 key={key++} className="text-xs font-bold text-[var(--text-primary)] mt-2 mb-1">{line.slice(3)}</h4>);
       i++;
@@ -985,7 +1036,11 @@ const MessageItem = memo(function MessageItem({ msg }: { msg: DisplayMessage }) 
                     <code className="text-[10px] text-[#58a6ff] font-mono flex-1 truncate">
                       {(te.args.command as string) || te.name}
                     </code>
-                    <CheckCircle2 size={9} className="text-[#3fb950] flex-shrink-0" />
+                    {te.isError ? (
+                      <AlertCircle size={9} className="text-[#ff7b72] flex-shrink-0" />
+                    ) : (
+                      <CheckCircle2 size={9} className="text-[#3fb950] flex-shrink-0" />
+                    )}
                     {open ? (
                       <ChevronDown size={9} className="text-[var(--text-muted)]" />
                     ) : (
@@ -1065,8 +1120,15 @@ export default function AiAssistant() {
     (a) => a.id === (activeSession ? settings.sessionAgents?.[activeSession.config.id] : undefined)
   );
 
+  // Autoscroll only while the user is pinned to the bottom — yanking the view
+  // down on every streamed token makes scrollback unreadable mid-response.
+  const pinnedRef = useRef(true);
+  const onChatScroll = () => {
+    const el = scrollRef.current;
+    if (el) pinnedRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+  };
   useEffect(() => {
-    if (scrollRef.current) {
+    if (scrollRef.current && pinnedRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [messages, isLoading]);
@@ -1118,6 +1180,7 @@ export default function AiAssistant() {
     setMessages((prev) => [...prev, userMsg]);
     setInput('');
     setIsLoading(true);
+    pinnedRef.current = true; // sending re-pins the view to follow the reply
     const myReq = ++requestSeq.current; // token to detect cancellation/supersede
 
     // The assistant talks to providers from the Rust backend. In a plain browser
@@ -1397,7 +1460,7 @@ export default function AiAssistant() {
       : provider === 'local-cli'
         ? settings.localCliCommand || 'CLI'
         : provider === 'anthropic'
-          ? settings.aiModel?.split('-').slice(1, 3).join(' ') || 'Claude'
+          ? (settings.aiModel ? prettyClaudeModel(settings.aiModel) : 'Claude')
           : provider === 'openrouter'
             ? settings.openrouterModel || providerMeta?.label || provider
             : settings.moonshotModel || providerMeta?.label || provider);
@@ -1508,7 +1571,7 @@ export default function AiAssistant() {
       )}
 
       {/* Chat */}
-      <div ref={scrollRef} className="flex-1 overflow-y-auto px-3 py-3 space-y-3">
+      <div ref={scrollRef} onScroll={onChatScroll} className="flex-1 overflow-y-auto px-3 py-3 space-y-3">
         {/* Prebuilt prompts when chat is empty */}
         {messages.length === 0 && (
           <div className="space-y-1.5">

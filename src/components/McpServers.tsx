@@ -38,6 +38,7 @@ const blankForm = {
   cwd: '',
   credsEnvVar: '',
   credsContent: '',
+  enabled: true,
 };
 
 export default function McpServers() {
@@ -66,6 +67,10 @@ export default function McpServers() {
 
   useEffect(() => {
     refresh();
+    // Live status: a server can crash (or the launch auto-connect can finish)
+    // while this panel is open — poll so "Connected · N tools" stays truthful.
+    const t = setInterval(refresh, 5000);
+    return () => clearInterval(t);
   }, [refresh]);
 
   const connect = async (name: string) => {
@@ -111,6 +116,7 @@ export default function McpServers() {
       cwd: s.cwd || '',
       credsEnvVar: s.credentialsEnvVar || '',
       credsContent: '',
+      enabled: s.enabled !== false,
     });
     invoke<boolean>('mcp_has_credentials', { name: s.name })
       .then(setCredsSaved)
@@ -136,15 +142,16 @@ export default function McpServers() {
       env,
       cwd: form.cwd.trim() || undefined,
       credentialsEnvVar: form.credsEnvVar.trim() || undefined,
-      enabled: true,
+      enabled: form.enabled,
     };
     try {
-      await invoke('mcp_save_server', { def });
-      // A rename writes under the new name; remove the old entry so we don't leave
-      // an orphaned duplicate behind.
+      // A rename must migrate, not delete-and-recreate: the old save-new +
+      // delete-old flow silently wiped the stored credentials (keyed by name)
+      // and dropped the live connection.
       if (editingName && editingName !== def.name) {
-        await invoke('mcp_delete_server', { name: editingName }).catch(() => {});
+        await invoke('mcp_rename_server', { from: editingName, to: def.name });
       }
+      await invoke('mcp_save_server', { def });
       // Persist credentials content only when the user typed new content (so we
       // never wipe saved creds just because the field is blank on edit).
       if (form.credsContent.trim()) {
@@ -209,7 +216,7 @@ export default function McpServers() {
                   {connected && (
                     <span className="flex items-center gap-1 text-[10px] text-[var(--accent-success)]">
                       <CheckCircle2 size={10} />
-                      {st?.toolCount ?? 0} tools
+                      {st?.toolCount ?? 0} tool{(st?.toolCount ?? 0) === 1 ? '' : 's'}
                     </span>
                   )}
                 </div>
@@ -324,6 +331,16 @@ export default function McpServers() {
               above is pointed at it — so you never keep a separate credentials file by hand.
             </p>
           </div>
+
+          <label className="flex items-center gap-2 text-[11px] text-[var(--text-secondary)] cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={form.enabled}
+              onChange={(e) => setForm({ ...form, enabled: e.target.checked })}
+              className="accent-[var(--accent)]"
+            />
+            Connect automatically when the app starts
+          </label>
 
           <div className="flex items-center justify-end gap-2 pt-1">
             <button

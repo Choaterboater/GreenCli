@@ -9,7 +9,7 @@
 use crate::error::AppError;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -216,7 +216,7 @@ impl McpClient {
         }
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .kill_on_drop(true);
 
         let mut child = cmd.spawn().map_err(|e| {
@@ -232,13 +232,42 @@ impl McpClient {
             .take()
             .ok_or_else(|| AppError::ApiError("MCP server has no stdout".into()))?;
 
+        // Collect the server's stderr (last ~50 lines) so a failed launch/handshake
+        // can show WHY (Python tracebacks, missing creds, bad args) instead of a
+        // bare timeout/EOF. The collector task ends by itself at stderr EOF.
+        let stderr_buf: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(VecDeque::new()));
+        if let Some(err_pipe) = child.stderr.take() {
+            let buf = stderr_buf.clone();
+            tokio::spawn(async move {
+                let mut lines = BufReader::new(err_pipe).lines();
+                loop {
+                    match lines.next_line().await {
+                        Ok(Some(l)) => {
+                            let mut b = buf.lock().await;
+                            if b.len() >= 50 {
+                                b.pop_front();
+                            }
+                            b.push_back(l);
+                        }
+                        Ok(None) => break,
+                        Err(e) if e.kind() == std::io::ErrorKind::InvalidData => continue,
+                        Err(_) => break,
+                    }
+                }
+            });
+        }
+
         let pending: Pending = Arc::new(Mutex::new(HashMap::new()));
         let pending_r = pending.clone();
         let dead = Arc::new(AtomicBool::new(false));
         let dead_r = dead.clone();
 
-        // Reader task: dispatch responses to waiters; ignore notifications. A
-        // transient read error (e.g. a non-UTF8 banner byte) skips that line
+        let stdin = Arc::new(Mutex::new(stdin));
+        let stdin_r = stdin.clone();
+
+        // Reader task: dispatch responses to waiters; answer server-initiated
+        // requests (ping keep-alives especially) instead of leaving them hanging.
+        // A transient read error (e.g. a non-UTF8 banner byte) skips that line
         // rather than killing the whole connection; only EOF ends the loop.
         let reader = tokio::spawn(async move {
             let mut lines = BufReader::new(stdout).lines();
@@ -261,10 +290,28 @@ impl McpClient {
                     Err(_) => continue, // skip any non-JSON banner/log lines
                 };
                 // A message carrying a `method` is a REQUEST/notification FROM the
-                // server (sampling/roots/elicitation), not a response to us. Never
-                // match it against pending waiters — ids restart at 1 each reconnect
-                // so a server-request id can collide with one of ours.
-                if v.get("method").is_some() {
+                // server (ping/sampling/roots/elicitation), not a response to us.
+                // Never match it against pending waiters — ids restart at 1 each
+                // reconnect so a server-request id can collide with one of ours.
+                // A server REQUEST (method + id) must be answered or a strict server
+                // can stall/tear down the session: reply to `ping`, politely refuse
+                // the rest. Notifications (no id) need no reply.
+                if let Some(method) = v.get("method").and_then(|m| m.as_str()) {
+                    if let Some(req_id) = v.get("id") {
+                        let resp = if method == "ping" {
+                            json!({ "jsonrpc": "2.0", "id": req_id, "result": {} })
+                        } else {
+                            json!({
+                                "jsonrpc": "2.0",
+                                "id": req_id,
+                                "error": { "code": -32601, "message": format!("client does not support '{}'", method) }
+                            })
+                        };
+                        let line = format!("{}\n", resp);
+                        let mut w = stdin_r.lock().await;
+                        let _ = w.write_all(line.as_bytes()).await;
+                        let _ = w.flush().await;
+                    }
                     continue;
                 }
                 // Accept integer / float / numeric-string ids (servers vary).
@@ -301,14 +348,28 @@ impl McpClient {
 
         let caller = McpCaller {
             server: Arc::from(def.name.as_str()),
-            stdin: Arc::new(Mutex::new(stdin)),
+            stdin,
             pending,
             next_id: Arc::new(Mutex::new(0)),
             dead,
         };
 
+        // Attach the server's stderr tail to a handshake error — that's where
+        // the actual reason (traceback, missing module, bad creds path) lands.
+        async fn with_stderr(e: AppError, buf: &Arc<Mutex<VecDeque<String>>>) -> AppError {
+            // Give the collector a beat to drain what the dying process wrote.
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            let b = buf.lock().await;
+            if b.is_empty() {
+                return e;
+            }
+            let tail: Vec<&str> = b.iter().rev().take(8).map(|s| s.as_str()).collect();
+            let tail: Vec<&str> = tail.into_iter().rev().collect();
+            AppError::ApiError(format!("{}\nServer stderr (tail):\n{}", e, tail.join("\n")))
+        }
+
         // Handshake.
-        let init = caller
+        let init = match caller
             .request(
                 "initialize",
                 json!({
@@ -317,35 +378,63 @@ impl McpClient {
                     "clientInfo": { "name": "greencli", "version": env!("CARGO_PKG_VERSION") }
                 }),
             )
-            .await?;
+            .await
+        {
+            Ok(v) => v,
+            Err(e) => return Err(with_stderr(e, &stderr_buf).await),
+        };
         let server_info = init.get("serverInfo").cloned().unwrap_or(Value::Null);
         caller.notify("notifications/initialized", json!({})).await?;
 
-        // Discover tools.
-        let tools_res = caller.request("tools/list", json!({})).await?;
-        let tools = tools_res
-            .get("tools")
-            .and_then(|t| t.as_array())
-            .cloned()
-            .unwrap_or_default()
-            .iter()
-            .filter_map(|t| {
-                let name = t.get("name").and_then(|n| n.as_str())?.to_string();
-                Some(McpToolInfo {
-                    server: def.name.clone(),
-                    name,
-                    description: t
-                        .get("description")
-                        .and_then(|d| d.as_str())
-                        .unwrap_or("")
-                        .to_string(),
-                    input_schema: t
-                        .get("inputSchema")
-                        .cloned()
-                        .unwrap_or_else(|| json!({ "type": "object" })),
-                })
-            })
-            .collect();
+        // Discover tools — following `nextCursor` pagination: a large server (e.g.
+        // centralmcp's ~145 tools) may page its list, and taking only the first
+        // page silently hides the rest from the AI.
+        let mut tools: Vec<McpToolInfo> = Vec::new();
+        let mut cursor: Option<String> = None;
+        for _page in 0..64 {
+            let params = match &cursor {
+                Some(c) => json!({ "cursor": c }),
+                None => json!({}),
+            };
+            let tools_res = match caller.request("tools/list", params).await {
+                Ok(v) => v,
+                Err(e) => return Err(with_stderr(e, &stderr_buf).await),
+            };
+            tools.extend(
+                tools_res
+                    .get("tools")
+                    .and_then(|t| t.as_array())
+                    .cloned()
+                    .unwrap_or_default()
+                    .iter()
+                    .filter_map(|t| {
+                        let name = t.get("name").and_then(|n| n.as_str())?.to_string();
+                        Some(McpToolInfo {
+                            server: def.name.clone(),
+                            name,
+                            description: t
+                                .get("description")
+                                .and_then(|d| d.as_str())
+                                .unwrap_or("")
+                                .to_string(),
+                            input_schema: t
+                                .get("inputSchema")
+                                .cloned()
+                                .unwrap_or_else(|| json!({ "type": "object" })),
+                        })
+                    }),
+            );
+            let next = tools_res
+                .get("nextCursor")
+                .and_then(|c| c.as_str())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string());
+            match next {
+                // A server echoing the same cursor forever would loop us — stop.
+                Some(n) if Some(&n) != cursor.as_ref() => cursor = Some(n),
+                _ => break,
+            }
+        }
 
         Ok(McpClient {
             child,
@@ -385,6 +474,15 @@ impl McpCaller {
     }
 
     async fn request(&self, method: &str, params: Value) -> Result<Value, AppError> {
+        self.request_with_timeout(method, params, 60).await
+    }
+
+    async fn request_with_timeout(
+        &self,
+        method: &str,
+        params: Value,
+        timeout_secs: u64,
+    ) -> Result<Value, AppError> {
         if self.dead.load(Ordering::Relaxed) {
             return Err(self.exited_error());
         }
@@ -416,13 +514,16 @@ impl McpCaller {
             });
         }
 
-        match tokio::time::timeout(std::time::Duration::from_secs(60), rx).await {
+        match tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), rx).await {
             Ok(Ok(Ok(v))) => Ok(v),
             Ok(Ok(Err(e))) => Err(AppError::ApiError(format!("MCP '{}': {}", method, e))),
             Ok(Err(_)) => Err(AppError::ApiError("MCP response channel dropped".into())),
             Err(_) => {
                 self.pending.lock().await.remove(&id);
-                Err(AppError::ApiError(format!("MCP '{}' timed out", method)))
+                Err(AppError::ApiError(format!(
+                    "MCP '{}' timed out after {}s",
+                    method, timeout_secs
+                )))
             }
         }
     }
@@ -443,16 +544,39 @@ impl McpCaller {
     /// `result` with `isError: true` (NOT a JSON-RPC error), so we check that
     /// and surface it as an Err instead of feeding the error text back as a
     /// valid answer.
+    ///
+    /// Uses a longer timeout than the handshake/list requests: real tools proxy
+    /// slow cloud APIs (Aruba Central reports, firmware queries) that
+    /// legitimately run past 60s.
     pub async fn call_tool(&self, name: &str, args: Value) -> Result<String, AppError> {
         let res = self
-            .request("tools/call", json!({ "name": name, "arguments": args }))
+            .request_with_timeout("tools/call", json!({ "name": name, "arguments": args }), 300)
             .await?;
+        // Extract text from content blocks: plain `text` blocks, embedded
+        // resources carrying inline text, and placeholders for binary blocks
+        // (dumping base64 image/audio at the model would burn its context).
         let text = res
             .get("content")
             .and_then(|c| c.as_array())
             .map(|arr| {
                 arr.iter()
-                    .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
+                    .filter_map(|b| {
+                        if let Some(t) = b.get("text").and_then(|t| t.as_str()) {
+                            return Some(t.to_string());
+                        }
+                        if let Some(t) = b
+                            .get("resource")
+                            .and_then(|r| r.get("text"))
+                            .and_then(|t| t.as_str())
+                        {
+                            return Some(t.to_string());
+                        }
+                        match b.get("type").and_then(|t| t.as_str()) {
+                            Some("image") => Some("[image content omitted]".to_string()),
+                            Some("audio") => Some("[audio content omitted]".to_string()),
+                            _ => None,
+                        }
+                    })
                     .collect::<Vec<_>>()
                     .join("\n")
             })
@@ -468,7 +592,10 @@ impl McpCaller {
         }
 
         if text.trim().is_empty() {
-            Ok(serde_json::to_string_pretty(&res).unwrap_or_default())
+            // No text blocks — fall back to structuredContent (the 2025-06 spec's
+            // machine-readable result), then to the raw result.
+            let fallback = res.get("structuredContent").unwrap_or(&res);
+            Ok(serde_json::to_string_pretty(fallback).unwrap_or_default())
         } else {
             Ok(text)
         }
@@ -550,8 +677,52 @@ impl McpManager {
         self.store.upsert(def)
     }
 
+    /// Rename a server, migrating everything keyed by name: config entry, stored
+    /// credentials, the materialised creds file, and any live client (so its
+    /// tools stay routable without a reconnect).
+    pub fn rename_server(&mut self, from: &str, to: &str) -> Result<(), AppError> {
+        if from == to {
+            return Ok(());
+        }
+        let mut all = self.store.load();
+        if all.iter().any(|d| d.name == to) {
+            return Err(AppError::ApiError(format!(
+                "An MCP server named '{}' already exists",
+                to
+            )));
+        }
+        let def = all
+            .iter_mut()
+            .find(|d| d.name == from)
+            .ok_or_else(|| AppError::ApiError(format!("No MCP server named '{}'", from)))?;
+        def.name = to.to_string();
+        self.store.save(&all)?;
+        // Move stored credentials to the new name (deleting the old entry used to
+        // silently drop them on rename).
+        if let Some(content) = self.secrets.get(from) {
+            self.secrets.set(to, &content)?;
+            self.secrets.set(from, "")?;
+        }
+        // The materialised creds file is keyed by name too; drop the old one (a
+        // fresh one is written under the new name on next connect).
+        let _ = fs::remove_file(self.app_dir.join("mcp_creds").join(sanitize_filename(from)));
+        if let Some(mut client) = self.clients.remove(from) {
+            for t in client.tools.iter_mut() {
+                t.server = to.to_string();
+            }
+            self.clients.insert(to.to_string(), client);
+        }
+        Ok(())
+    }
+
     pub fn set_credentials(&self, name: &str, content: &str) -> Result<(), AppError> {
-        self.secrets.set(name, content)
+        self.secrets.set(name, content)?;
+        if content.is_empty() {
+            // Clearing the stored secret must also delete the materialised
+            // cleartext file, or it lingers on disk until the server is removed.
+            let _ = fs::remove_file(self.app_dir.join("mcp_creds").join(sanitize_filename(name)));
+        }
+        Ok(())
     }
 
     pub fn has_credentials(&self, name: &str) -> bool {
@@ -604,6 +775,12 @@ impl McpManager {
     /// Remove and return a live client (shut it down outside the lock).
     pub fn take_client(&mut self, name: &str) -> Option<McpClient> {
         self.clients.remove(name)
+    }
+
+    /// Detach every live client (for app-exit cleanup — shut them down outside
+    /// the lock).
+    pub fn take_all_clients(&mut self) -> Vec<McpClient> {
+        self.clients.drain().map(|(_, c)| c).collect()
     }
 
     pub fn all_tools(&self) -> Vec<McpToolInfo> {
