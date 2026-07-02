@@ -33,7 +33,8 @@ export default function DialogHost() {
 
   const onConfirm = () => {
     if (current.type === 'prompt') {
-      if (!value.trim()) return finish(null);
+      // Resolve the value as typed — an empty submit is a deliberate "clear"
+      // (e.g. removing a session's tags), distinct from Cancel (null).
       finish(value);
     } else {
       finish('');

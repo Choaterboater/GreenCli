@@ -29,6 +29,9 @@ export class AnsiProcessor {
    * Check if text contains ANSI sequences
    */
   hasAnsi(input: string): boolean {
+    // ANSI_REGEX is /g: .test() advances its shared lastIndex, making repeated
+    // calls alternate true/false on the same input — reset before testing.
+    AnsiProcessor.ANSI_REGEX.lastIndex = 0;
     return AnsiProcessor.ANSI_REGEX.test(input);
   }
 

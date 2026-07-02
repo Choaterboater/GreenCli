@@ -218,6 +218,9 @@ export default function CommandPalette({ onConnect, onLocalShell, onConnectRecen
       runAt(selected);
     } else if (e.key === 'Escape') {
       e.preventDefault();
+      // Don't let the keydown bubble to window-level Escape listeners (e.g.
+      // HelpPanel's) — one press should close only the palette.
+      e.stopPropagation();
       close();
     }
   };
