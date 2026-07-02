@@ -1036,6 +1036,14 @@ async fn mcp_save_server(def: McpServerDef, state: State<'_, AppState>) -> Resul
     mgr.save_config(def).map_err(|e| e.to_string())
 }
 
+/// Rename a server, migrating its stored credentials, materialised creds file,
+/// and live connection to the new name (deleting + re-adding loses all three).
+#[tauri::command]
+async fn mcp_rename_server(from: String, to: String, state: State<'_, AppState>) -> Result<(), String> {
+    let mut mgr = state.mcp_manager.lock().await;
+    mgr.rename_server(&from, &to).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 async fn mcp_delete_server(name: String, state: State<'_, AppState>) -> Result<(), String> {
     // Detach the live client + remove config under a brief lock, then shut the
@@ -1829,6 +1837,44 @@ fn main() {
                 .expect("Failed to get app data dir");
             let state = AppState::new(app_dir)?;
             app.manage(state);
+
+            // Auto-connect enabled MCP servers in the background so the AI's
+            // tools survive an app restart without reconnecting each one by hand.
+            let handle = app.handle();
+            tauri::async_runtime::spawn(async move {
+                let state = handle.state::<AppState>();
+                let defs = {
+                    let mgr = state.mcp_manager.lock().await;
+                    mgr.list_configs()
+                };
+                for def in defs.into_iter().filter(|d| d.enabled) {
+                    let resolved = {
+                        let mgr = state.mcp_manager.lock().await;
+                        mgr.resolve_connect_def(&def.name)
+                    };
+                    let resolved = match resolved {
+                        Ok(r) => r,
+                        Err(e) => {
+                            log::warn!("MCP auto-connect '{}': {}", def.name, e);
+                            continue;
+                        }
+                    };
+                    // Spawn/handshake runs WITHOUT the manager lock (same pattern
+                    // as mcp_connect) so a slow server can't block MCP commands.
+                    match McpClient::connect(&resolved).await {
+                        Ok(client) => {
+                            let old = {
+                                let mut mgr = state.mcp_manager.lock().await;
+                                mgr.install_client(def.name.clone(), client)
+                            };
+                            if let Some(old) = old {
+                                old.shutdown().await;
+                            }
+                        }
+                        Err(e) => log::warn!("MCP auto-connect '{}' failed: {}", def.name, e),
+                    }
+                }
+            });
             Ok(())
         })
         .on_window_event(|event| {
@@ -1905,6 +1951,7 @@ fn main() {
             ai_chat_stream,
             mcp_list_servers,
             mcp_save_server,
+            mcp_rename_server,
             mcp_delete_server,
             mcp_connect,
             mcp_disconnect,
@@ -1925,6 +1972,22 @@ fn main() {
             intent_delete,
             intent_set_result,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while running tauri application")
+        .run(|app_handle, event| {
+            if let tauri::RunEvent::Exit = event {
+                // Tauri v1 leaves via std::process::exit after the event loop, so
+                // kill_on_drop destructors never run — reap MCP server children
+                // explicitly or they outlive the app (not every server exits on
+                // stdin EOF).
+                let state: State<AppState> = app_handle.state();
+                let mgr = state.mcp_manager.clone();
+                tauri::async_runtime::block_on(async move {
+                    let clients = { mgr.lock().await.take_all_clients() };
+                    for c in clients {
+                        c.shutdown().await;
+                    }
+                });
+            }
+        });
 }
