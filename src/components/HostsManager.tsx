@@ -89,7 +89,7 @@ export default function HostsManager() {
     if (chosen.length === 0) return;
 
     // Put imported hosts in a dedicated folder (created once).
-    let folder = folders.find((f) => f.name === 'SSH config');
+    const folder = folders.find((f) => f.name === 'SSH config');
     let folderId = folder?.id;
     if (!folderId) {
       folderId = await invoke<string>('create_folder', { name: 'SSH config' }).catch(

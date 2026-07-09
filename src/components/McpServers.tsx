@@ -7,6 +7,7 @@ import {
   Plug,
   Power,
   PencilLine,
+  Copy,
   Server,
   CheckCircle2,
   ClipboardPaste,
@@ -195,6 +196,28 @@ export default function McpServers() {
     setShowForm(true);
   };
 
+  const duplicate = (s: McpServerDef) => {
+    setEditingName(null);
+    setForm({
+      name: `${s.name} Copy`,
+      transport: s.transport === 'http' ? 'http' : 'stdio',
+      command: s.command,
+      argsText: (s.args || []).join('\n'),
+      envText: Object.entries(s.env || {})
+        .map(([k, v]) => `${k}=${v}`)
+        .join('\n'),
+      cwd: s.cwd || '',
+      url: s.url || '',
+      credsEnvVar: s.credentialsEnvVar || '',
+      credsContent: '',
+      enabled: s.enabled !== false,
+    });
+    setCredsSaved(false);
+    setShowConfigPaste(false);
+    setConfigPasteText('');
+    setShowForm(true);
+  };
+
   const applyConfigPaste = () => {
     const patch = parseMcpConfigPaste(configPasteText);
     if (!patch) {
@@ -371,6 +394,13 @@ export default function McpServers() {
                 title="Edit"
               >
                 <PencilLine size={12} />
+              </button>
+              <button
+                onClick={() => duplicate(s)}
+                className="p-1 rounded-md text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]"
+                title="Duplicate"
+              >
+                <Copy size={12} />
               </button>
               <button
                 onClick={() => remove(s.name)}

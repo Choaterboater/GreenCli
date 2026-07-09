@@ -1,9 +1,15 @@
+/// <reference types="vitest" />
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
 export default defineConfig(async () => ({
   plugins: [react()],
   clearScreen: false,
+  test: {
+    environment: 'jsdom',
+    globals: true,
+    setupFiles: ['./src/setupTests.ts'],
+  },
   build: {
     rollupOptions: {
       output: {
