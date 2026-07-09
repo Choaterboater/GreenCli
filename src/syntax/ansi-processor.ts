@@ -11,28 +11,36 @@ export interface AnsiRun {
 }
 
 export class AnsiProcessor {
-  // Match ANSI escape sequences (CSI SGR codes primarily)
-  private static readonly ANSI_REGEX =
-    /\x1b\[(?:\d{1,4}(?:;\d{1,4})*)?[mGKHfJsuABCD]/g;
+  // ANSI / VT escape-sequence patterns. The prior single CSI-SGR regex missed
+  // OSC strings, non-SGR CSI (private-mode `?`, other final bytes), two-byte
+  // ESC sequences, and stray control chars — mirror utils/terminal.ts coverage.
+  private static readonly OSC_REGEX = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
+  private static readonly CSI_REGEX = /\x1b\[[0-?]*[ -/]*[@-~]/g;
+  private static readonly TWO_BYTE_REGEX = /\x1b[@-Z\\-_]/g;
+  private static readonly CONTROL_REGEX = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g;
 
+  // Digits are optional so a bare `\x1b[m` reset (no params) is recognized.
   private static readonly COLOR_REGEX =
-    /\x1b\[(\d{1,3}(?:;\d{1,3})*)m/;
+    /\x1b\[(\d{1,3}(?:;\d{1,3})*)?m/;
 
   /**
    * Strip all ANSI escape sequences from text
    */
   stripAnsi(input: string): string {
-    return input.replace(AnsiProcessor.ANSI_REGEX, '');
+    return input
+      .replace(AnsiProcessor.OSC_REGEX, '')
+      .replace(AnsiProcessor.CSI_REGEX, '')
+      .replace(AnsiProcessor.TWO_BYTE_REGEX, '')
+      .replace(AnsiProcessor.CONTROL_REGEX, '');
   }
 
   /**
    * Check if text contains ANSI sequences
    */
   hasAnsi(input: string): boolean {
-    // ANSI_REGEX is /g: .test() advances its shared lastIndex, making repeated
-    // calls alternate true/false on the same input — reset before testing.
-    AnsiProcessor.ANSI_REGEX.lastIndex = 0;
-    return AnsiProcessor.ANSI_REGEX.test(input);
+    // ESC + a CSI '['/OSC ']'/two-byte introducer. Non-global so repeated
+    // .test() calls don't share a stateful lastIndex.
+    return /\x1b[@-_]/.test(input);
   }
 
   /**
@@ -95,6 +103,8 @@ export class AnsiProcessor {
     const match = ansi.match(AnsiProcessor.COLOR_REGEX);
     if (!match) return null;
 
+    // Bare `\x1b[m` reset carries no params → no specific color.
+    if (!match[1]) return null;
     const codes = match[1].split(';').map(Number);
 
     // 24-bit true color: ESC[38;2;R;G;Bm or ESC[48;2;R;G;Bm

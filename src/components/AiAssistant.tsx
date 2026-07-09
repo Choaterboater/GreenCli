@@ -22,6 +22,7 @@ import { invoke } from '@tauri-apps/api/tauri';
 import { listen } from '@tauri-apps/api/event';
 import { useSessionStore } from '../store/sessionStore';
 import { useSettingsStore } from '../store/settingsStore';
+import { askConfirm } from '../store/dialogStore';
 import { ChatMessage, Session, AiProvider, AI_PROVIDERS } from '../types';
 import { sleep, stripAnsi, sendAndCapture } from '../utils/terminal';
 import { Intent, evaluateAll, summarize } from '../utils/intent';
@@ -329,6 +330,44 @@ interface ToolOutcome {
 const toolOk = (text: string): ToolOutcome => ({ text, isError: false });
 const toolErr = (text: string): ToolOutcome => ({ text, isError: true });
 
+// ─── Write-confirmation gate for AI-issued device actions ───
+//
+// The AI tool loop is reachable by prompt injection: device output (LLDP
+// neighbor names, banners), MCP-server responses, and REST payloads are fed
+// back to the model as tool results, so injected text could drive a destructive
+// command with no user interaction. The manual paths already confirm writes
+// (ApiExplorer confirms non-GET, Terminal confirms multi-line pastes); this is
+// the code-level equivalent for the AI path. Obvious reads pass with no dialog
+// to keep the diagnostic path fast; everything else is confirmed (fail-safe).
+const AI_READ_ONLY_CMD =
+  /^\s*(do\s+)?(sh(ow)?|disp(lay)?|get|ping|traceroute|tracert|monitor|dir|more|less|cat|tail|head|echo|whoami|who|uptime|date|\?)\b/i;
+const AI_CONFIG_ENTER = /^\s*conf(ig(ure)?)?\b/i;
+const AI_DESTRUCTIVE_CMD =
+  /\b(write|erase|delete|clear|reload|reboot|boot|commit|rollback|copy|format|factory-reset|factory-default|zeroize|request\s+system|install|upgrade)\b/i;
+const AI_DANGER_CMD = /\b(erase|delete|reload|reboot|format|factory|write|zeroize|rollback)\b/i;
+
+/** Heuristic: does this (possibly multi-line) command modify device state? */
+function aiIsWriteCommand(cmd: string): boolean {
+  return cmd.split(/\r?\n/).some((line) => {
+    const c = line.trim();
+    if (!c) return false;
+    if (AI_CONFIG_ENTER.test(c) || AI_DESTRUCTIVE_CMD.test(c)) return true;
+    if (AI_READ_ONLY_CMD.test(c)) return false;
+    return true; // unknown verb (set/no/interface/vlan/…): confirm to be safe
+  });
+}
+
+/** MCP tool names are opaque, so confirm anything that looks like a write. */
+function aiMcpLooksWrite(tool: string): boolean {
+  const looksRead =
+    /(^|_)(get|list|read|show|describe|search|find|query|fetch|status|inspect)\b/i.test(tool);
+  const looksWrite =
+    /(^|_)(write|create|update|delete|remove|set|put|post|patch|reboot|erase|apply|deploy|provision|add|modify|enable|disable|move|rename)\b/i.test(
+      tool
+    );
+  return looksWrite && !looksRead;
+}
+
 async function executeTool(
   name: string,
   args: Record<string, unknown>,
@@ -348,6 +387,15 @@ async function executeTool(
   // tool — a 145-tool cloud server can return megabytes of JSON.
   const mcp = mcpResolve?.get(name);
   if (mcp) {
+    if (aiMcpLooksWrite(mcp.tool)) {
+      const ok = await askConfirm({
+        title: `Run MCP tool ${mcp.tool}?`,
+        message: JSON.stringify(args).slice(0, 500),
+        confirmLabel: 'Run tool',
+        danger: true,
+      });
+      if (!ok) return toolErr('User declined to run this MCP tool.');
+    }
     try {
       return toolOk(capToolResult(await invoke<string>('mcp_call', { server: mcp.server, tool: mcp.tool, args })));
     } catch (e) {
@@ -361,6 +409,15 @@ async function executeTool(
     const method = (args.method as string) || 'GET';
     const path = (args.path as string) || '';
     const body = (args.body as string) || undefined;
+    if (method.toUpperCase() !== 'GET') {
+      const ok = await askConfirm({
+        title: `Run ${method.toUpperCase()} ${path} on ${host}?`,
+        message: body || 'This request may change switch state.',
+        confirmLabel: 'Run request',
+        danger: method.toUpperCase() === 'DELETE',
+      });
+      if (!ok) return toolErr('User declined this write request.');
+    }
     const doReq = () => invoke('api_request', { host, method, path, body });
     try {
       return toolOk(capToolResult(JSON.stringify(await doReq(), null, 2)));
@@ -402,6 +459,15 @@ async function executeTool(
     const method = (args.method as string) || 'GET';
     const path = (args.path as string) || '';
     const body = (args.body as string) || undefined;
+    if (method.toUpperCase() !== 'GET') {
+      const ok = await askConfirm({
+        title: `Run ${method.toUpperCase()} ${path} on ${host}?`,
+        message: body || 'This request may change switch state.',
+        confirmLabel: 'Run request',
+        danger: method.toUpperCase() === 'DELETE',
+      });
+      if (!ok) return toolErr('User declined this write request.');
+    }
     const doReq = () => invoke('aoss_request', { host, method, path, body });
     try {
       return toolOk(capToolResult(JSON.stringify(await doReq(), null, 2)));
@@ -421,6 +487,15 @@ async function executeTool(
     const method = (args.method as string) || 'GET';
     const path = (args.path as string) || '';
     const body = (args.body as string) || undefined;
+    if (method.toUpperCase() !== 'GET') {
+      const ok = await askConfirm({
+        title: `Run ${method.toUpperCase()} ${path} on Apstra?`,
+        message: body || 'This request may change fabric/blueprint state.',
+        confirmLabel: 'Run request',
+        danger: method.toUpperCase() === 'DELETE',
+      });
+      if (!ok) return toolErr('User declined this write request.');
+    }
     try {
       return toolOk(capToolResult(JSON.stringify(await invoke('apstra_request', { method, path, body }), null, 2)));
     } catch (e) {
@@ -447,6 +522,15 @@ async function executeTool(
     }
     if (!activeSession.connected) {
       return toolErr('Error: Terminal session exists but device is not connected.');
+    }
+    if (aiIsWriteCommand(command)) {
+      const ok = await askConfirm({
+        title: `Run on ${activeSession.config.name || activeSession.config.host || 'device'}?`,
+        message: command,
+        confirmLabel: 'Run command',
+        danger: AI_DANGER_CMD.test(command),
+      });
+      if (!ok) return toolErr('User declined to run this command.');
     }
     try {
       const cleaned = await sendAndCapture(activeSession.sessionId, command);
@@ -681,13 +765,17 @@ async function callAnthropicWithTools(
   let fullText = '';
   for (let iter = 0; iter < 8; iter++) {
     if (shouldCancel()) throw new Error('cancelled');
+    // Separate each tool-loop round's prose with a paragraph break, so a round-1
+    // preamble ("Let me check…") isn't glued onto the round-2 summary. Guarding
+    // on text avoids leaving a dangling separator when a round only calls a tool.
+    const prefix = fullText + (fullText ? '\n\n' : '');
     const round = await streamAnthropicOnce(
       // Anthropic rejects an empty tools array once tool blocks appear in the
       // conversation — and an empty list has nothing to offer anyway.
       { model, max_tokens: 2048, system: systemPrompt, messages, ...(allTools.length ? { tools: allTools } : {}) },
-      (t) => onDelta(fullText + t)
+      (t) => onDelta(t ? prefix + t : fullText)
     );
-    fullText += round.text;
+    if (round.text) fullText = prefix + round.text;
 
     if (round.stopReason !== 'tool_use') return fullText;
 
@@ -718,6 +806,7 @@ async function callAnthropicWithTools(
   // still be sent: the API rejects a conversation containing tool_use /
   // tool_result blocks when the request omits it (so dropping it made this
   // wrap-up 400 and silently fall through to the generic message below).
+  const wrapPrefix = fullText + (fullText ? '\n\n' : '');
   const wrap = await streamAnthropicOnce(
     {
       model,
@@ -726,9 +815,9 @@ async function callAnthropicWithTools(
       messages,
       ...(allTools.length ? { tools: allTools, tool_choice: { type: 'none' } } : {}),
     },
-    (t) => onDelta(fullText + t)
+    (t) => onDelta(t ? wrapPrefix + t : fullText)
   ).catch(() => null);
-  if (wrap) fullText += wrap.text;
+  if (wrap?.text) fullText = wrapPrefix + wrap.text;
   return fullText || 'Reached the tool-call limit — see the command output above for what was gathered.';
 }
 
@@ -782,16 +871,23 @@ async function callOpenAiCompatWithTools(
   let fullText = '';
   for (let iter = 0; iter < 8; iter++) {
     if (shouldCancel()) throw new Error('cancelled');
+    // Paragraph-break between rounds (see the Anthropic path for rationale).
+    const prefix = fullText + (fullText ? '\n\n' : '');
     const round = await streamOpenAiOnce(
       provider,
       baseUrl,
       // Several OpenAI-compatible backends 400 on an empty tools array — omit it.
       { model, messages, ...(tools.length ? { tools } : {}) },
-      (t) => onDelta(fullText + t)
+      (t) => onDelta(t ? prefix + t : fullText)
     );
-    fullText += round.content;
+    if (round.content) fullText = prefix + round.content;
 
-    if (round.finishReason !== 'tool_calls' || round.toolCalls.length === 0) {
+    // Execute whenever tool calls were parsed, regardless of the reported
+    // finish_reason: several OpenAI-compatible backends (notably Ollama) stream
+    // populated tool_calls but report finish_reason 'stop', which the old
+    // `finishReason !== 'tool_calls'` guard silently dropped. The iter cap and
+    // the tool_choice:'none' wrap-up below still bound the loop.
+    if (round.toolCalls.length === 0) {
       return fullText;
     }
 
@@ -821,13 +917,14 @@ async function callOpenAiCompatWithTools(
 
   // Final pass with tool use disabled so the model summarises what it gathered
   // instead of trying to call tools it can no longer use.
+  const wrapPrefix = fullText + (fullText ? '\n\n' : '');
   const wrap = await streamOpenAiOnce(
     provider,
     baseUrl,
     { model, messages, ...(tools.length ? { tools, tool_choice: 'none' } : {}) },
-    (t) => onDelta(fullText + t)
+    (t) => onDelta(t ? wrapPrefix + t : fullText)
   ).catch(() => null);
-  if (wrap) fullText += wrap.content;
+  if (wrap?.content) fullText = wrapPrefix + wrap.content;
   return fullText || 'Reached the tool-call limit — see the command output above for what was gathered.';
 }
 
@@ -1002,6 +1099,12 @@ const MessageItem = memo(function MessageItem({ msg }: { msg: DisplayMessage }) 
         </div>
       </div>
     );
+  }
+
+  // The streaming assistant message starts blank; don't render an empty bubble
+  // until it has content or a tool panel — the "Thinking…" pill covers that gap.
+  if (!msg.content && !(msg.toolExecutions && msg.toolExecutions.length > 0) && !msg.isError) {
+    return null;
   }
 
   return (
@@ -1332,6 +1435,13 @@ export default function AiAssistant() {
         });
       }
     };
+    // Surface each tool execution the moment it completes (rather than only when
+    // the whole response finishes), so the tool panel appears live and a Stop
+    // mid-run keeps the partial tool output already gathered.
+    const onToolCall = (tool: ToolExecution) => {
+      collectedTools.push(tool);
+      if (requestSeq.current === myReq) updateLast({ toolExecutions: [...collectedTools] });
+    };
 
     try {
       let text = '';
@@ -1342,7 +1452,7 @@ export default function AiAssistant() {
           activeAgent?.model || settings.aiModel || 'claude-sonnet-4-6',
           systemPrompt,
           activeSession,
-          (tool) => collectedTools.push(tool),
+          onToolCall,
           mcpTools,
           mcpResolve,
           builtinTools,
@@ -1373,7 +1483,7 @@ export default function AiAssistant() {
           apiMessages,
           systemPrompt,
           activeSession,
-          (tool) => collectedTools.push(tool),
+          onToolCall,
           mcpTools,
           mcpResolve,
           builtinTools,
@@ -1595,18 +1705,27 @@ export default function AiAssistant() {
           <MessageItem key={msg.id} msg={msg} />
         ))}
 
-        {/* Loading */}
-        {isLoading && (
-          <div className="flex items-center gap-2">
-            <div className="w-6 h-6 rounded-full bg-[#d2a8ff20] flex items-center justify-center flex-shrink-0">
-              <Bot size={12} className="text-[#d2a8ff]" />
+        {/* Loading — only the standalone "Thinking…" pill until the assistant
+            bubble has actual content or a tool panel to show, so we don't render
+            an empty bubble and a "Thinking…" indicator at the same time. */}
+        {isLoading &&
+          (() => {
+            const last = messages[messages.length - 1];
+            const streaming =
+              last?.role === 'assistant' &&
+              (!!last.content || (last.toolExecutions?.length ?? 0) > 0);
+            return !streaming;
+          })() && (
+            <div className="flex items-center gap-2">
+              <div className="w-6 h-6 rounded-full bg-[#d2a8ff20] flex items-center justify-center flex-shrink-0">
+                <Bot size={12} className="text-[#d2a8ff]" />
+              </div>
+              <div className="flex items-center gap-1.5 px-3 py-2 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg text-[11px] text-[var(--text-secondary)]">
+                <Loader2 size={11} className="animate-spin text-[#d2a8ff]" />
+                Thinking…
+              </div>
             </div>
-            <div className="flex items-center gap-1.5 px-3 py-2 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg text-[11px] text-[var(--text-secondary)]">
-              <Loader2 size={11} className="animate-spin text-[#d2a8ff]" />
-              Thinking…
-            </div>
-          </div>
-        )}
+          )}
       </div>
 
       {/* Input */}

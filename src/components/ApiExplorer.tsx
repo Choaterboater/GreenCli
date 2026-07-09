@@ -536,9 +536,13 @@ export default function ApiExplorer() {
   const copyResponse = () => {
     if (!response) return;
     const text = showTable && tableRows ? toCsv(tableRows, allColumns(tableRows)) : JSON.stringify(response.body, null, 2);
-    navigator.clipboard.writeText(text);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    navigator.clipboard
+      .writeText(text)
+      .then(() => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      })
+      .catch(() => notify.error('Copy failed', 'Could not write to the clipboard.'));
   };
 
   const exportResponse = (format: 'json' | 'csv') => {
@@ -722,7 +726,7 @@ export default function ApiExplorer() {
           )}
           <button
             onClick={() => setShowNewConnection(!showNewConnection)}
-            className="px-2 py-1 text-xs bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white rounded transition-colors"
+            className="px-2 py-1 text-xs bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-[var(--accent-fg)] rounded transition-colors"
           >
             {showNewConnection ? 'Cancel' : 'Connect'}
           </button>
@@ -790,7 +794,7 @@ export default function ApiExplorer() {
             <button
               onClick={handleLogin}
               disabled={loggingIn}
-              className="w-full flex items-center justify-center gap-1.5 px-2 py-1.5 text-xs bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white rounded transition-colors disabled:opacity-60"
+              className="w-full flex items-center justify-center gap-1.5 px-2 py-1.5 text-xs bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-[var(--accent-fg)] rounded transition-colors disabled:opacity-60"
             >
               {loggingIn && <Loader2 size={12} className="animate-spin" />}
               {loggingIn ? 'Logging in…' : 'Login & Save'}
@@ -951,7 +955,7 @@ export default function ApiExplorer() {
           <button
             onClick={executeRequest}
             disabled={loading || !endpointPath}
-            className="flex items-center justify-center gap-2 h-8 text-xs bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-50 disabled:hover:bg-[var(--accent)] text-white rounded transition-colors"
+            className="flex items-center justify-center gap-2 h-8 text-xs bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-50 disabled:hover:bg-[var(--accent)] text-[var(--accent-fg)] rounded transition-colors"
           >
             {loading ? (
               <>

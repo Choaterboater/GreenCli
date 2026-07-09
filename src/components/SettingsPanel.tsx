@@ -100,19 +100,21 @@ export default function SettingsPanel() {
       .catch(() => {});
   };
 
-  // The key otherwise saves only on blur — closing Settings with Escape
-  // unmounts the panel without a blur and silently discarded a typed key.
+  // The key otherwise saves only on the input's onBlur. Every close path (Escape,
+  // backdrop mousedown, X button) just sets showSettings=false, which hides the
+  // panel via `return null` below WITHOUT unmounting — App renders <SettingsPanel/>
+  // unconditionally — so React fires neither a blur nor an unmount cleanup. Flush
+  // any pending key on the open→closed transition instead.
   const keyFlushRef = useRef({ keyInput, aiProvider });
   keyFlushRef.current = { keyInput, aiProvider };
-  useEffect(
-    () => () => {
+  const wasOpenRef = useRef(showSettings);
+  useEffect(() => {
+    if (wasOpenRef.current && !showSettings) {
       const { keyInput: pending, aiProvider: provider } = keyFlushRef.current;
-      if (pending) {
-        invoke('ai_set_key', { provider, key: pending }).catch(() => {});
-      }
-    },
-    []
-  );
+      if (pending) invoke('ai_set_key', { provider, key: pending }).catch(() => {});
+    }
+    wasOpenRef.current = showSettings;
+  }, [showSettings]);
 
   const addProfile = () => {
     const name = profileName.trim();
@@ -954,7 +956,7 @@ export default function SettingsPanel() {
                           style={{ background: val ? 'var(--accent)' : 'var(--border-strong)' }}
                         >
                           <div
-                            className="absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform"
+                            className="absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow-sm transition-transform"
                             style={{ transform: val ? 'translateX(16px)' : 'translateX(0)' }}
                           />
                         </div>
@@ -1108,7 +1110,7 @@ export default function SettingsPanel() {
                 style={{ background: settings.verifyDeviceTls ? 'var(--accent)' : 'var(--border-strong)' }}
               >
                 <div
-                  className="absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform"
+                  className="absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow-sm transition-transform"
                   style={{ transform: settings.verifyDeviceTls ? 'translateX(16px)' : 'translateX(0)' }}
                 />
               </div>
