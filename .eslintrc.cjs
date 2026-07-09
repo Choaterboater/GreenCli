@@ -11,6 +11,13 @@ module.exports = {
   plugins: [],
   rules: {
     '@typescript-eslint/no-explicit-any': 'off', // Lots of 'any' in the codebase initially
-    '@typescript-eslint/no-unused-vars': ['warn', { argsIgnorePattern: '^_' }]
+    '@typescript-eslint/no-unused-vars': ['warn', { argsIgnorePattern: '^_' }],
+    'no-control-regex': 'off',
+    'no-useless-escape': 'off',
+    'react-hooks/rules-of-hooks': 'error',
+    'react-hooks/exhaustive-deps': 'warn',
+    'react-hooks/set-state-in-effect': 'off',
+    'react-hooks/refs': 'off',
+    'react-hooks/preserve-manual-memoization': 'off'
   },
 };
