@@ -9,6 +9,9 @@ export default defineConfig(async () => ({
     environment: 'jsdom',
     globals: true,
     setupFiles: ['./src/setupTests.ts'],
+    // Only Vitest specs under src/; e2e/*.spec.ts belongs to Playwright and
+    // throws "test() was called here" if Vitest's default glob picks it up.
+    include: ['src/**/*.{test,spec}.{ts,tsx}'],
   },
   build: {
     rollupOptions: {
