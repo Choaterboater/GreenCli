@@ -58,6 +58,8 @@ In a plain browser the UI renders but anything that calls the Rust backend
 
 ```bash
 npm run build               # type-check + bundle the frontend (tsc && vite build)
+npm run lint                # run ESLint on the frontend code
+npx vitest run              # run frontend unit tests
 npm run tauri-build         # produce the native installer/app in src-tauri/target/release/
 ```
 
