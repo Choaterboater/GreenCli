@@ -210,6 +210,42 @@ A 49-agent review (8 finder dimensions, every finding adversarially verified) co
 
 All green: `cargo check` + `tsc` + `vite build`; shell/Settings smoke-tested in-browser.
 
+## ✅ Done — Pass 14 (full-codebase audit + fixes, 2026-07-09)
+
+A comprehensive multi-agent audit (one reviewer per subsystem + adversarial
+verification of every finding) surfaced **60 confirmed** bugs/perf/security/
+robustness issues and **20** visual/feature/quality items. Fixes were then
+implemented one-agent-per-file (conflict-free) and reconciled centrally.
+All green: `tsc` + `vite build` + `cargo check` (0 warnings) + vault unit tests.
+
+### Security / vault
+- **KDF params persisted per-vault** — the Argon2id m/t/p cost is now stored in the envelope (serde-defaulted to the 0.5.x values), so a future `argon2` default change can never lock users out. Backward-compat covered by a new regression test (a vault whose JSON lacks the fields still unlocks).
+- **Durable vault writes** — `save()` now creates the temp 0600-from-birth, `fsync`s it, renames, then `fsync`s the parent dir; a present-but-empty `vault.enc` is refused (not silently re-initialized), closing a power-loss credential-loss window. chmod failures now propagate.
+- **Master-password floor 4 → 12** (frontend + backend, create/rotate paths only), plus `vault_change_password` finally exposed as a command.
+- **AI write-confirmation gate** — the AI tool loop (prompt-injection-reachable) now confirms config-changing / destructive `send_terminal_command`, non-GET REST, and write-looking MCP calls, matching the manual paths.
+- **Bulk-runner CSV formula-injection** neutralized; known_hosts now namespaced per key-algorithm (no spurious MITM lockout).
+
+### Correctness / robustness
+- Terminal **Ctrl+C** no longer swallowed as copy while a selection persists (SIGINT reaches the device); hidden/popped terminals no longer push bogus resizes to their PTYs.
+- Auto-reconnect: **generation-checked atomic swap** (no resurrecting a just-disconnected session), and the remote PTY keeps the user's real size across reconnect.
+- MCP HTTP transport: standalone SSE stream re-establishes instead of marking the client dead; `error: null` no longer misread; session-expiry (404) re-inits; real down-servers marked dead after a failure streak.
+- Telnet TCP_NODELAY + connect timeout + bounded IAC carry; SFTP downloads no longer truncate the local file on failure; many smaller display/logic fixes across editor, API explorer, stores, and syntax.
+
+### Perf
+- SFTP transfers no longer hold the shared SSH handle lock for the whole transfer; terminal trigger-matching compiles user regexes once and scans line-bounded (ReDoS defanged); terminal subscribes to only the settings it uses.
+
+### Visual
+- WCAG contrast fixes (muted text, accent-on-fill buttons), visible selection highlight and light-mode toggle knob, StatusBar truncation, `prefers-reduced-motion`.
+
+### Features
+- **Serial BREAK** wired end-to-end (`serial_send_break`) for boot-interrupt / ROMMON.
+- **RSA key generation** available behind the opt-in `rsa-keys` cargo feature (Ed25519 remains default).
+
+### Deferred (see backlog)
+Vault idle auto-lock; SFTP progress/queue (needs event plumbing + UI); per-vendor
+API-client de-serialization off the lock (medium perf); local-PTY orphaned-job
+reap (needs `libc`, historically avoided). Feature ideas captured in the PR.
+
 ## ⏭️ Next — remaining backlog
 
 - **Vault auto-lock on idle** — MEDIUM, S.
