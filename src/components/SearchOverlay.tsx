@@ -12,6 +12,8 @@ const SECTION_CHIPS = [
   { label: 'aaa', pattern: '^aaa ' },
   { label: 'ntp', pattern: '^ntp ' },
   { label: 'hostname', pattern: '^hostname ' },
+  { label: 'error', pattern: '(?i)error|fail|invalid' },
+  { label: 'warning', pattern: '(?i)warn' },
 ];
 
 export default function SearchOverlay() {
