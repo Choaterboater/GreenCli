@@ -197,6 +197,18 @@ impl Connection for LocalConnection {
             // kill() alone leaves a defunct process: portable-pty's unix Child
             // doesn't reap on drop, so wait() on a blocking thread to collect
             // it (also reaps shells that already exited on their own).
+            //
+            // NOTE: kill() signals only the shell's own PID (SIGHUP, then SIGKILL
+            // after a short grace) — not its process group or session. Ordinary
+            // background jobs are still cleaned up (an interactive shell hangs up
+            // its jobs on SIGHUP, and same-group jobs die with the session leader),
+            // but a disown'd job — or one that traps/ignores SIGHUP — that keeps the
+            // PTY slave open survives. While any slave fd stays open, the master
+            // reader thread spawned in connect() never sees EOF, so that thread and
+            // its forwarder task linger until the stray job exits. Fully reaping the
+            // session (killpg) or interrupting the blocked reader (self-pipe/poll)
+            // needs the `libc` crate, which this codebase intentionally avoids
+            // taking as a dependency (see the same trade-off noted in ai/mod.rs).
             tokio::task::spawn_blocking(move || {
                 let mut child = child.blocking_lock();
                 let _ = child.kill();

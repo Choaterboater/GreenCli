@@ -5,7 +5,7 @@ use serde::Serialize;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, WriteHalf};
 use tokio::net::TcpStream;
-use tokio::sync::mpsc::{channel, Sender};
+use tokio::sync::mpsc::channel;
 use tokio::sync::Mutex;
 
 // Telnet command codes (RFC 854) — only those actually handled below.
@@ -33,7 +33,6 @@ pub struct TelnetConnection {
     pub session_id: String,
     pub config: TelnetConfig,
     pub write_half: Option<Arc<Mutex<WriteHalf<TcpStream>>>>,
-    pub data_sender: Option<Sender<Vec<u8>>>,
     pub data_receiver: Option<tokio::sync::mpsc::Receiver<Vec<u8>>>,
     pub reader_task: Option<tokio::task::JoinHandle<()>>,
     pub connected: bool,
@@ -48,7 +47,6 @@ impl TelnetConnection {
             session_id,
             config,
             write_half: None,
-            data_sender: None,
             data_receiver: None,
             reader_task: None,
             connected: false,
@@ -230,9 +228,19 @@ impl TelnetConnection {
 impl Connection for TelnetConnection {
     async fn connect(&mut self) -> Result<ConnectResponse, AppError> {
         let addr = format!("{}:{}", self.config.host, self.config.port);
-        let mut stream = TcpStream::connect(&addr)
-            .await
-            .map_err(|e| AppError::TelnetError(format!("Connect: {}", e)))?;
+        // Bound the connect so an unreachable host (firewalled/down, dropping
+        // SYNs) fails fast instead of blocking on the OS default (~1-2 min);
+        // 12s matches the connect_timeout used elsewhere (ai/mod.rs).
+        let mut stream = tokio::time::timeout(
+            std::time::Duration::from_secs(12),
+            TcpStream::connect(&addr),
+        )
+        .await
+        .map_err(|_| AppError::TelnetError(format!("Connect: timed out connecting to {}", addr)))?
+        .map_err(|e| AppError::TelnetError(format!("Connect: {}", e)))?;
+        // Disable Nagle so small interactive writes (keystrokes, pastes) flush
+        // promptly instead of stalling on the Nagle/delayed-ACK interaction.
+        let _ = stream.set_nodelay(true);
 
         self.negotiate_options(&mut stream).await?;
 
@@ -254,7 +262,19 @@ impl Connection for TelnetConnection {
                     Ok(n) => {
                         let mut chunk = std::mem::take(&mut carry);
                         chunk.extend_from_slice(&buf[..n]);
-                        let keep = TelnetConnection::incomplete_tail_len(&chunk);
+                        // Never carry more than MAX_CARRY bytes waiting for a
+                        // split telnet sequence to complete. A peer that opens
+                        // `IAC SB` and never sends `IAC SE` would otherwise grow
+                        // `carry` ~4 KiB per read without bound (OOM). Give up:
+                        // keep=0 lets process_telnet_data drain the whole chunk
+                        // (it swallows the unterminated SB) and `carry` — emptied
+                        // by mem::take above — stays empty. Real subnegotiations
+                        // (NAWS=9B, term-type a few dozen) never approach this cap.
+                        const MAX_CARRY: usize = 8192;
+                        let mut keep = TelnetConnection::incomplete_tail_len(&chunk);
+                        if keep > MAX_CARRY {
+                            keep = 0;
+                        }
                         let split = chunk.len() - keep;
                         if keep > 0 {
                             carry = chunk[split..].to_vec();
@@ -275,7 +295,6 @@ impl Connection for TelnetConnection {
             }
         });
 
-        self.data_sender = None;
         self.write_half = Some(write_half);
         self.data_receiver = Some(data_rx);
         self.reader_task = Some(reader_task);
@@ -292,9 +311,8 @@ impl Connection for TelnetConnection {
         self.connected = false;
         // Shut the write half down first so the peer sees a clean FIN…
         if let Some(wh) = self.write_half.take() {
-            if let Ok(mut w) = wh.try_lock() {
-                let _ = w.shutdown().await;
-            }
+            let mut w = wh.lock().await;
+            let _ = w.shutdown().await;
         }
         // …then abort the reader task so its read half drops and the TCP
         // socket is fully released (previously it lingered until the peer
@@ -302,7 +320,6 @@ impl Connection for TelnetConnection {
         if let Some(task) = self.reader_task.take() {
             task.abort();
         }
-        self.data_sender = None;
         self.data_receiver = None;
         Ok(())
     }

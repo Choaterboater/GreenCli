@@ -158,16 +158,29 @@ impl ArubaCxClient {
 
         let mut interfaces = Vec::new();
         if let Some(if_map) = data.as_object() {
+            let total = if_map.len();
             for (name, val) in if_map {
                 let mut iface: Interface = match serde_json::from_value(val.clone()) {
                     Ok(i) => i,
-                    Err(_) => continue,
+                    Err(e) => {
+                        log::warn!("aruba_cx: skipping interface '{}': {}", name, e);
+                        continue;
+                    }
                 };
                 iface.id = name.clone();
                 if iface.name.is_empty() {
                     iface.name = name.clone();
                 }
                 interfaces.push(iface);
+            }
+            // Distinguish a genuinely empty device (total == 0) from a response
+            // whose every entry failed to deserialize — the latter would
+            // otherwise return an empty list indistinguishable from "no interfaces".
+            if total > 0 && interfaces.is_empty() {
+                return Err(AppError::ApiError(format!(
+                    "Interfaces response had {} entries but none matched the expected shape (AOS-CX may use an unexpected attribute representation)",
+                    total
+                )));
             }
         }
         Ok(interfaces)
@@ -185,15 +198,30 @@ impl ArubaCxClient {
 
         let mut vlans = Vec::new();
         if let Some(vlan_map) = data.as_object() {
+            let total = vlan_map.len();
             for (id_str, val) in vlan_map {
                 if let Ok(id) = id_str.parse::<u32>() {
                     let mut vlan: Vlan = match serde_json::from_value(val.clone()) {
                         Ok(v) => v,
-                        Err(_) => continue,
+                        Err(e) => {
+                            log::warn!("aruba_cx: skipping vlan '{}': {}", id_str, e);
+                            continue;
+                        }
                     };
                     vlan.id = id;
                     vlans.push(vlan);
+                } else {
+                    log::warn!("aruba_cx: skipping vlan with non-numeric key '{}'", id_str);
                 }
+            }
+            // As in get_interfaces: an all-fail response must not masquerade as
+            // an empty VLAN list. (total counts non-numeric keys too, so a
+            // fully non-numeric-keyed map also surfaces here.)
+            if total > 0 && vlans.is_empty() {
+                return Err(AppError::ApiError(format!(
+                    "VLANs response had {} entries but none matched the expected shape (AOS-CX may use an unexpected attribute representation)",
+                    total
+                )));
             }
         }
         Ok(vlans)
@@ -342,6 +370,14 @@ impl ArubaCxClient {
 
         if response.status().is_success() {
             Ok(response)
+        } else if matches!(response.status().as_u16(), 401 | 403) {
+            // Session cookie expired or was rejected — surface an actionable
+            // AuthError instead of a raw "HTTP error: 401" so the UI can prompt
+            // a reconnect. The client caches no credentials, so it cannot
+            // self-re-login here.
+            Err(AppError::AuthError(
+                "REST session expired or unauthorized — reconnect to the device.".into(),
+            ))
         } else {
             Err(AppError::ApiError(format!(
                 "HTTP error: {} - {}",

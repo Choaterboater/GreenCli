@@ -93,6 +93,45 @@ impl SessionManager {
         Ok(generation)
     }
 
+    /// Atomically swap in `connection` for `session_id` ONLY if the current
+    /// entry's generation still equals `expected_gen`. Returns the NEW
+    /// generation on success, or `None` if ownership was lost (a user disconnect
+    /// removed the entry, or a newer `connect` replaced it). The check and the
+    /// swap happen under a single map-lock with no await between them, so a
+    /// concurrent disconnect/connect can't slip in between — closing the TOCTOU
+    /// window that `contains_gen` + `add_session` left open. On `None` the map is
+    /// left untouched and the passed-in connection is disconnected here (Drop
+    /// alone never sends an SSH application-level disconnect).
+    pub async fn replace_if_gen(
+        &self,
+        session_id: &str,
+        expected_gen: u64,
+        connection: Box<dyn Connection>,
+    ) -> Option<u64> {
+        let generation = self.next_generation.fetch_add(1, Ordering::Relaxed) + 1;
+        let old = {
+            let mut sessions = self.sessions.lock().await;
+            match sessions.get(session_id) {
+                Some((gen, _)) if *gen == expected_gen => sessions.insert(
+                    session_id.to_string(),
+                    (generation, Arc::new(Mutex::new(connection))),
+                ),
+                _ => {
+                    // Ownership lost: leave the map untouched and tear down the
+                    // connection we were handed so we don't leak an SSH session.
+                    drop(sessions);
+                    let mut connection = connection;
+                    let _ = connection.disconnect().await;
+                    return None;
+                }
+            }
+        };
+        if let Some((_, old)) = old {
+            let _ = Self::disconnect_with_timeout(session_id, old).await;
+        }
+        Some(generation)
+    }
+
     /// Unconditionally remove a session (user-driven disconnect).
     pub async fn remove_session(&self, session_id: &str) -> Result<(), AppError> {
         // Remove under the map lock FIRST (the id becomes immediately
@@ -164,6 +203,18 @@ impl SessionManager {
             return Err(AppError::SessionNotFound(session_id.to_string()));
         }
         conn.resize(cols, rows).await
+    }
+
+    /// Send a line BREAK on the session (serial only; other transports report it
+    /// unsupported via the Connection trait default).
+    pub async fn send_break(&self, session_id: &str) -> Result<(), AppError> {
+        let conn = {
+            let sessions = self.sessions.lock().await;
+            sessions.get(session_id).map(|(_, conn)| conn.clone())
+        }
+        .ok_or_else(|| AppError::SessionNotFound(session_id.to_string()))?;
+        let conn = conn.lock().await;
+        conn.send_break().await
     }
 
     /// Whether the session is still registered AND still the same registration

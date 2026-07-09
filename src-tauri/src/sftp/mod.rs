@@ -62,19 +62,46 @@ pub async fn download(
         .open(remote_path)
         .await
         .map_err(|e| AppError::SshError(format!("SFTP open '{}': {}", remote_path, e)))?;
-    let mut local_file = tokio::fs::File::create(local_path)
+    // Write to a sibling temp file and atomically rename on success. A failed or
+    // aborted transfer then never truncates or replaces the user's existing file
+    // (tokio::fs::rename replaces the destination atomically on every platform).
+    let tmp_path = format!("{}.part", local_path);
+    let mut local_file = tokio::fs::File::create(&tmp_path)
         .await
-        .map_err(|e| AppError::SshError(format!("Create local '{}': {}", local_path, e)))?;
+        .map_err(|e| AppError::SshError(format!("Create local '{}': {}", tmp_path, e)))?;
     // Stream in chunks rather than buffering the whole file in RAM — a firmware
-    // image / capture can be GBs and would otherwise OOM the app.
-    let len = tokio::io::copy(&mut remote_file, &mut local_file)
-        .await
-        .map_err(|e| AppError::SshError(format!("SFTP download '{}': {}", remote_path, e)))?;
+    // image / capture can be GBs and would otherwise OOM the app. Buffer 256 KiB
+    // per read so each SFTP READ fills the negotiated max packet (~256 KiB) rather
+    // than tokio::io::copy's fixed 8 KiB, cutting round-trips ~32x on high-RTT links.
+    let mut reader = tokio::io::BufReader::with_capacity(256 * 1024, &mut remote_file);
+    let len = match tokio::io::copy_buf(&mut reader, &mut local_file).await {
+        Ok(n) => n,
+        Err(e) => {
+            let _ = tokio::fs::remove_file(&tmp_path).await;
+            return Err(AppError::SshError(format!(
+                "SFTP download '{}': {}",
+                remote_path, e
+            )));
+        }
+    };
     // A failed final write (disk full, quota) must not report success.
-    local_file
-        .flush()
-        .await
-        .map_err(|e| AppError::SshError(format!("Write local '{}': {}", local_path, e)))?;
+    if let Err(e) = local_file.flush().await {
+        drop(local_file);
+        let _ = tokio::fs::remove_file(&tmp_path).await;
+        return Err(AppError::SshError(format!(
+            "Write local '{}': {}",
+            local_path, e
+        )));
+    }
+    // Close the fd before renaming — Windows rejects renaming an open file.
+    drop(local_file);
+    if let Err(e) = tokio::fs::rename(&tmp_path, local_path).await {
+        let _ = tokio::fs::remove_file(&tmp_path).await;
+        return Err(AppError::SshError(format!(
+            "Finalize local '{}': {}",
+            local_path, e
+        )));
+    }
     Ok(len)
 }
 
@@ -128,15 +155,32 @@ pub async fn upload(
         .create(remote_path)
         .await
         .map_err(|e| AppError::SshError(format!("SFTP create '{}': {}", remote_path, e)))?;
-    // Stream in chunks rather than reading the whole local file into RAM.
-    let len = tokio::io::copy(&mut local_file, &mut remote_file)
-        .await
-        .map_err(|e| AppError::SshError(format!("SFTP upload '{}': {}", remote_path, e)))?;
+    // Stream in chunks rather than reading the whole local file into RAM. Buffer
+    // the local reads at 256 KiB so we emit fewer, fuller WRITE packets and keep
+    // russh-sftp's write pipeline full (do NOT buffer the remote writer — that
+    // would coalesce writes and defeat its concurrent-write pipelining).
+    let mut reader = tokio::io::BufReader::with_capacity(256 * 1024, &mut local_file);
+    let len = match tokio::io::copy_buf(&mut reader, &mut remote_file).await {
+        Ok(n) => n,
+        Err(e) => {
+            // Don't leave a truncated file at the real remote path on failure.
+            let _ = remote_file.shutdown().await;
+            let _ = sftp.remove_file(remote_path).await;
+            return Err(AppError::SshError(format!(
+                "SFTP upload '{}': {}",
+                remote_path, e
+            )));
+        }
+    };
     // shutdown() carries the SFTP flush/close status — ignoring it reported
-    // truncated/failed uploads as successful.
-    remote_file
-        .shutdown()
-        .await
-        .map_err(|e| AppError::SshError(format!("SFTP close '{}': {}", remote_path, e)))?;
+    // truncated/failed uploads as successful. A failed close must likewise not
+    // leave a truncated file behind.
+    if let Err(e) = remote_file.shutdown().await {
+        let _ = sftp.remove_file(remote_path).await;
+        return Err(AppError::SshError(format!(
+            "SFTP close '{}': {}",
+            remote_path, e
+        )));
+    }
     Ok(len)
 }

@@ -3,10 +3,10 @@ use crate::ssh::client::{ConnectResponse, Connection};
 use async_trait::async_trait;
 use serde::Serialize;
 use std::sync::Arc;
-use tokio::io::{AsyncReadExt, AsyncWriteExt, ReadHalf, WriteHalf};
+use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc::channel;
 use tokio::sync::Mutex;
-use tokio_serial::{DataBits, Parity, SerialPortBuilderExt, SerialStream, StopBits};
+use tokio_serial::{DataBits, Parity, SerialPort, SerialPortBuilderExt, SerialStream, StopBits};
 
 #[derive(Clone, Debug, Serialize)]
 pub struct SerialConfig {
@@ -21,7 +21,11 @@ pub struct SerialConfig {
 pub struct SerialConnection {
     pub session_id: String,
     pub config: SerialConfig,
-    write_half: Option<Arc<Mutex<WriteHalf<SerialStream>>>>,
+    // The whole serial stream, shared between the reader task and the
+    // write/break paths. It is deliberately NOT split into read/write halves:
+    // a serial BREAK (SerialPort::set_break) needs the underlying port, which
+    // the opaque tokio::io split halves don't expose.
+    stream: Option<Arc<Mutex<SerialStream>>>,
     data_receiver: Option<tokio::sync::mpsc::Receiver<Vec<u8>>>,
     reader_task: Option<tokio::task::JoinHandle<()>>,
     connected: bool,
@@ -32,7 +36,7 @@ impl SerialConnection {
         Self {
             session_id,
             config,
-            write_half: None,
+            stream: None,
             data_receiver: None,
             reader_task: None,
             connected: false,
@@ -41,6 +45,28 @@ impl SerialConnection {
 
     pub fn take_data_receiver(&mut self) -> Option<tokio::sync::mpsc::Receiver<Vec<u8>>> {
         self.data_receiver.take()
+    }
+
+    /// Send a serial BREAK: assert the break condition, hold it briefly, then
+    /// release it. Network gear watches for a BREAK during boot to interrupt the
+    /// boot sequence and drop into ROMMON / the bootloader (Cisco Ctrl-Break,
+    /// Juniper/Aruba boot interrupt, etc.).
+    pub async fn send_break(&self) -> Result<(), AppError> {
+        if let Some(ref stream) = self.stream {
+            let guard = stream.lock().await;
+            guard
+                .set_break()
+                .map_err(|e| AppError::SerialError(format!("Set break: {}", e)))?;
+            // A BREAK must be held longer than one character time; ~250ms is the
+            // conventional console value the boot ROMs look for.
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            guard
+                .clear_break()
+                .map_err(|e| AppError::SerialError(format!("Clear break: {}", e)))?;
+            Ok(())
+        } else {
+            Err(AppError::SerialError("Serial port not connected".into()))
+        }
     }
 
     fn data_bits(&self) -> DataBits {
@@ -78,28 +104,42 @@ impl Connection for SerialConnection {
             .open_native_async()
             .map_err(|e| AppError::SerialError(format!("Open {}: {}", self.config.port, e)))?;
 
-        let (read_half, write_half): (ReadHalf<SerialStream>, WriteHalf<SerialStream>) =
-            tokio::io::split(stream);
+        // Share the whole stream (instead of tokio::io::split) so send() and a
+        // BREAK can both reach the underlying port. try_read keeps the reader
+        // non-blocking, so it only holds the lock momentarily.
+        let stream = Arc::new(Mutex::new(stream));
         let (data_tx, data_rx) = channel::<Vec<u8>>(1024);
 
         // Spawn background reader forwarding serial bytes to the frontend channel.
+        let reader_stream = stream.clone();
         let reader_task = tokio::spawn(async move {
-            let mut reader = read_half;
             let mut buf = vec![0u8; 4096];
             loop {
-                match reader.read(&mut buf).await {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        if data_tx.send(buf[..n].to_vec()).await.is_err() {
+                // Grab whatever is buffered without holding the lock across an
+                // await, so writes / a BREAK aren't starved of the port.
+                let chunk = {
+                    let mut guard = reader_stream.lock().await;
+                    match guard.try_read(&mut buf) {
+                        Ok(0) => break,
+                        Ok(n) => Some(buf[..n].to_vec()),
+                        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => None,
+                        Err(_) => break,
+                    }
+                };
+                match chunk {
+                    Some(data) => {
+                        if data_tx.send(data).await.is_err() {
                             break;
                         }
                     }
-                    Err(_) => break,
+                    // Nothing pending: yield briefly (lock released) before
+                    // polling again rather than spinning the CPU.
+                    None => tokio::time::sleep(std::time::Duration::from_millis(5)).await,
                 }
             }
         });
 
-        self.write_half = Some(Arc::new(Mutex::new(write_half)));
+        self.stream = Some(stream);
         self.data_receiver = Some(data_rx);
         self.reader_task = Some(reader_task);
         self.connected = true;
@@ -113,19 +153,20 @@ impl Connection for SerialConnection {
 
     async fn disconnect(&mut self) -> Result<(), AppError> {
         self.connected = false;
-        self.write_half = None;
-        // Abort the reader so its read half drops and the serial port is
-        // released — otherwise it stayed open and blocked re-opening the port.
+        // Abort the reader so it drops its handle to the stream; once that and
+        // self.stream (below) are both gone the serial port is released —
+        // otherwise it stayed open and blocked re-opening the port.
         if let Some(task) = self.reader_task.take() {
             task.abort();
         }
+        self.stream = None;
         self.data_receiver = None;
         Ok(())
     }
 
     async fn send(&self, data: &[u8]) -> Result<(), AppError> {
-        if let Some(ref wh) = self.write_half {
-            let mut w = wh.lock().await;
+        if let Some(ref stream) = self.stream {
+            let mut w = stream.lock().await;
             w.write_all(data)
                 .await
                 .map_err(|e| AppError::SerialError(format!("Write error: {}", e)))?;
@@ -149,5 +190,9 @@ impl Connection for SerialConnection {
 
     fn get_session_id(&self) -> String {
         self.session_id.clone()
+    }
+
+    async fn send_break(&self) -> Result<(), AppError> {
+        SerialConnection::send_break(self).await
     }
 }
