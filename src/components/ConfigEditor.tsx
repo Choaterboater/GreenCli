@@ -23,7 +23,6 @@ import {
   RefreshCw,
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/tauri';
-import { open as openDialog, save as saveDialog } from '@tauri-apps/api/dialog';
 import { useSessionStore } from '../store/sessionStore';
 import { useSettingsStore } from '../store/settingsStore';
 import { sleep, stripAnsi as stripAnsiUtil, hasAnsi, sendAndCapture } from '../utils/terminal';
@@ -33,72 +32,12 @@ import { generateId } from '../utils';
 import { profileForSession } from '../utils/deviceProfiles';
 import { ArubaHighlighter } from '../syntax';
 import { useTheme } from '../hooks/useTheme';
-
-// ─── Tauri / browser file I/O ───
-
-const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
-
-async function tauriOpen(): Promise<string | null> {
-  const result = await openDialog({
-    title: 'Open File',
-    filters: [{ name: 'All Files', extensions: ['*'] }],
-    multiple: false,
-  });
-  return typeof result === 'string' ? result : null;
-}
-
-async function tauriSave(defaultName: string): Promise<string | null> {
-  const result = await saveDialog({
-    title: 'Save File',
-    defaultPath: defaultName,
-    filters: [{ name: 'All Files', extensions: ['*'] }],
-  });
-  return result ?? null;
-}
-
-// Read/write via Rust commands rather than the webview `fs` API, which is
-// scope-limited (it refuses arbitrary paths like ~/Downloads/...) and chokes on
-// non-UTF8 bytes common in terminal-capture logs.
-async function tauriReadText(path: string): Promise<string> {
-  return invoke<string>('read_file_text', { path });
-}
-
-async function tauriWriteText(path: string, data: string): Promise<void> {
-  await invoke('write_file_text', { path, contents: data });
-}
+import { isTauri, tauriOpen, tauriSave, tauriReadText, tauriWriteText, browserOpen, browserSave } from '../utils/fileSystem';
 
 // Strip terminal/ANSI control sequences so captured logs (PuTTY/`show tech`,
 // shared utils
 const stripTerminalSequences = stripAnsiUtil;
 const looksLikeTerminalCapture = hasAnsi;
-
-function browserOpen(): Promise<{ name: string; content: string } | null> {
-  return new Promise((resolve) => {
-    const input = document.createElement('input');
-    input.type = 'file';
-    // accept everything
-    input.onchange = () => {
-      const file = input.files?.[0];
-      if (!file) { resolve(null); return; }
-      const reader = new FileReader();
-      reader.onload = (e) => resolve({ name: file.name, content: e.target?.result as string ?? '' });
-      reader.onerror = () => resolve(null);
-      reader.readAsText(file);
-    };
-    input.oncancel = () => resolve(null);
-    input.click();
-  });
-}
-
-function browserSave(content: string, filename: string) {
-  const blob = new Blob([content], { type: 'text/plain' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(url);
-}
 
 function basename(path: string): string {
   return path.replace(/\\/g, '/').split('/').pop() || path;
