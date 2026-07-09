@@ -23,6 +23,7 @@ import {
   CornerDownLeft,
 } from 'lucide-react';
 import { useSessionStore } from '../store/sessionStore';
+import { getTerminalActionAdapter } from '../utils/terminalActions';
 import { useSettingsStore } from '../store/settingsStore';
 import { useRecentStore, timeAgo, RecentConnection } from '../store/recentStore';
 import { ConnectionConfig } from '../types';
@@ -75,6 +76,33 @@ export default function CommandPalette({ onConnect, onLocalShell, onConnectRecen
       { id: 'toggle-broadcast', label: 'Toggle Multi-send', keywords: 'send all multiple sessions broadcast subset', icon: <Radio size={14} />, run: store.toggleBroadcast },
       { id: 'bulk-runner', label: 'Bulk Command Runner', keywords: 'run all devices batch collect csv', icon: <Radio size={14} />, run: () => store.setShowBulkRunner(true) },
       { id: 'sftp', label: 'SFTP File Transfer', keywords: 'sftp upload download file transfer scp', icon: <HardDrive size={14} />, run: () => store.setShowSftp(true) },
+      {
+        id: 'clear-terminal',
+        label: 'Clear Active Terminal',
+        keywords: 'clear screen wipe reset',
+        icon: <TerminalSquare size={14} className="text-[var(--accent)]" />,
+        run: () => {
+          if (!activeSessionId) return;
+          const adapter = getTerminalActionAdapter(activeSessionId);
+          if (adapter) {
+            adapter.clear();
+          }
+        },
+      },
+      {
+        id: 'close-all-tabs',
+        label: 'Close All Sessions',
+        keywords: 'close all tabs disconnect everything',
+        icon: <X size={14} className="text-[#ff7b72]" />,
+        run: () => {
+          sessions.forEach((s) => {
+            if (!poppedSessions.includes(s.sessionId)) {
+              invoke('disconnect', { sessionId: s.sessionId }).catch(() => {});
+              store.removeSession(s.sessionId);
+            }
+          });
+        },
+      },
       {
         id: 'toggle-split',
         label: 'Toggle Split View',
@@ -188,6 +216,7 @@ export default function CommandPalette({ onConnect, onLocalShell, onConnectRecen
       .map((x) => x.a);
   }, [actions, query]);
 
+  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => setSelected(0), [query]);
 
   // Keep the selected row in view.

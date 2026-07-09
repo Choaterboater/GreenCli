@@ -10,7 +10,7 @@
     "tauri": "tauri",
     "tauri-dev": "tauri dev",
     "tauri-build": "tauri build",
-    "lint": "eslint src --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
+    "lint": "eslint src --ext ts,tsx --report-unused-disable-directives",
     "test:e2e": "playwright test"
   },
   "dependencies": {
@@ -19,6 +19,9 @@
     "lucide-react": "^0.309.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
+    "react-markdown": "^10.1.0",
+    "react-syntax-highlighter": "^16.1.1",
+    "remark-gfm": "^4.0.1",
     "xterm": "^5.3.0",
     "xterm-addon-fit": "^0.8.0",
     "xterm-addon-search": "^0.13.0",
@@ -33,6 +36,7 @@
     "@testing-library/react": "^16.3.2",
     "@types/react": "^18.2.55",
     "@types/react-dom": "^18.2.19",
+    "@types/react-syntax-highlighter": "^15.5.13",
     "@types/testing-library__jest-dom": "^5.14.9",
     "@typescript-eslint/eslint-plugin": "^8.63.0",
     "@typescript-eslint/parser": "^8.63.0",

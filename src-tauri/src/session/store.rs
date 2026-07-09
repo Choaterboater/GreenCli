@@ -262,3 +262,104 @@ impl SessionStore {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_dir() -> PathBuf {
+        let mut p = std::env::temp_dir();
+        p.push(format!("atp-store-test-{}", rand::random::<u64>()));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn mock_session(id: &str, name: &str) -> StoredSession {
+        StoredSession {
+            id: id.to_string(),
+            name: name.to_string(),
+            protocol: "ssh".to_string(),
+            host: Some("127.0.0.1".to_string()),
+            port: Some(22),
+            username: Some("admin".to_string()),
+            auth_type: Some("password".to_string()),
+            device_type: "generic".to_string(),
+            device_profile_id: None,
+            folder_id: None,
+            tags: vec![],
+            notes: None,
+            serial_port: None,
+            baud_rate: None,
+            data_bits: None,
+            parity: None,
+            stop_bits: None,
+            startup_commands: None,
+            keep_alive_interval: None,
+            auto_reconnect: None,
+            command: None,
+            args: None,
+            cwd: None,
+            jump_host: None,
+            jump_port: None,
+            jump_username: None,
+        }
+    }
+
+    #[test]
+    fn test_store_initialization() {
+        let dir = temp_dir();
+        let mut store = SessionStore::new(dir.clone()).unwrap();
+        let data = store.load().unwrap();
+        assert_eq!(data.folders.len(), 1);
+        assert_eq!(data.folders[0].id, "default");
+        assert_eq!(data.folders[0].items.len(), 0);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn test_add_and_remove_session() {
+        let dir = temp_dir();
+        let mut store = SessionStore::new(dir.clone()).unwrap();
+        let s = mock_session("s1", "router1");
+        store.add_session("default", s).unwrap();
+        
+        let data = store.load().unwrap();
+        assert_eq!(data.folders[0].items.len(), 1);
+        assert_eq!(data.folders[0].items[0].id, "s1");
+
+        store.remove_session("s1").unwrap();
+        let data = store.load().unwrap();
+        assert_eq!(data.folders[0].items.len(), 0);
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn test_move_session() {
+        let dir = temp_dir();
+        let mut store = SessionStore::new(dir.clone()).unwrap();
+        
+        let f2 = SessionFolder {
+            id: "f2".to_string(),
+            name: "Folder 2".to_string(),
+            items: vec![],
+            expanded: true,
+        };
+        store.add_folder(f2).unwrap();
+        
+        let s = mock_session("s1", "router1");
+        store.add_session("default", s).unwrap();
+
+        // Move
+        store.move_session("s1", "f2").unwrap();
+
+        let data = store.load().unwrap();
+        let f1 = data.folders.iter().find(|f| f.id == "default").unwrap();
+        let f2 = data.folders.iter().find(|f| f.id == "f2").unwrap();
+        assert_eq!(f1.items.len(), 0);
+        assert_eq!(f2.items.len(), 1);
+        assert_eq!(f2.items[0].id, "s1");
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+}

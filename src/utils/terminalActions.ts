@@ -2,6 +2,7 @@ export interface TerminalActionAdapter {
   paste: (text: string) => void;
   copySelection: () => string;
   focus: () => void;
+  clear: () => void;
 }
 
 const registry = new Map<string, TerminalActionAdapter>();
