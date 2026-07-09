@@ -31,11 +31,19 @@ fn restrict_perms(path: &Path) {
     let _ = path;
 }
 
-/// Write a secrets file owner-only WITHOUT a world-readable window: create with
-/// mode 0600 directly on Unix, rather than fs::write (umask 0644) then chmod —
-/// which leaves raw provider API keys readable to other local users in between
-/// (mirrors mcp::client::write_secret_file).
+/// Write a secrets file owner-only AND atomically. The content goes to a 0600
+/// sibling temp file — created with mode 0600 directly on Unix rather than
+/// fs::write (umask 0644) then chmod, which would briefly leave raw provider API
+/// keys readable to other local users — then renamed over the target. Rename is
+/// atomic on the same filesystem, so a concurrent reader never observes a
+/// torn/empty file and a crash mid-write leaves the previous good key file intact
+/// (mirrors intent::IntentStore::save_locked; 0600 handling mirrors
+/// mcp::client::write_secret_file).
 fn write_key_file(path: &Path, content: &[u8]) -> Result<(), AppError> {
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let tmp = path.with_extension("json.tmp");
     #[cfg(unix)]
     {
         use std::io::Write;
@@ -45,15 +53,16 @@ fn write_key_file(path: &Path, content: &[u8]) -> Result<(), AppError> {
             .truncate(true)
             .write(true)
             .mode(0o600)
-            .open(path)
+            .open(&tmp)
             .map_err(AppError::from)?;
         f.write_all(content).map_err(AppError::from)?;
     }
     #[cfg(not(unix))]
     {
-        fs::write(path, content).map_err(AppError::from)?;
+        fs::write(&tmp, content).map_err(AppError::from)?;
     }
-    restrict_perms(path); // also fixes perms if the file pre-existed
+    fs::rename(&tmp, path).map_err(AppError::from)?;
+    restrict_perms(path); // belt-and-suspenders: also fixes perms if the target pre-existed
     Ok(())
 }
 
@@ -62,7 +71,8 @@ fn write_key_file(path: &Path, content: &[u8]) -> Result<(), AppError> {
 /// but it avoids the vault's master-password unlock friction for AI keys.
 pub struct AiKeyStore {
     path: PathBuf,
-    /// Serializes the read-modify-write in `set` so concurrent saves don't clobber.
+    /// Serializes reads and the read-modify-write in `set`, so concurrent saves
+    /// don't clobber and a read never races an in-flight save.
     lock: Mutex<()>,
 }
 
@@ -74,7 +84,10 @@ impl AiKeyStore {
         }
     }
 
-    fn load(&self) -> HashMap<String, String> {
+    /// Read the key map from disk. Caller must hold `lock` — `set`'s
+    /// read-modify-write already does, and the `get`/`has` wrappers take it
+    /// themselves (`lock` is non-reentrant, so this must not take it again).
+    fn load_locked(&self) -> HashMap<String, String> {
         fs::read(&self.path)
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok())
@@ -88,7 +101,7 @@ impl AiKeyStore {
 
     pub fn set(&self, provider: &str, key: &str) -> Result<(), AppError> {
         let _g = self.lock.lock().unwrap_or_else(|e| e.into_inner());
-        let mut m = self.load();
+        let mut m = self.load_locked();
         if key.is_empty() {
             m.remove(provider);
         } else {
@@ -98,11 +111,13 @@ impl AiKeyStore {
     }
 
     pub fn get(&self, provider: &str) -> Option<String> {
-        self.load().get(provider).cloned()
+        let _g = self.lock.lock().unwrap_or_else(|e| e.into_inner());
+        self.load_locked().get(provider).cloned()
     }
 
     pub fn has(&self, provider: &str) -> bool {
-        self.load()
+        let _g = self.lock.lock().unwrap_or_else(|e| e.into_inner());
+        self.load_locked()
             .get(provider)
             .map(|k| !k.is_empty())
             .unwrap_or(false)
@@ -151,36 +166,8 @@ pub async fn chat_request(store: &AiKeyStore, req: AiChatRequest) -> Result<Valu
         )));
     }
 
-    let rb = match req.provider.as_str() {
-        "anthropic" => client
-            .post("https://api.anthropic.com/v1/messages")
-            .header("anthropic-version", "2023-06-01")
-            .header("x-api-key", key),
-        "openrouter" => client
-            .post("https://openrouter.ai/api/v1/chat/completions")
-            .header("HTTP-Referer", "https://hpe.com")
-            .header("X-Title", "GreenCLI")
-            .bearer_auth(key),
-        "moonshot" => client
-            .post("https://api.moonshot.ai/v1/chat/completions")
-            .bearer_auth(key),
-        "ollama" => {
-            let base = req
-                .base_url
-                .clone()
-                .unwrap_or_else(|| "http://localhost:11434".to_string());
-            client.post(format!(
-                "{}/v1/chat/completions",
-                base.trim_end_matches('/')
-            ))
-        }
-        other => {
-            return Err(AppError::ApiError(format!(
-                "Unknown AI provider: {}",
-                other
-            )))
-        }
-    };
+    // Single source of truth for provider URL + auth (shared with chat_stream).
+    let rb = build_request(&client, &req.provider, &key, &req.base_url)?;
 
     let resp = rb.json(&req.body).send().await.map_err(|e| {
         let hint = if req.provider == "ollama" {
@@ -317,16 +304,35 @@ pub async fn chat_stream(
         false
     };
 
-    while let Some(bytes) = resp.chunk().await.map_err(|e| AppError::ApiError(e.to_string()))? {
+    loop {
         if cancel.load(Ordering::Relaxed) {
             break;
         }
+        // Short per-read deadline so a Stop pressed while the provider is between
+        // SSE events (or a proxy stalls) is observed within ~250ms rather than up
+        // to the multi-minute idle read_timeout. chunk()'s buffered body state
+        // lives in `resp`, so dropping a pending read on timeout re-polls losslessly.
+        let bytes = match tokio::time::timeout(
+            std::time::Duration::from_millis(250),
+            resp.chunk(),
+        )
+        .await
+        {
+            Ok(res) => match res.map_err(|e| AppError::ApiError(e.to_string()))? {
+                Some(b) => b,
+                None => break, // stream ended cleanly
+            },
+            Err(_) => continue, // 250ms idle — loop back and re-check cancel
+        };
         buf.extend_from_slice(&bytes);
         while let Some(pos) = buf.iter().position(|&b| b == b'\n') {
             let line_bytes: Vec<u8> = buf.drain(..=pos).collect();
             emitted_any |= emit_line(&line_bytes, &mut saw_done);
         }
     }
+    // Tear the socket down promptly on cancel rather than at function return
+    // (the flush + ai_done below only need `buf`, never `resp`).
+    drop(resp);
     // Flush a final `data:` line that arrived without a trailing newline (some
     // servers/proxies omit it when the connection closes right after the last event).
     if !cancel.load(Ordering::Relaxed) && !buf.is_empty() {

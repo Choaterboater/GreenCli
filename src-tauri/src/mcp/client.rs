@@ -25,7 +25,7 @@ use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::path::PathBuf;
 use std::process::Stdio;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -34,6 +34,17 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 
 fn default_true() -> bool {
     true
+}
+
+/// The `initialize` request params — shared by the stdio/HTTP handshakes and
+/// the HTTP session-expiry re-initialize path, so the advertised protocol
+/// version and client identity live in exactly one place.
+fn initialize_params() -> Value {
+    json!({
+        "protocolVersion": "2024-11-05",
+        "capabilities": {},
+        "clientInfo": { "name": "greencli", "version": env!("CARGO_PKG_VERSION") }
+    })
 }
 
 /// How to reach an MCP server: spawn it (stdio) or connect to one already
@@ -197,6 +208,11 @@ enum ClientIo {
         /// Captured from the server's `Mcp-Session-Id` response header
         /// (typically on `initialize`) and echoed on every later request.
         session_id: Arc<Mutex<Option<String>>>,
+        /// The MCP protocol version negotiated on `initialize`, sent as the
+        /// `MCP-Protocol-Version` header on every post-initialize request (per
+        /// the 2025-06-18 Streamable HTTP spec). `None` until the handshake
+        /// completes, so the `initialize` POST itself omits the header.
+        protocol_version: Arc<Mutex<Option<String>>>,
     },
 }
 
@@ -220,13 +236,18 @@ pub struct McpCaller {
     /// does the optional standalone GET listener task.
     tools_changed_tx: mpsc::UnboundedSender<()>,
     /// Set when the server is known gone: for stdio, the child's stdout hit
-    /// EOF/error; for Http, the (optional) standalone listener stream closed
-    /// after being established. Checked before every request so callers get
-    /// a clear "server has exited" error instead of a raw I/O failure, and so
-    /// the manager stops reporting the client as connected. An Http server
-    /// that never establishes the optional standalone stream (allowed by
-    /// spec) simply never flips this — its health is judged per-request.
+    /// EOF/error; for Http, several consecutive connection-level POST failures
+    /// (see `http_connect_failures`). Checked before every request so callers
+    /// get a clear "server has exited" error instead of a raw I/O failure, and
+    /// so the manager stops reporting the client as connected. HTTP health is
+    /// judged purely per-request: the optional standalone SSE stream closing is
+    /// benign (it re-establishes) and never flips this.
     dead: Arc<AtomicBool>,
+    /// Http only: consecutive connection-level failures (refused/reset/DNS)
+    /// seen by the per-request POST path. A handful in a row means the server
+    /// is really down, so `dead` is set; any successful send resets it, so a
+    /// lone transient blip never forces a manual reconnect. Zero for stdio.
+    http_connect_failures: Arc<AtomicU32>,
 }
 
 pub struct McpClient {
@@ -242,7 +263,8 @@ pub struct McpClient {
     #[allow(dead_code)]
     pub server_info: Value,
     /// Stdio: the stdout line reader. Http: the optional standalone GET SSE
-    /// listener (a no-op already-finished task if the server doesn't support it).
+    /// listener, which re-establishes the stream if it drops (a no-op
+    /// already-finished task if the server doesn't support it at all).
     reader: tokio::task::JoinHandle<()>,
     /// Refetches the tool list when the server sends `notifications/tools/list_changed`
     /// (e.g. centralmcp enabling a new capability mid-session) — without this the
@@ -337,7 +359,11 @@ fn extract_id(v: &Value) -> Option<i64> {
 
 /// Turn a JSON-RPC response body into our Result convention.
 fn extract_result_or_error(v: Value) -> Result<Value, AppError> {
-    if let Some(err) = v.get("error") {
+    // `error: null` alongside a valid `result` is a lenient success (some
+    // non-conformant servers serialize both keys). `Value::get` returns
+    // `Some(&Value::Null)` for a present-but-null key, so filter it out or the
+    // error branch would fire on a successful response.
+    if let Some(err) = v.get("error").filter(|e| !e.is_null()) {
         let msg = err
             .get("message")
             .and_then(|m| m.as_str())
@@ -361,6 +387,7 @@ async fn handle_pushed_message(
     http: &reqwest::Client,
     url: &str,
     session_id: &Arc<Mutex<Option<String>>>,
+    protocol_version: &Arc<Mutex<Option<String>>>,
     tools_changed_tx: &mpsc::UnboundedSender<()>,
     awaiting_id: Option<i64>,
 ) -> Option<Result<Value, AppError>> {
@@ -390,7 +417,13 @@ async fn handle_pushed_message(
             if let Some(sid) = sid {
                 rb = rb.header("Mcp-Session-Id", sid);
             }
-            let _ = rb.send().await;
+            if let Some(ver) = protocol_version.lock().await.as_deref() {
+                rb = rb.header("MCP-Protocol-Version", ver);
+            }
+            // Bound so a stalled server can't park the standalone listener task
+            // (on the per-request path the outer request timeout already covers
+            // this send).
+            let _ = tokio::time::timeout(Duration::from_secs(30), rb.send()).await;
         }
         return None;
     }
@@ -413,6 +446,7 @@ async fn drain_sse(
     http: &reqwest::Client,
     url: &str,
     session_id: &Arc<Mutex<Option<String>>>,
+    protocol_version: &Arc<Mutex<Option<String>>>,
     tools_changed_tx: &mpsc::UnboundedSender<()>,
     awaiting_id: Option<i64>,
 ) -> Option<Result<Value, AppError>> {
@@ -446,9 +480,16 @@ async fn drain_sse(
                 Ok(v) => v,
                 Err(_) => continue,
             };
-            if let Some(result) =
-                handle_pushed_message(&v, http, url, session_id, tools_changed_tx, awaiting_id)
-                    .await
+            if let Some(result) = handle_pushed_message(
+                &v,
+                http,
+                url,
+                session_id,
+                protocol_version,
+                tools_changed_tx,
+                awaiting_id,
+            )
+            .await
             {
                 return Some(result);
             }
@@ -627,7 +668,10 @@ impl McpClient {
                 });
                 if let Some(id) = id {
                     if let Some(tx) = pending_r.lock().await.remove(&id) {
-                        if let Some(err) = v.get("error") {
+                        // `error: null` with a valid `result` is a lenient
+                        // success, not an error — `get` yields Some(&Null) for a
+                        // present-but-null key, so filter null out here too.
+                        if let Some(err) = v.get("error").filter(|e| !e.is_null()) {
                             let msg = err
                                 .get("message")
                                 .and_then(|m| m.as_str())
@@ -657,6 +701,7 @@ impl McpClient {
             next_id: Arc::new(Mutex::new(0)),
             tools_changed_tx: tools_changed_tx.clone(),
             dead,
+            http_connect_failures: Arc::new(AtomicU32::new(0)),
         };
 
         // Attach the server's stderr tail to a handshake error — that's where
@@ -674,17 +719,7 @@ impl McpClient {
         }
 
         // Handshake.
-        let init = match caller
-            .request(
-                "initialize",
-                json!({
-                    "protocolVersion": "2024-11-05",
-                    "capabilities": {},
-                    "clientInfo": { "name": "greencli", "version": env!("CARGO_PKG_VERSION") }
-                }),
-            )
-            .await
-        {
+        let init = match caller.request("initialize", initialize_params()).await {
             Ok(v) => v,
             Err(e) => return Err(with_stderr(e, &stderr_buf).await),
         };
@@ -727,9 +762,14 @@ impl McpClient {
         }
 
         let http = reqwest::Client::builder()
+            // Bound TCP+TLS establishment for every request (handshake,
+            // per-request, notify, the standalone listener) WITHOUT a blanket
+            // request timeout, which would abort the long-lived SSE streams.
+            .connect_timeout(Duration::from_secs(10))
             .build()
             .map_err(|e| AppError::ApiError(format!("Failed to build HTTP client: {}", e)))?;
         let session_id: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let protocol_version: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
         let dead = Arc::new(AtomicBool::new(false));
         let (tools_changed_tx, tools_changed_rx) = mpsc::unbounded_channel::<()>();
 
@@ -739,24 +779,19 @@ impl McpClient {
                 http: http.clone(),
                 url: url.clone(),
                 session_id: session_id.clone(),
+                protocol_version: protocol_version.clone(),
             },
             pending: Arc::new(Mutex::new(HashMap::new())), // unused for Http
             next_id: Arc::new(Mutex::new(0)),
             tools_changed_tx: tools_changed_tx.clone(),
             dead: dead.clone(),
+            http_connect_failures: Arc::new(AtomicU32::new(0)),
         };
 
         // Handshake — same JSON-RPC calls as stdio; McpCaller dispatches the
         // actual HTTP mechanics internally.
         let init = caller
-            .request(
-                "initialize",
-                json!({
-                    "protocolVersion": "2024-11-05",
-                    "capabilities": {},
-                    "clientInfo": { "name": "greencli", "version": env!("CARGO_PKG_VERSION") }
-                }),
-            )
+            .request("initialize", initialize_params())
             .await
             .map_err(|e| {
                 AppError::ApiError(format!(
@@ -765,6 +800,17 @@ impl McpClient {
                 ))
             })?;
         let server_info = init.get("serverInfo").cloned().unwrap_or(Value::Null);
+        // Capture the negotiated protocol version BEFORE the initialized
+        // notification, so that notification and every later request/notify
+        // carry the `MCP-Protocol-Version` header. (The initialize POST above
+        // ran while protocol_version was still None, so it correctly omitted
+        // the header.)
+        let negotiated = init
+            .get("protocolVersion")
+            .and_then(|v| v.as_str())
+            .unwrap_or("2024-11-05")
+            .to_string();
+        *protocol_version.lock().await = Some(negotiated);
         caller.notify("notifications/initialized", json!({})).await?;
 
         let tools = fetch_all_tools(&caller, &def.name).await?;
@@ -780,32 +826,64 @@ impl McpClient {
             let http = http.clone();
             let url = url.clone();
             let session_id = session_id.clone();
-            let dead = dead.clone();
+            let protocol_version = protocol_version.clone();
             let tools_changed_tx = tools_changed_tx.clone();
             tokio::spawn(async move {
-                let sid = session_id.lock().await.clone();
-                let mut rb = http.get(url.as_ref()).header("Accept", "text/event-stream");
-                if let Some(sid) = &sid {
-                    rb = rb.header("Mcp-Session-Id", sid);
+                // Unlike stdio's stdout (EOF == process gone), this is one of
+                // many independent HTTP connections: proxies/LBs close idle
+                // streams and, per the Streamable HTTP spec, the server MAY close
+                // it at any time without the session ending. So on close we
+                // re-establish rather than mark the client dead — real liveness
+                // comes from per-POST failures (see request_with_timeout).
+                let mut err_backoff = Duration::from_secs(1);
+                loop {
+                    let sid = session_id.lock().await.clone();
+                    let mut rb = http.get(url.as_ref()).header("Accept", "text/event-stream");
+                    if let Some(sid) = &sid {
+                        rb = rb.header("Mcp-Session-Id", sid);
+                    }
+                    if let Some(ver) = protocol_version.lock().await.as_deref() {
+                        rb = rb.header("MCP-Protocol-Version", ver);
+                    }
+                    // Bound establishment: connect_timeout covers TCP/TLS, this
+                    // also covers a server that connects then stalls before
+                    // sending headers (slowloris), so the task can't park forever.
+                    match tokio::time::timeout(Duration::from_secs(30), rb.send()).await {
+                        Ok(Ok(resp)) => {
+                            let is_stream = resp
+                                .headers()
+                                .get("content-type")
+                                .and_then(|v| v.to_str().ok())
+                                .map(|ct| ct.starts_with("text/event-stream"))
+                                .unwrap_or(false);
+                            if !resp.status().is_success() || !is_stream {
+                                return; // standalone stream unsupported — optional, not dead
+                            }
+                            err_backoff = Duration::from_secs(1); // reset after a good connect
+                            let _ = drain_sse(
+                                resp,
+                                &http,
+                                &url,
+                                &session_id,
+                                &protocol_version,
+                                &tools_changed_tx,
+                                None,
+                            )
+                            .await;
+                            // Established stream closed (benign per spec) — brief
+                            // pause, then re-establish. The fixed pause prevents a
+                            // busy loop if a server closes each stream immediately.
+                            tokio::time::sleep(Duration::from_secs(1)).await;
+                        }
+                        // Couldn't connect (or stalled past the timeout) — leave
+                        // `dead` false (per-request health decides that) and retry
+                        // with capped backoff so a down server isn't hammered.
+                        Ok(Err(_)) | Err(_) => {
+                            tokio::time::sleep(err_backoff).await;
+                            err_backoff = (err_backoff * 2).min(Duration::from_secs(30));
+                        }
+                    }
                 }
-                let resp = match rb.send().await {
-                    Ok(r) => r,
-                    Err(_) => return, // couldn't connect — leave `dead` false, judge health per-request
-                };
-                let is_stream = resp
-                    .headers()
-                    .get("content-type")
-                    .and_then(|v| v.to_str().ok())
-                    .map(|ct| ct.starts_with("text/event-stream"))
-                    .unwrap_or(false);
-                if !resp.status().is_success() || !is_stream {
-                    return; // standalone stream unsupported — optional, not an error
-                }
-                // Established: from here, closing/erroring DOES mean dead,
-                // mirroring stdio's EOF-marks-dead semantic.
-                let _ =
-                    drain_sse(resp, &http, &url, &session_id, &tools_changed_tx, None).await;
-                dead.store(true, Ordering::Relaxed);
             })
         };
 
@@ -910,53 +988,117 @@ impl McpCaller {
                     }
                 }
             }
-            ClientIo::Http { http, url, session_id } => {
+            ClientIo::Http {
+                http,
+                url,
+                session_id,
+                protocol_version,
+            } => {
                 let msg = json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
                 let fut = async {
-                    let sid = session_id.lock().await.clone();
-                    let mut rb = http
-                        .post(url.as_ref())
-                        .header("Content-Type", "application/json")
-                        .header("Accept", "application/json, text/event-stream")
-                        .json(&msg);
-                    if let Some(sid) = &sid {
-                        rb = rb.header("Mcp-Session-Id", sid);
-                    }
-                    let resp = rb.send().await.map_err(|e| {
-                        AppError::ApiError(format!("MCP '{}': HTTP request failed: {}", method, e))
-                    })?;
+                    // At most one transparent retry: if the server reports the
+                    // session expired (404 to a stale Mcp-Session-Id), start a
+                    // fresh session and replay this request once.
+                    let mut reinit_attempted = false;
+                    loop {
+                        let sid = session_id.lock().await.clone();
+                        let mut rb = http
+                            .post(url.as_ref())
+                            .header("Content-Type", "application/json")
+                            .header("Accept", "application/json, text/event-stream")
+                            .json(&msg);
+                        if let Some(sid) = &sid {
+                            rb = rb.header("Mcp-Session-Id", sid);
+                        }
+                        if let Some(ver) = protocol_version.lock().await.as_deref() {
+                            rb = rb.header("MCP-Protocol-Version", ver);
+                        }
+                        let resp = match rb.send().await {
+                            Ok(r) => {
+                                // A request reached the server — clear any prior
+                                // connect-failure streak.
+                                self.http_connect_failures.store(0, Ordering::Relaxed);
+                                r
+                            }
+                            Err(e) => {
+                                // A connection-level failure (refused/reset/DNS —
+                                // NOT a mid-body timeout, which is not is_connect)
+                                // is real evidence the server is down. Tolerate a
+                                // transient blip, but after a few in a row mark the
+                                // client dead so status()/all_tools() stop
+                                // advertising a server that isn't there.
+                                if e.is_connect()
+                                    && self.http_connect_failures.fetch_add(1, Ordering::Relaxed) + 1
+                                        >= 3
+                                {
+                                    self.dead.store(true, Ordering::Relaxed);
+                                }
+                                return Err(AppError::ApiError(format!(
+                                    "MCP '{}': HTTP request failed: {}",
+                                    method, e
+                                )));
+                            }
+                        };
 
-                    // The server typically mints this on `initialize`; once set,
-                    // echo it on every later request on this connection.
-                    if let Some(v) = resp
-                        .headers()
-                        .get("mcp-session-id")
-                        .and_then(|h| h.to_str().ok())
-                    {
-                        *session_id.lock().await = Some(v.to_string());
-                    }
+                        // The server typically mints this on `initialize`; once set,
+                        // echo it on every later request on this connection.
+                        if let Some(v) = resp
+                            .headers()
+                            .get("mcp-session-id")
+                            .and_then(|h| h.to_str().ok())
+                        {
+                            *session_id.lock().await = Some(v.to_string());
+                        }
 
-                    let status = resp.status();
-                    let content_type = resp
-                        .headers()
-                        .get("content-type")
-                        .and_then(|v| v.to_str().ok())
-                        .unwrap_or("")
-                        .to_string();
+                        let status = resp.status();
+                        let content_type = resp
+                            .headers()
+                            .get("content-type")
+                            .and_then(|v| v.to_str().ok())
+                            .unwrap_or("")
+                            .to_string();
 
-                    if !status.is_success() {
-                        let body = resp.text().await.unwrap_or_default();
-                        let snippet: String = body.chars().take(500).collect();
-                        return Err(AppError::ApiError(format!(
-                            "MCP '{}': HTTP {}: {}",
-                            method,
-                            status.as_u16(),
-                            snippet
-                        )));
-                    }
+                        if !status.is_success() {
+                            // Session expired: per the Streamable HTTP spec a
+                            // server MAY drop a session and MUST then 404 its stale
+                            // id; the client MUST re-initialize WITHOUT a session id
+                            // and retry. Do this exactly once (initialize itself is
+                            // exempt, and clearing the id keeps re-init from
+                            // 404-looping).
+                            if status == reqwest::StatusCode::NOT_FOUND
+                                && sid.is_some()
+                                && method != "initialize"
+                                && !reinit_attempted
+                            {
+                                reinit_attempted = true;
+                                *session_id.lock().await = None;
+                                // Boxed: request -> request_with_timeout -> this
+                                // future would otherwise be an infinitely-sized
+                                // (recursive) async type.
+                                Box::pin(self.request("initialize", initialize_params())).await?;
+                                self.notify("notifications/initialized", json!({})).await?;
+                                continue;
+                            }
+                            let body = resp.text().await.unwrap_or_default();
+                            let snippet: String = body.chars().take(500).collect();
+                            return Err(AppError::ApiError(format!(
+                                "MCP '{}': HTTP {}: {}",
+                                method,
+                                status.as_u16(),
+                                snippet
+                            )));
+                        }
 
-                    if content_type.starts_with("text/event-stream") {
-                        drain_sse(resp, http, url, session_id, &self.tools_changed_tx, Some(id))
+                        return if content_type.starts_with("text/event-stream") {
+                            drain_sse(
+                                resp,
+                                http,
+                                url,
+                                session_id,
+                                protocol_version,
+                                &self.tools_changed_tx,
+                                Some(id),
+                            )
                             .await
                             .unwrap_or_else(|| {
                                 Err(AppError::ApiError(format!(
@@ -964,11 +1106,12 @@ impl McpCaller {
                                     method
                                 )))
                             })
-                    } else {
-                        let body: Value = resp.json().await.map_err(|e| {
-                            AppError::ApiError(format!("MCP '{}': response parse: {}", method, e))
-                        })?;
-                        extract_result_or_error(body)
+                        } else {
+                            let body: Value = resp.json().await.map_err(|e| {
+                                AppError::ApiError(format!("MCP '{}': response parse: {}", method, e))
+                            })?;
+                            extract_result_or_error(body)
+                        };
                     }
                 };
                 match tokio::time::timeout(Duration::from_secs(timeout_secs), fut).await {
@@ -995,7 +1138,12 @@ impl McpCaller {
                 stdin.flush().await.map_err(AppError::from)?;
                 Ok(())
             }
-            ClientIo::Http { http, url, session_id } => {
+            ClientIo::Http {
+                http,
+                url,
+                session_id,
+                protocol_version,
+            } => {
                 let sid = session_id.lock().await.clone();
                 let mut rb = http
                     .post(url.as_ref())
@@ -1004,6 +1152,9 @@ impl McpCaller {
                     .json(&msg);
                 if let Some(sid) = &sid {
                     rb = rb.header("Mcp-Session-Id", sid);
+                }
+                if let Some(ver) = protocol_version.lock().await.as_deref() {
+                    rb = rb.header("MCP-Protocol-Version", ver);
                 }
                 let resp = rb
                     .send()

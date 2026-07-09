@@ -106,8 +106,13 @@ impl Handler for ClientHandler {
         match &self.known_hosts_path {
             Some(path) => {
                 let fingerprint = server_public_key.fingerprint();
-                match crate::ssh::known_hosts::verify_or_record(path, &self.host_port, &fingerprint)
-                {
+                let key_type = server_public_key.name();
+                match crate::ssh::known_hosts::verify_or_record(
+                    path,
+                    &self.host_port,
+                    key_type,
+                    &fingerprint,
+                ) {
                     Ok(accepted) => Ok(accepted),
                     Err(reason) => {
                         log::warn!("Rejected SSH host key: {}", reason);
@@ -521,6 +526,14 @@ impl SshConnection {
         }
     }
 
+    /// Set the size the PTY will be requested at BEFORE connecting. Used by the
+    /// reconnect supervisor to carry the user's last-known geometry into the
+    /// fresh connection (resize() can't be used pre-connect — there is no channel
+    /// yet, so window_change would error).
+    pub async fn set_initial_size(&self, cols: u16, rows: u16) {
+        *self.last_size.lock().await = (cols, rows);
+    }
+
     pub async fn resize(&self, cols: u16, rows: u16) -> Result<(), AppError> {
         // Remember the size so a reconnect requests the PTY at the right one.
         *self.last_size.lock().await = (cols, rows);
@@ -558,6 +571,13 @@ pub trait Connection: Send + Sync {
     /// Return the SSH handle if this is an SSH connection (for SFTP).
     fn ssh_handle(&self) -> Option<Arc<Mutex<client::Handle<ClientHandler>>>> {
         None
+    }
+    /// Send a line BREAK. Only meaningful on serial connections (used to
+    /// interrupt boot / drop into ROMMON); the default reports it unsupported.
+    async fn send_break(&self) -> Result<(), AppError> {
+        Err(AppError::SerialError(
+            "BREAK is only supported on serial connections".into(),
+        ))
     }
 }
 

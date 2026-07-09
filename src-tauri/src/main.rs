@@ -71,6 +71,9 @@ struct AppState {
     /// Recent terminal output per session, so the AI assistant can read back
     /// command results (bounded tail, plain bytes lossily decoded).
     terminal_buffers: Arc<AsyncMutex<HashMap<String, String>>>,
+    /// Last-known terminal geometry per session, so an auto-reconnect can request
+    /// the PTY at the size the user actually has rather than resetting to 80x24.
+    terminal_sizes: Arc<AsyncMutex<HashMap<String, (u16, u16)>>>,
     /// Open session-log files keyed by session id (raw output streamed to disk).
     session_logs: Arc<AsyncMutex<HashMap<String, std::fs::File>>>,
     /// Active SSH port-forwards keyed by forward id (meta + listener task).
@@ -99,6 +102,7 @@ impl AppState {
             ai_keys: AiKeyStore::new(app_dir.clone()),
             intents: intent::IntentStore::new(app_dir.clone()),
             terminal_buffers: Arc::new(AsyncMutex::new(HashMap::new())),
+            terminal_sizes: Arc::new(AsyncMutex::new(HashMap::new())),
             session_logs: Arc::new(AsyncMutex::new(HashMap::new())),
             forwards: Arc::new(AsyncMutex::new(HashMap::new())),
             ai_cancels: Arc::new(AsyncMutex::new(HashMap::new())),
@@ -307,6 +311,7 @@ fn spawn_ssh_supervisor(
     logs: Arc<AsyncMutex<HashMap<String, std::fs::File>>>,
     session_manager: Arc<SessionManager>,
     forwards: ForwardsMap,
+    terminal_sizes: Arc<AsyncMutex<HashMap<String, (u16, u16)>>>,
     ssh_config: ConnectionConfig,
     session_id: String,
     mut generation: u64,
@@ -342,31 +347,35 @@ fn spawn_ssh_supervisor(
                     }
                 }
                 let mut conn = SshConnection::new(session_id.clone(), ssh_config.clone());
+                // Request the reconnected PTY at the user's last-known size rather
+                // than the hardcoded 80x24, so wide output / TUIs don't reflow.
+                if let Some(&(cols, rows)) = terminal_sizes.lock().await.get(&session_id) {
+                    conn.set_initial_size(cols, rows).await;
+                }
                 match conn.connect().await {
                     Ok(_) => match conn.take_data_receiver() {
                         Some(nrx) => {
-                            // The connect() above can take seconds; if the user
-                            // hit Disconnect during it (or a new connect replaced
-                            // our registration), the session is no longer ours —
-                            // tear the new connection down instead of resurrecting
-                            // an orphan, and stop the supervisor.
-                            if !session_manager.contains_gen(&session_id, generation).await {
-                                let _ = conn.disconnect().await;
-                                return;
-                            }
-                            // Any port-forwards were cloned from the OLD (dead)
-                            // russh handle and can never carry traffic again —
-                            // tear them down before swapping in the new connection.
-                            close_session_forwards(&forwards, &session_id).await;
+                            // Atomically swap in the new connection ONLY if we
+                            // still own the registration. This closes the TOCTOU
+                            // window the old contains_gen-then-add_session had: a
+                            // concurrent user Disconnect (or a fresh connect) that
+                            // lands during connect()/here no longer gets clobbered
+                            // by a resurrected session. On loss, replace_if_gen
+                            // tears the new connection down for us.
                             match session_manager
-                                .add_session(session_id.clone(), Box::new(conn))
+                                .replace_if_gen(&session_id, generation, Box::new(conn))
                                 .await
                             {
-                                // Adopt the generation of OUR new registration so
-                                // later ownership checks keep matching.
-                                Ok(gen) => generation = gen,
-                                Err(_) => return,
+                                Some(gen) => generation = gen,
+                                None => return,
                             }
+                            // Only now that we've confirmed ownership and swapped
+                            // in the new connection, tear down the OLD port-forwards
+                            // (cloned from the dead handle, so they can't carry
+                            // traffic). Doing this AFTER the ownership check avoids
+                            // closing a concurrent new owner's forwards on the race
+                            // where we lost ownership during connect().
+                            close_session_forwards(&forwards, &session_id).await;
                             rx = nrx;
                             let _ = app.emit_all(
                                 "connection_status",
@@ -501,6 +510,7 @@ async fn connect(
                     state.session_logs.clone(),
                     state.session_manager.clone(),
                     state.forwards.clone(),
+                    state.terminal_sizes.clone(),
                     ssh_config,
                     session_id.clone(),
                     generation,
@@ -660,12 +670,17 @@ async fn disconnect(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    state
-        .session_manager.remove_session(&session_id)
-        .await
-        .map_err(|e| e.to_string())?;
+    // The map entry is removed inside remove_session BEFORE the network
+    // disconnect runs, so even if the disconnect errors we must still tear down
+    // per-session state and notify the UI — otherwise a disconnect that returned
+    // Err would orphan port-forwards, leak the buffer/log, and leave the UI
+    // showing "connected". Log and continue rather than gating cleanup on it.
+    if let Err(e) = state.session_manager.remove_session(&session_id).await {
+        eprintln!("[disconnect] remove_session('{}') failed: {}", session_id, e);
+    }
 
     state.terminal_buffers.lock().await.remove(&session_id);
+    state.terminal_sizes.lock().await.remove(&session_id);
     state.session_logs.lock().await.remove(&session_id);
 
     // Tear down any SSH port-forwards belonging to this session, so a disconnect
@@ -705,8 +720,24 @@ async fn resize_terminal(
     rows: u16,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    // Remember the size so an auto-reconnect can restore it (the mount-time fit
+    // fires this on first connect, so the map is populated before any reconnect).
+    state
+        .terminal_sizes
+        .lock()
+        .await
+        .insert(session_id.clone(), (cols, rows));
     state
         .session_manager.resize_session(&session_id, cols, rows)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn serial_send_break(session_id: String, state: State<'_, AppState>) -> Result<(), String> {
+    state
+        .session_manager
+        .send_break(&session_id)
         .await
         .map_err(|e| e.to_string())
 }
@@ -854,6 +885,25 @@ async fn vault_unlock(password: String, state: State<'_, AppState>) -> Result<bo
         let vault = vault.lock().map_err(|e| e.to_string())?;
         vault.unlock(&password).map_err(|e| e.to_string())?;
         Ok(true)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn vault_change_password(
+    old_password: String,
+    new_password: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    // change_password runs the Argon2 KDF twice (verify old + derive new), so
+    // like vault_unlock it must run off the main thread to avoid freezing the UI.
+    let vault = state.vault.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let vault = vault.lock().map_err(|e| e.to_string())?;
+        vault
+            .change_password(&old_password, &new_password)
+            .map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| e.to_string())?
@@ -1169,6 +1219,7 @@ async fn mcp_has_credentials(name: String, state: State<'_, AppState>) -> Result
 #[serde(rename_all = "camelCase")]
 struct KnownHostEntry {
     host_port: String,
+    key_type: String,
     fingerprint: String,
 }
 
@@ -1178,8 +1229,9 @@ fn list_known_hosts(state: State<'_, AppState>) -> Result<Vec<KnownHostEntry>, S
     Ok(kh
         .list()
         .into_iter()
-        .map(|(host_port, fingerprint)| KnownHostEntry {
+        .map(|(host_port, key_type, fingerprint)| KnownHostEntry {
             host_port,
+            key_type,
             fingerprint,
         })
         .collect())
@@ -1665,10 +1717,16 @@ async fn sftp_list_dir(
         .session_manager.get_ssh_handle(&session_id)
         .await
         .ok_or_else(|| "No SSH handle for this session".to_string())?;
-    let mut handle = handle.lock().await;
-    let sftp = open_sftp_session(&mut handle)
-        .await
-        .map_err(|e| e.to_string())?;
+    // Scope the shared-handle lock to just opening the SFTP channel; the
+    // returned SftpSession owns its own stream, so the transfer below runs with
+    // the lock released — a slow/large transfer no longer blocks concurrent SFTP
+    // ops, port-forward channel-opens, or disconnect on the same session.
+    let sftp = {
+        let mut handle = handle.lock().await;
+        open_sftp_session(&mut handle)
+            .await
+            .map_err(|e| e.to_string())?
+    };
     sftp_read_dir(&sftp, &path).await.map_err(|e| e.to_string())
 }
 
@@ -1683,10 +1741,16 @@ async fn sftp_download(
         .session_manager.get_ssh_handle(&session_id)
         .await
         .ok_or_else(|| "No SSH handle for this session".to_string())?;
-    let mut handle = handle.lock().await;
-    let sftp = open_sftp_session(&mut handle)
-        .await
-        .map_err(|e| e.to_string())?;
+    // Scope the shared-handle lock to just opening the SFTP channel; the
+    // returned SftpSession owns its own stream, so the transfer below runs with
+    // the lock released — a slow/large transfer no longer blocks concurrent SFTP
+    // ops, port-forward channel-opens, or disconnect on the same session.
+    let sftp = {
+        let mut handle = handle.lock().await;
+        open_sftp_session(&mut handle)
+            .await
+            .map_err(|e| e.to_string())?
+    };
     sftp_download_file(&sftp, &remote_path, &local_path)
         .await
         .map(|_| ())
@@ -1705,10 +1769,16 @@ async fn sftp_upload(
         .session_manager.get_ssh_handle(&session_id)
         .await
         .ok_or_else(|| "No SSH handle for this session".to_string())?;
-    let mut handle = handle.lock().await;
-    let sftp = open_sftp_session(&mut handle)
-        .await
-        .map_err(|e| e.to_string())?;
+    // Scope the shared-handle lock to just opening the SFTP channel; the
+    // returned SftpSession owns its own stream, so the transfer below runs with
+    // the lock released — a slow/large transfer no longer blocks concurrent SFTP
+    // ops, port-forward channel-opens, or disconnect on the same session.
+    let sftp = {
+        let mut handle = handle.lock().await;
+        open_sftp_session(&mut handle)
+            .await
+            .map_err(|e| e.to_string())?
+    };
     sftp_upload_file(&sftp, &local_path, &remote_path, overwrite.unwrap_or(false))
         .await
         .map(|_| ())
@@ -1725,8 +1795,10 @@ async fn sftp_mkdir_cmd(
         .session_manager.get_ssh_handle(&session_id)
         .await
         .ok_or_else(|| "No SSH handle for this session".to_string())?;
-    let mut handle = handle.lock().await;
-    let sftp = open_sftp_session(&mut handle).await.map_err(|e| e.to_string())?;
+    let sftp = {
+        let mut handle = handle.lock().await;
+        open_sftp_session(&mut handle).await.map_err(|e| e.to_string())?
+    };
     sftp_mkdir(&sftp, &path).await.map_err(|e| e.to_string())
 }
 
@@ -1741,8 +1813,10 @@ async fn sftp_delete(
         .session_manager.get_ssh_handle(&session_id)
         .await
         .ok_or_else(|| "No SSH handle for this session".to_string())?;
-    let mut handle = handle.lock().await;
-    let sftp = open_sftp_session(&mut handle).await.map_err(|e| e.to_string())?;
+    let sftp = {
+        let mut handle = handle.lock().await;
+        open_sftp_session(&mut handle).await.map_err(|e| e.to_string())?
+    };
     if is_dir {
         sftp_remove_dir(&sftp, &path).await.map_err(|e| e.to_string())
     } else {
@@ -1761,8 +1835,10 @@ async fn sftp_rename_cmd(
         .session_manager.get_ssh_handle(&session_id)
         .await
         .ok_or_else(|| "No SSH handle for this session".to_string())?;
-    let mut handle = handle.lock().await;
-    let sftp = open_sftp_session(&mut handle).await.map_err(|e| e.to_string())?;
+    let sftp = {
+        let mut handle = handle.lock().await;
+        open_sftp_session(&mut handle).await.map_err(|e| e.to_string())?
+    };
     sftp_rename(&sftp, &from, &to).await.map_err(|e| e.to_string())
 }
 
@@ -1904,6 +1980,7 @@ fn main() {
             disconnect,
             send_data,
             resize_terminal,
+            serial_send_break,
             list_sessions,
             list_folders,
             save_session,
@@ -1915,6 +1992,7 @@ fn main() {
             create_folder,
             move_session,
             vault_unlock,
+            vault_change_password,
             vault_lock,
             vault_store,
             vault_retrieve,
