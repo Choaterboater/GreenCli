@@ -277,6 +277,7 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
         return selection;
       },
       focus: () => term.focus(),
+      clear: () => term.clear(),
     });
 
     const clearSilenceTimer = () => {

@@ -1,4 +1,8 @@
 import { useState, useRef, useEffect, useCallback, useMemo, memo } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
+import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import {
   X,
   Send,
@@ -980,100 +984,6 @@ function buildDeviceContext(activeSession: Session | undefined): string {
   ].join(' | ');
 }
 
-// ─── Simple markdown renderer ───
-
-function renderMarkdown(text: string) {
-  const lines = text.split('\n');
-  const result: JSX.Element[] = [];
-  let i = 0;
-  let key = 0;
-
-  while (i < lines.length) {
-    const line = lines[i];
-
-    // Code fence
-    if (line.startsWith('```')) {
-      const lang = line.slice(3).trim();
-      const codeLines: string[] = [];
-      i++;
-      while (i < lines.length && !lines[i].startsWith('```')) {
-        codeLines.push(lines[i]);
-        i++;
-      }
-      result.push(
-        <pre key={key++} className="my-2 p-3 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg overflow-x-auto">
-          <code className="text-[11px] text-[var(--text-primary)] font-mono whitespace-pre">
-            {codeLines.join('\n')}
-          </code>
-        </pre>
-      );
-      i++;
-      continue;
-    }
-
-    // Heading (### before ## so the longer prefix wins)
-    if (line.startsWith('### ')) {
-      result.push(<h5 key={key++} className="text-[11px] font-bold text-[var(--text-primary)] mt-2 mb-1">{line.slice(4)}</h5>);
-      i++;
-      continue;
-    }
-    if (line.startsWith('## ')) {
-      result.push(<h4 key={key++} className="text-xs font-bold text-[var(--text-primary)] mt-2 mb-1">{line.slice(3)}</h4>);
-      i++;
-      continue;
-    }
-    if (line.startsWith('# ')) {
-      result.push(<h3 key={key++} className="text-sm font-bold text-[var(--text-primary)] mt-2 mb-1">{line.slice(2)}</h3>);
-      i++;
-      continue;
-    }
-
-    // Horizontal rule
-    if (line.match(/^---+$/)) {
-      result.push(<hr key={key++} className="border-[var(--border)] my-2" />);
-      i++;
-      continue;
-    }
-
-    // Empty line
-    if (line.trim() === '') {
-      result.push(<div key={key++} className="h-1" />);
-      i++;
-      continue;
-    }
-
-    // Normal text with inline formatting
-    result.push(<p key={key++} className="text-[11px] leading-relaxed">{renderInline(line)}</p>);
-    i++;
-  }
-
-  return result;
-}
-
-function renderInline(text: string): (JSX.Element | string)[] {
-  const parts: (JSX.Element | string)[] = [];
-  const re = /(\*\*[^*]+\*\*|`[^`]+`|\*[^*]+\*)/g;
-  let last = 0;
-  let m: RegExpExecArray | null;
-  let k = 0;
-
-  while ((m = re.exec(text)) !== null) {
-    if (m.index > last) parts.push(text.slice(last, m.index));
-    const tok = m[0];
-    if (tok.startsWith('**')) {
-      parts.push(<strong key={k++} className="text-[var(--text-primary)] font-semibold">{tok.slice(2, -2)}</strong>);
-    } else if (tok.startsWith('`')) {
-      parts.push(<code key={k++} className="px-1 py-0.5 bg-[var(--bg-primary)] border border-[var(--border)] rounded text-[#d29922] text-[10px] font-mono">{tok.slice(1, -1)}</code>);
-    } else if (tok.startsWith('*')) {
-      parts.push(<em key={k++} className="italic">{tok.slice(1, -1)}</em>);
-    }
-    last = m.index + tok.length;
-  }
-  if (last < text.length) parts.push(text.slice(last));
-  return parts;
-}
-
-// ─── Message bubble ───
 
 // One chat bubble, memoized. During streaming only the LAST message object is
 // replaced (updateLast), so every other bubble keeps its identity and React.memo
@@ -1082,7 +992,6 @@ function renderInline(text: string): (JSX.Element | string)[] {
 // never re-renders the rest of the conversation.
 const MessageItem = memo(function MessageItem({ msg }: { msg: DisplayMessage }) {
   const [openTools, setOpenTools] = useState<Set<number>>(new Set());
-  const body = useMemo(() => renderMarkdown(msg.content), [msg.content]);
 
   if (msg.role === 'user') {
     return (
@@ -1163,7 +1072,33 @@ const MessageItem = memo(function MessageItem({ msg }: { msg: DisplayMessage }) 
 
         {/* Message content */}
         <div className={`px-3 py-2 rounded-lg ${msg.isError ? 'bg-[#ff7b7210] border border-[#ff7b7225] text-[#ff7b72]' : 'bg-[var(--bg-secondary)] border border-[var(--border)] text-[var(--text-primary)]'}`}>
-          <div className="space-y-0.5">{body}</div>
+          <div className="space-y-0.5 text-[11px] leading-relaxed markdown-body">
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm]}
+              components={{
+                code(props) {
+                  const { children, className, node, ...rest } = props;
+                  const match = /language-(\w+)/.exec(className || '');
+                  return match ? (
+                    <SyntaxHighlighter
+                      {...(rest as any)}
+                      PreTag="div"
+                      children={String(children).replace(/\n$/, '')}
+                      language={match[1]}
+                      style={vscDarkPlus}
+                      customStyle={{ margin: '8px 0', borderRadius: '8px', fontSize: '11px', padding: '12px' }}
+                    />
+                  ) : (
+                    <code {...rest} className="px-1 py-0.5 bg-[var(--bg-primary)] border border-[var(--border)] rounded text-[#d29922] text-[10px] font-mono">
+                      {children}
+                    </code>
+                  );
+                }
+              }}
+            >
+              {msg.content}
+            </ReactMarkdown>
+          </div>
           <div className="text-[9px] text-[var(--text-muted)] mt-1.5 flex items-center gap-1">
             <Clock size={7} />
             {new Date(msg.timestamp).toLocaleTimeString()}
@@ -1397,6 +1332,7 @@ export default function AiAssistant() {
         nm = `${base}_${i}`;
       }
       usedNames.add(nm);
+      // eslint-disable-next-line react-hooks/immutability
       t.safeName = nm;
       mcpResolve.set(nm, { server: t.server, tool: t.name });
     }
@@ -1769,3 +1705,4 @@ export default function AiAssistant() {
     </div>
   );
 }
+// ─── Message bubble ───
