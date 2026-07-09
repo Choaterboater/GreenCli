@@ -126,8 +126,8 @@ export default function StatusBar({ onReconnect, onDisconnect, onMapDevice }: St
           </div>
 
           {/* Connection info */}
-          <div className="flex items-center gap-1.5 mr-4 text-[var(--text-muted)]">
-            <span>
+          <div className="flex items-center gap-1.5 mr-4 min-w-0 text-[var(--text-muted)]">
+            <span className="truncate max-w-[40ch]">
               {activeSession.config.protocol === 'local' ? (
                 activeSession.config.command || 'shell'
               ) : (

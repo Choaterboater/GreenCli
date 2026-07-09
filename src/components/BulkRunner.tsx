@@ -73,7 +73,7 @@ export default function BulkRunner() {
       }))
     );
 
-    for (const s of targets) {
+    const runOne = async (s: (typeof targets)[number]) => {
       setResults((prev) =>
         prev.map((r) => (r.sessionId === s.sessionId ? { ...r, status: 'running' } : r))
       );
@@ -99,12 +99,32 @@ export default function BulkRunner() {
           )
         );
       }
-    }
+    };
+
+    // Bounded concurrency: a fixed pool of workers pulls from a shared queue so
+    // network waits overlap without dispatching to every device at once. Each
+    // target is a distinct sessionId and the per-row setResults updaters are
+    // independent, so overlapping captures are safe; the shared idx++ is fine
+    // because JS is single-threaded (the only yield is the awaited runOne).
+    const POOL = 6;
+    let idx = 0;
+    const worker = async () => {
+      while (idx < targets.length) {
+        const s = targets[idx++];
+        await runOne(s);
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(POOL, targets.length) }, () => worker()));
+
     setRunning(false);
   };
 
   const exportCsv = () => {
-    const esc = (v: string) => `"${v.replace(/"/g, '""')}"`;
+    // Neutralize leading formula characters so device output (interface
+    // descriptions, banners, LLDP neighbor names…) can't execute as a formula
+    // when the CSV is opened in Excel/Sheets — mirrors ApiExplorer's toCsv.
+    const neutralizeFormula = (s: string) => (/^\s*[=+\-@]/.test(s) || /^[\t\r]/.test(s) ? `'${s}` : s);
+    const esc = (v: string) => `"${neutralizeFormula(v).replace(/"/g, '""')}"`;
     const rows = [['device', 'command', 'output'].map(esc).join(',')];
     for (const r of results) rows.push([r.name, r.command, r.output].map(esc).join(','));
     const blob = new Blob([rows.join('\n')], { type: 'text/csv' });

@@ -3,8 +3,9 @@
 // have the live terminal channel. Results are written back via intent_set_result.
 
 import { invoke } from '@tauri-apps/api/tauri';
-import { Session } from '../types';
-import { sendAndCapture } from './terminal';
+import { Session, DeviceProfile } from '../types';
+import { sendAndCapture, sleep } from './terminal';
+import { profileForSession } from './deviceProfiles';
 
 export type MatcherKind = 'contains' | 'notContains' | 'regex' | 'regexAbsent';
 export type IntentStatus = 'ok' | 'violation' | 'unknown';
@@ -12,6 +13,9 @@ export type IntentStatus = 'ok' | 'violation' | 'unknown';
 export interface Matcher {
   kind: MatcherKind;
   value: string;
+  /** Regex matchers compile case-insensitive ('im') by default; set true for
+   *  case-sensitive ('m'). Ignored by contains/notContains (already case-folded). */
+  caseSensitive?: boolean;
 }
 export interface Scope {
   all: boolean;
@@ -41,6 +45,10 @@ export interface Intent {
   lastResult?: IntentResult;
 }
 
+/** Regex flags for a matcher: multiline always; case-insensitive unless the
+ *  author opted into case-sensitive matching. */
+const reFlags = (m: Matcher): string => (m.caseSensitive ? 'm' : 'im');
+
 export function describeMatcher(m: Matcher): string {
   switch (m.kind) {
     case 'contains':
@@ -48,9 +56,9 @@ export function describeMatcher(m: Matcher): string {
     case 'notContains':
       return `output does NOT contain "${m.value}"`;
     case 'regex':
-      return `output matches /${m.value}/`;
+      return `output matches /${m.value}/${reFlags(m)}`;
     case 'regexAbsent':
-      return `output does NOT match /${m.value}/`;
+      return `output does NOT match /${m.value}/${reFlags(m)}`;
   }
 }
 
@@ -72,9 +80,9 @@ export function evalMatcher(m: Matcher, output: string): boolean {
       case 'notContains':
         return !output.toLowerCase().includes(m.value.toLowerCase());
       case 'regex':
-        return new RegExp(m.value, 'im').test(output);
+        return new RegExp(m.value, reFlags(m)).test(output);
       case 'regexAbsent':
-        return !new RegExp(m.value, 'im').test(output);
+        return !new RegExp(m.value, reFlags(m)).test(output);
     }
   } catch {
     return false;
@@ -91,11 +99,18 @@ export function matchOutcome(m: Matcher, output: string): { status: IntentStatus
   if (output.trim() === '') {
     return { status: 'unknown', detail: 'no output captured' };
   }
+  // A trailing pager prompt (`-- MORE --`, `---(more)---`, `--More--`) means the
+  // capture stopped at page 1. Judging it risks a false "compliant" for
+  // notContains/regexAbsent when the offending content is on a later page — so
+  // treat truncated output as indeterminate, not a pass.
+  if (/(-{2,}\s*more|---\(more|--More--)/i.test(output.slice(-80))) {
+    return { status: 'unknown', detail: 'output truncated at pager prompt' };
+  }
   let present: boolean;
   if (m.kind === 'regex' || m.kind === 'regexAbsent') {
     let re: RegExp;
     try {
-      re = new RegExp(m.value, 'im');
+      re = new RegExp(m.value, reFlags(m));
     } catch (e) {
       return { status: 'unknown', detail: `invalid regex /${m.value}/: ${e instanceof Error ? e.message : String(e)}` };
     }
@@ -111,7 +126,8 @@ export function matchOutcome(m: Matcher, output: string): { status: IntentStatus
 export async function evaluateIntent(
   intent: Intent,
   sessions: Session[],
-  shouldCancel?: () => boolean
+  shouldCancel?: () => boolean,
+  customProfiles: DeviceProfile[] = []
 ): Promise<IntentResult> {
   const targets = sessions.filter(
     (s) => s.connected && s.config.protocol !== 'local' && inScope(intent.scope, s)
@@ -125,7 +141,28 @@ export async function evaluateIntent(
     }
     const device = s.config.name || s.config.host || s.sessionId;
     try {
-      const out = (await sendAndCapture(s.sessionId, intent.command)) || '';
+      // Disable device paging around the capture, mirroring ConfigEditor.pullCommand.
+      // Without this, sendAndCapture returns only page 1 (the device pauses at a
+      // pager prompt) and a violation on a later page silently reads as compliant.
+      const profile = profileForSession(s.config, customProfiles);
+      let cmd = intent.command;
+      // Junos/Mist have no session paging toggle — pipe `| no-more` on show commands.
+      if (
+        (profile.deviceType === 'juniper-junos' || profile.deviceType === 'mist') &&
+        /^\s*show\b/i.test(cmd) &&
+        !/\|\s*no-more\b/i.test(cmd)
+      ) {
+        cmd = `${cmd} | no-more`;
+      }
+      if (profile.pagingDisableCommand) {
+        await invoke('send_data', { sessionId: s.sessionId, data: profile.pagingDisableCommand + '\r' });
+        await sleep(300);
+      }
+      const out = (await sendAndCapture(s.sessionId, cmd)) || '';
+      if (profile.pagingRestoreCommand) {
+        await invoke('send_data', { sessionId: s.sessionId, data: profile.pagingRestoreCommand + '\r' });
+        await sleep(150);
+      }
       const oc = matchOutcome(intent.matcher, out);
       perDevice.push({ device, status: oc.status, detail: oc.detail });
     } catch (e) {
@@ -164,12 +201,13 @@ export async function evaluateIntent(
 export async function evaluateAll(
   intents: Intent[],
   sessions: Session[],
-  shouldCancel?: () => boolean
+  shouldCancel?: () => boolean,
+  customProfiles: DeviceProfile[] = []
 ): Promise<Intent[]> {
   const out: Intent[] = [];
   for (const intent of intents) {
     if (shouldCancel?.()) break;
-    const lastResult = await evaluateIntent(intent, sessions, shouldCancel);
+    const lastResult = await evaluateIntent(intent, sessions, shouldCancel, customProfiles);
     out.push({ ...intent, lastResult });
   }
   return out;

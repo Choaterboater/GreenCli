@@ -62,6 +62,11 @@ export default function ApstraBrowser() {
   const loadBlueprints = useCallback(async () => {
     setLoading('bp');
     setError('');
+    // Reset selection so a stale node/config isn't left showing after a refresh.
+    setBpId(null);
+    setNodes([]);
+    setNodeId(null);
+    setConfig('');
     try {
       const data = await apstra<{ items: Blueprint[] }>('/api/blueprints');
       setBlueprints(data.items || []);
@@ -74,13 +79,7 @@ export default function ApstraBrowser() {
   }, []);
 
   useEffect(() => {
-    if (showApstra) {
-      setBpId(null);
-      setNodes([]);
-      setNodeId(null);
-      setConfig('');
-      loadBlueprints();
-    }
+    if (showApstra) loadBlueprints();
   }, [showApstra, loadBlueprints]);
 
   const openBlueprint = async (id: string) => {

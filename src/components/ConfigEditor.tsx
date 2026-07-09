@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import { useState, useRef, useEffect, useCallback, useMemo, useDeferredValue } from 'react';
 import Editor, { BeforeMount, DiffEditor, OnMount } from '@monaco-editor/react';
 import type { editor as MonacoEditor } from 'monaco-editor';
 import {
@@ -760,10 +760,27 @@ export default function ConfigEditor() {
   );
 
   const activeSession = sessions.find((s) => s.sessionId === activeSessionId);
-  const outlineItems = useMemo(() => buildOutline(content), [content]);
-  const diagnostics = useMemo(() => buildDiagnostics(content, language), [content, language]);
+  // Recompute the outline/diagnostics against a DEFERRED copy of the content so the
+  // full-buffer reparse (buildOutline/buildDiagnostics scan every line) runs at low
+  // priority instead of on the keystroke path. Monaco's value={content} below still
+  // updates synchronously, so typing stays responsive on multi-thousand-line configs.
+  const deferredContent = useDeferredValue(content);
+  const outlineItems = useMemo(() => buildOutline(deferredContent), [deferredContent]);
+  const diagnostics = useMemo(() => buildDiagnostics(deferredContent, language), [deferredContent, language]);
 
   useEffect(() => { contentRef.current = content; }, [content]);
+
+  // Auto-detect the device language from typed/pasted config, debounced so the scan
+  // fires at most once per idle window instead of on every keystroke. Only runs while
+  // the buffer is still plaintext and the user hasn't explicitly picked a language.
+  useEffect(() => {
+    if (language !== 'plaintext' || active.langExplicit) return;
+    const id = setTimeout(() => {
+      const detected = detectConfigLanguage(contentRef.current);
+      if (detected) setLanguage(detected);
+    }, 300);
+    return () => clearTimeout(id);
+  }, [content, language, active.langExplicit, setLanguage]);
 
   const showStatus = (msg: string) => {
     setStatusMsg(msg);
@@ -1126,13 +1143,15 @@ export default function ConfigEditor() {
       return;
     }
     const lines = content
+      // Strip /* ... */ block comments across the WHOLE buffer first (dotall via
+      // [\s\S]), so multi-line Junos annotations can't leak inner/closing lines —
+      // this also subsumes the inline "/* uplink */ set interfaces ..." case.
+      .replace(/\/\*[\s\S]*?\*\//g, '')
       .split('\n')
       .map((l) => l.trim())
-      // Strip INLINE Junos block comments /* ... */ rather than dropping the whole
-      // line — "/* uplink */ set interfaces ..." must keep its `set` command.
-      .map((l) => l.replace(/\/\*.*?\*\//g, '').trim())
       // Drop pure comment lines for every supported vendor: Aruba/Cisco '!' '#',
-      // now-empty comment-only lines, and lone Junos block delimiters.
+      // now-empty comment-only lines, and any stray delimiter left behind by an
+      // UNTERMINATED /* (which the regex above won't match — it has no closing */).
       .filter((l) => l && !l.startsWith('!') && !l.startsWith('#') && !l.startsWith('/*') && !l.startsWith('*/'));
     if (lines.length === 0) {
       showStatus('Nothing to send');
@@ -1666,10 +1685,8 @@ export default function ConfigEditor() {
             const next = v ?? '';
             setContent(next);
             setIsDirty(true);
-            if (language === 'plaintext' && !active.langExplicit) {
-              const detected = detectConfigLanguage(next);
-              if (detected) setLanguage(detected);
-            }
+            // Language auto-detect runs from a debounced effect (see above) so it
+            // isn't re-scanned on every keystroke.
           }}
           beforeMount={defineEditorThemes}
           onMount={handleEditorMount}

@@ -81,7 +81,9 @@ const DEVICE_PATTERNS: DevicePattern[] = [
   {
     type: 'aruba-controller',
     patterns: [
-      /^\([A-Za-z][A-Za-z0-9-_\s]*\)\s*#\s?/,
+      // Hostname prompt: no internal whitespace, so ordinary parenthesized
+      // output like "(some text) #" no longer false-triggers controller detection.
+      /^\([A-Za-z][A-Za-z0-9._-]*\)\s*#\s?/,
       /^\(config\)\s*#\s?/,
       /^\(config-\w+\)\s*#\s?/,
       /^\(ArubaMC\)\s*#\s?/,
@@ -98,6 +100,14 @@ export class ArubaHighlighter {
   private sortedKeywords: string[];
   private sortedOperators: string[];
   private sortedFlags: string[];
+  // Lowercased copies of the sorted lists, precomputed once. matchFromList runs
+  // in the highlight hot path, so we avoid re-lowercasing these static grammar
+  // tokens on every line/segment (grammar tokens are ASCII, so length is stable).
+  private sortedCommandsLower: string[];
+  private sortedSubcommandsLower: string[];
+  private sortedKeywordsLower: string[];
+  private sortedOperatorsLower: string[];
+  private sortedFlagsLower: string[];
 
   constructor(grammar: Grammar) {
     this.grammar = grammar;
@@ -107,6 +117,12 @@ export class ArubaHighlighter {
     this.sortedKeywords = [...grammar.keywords].sort((a, b) => b.length - a.length);
     this.sortedOperators = [...grammar.operators].sort((a, b) => b.length - a.length);
     this.sortedFlags = [...grammar.flags].sort((a, b) => b.length - a.length);
+    // Precompute lowercased forms for case-insensitive matching in matchFromList.
+    this.sortedCommandsLower = this.sortedCommands.map((s) => s.toLowerCase());
+    this.sortedSubcommandsLower = this.sortedSubcommands.map((s) => s.toLowerCase());
+    this.sortedKeywordsLower = this.sortedKeywords.map((s) => s.toLowerCase());
+    this.sortedOperatorsLower = this.sortedOperators.map((s) => s.toLowerCase());
+    this.sortedFlagsLower = this.sortedFlags.map((s) => s.toLowerCase());
   }
 
   isGeneric(): boolean {
@@ -121,8 +137,12 @@ export class ArubaHighlighter {
     let promptProcessed = false;
 
     while (pos < line.length) {
-      // 1. Handle prompt prefix
-      if (isPrompt && !promptProcessed) {
+      // 1. Handle prompt prefix. The live terminal path can't flag prompt lines
+      // in advance (applyToTerminal is called per split line with isPrompt=false),
+      // so in addition to the explicit isPrompt hint we opportunistically detect a
+      // device prompt at the very start of the line via grammar.promptPattern.
+      // The generic grammar uses NO_MATCH, so this never fires for generic output.
+      if (!promptProcessed && (isPrompt || pos === 0)) {
         const promptMatch = this.matchPrompt(line, pos);
         if (promptMatch) {
           tokens.push({
@@ -158,8 +178,20 @@ export class ArubaHighlighter {
         continue;
       }
 
+      // 3.5 Pipe filters (Junos '| match', '| display set', '| count', …). Must
+      // run BEFORE operators, otherwise the bare '|' is consumed as an operator
+      // and the multi-word filter flag never gets a chance to match.
+      if (line[pos] === '|') {
+        const pipeMatch = this.matchFromList(line, pos, this.sortedFlagsLower, 'token-cmd-flag');
+        if (pipeMatch) {
+          tokens.push(pipeMatch);
+          pos = pipeMatch.endPos;
+          continue;
+        }
+      }
+
       // 4. Try operators
-      const opMatch = this.matchFromList(line, pos, this.sortedOperators, 'token-cmd-operator');
+      const opMatch = this.matchFromList(line, pos, this.sortedOperatorsLower, 'token-cmd-operator');
       if (opMatch) {
         tokens.push(opMatch);
         pos = opMatch.endPos;
@@ -167,7 +199,7 @@ export class ArubaHighlighter {
       }
 
       // 5. Try flags
-      const flagMatch = this.matchFromList(line, pos, this.sortedFlags, 'token-cmd-flag');
+      const flagMatch = this.matchFromList(line, pos, this.sortedFlagsLower, 'token-cmd-flag');
       if (flagMatch) {
         tokens.push(flagMatch);
         pos = flagMatch.endPos;
@@ -189,7 +221,7 @@ export class ArubaHighlighter {
 
       // 8. Try commands (only at command position)
       if (isCommandPosition) {
-        const cmdMatch = this.matchFromList(line, pos, this.sortedCommands, 'token-cmd-keyword');
+        const cmdMatch = this.matchFromList(line, pos, this.sortedCommandsLower, 'token-cmd-keyword');
         if (cmdMatch) {
           tokens.push(cmdMatch);
           pos = cmdMatch.endPos;
@@ -198,7 +230,7 @@ export class ArubaHighlighter {
       }
 
       // 9. Try subcommands
-      const subMatch = this.matchFromList(line, pos, this.sortedSubcommands, 'token-cmd-subcommand');
+      const subMatch = this.matchFromList(line, pos, this.sortedSubcommandsLower, 'token-cmd-subcommand');
       if (subMatch) {
         tokens.push(subMatch);
         pos = subMatch.endPos;
@@ -206,7 +238,7 @@ export class ArubaHighlighter {
       }
 
       // 10. Try keywords
-      const kwMatch = this.matchFromList(line, pos, this.sortedKeywords, 'token-cmd-keyword');
+      const kwMatch = this.matchFromList(line, pos, this.sortedKeywordsLower, 'token-cmd-keyword');
       if (kwMatch) {
         tokens.push(kwMatch);
         pos = kwMatch.endPos;
@@ -407,7 +439,7 @@ export class ArubaHighlighter {
   private matchFromList(
     line: string,
     pos: number,
-    sortedList: string[],
+    sortedListLower: string[],
     className: string
   ): Token | null {
     // Word boundary before pos — don't match in the middle of a word
@@ -416,16 +448,20 @@ export class ArubaHighlighter {
     }
 
     const remaining = line.slice(pos);
-    for (const item of sortedList) {
-      if (remaining.toLowerCase().startsWith(item.toLowerCase())) {
+    // Lowercase the remaining substring once (not once per list item). The
+    // emitted token text is sliced from `remaining` so its original case is
+    // preserved, and ASCII grammar tokens keep the same length when lowercased.
+    const lowerRemaining = remaining.toLowerCase();
+    for (const itemLower of sortedListLower) {
+      if (lowerRemaining.startsWith(itemLower)) {
         // Word boundary after match — next char must be whitespace, operator, or EOL
-        const after = remaining[item.length];
+        const after = remaining[itemLower.length];
         if (!after || /[\s|><;!&()\[\]{}]/.test(after)) {
           return {
-            text: remaining.slice(0, item.length),
+            text: remaining.slice(0, itemLower.length),
             className,
             startPos: pos,
-            endPos: pos + item.length,
+            endPos: pos + itemLower.length,
           };
         }
       }

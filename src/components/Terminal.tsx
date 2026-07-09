@@ -113,6 +113,12 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
   // Mirror the deviceType prop into a ref so the data listener can read it
   // without being torn down and re-subscribed (which drops in-flight output).
   const deviceTypeRef = useRef(deviceType);
+  // Latched auto-detected vendor for a 'generic' session. Once the output
+  // fingerprints a device we build that highlighter ONCE and stop re-detecting
+  // (and re-sorting every grammar) on each flush — which also stops the active
+  // grammar thrashing as fingerprints scroll out of the rolling bufferRef
+  // window. Reset by the deviceType effect so a new/explicit choice re-detects.
+  const autoDetectedRef = useRef<string | null>(null);
   const ansiProcessorRef = useRef<AnsiProcessor>(new AnsiProcessor());
   const bufferRef = useRef<string>('');
   // Persistent streaming decoder so multibyte UTF-8 split across chunks is not
@@ -129,6 +135,9 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
   // Tail of the previous decoded chunk, prepended to the next so an output trigger
   // whose match straddles a chunk boundary is still detected.
   const triggerCarryRef = useRef<string>('');
+  // Compiled-regex cache for output triggers, keyed by pattern string, so a valid
+  // user regex is compiled once instead of recompiled on every ~8ms flush.
+  const triggerRxRef = useRef<Map<string, RegExp>>(new Map());
   // Trailing incomplete escape sequence held back from the previous flush batch
   // and prepended to the next, so the raw-vs-highlight check doesn't mistake a
   // split sequence (e.g. '\x1b[3' + '8;5;196m') for highlightable text.
@@ -164,7 +173,15 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
 
 
   const { terminalTheme } = useTheme();
-  const settings = useSettingsStore();
+  // Subscribe only to the terminal-relevant fields (read by the init + settings
+  // effects below) instead of the whole settings store, so unrelated settings
+  // changes (bell, syntax highlighting, AI model, device profiles, …) don't
+  // re-render every mounted terminal.
+  const fontSize = useSettingsStore((s) => s.fontSize);
+  const fontFamily = useSettingsStore((s) => s.fontFamily);
+  const cursorStyle = useSettingsStore((s) => s.cursorStyle);
+  const cursorBlink = useSettingsStore((s) => s.cursorBlink);
+  const scrollback = useSettingsStore((s) => s.scrollback);
   const updateSessionConnection = useSessionStore((s) => s.updateSessionConnection);
 
   useEffect(() => {
@@ -175,6 +192,8 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
   useEffect(() => {
     deviceTypeRef.current = deviceType;
     highlighterRef.current = ArubaHighlighter.forDeviceType(deviceType);
+    // A fresh explicit choice (or a switch back to 'generic') re-arms auto-detect.
+    autoDetectedRef.current = null;
   }, [deviceType]);
 
   // Initialize terminal
@@ -183,11 +202,11 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
 
     const term = new XTerm({
       theme: terminalTheme,
-      fontSize: settings.fontSize,
-      fontFamily: settings.fontFamily,
-      cursorStyle: settings.cursorStyle,
-      cursorBlink: settings.cursorBlink,
-      scrollback: settings.scrollback,
+      fontSize,
+      fontFamily,
+      cursorStyle,
+      cursorBlink,
+      scrollback,
       allowProposedApi: true,
       allowTransparency: false,
       macOptionIsMeta: true,
@@ -344,6 +363,14 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
       ) {
         const sel = term.getSelection();
         if (sel) navigator.clipboard?.writeText(sel).catch(() => {});
+        // Clear the selection after copying — getSelection() already captured
+        // `sel` synchronously, so the async clipboard write is unaffected — and
+        // drop the keyboard anchor. hasSelection() is now false, so the NEXT
+        // Ctrl+C falls through and xterm emits \x03 (SIGINT); a lingering mouse
+        // selection no longer swallows every abort.
+        term.clearSelection();
+        selAnchorRef.current = null;
+        selFocusRef.current = null;
         return false;
       }
 
@@ -557,18 +584,42 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
             // pattern split across PTY chunks is still matched (the 2.5s cooldown
             // below suppresses duplicate fires from the overlap).
             const haystack = triggerCarryRef.current + text;
+            // Match line-by-line over the batch. A burst flush hands us up to
+            // ~256KB (see the 256*1024 threshold below); running a user regex over
+            // the whole batch risks catastrophic backtracking (ReDoS) that pins
+            // the main thread, and re-lowercasing / recompiling per trigger is
+            // wasted work. The 'im' flag is line-anchored and terminal output is
+            // line-oriented, so per-line testing keeps full-batch coverage and
+            // anchor semantics while bounding each regex to a single line. The
+            // lines are lowercased once here rather than once per keyword trigger.
+            const lines = haystack.split('\n');
+            const lowerLines = lines.map((l) => l.toLowerCase());
             for (const tr of triggers) {
               let matchText = '';
-              try {
-                if (tr.isRegex) {
-                  // 'm' so ^/$ anchor per line, matching user expectation.
-                  const m = haystack.match(new RegExp(tr.pattern, 'im'));
-                  if (m) matchText = m[0];
-                } else if (haystack.toLowerCase().includes(tr.pattern.toLowerCase())) {
-                  matchText = tr.pattern;
+              if (tr.isRegex) {
+                // Compile once and cache by pattern — recompiling on every ~8ms
+                // flush is the bulk of the per-trigger waste.
+                let rx = triggerRxRef.current.get(tr.pattern);
+                if (!rx) {
+                  try {
+                    // 'm' so ^/$ anchor per line, matching user expectation.
+                    rx = new RegExp(tr.pattern, 'im');
+                    triggerRxRef.current.set(tr.pattern, rx);
+                  } catch {
+                    rx = undefined; // bad regex — ignore
+                  }
                 }
-              } catch {
-                /* bad regex — ignore */
+                if (rx) {
+                  for (const line of lines) {
+                    const m = line.match(rx);
+                    if (m) { matchText = m[0]; break; }
+                  }
+                }
+              } else {
+                const needle = tr.pattern.toLowerCase();
+                for (const lowerLine of lowerLines) {
+                  if (lowerLine.includes(needle)) { matchText = tr.pattern; break; }
+                }
               }
               if (matchText && now - (triggerFiredRef.current[tr.id] || 0) > 2500) {
                 triggerFiredRef.current[tr.id] = now;
@@ -583,9 +634,13 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
           // 'generic'. An explicit choice is authoritative and must not be
           // flipped mid-session by transient output. Read from a ref so the
           // listener never needs to be torn down + re-subscribed on prop change.
-          if (deviceTypeRef.current === 'generic') {
+          if (deviceTypeRef.current === 'generic' && autoDetectedRef.current === null) {
             const detected = highlighterRef.current.detectDeviceType(bufferRef.current);
             if (detected !== 'generic') {
+              // Latch the vendor: build its highlighter once and stop re-detecting
+              // (and re-sorting every grammar) on subsequent flushes, and stop the
+              // active grammar thrashing as fingerprints scroll out of bufferRef.
+              autoDetectedRef.current = detected;
               highlighterRef.current = ArubaHighlighter.forDeviceType(detected);
             }
           }
@@ -802,20 +857,30 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
     if (!terminalRef.current) return;
     const term = terminalRef.current;
 
-    term.options.fontSize = settings.fontSize;
-    term.options.fontFamily = settings.fontFamily;
-    term.options.cursorStyle = settings.cursorStyle;
-    term.options.cursorBlink = settings.cursorBlink;
-    term.options.scrollback = settings.scrollback;
+    term.options.fontSize = fontSize;
+    term.options.fontFamily = fontFamily;
+    term.options.cursorStyle = cursorStyle;
+    term.options.cursorBlink = cursorBlink;
+    term.options.scrollback = scrollback;
     term.options.theme = terminalTheme;
 
-    fitAddonRef.current?.fit();
+    // Only fit() when actually visible. A hidden (display:none) background tab, or
+    // the main-window copy of a popped-out session, has a zero-size box — but
+    // FitAddon reads the h-full/w-full parent's computed height/width as "100%"
+    // (parseInt -> 100) and keeps the last cached cell size, landing on a bogus
+    // ~10x5 geometry that fires resize_terminal and SIGWINCHes that session's PTY.
+    // Mirror handleResize's guard; the ResizeObserver refits (0 -> size) when the
+    // terminal becomes visible again.
+    const el = containerRef.current;
+    if (el && el.clientWidth > 0 && el.clientHeight > 0) {
+      fitAddonRef.current?.fit();
+    }
   }, [
-    settings.fontSize,
-    settings.fontFamily,
-    settings.cursorStyle,
-    settings.cursorBlink,
-    settings.scrollback,
+    fontSize,
+    fontFamily,
+    cursorStyle,
+    cursorBlink,
+    scrollback,
     terminalTheme,
   ]);
 

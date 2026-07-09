@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { X, KeyRound, Eye, EyeOff, Lock, FolderOpen, FileKey } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/tauri';
 import { open as openDialog } from '@tauri-apps/api/dialog';
@@ -27,18 +27,38 @@ export default function SshAuthDialog({ onAuthenticate }: SshAuthDialogProps) {
   const [keyPassphrase, setKeyPassphrase] = useState('');
   const [showKeyPassphrase, setShowKeyPassphrase] = useState(false);
 
-  if (!showAuthDialog || !pendingConnection) return null;
-
-  // Dismissing the dialog must drop the typed secrets — the next prompt can be
-  // for a DIFFERENT host, and pre-filling it with the previous host's
-  // password/key is both a surprise and a leak.
-  const dismiss = () => {
+  // Closing the dialog must reset ALL form state — the next prompt can be for a
+  // DIFFERENT host, and carrying over the previous host's secrets, its "Save
+  // credential" opt-in, or the selected auth tab is both a surprise and a leak.
+  const resetForm = () => {
     setPassword('');
+    setShowPassword(false);
+    setSaveCredential(false);
+    setAuthType('password');
     setPrivateKey('');
     setKeyName(null);
     setKeyPassphrase('');
+    setShowKeyPassphrase(false);
+  };
+
+  const dismiss = () => {
+    resetForm();
     setShowAuthDialog(false);
   };
+
+  // Close on Escape, matching every other modal in the app.
+  useEffect(() => {
+    if (!showAuthDialog) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      dismiss();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showAuthDialog]);
+
+  if (!showAuthDialog || !pendingConnection) return null;
 
   const browseForKey = async () => {
     try {
@@ -74,10 +94,7 @@ export default function SshAuthDialog({ onAuthenticate }: SshAuthDialogProps) {
         saveCredential
       );
     }
-    setPassword('');
-    setPrivateKey('');
-    setKeyName(null);
-    setKeyPassphrase('');
+    resetForm();
     setShowAuthDialog(false);
   };
 
@@ -230,16 +247,18 @@ export default function SshAuthDialog({ onAuthenticate }: SshAuthDialogProps) {
             </div>
           )}
 
-          {/* Save */}
-          <label className="flex items-center gap-2 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={saveCredential}
-              onChange={(e) => setSaveCredential(e.target.checked)}
-              className="w-4 h-4 rounded"
-            />
-            <span className="text-sm text-[var(--text-secondary)]">Save credential to encrypted vault</span>
-          </label>
+          {/* Save — hidden on the SSH Agent tab, where nothing is persisted */}
+          {authType !== 'agent' && (
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={saveCredential}
+                onChange={(e) => setSaveCredential(e.target.checked)}
+                className="w-4 h-4 rounded"
+              />
+              <span className="text-sm text-[var(--text-secondary)]">Save credential to encrypted vault</span>
+            </label>
+          )}
 
           {/* Actions */}
           <div className="flex items-center gap-3 pt-1">

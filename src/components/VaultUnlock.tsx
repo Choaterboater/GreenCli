@@ -39,8 +39,15 @@ export default function VaultUnlock({ onUnlocked }: { onUnlocked?: () => void })
       setErr('Passwords do not match.');
       return;
     }
-    if (isNew && pw.length < 4) {
-      setErr('Password must be at least 4 characters.');
+    if (isNew && pw.length < 12) {
+      // Matches the backend floor (vault/mod.rs). A short master password is
+      // offline-brute-forceable if vault.enc is stolen — the exact threat the
+      // vault exists to resist.
+      setErr('Master password must be at least 12 characters.');
+      return;
+    }
+    if (isNew && /^(.)\1*$/.test(pw)) {
+      setErr('Master password is too weak. Avoid a single repeated character.');
       return;
     }
     setBusy(true);
@@ -79,7 +86,7 @@ export default function VaultUnlock({ onUnlocked }: { onUnlocked?: () => void })
         <form onSubmit={submit} className="px-5 py-4 space-y-3">
           <p className="text-xs text-[var(--text-secondary)]">
             {isNew
-              ? 'Choose a master password for your credential vault. You\u2019ll need this to access saved passwords.'
+              ? 'Choose a master password (at least 12 characters) for your credential vault. You\u2019ll need this to access saved passwords.'
               : 'Enter your vault master password to unlock saved credentials.'}
           </p>
           <div className="relative">

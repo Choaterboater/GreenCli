@@ -225,7 +225,16 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
       ),
     })),
 
-  clearSessions: () => set({ sessions: [], activeSessionId: null }),
+  clearSessions: () =>
+    set({
+      sessions: [],
+      activeSessionId: null,
+      // Don't leave split/popped/unseen tracking pointing at destroyed sessions.
+      splitPanes: [],
+      splitView: false,
+      poppedSessions: [],
+      unseenOutput: [],
+    }),
 
   toggleSidebar: () => set((state) => ({ sidebarVisible: !state.sidebarVisible })),
   setSidebarVisible: (visible) => set({ sidebarVisible: visible }),
@@ -361,6 +370,9 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
         .find((f) => f.id === fromFolderId)
         ?.items.find((s) => s.id === sessionId);
       if (!moved) return state;
+      // Don't detach from the source unless the target folder actually exists,
+      // otherwise the session would be dropped from the tree entirely.
+      if (!state.folders.some((f) => f.id === toFolderId)) return state;
       return {
         folders: state.folders.map((f) => {
           if (f.id === fromFolderId) {

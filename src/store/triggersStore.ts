@@ -20,7 +20,7 @@ export const useTriggersStore = create<TriggersState>()(
     (set) => ({
       triggers: [],
       addTrigger: (t) =>
-        set((s) => ({ triggers: [...s.triggers, { ...t, id: `trg-${Date.now()}-${s.triggers.length}` }] })),
+        set((s) => ({ triggers: [...s.triggers, { ...t, id: `trg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}` }] })),
       removeTrigger: (id) => set((s) => ({ triggers: s.triggers.filter((t) => t.id !== id) })),
     }),
     { name: 'atp-triggers' }

@@ -112,9 +112,8 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
       const localCommand = protocol === 'local' ? customCommand.trim() || preset?.command : undefined;
       const localName =
         protocol === 'local'
-          ? preset && preset.id !== 'shell'
-            ? preset.label
-            : localCommand || 'Local Shell'
+          ? customCommand.trim() ||
+            (preset && preset.id !== 'shell' ? preset.label : localCommand || 'Local Shell')
           : undefined;
 
       const config: ConnectionConfig = {
@@ -135,10 +134,10 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
         command: localCommand,
         args: protocol === 'local' ? preset?.args : undefined,
         cwd: protocol === 'local' && cwd.trim() ? cwd.trim() : undefined,
-        jumpHost: protocol === 'ssh' && jumpHost ? jumpHost : undefined,
-        jumpPort: protocol === 'ssh' && jumpHost ? jumpPort : undefined,
-        jumpUsername: protocol === 'ssh' && jumpHost ? jumpUsername : undefined,
-        jumpPassword: protocol === 'ssh' && jumpHost ? jumpPassword : undefined,
+        jumpHost: protocol === 'ssh' && showJump && jumpHost ? jumpHost : undefined,
+        jumpPort: protocol === 'ssh' && showJump && jumpHost ? jumpPort : undefined,
+        jumpUsername: protocol === 'ssh' && showJump && jumpHost ? jumpUsername : undefined,
+        jumpPassword: protocol === 'ssh' && showJump && jumpHost ? jumpPassword : undefined,
       };
       if (protocol !== 'local') {
         settings.setLastUsedDeviceType(config.deviceType);

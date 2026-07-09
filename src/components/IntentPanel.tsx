@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/tauri';
 import {
   X,
@@ -47,6 +47,11 @@ export default function IntentPanel() {
   const [running, setRunning] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [showPacks, setShowPacks] = useState(false);
+  // Cancel an in-flight sweep when the panel closes. Closing only makes the
+  // component return null (line below) — it's never unmounted — so without a
+  // cancel signal the async evaluate loop keeps issuing show-commands on live
+  // sessions and still fires completion toasts over a hidden panel.
+  const cancelRef = useRef(false);
 
   const refresh = useCallback(() => {
     invoke<Intent[]>('intent_list')
@@ -67,6 +72,11 @@ export default function IntentPanel() {
   useEffect(() => {
     if (showIntent) refresh();
   }, [showIntent, refresh]);
+
+  // One choke point for every close path (backdrop, X button, programmatic).
+  useEffect(() => {
+    if (!showIntent) cancelRef.current = true;
+  }, [showIntent]);
 
   if (!showIntent) return null;
 
@@ -145,10 +155,14 @@ export default function IntentPanel() {
   };
 
   const runOne = async (intent: Intent) => {
+    cancelRef.current = false;
     setRunning(intent.id);
-    const result = await evaluateIntent(intent, sessions);
-    setIntents((prev) => prev.map((i) => (i.id === intent.id ? { ...i, lastResult: result } : i)));
-    setRunning(null);
+    try {
+      const result = await evaluateIntent(intent, sessions, () => cancelRef.current);
+      if (!cancelRef.current) setIntents((prev) => prev.map((i) => (i.id === intent.id ? { ...i, lastResult: result } : i)));
+    } finally {
+      setRunning(null);
+    }
   };
 
   const runAll = async () => {
@@ -156,13 +170,18 @@ export default function IntentPanel() {
       notify.warning('No connected devices', 'Connect a session to evaluate intents.');
       return;
     }
+    cancelRef.current = false;
     setRunning('*');
-    const updated = await evaluateAll(intents, sessions);
-    setIntents(updated);
-    setRunning(null);
-    const v = updated.filter((i) => i.lastResult?.status === 'violation').length;
-    if (v) notify.warning('Intent violations', `${v} intent${v > 1 ? 's' : ''} not met.`);
-    else notify.success('Network compliant', 'All evaluated intents are met.');
+    try {
+      const updated = await evaluateAll(intents, sessions, () => cancelRef.current);
+      if (cancelRef.current) return; // panel closed mid-sweep — suppress toast + state write
+      setIntents(updated);
+      const v = updated.filter((i) => i.lastResult?.status === 'violation').length;
+      if (v) notify.warning('Intent violations', `${v} intent${v > 1 ? 's' : ''} not met.`);
+      else notify.success('Network compliant', 'All evaluated intents are met.');
+    } finally {
+      setRunning(null);
+    }
   };
 
   const toggleExp = (id: string) =>

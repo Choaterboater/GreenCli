@@ -138,22 +138,29 @@ export default function DeviceMapper({ sessionId, onClose }: DeviceMapperProps) 
   };
 
   const exportProfiles = async () => {
-    const data = JSON.stringify(settings.customDeviceProfiles, null, 2);
-    if (isTauri) {
-      const path = await saveDialog({
-        title: 'Export device profiles',
-        defaultPath: 'greencli-device-profiles.json',
-        filters: [{ name: 'JSON', extensions: ['json'] }],
-      });
-      if (path) await invoke('write_file_text', { path, contents: data });
-    } else {
-      const blob = new Blob([data], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'greencli-device-profiles.json';
-      a.click();
-      URL.revokeObjectURL(url);
+    try {
+      const data = JSON.stringify(settings.customDeviceProfiles, null, 2);
+      if (isTauri) {
+        const path = await saveDialog({
+          title: 'Export device profiles',
+          defaultPath: 'greencli-device-profiles.json',
+          filters: [{ name: 'JSON', extensions: ['json'] }],
+        });
+        if (path) {
+          await invoke('write_file_text', { path, contents: data });
+          notify.success('Profiles exported', `${settings.customDeviceProfiles.length} profile${settings.customDeviceProfiles.length === 1 ? '' : 's'} written.`);
+        }
+      } else {
+        const blob = new Blob([data], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'greencli-device-profiles.json';
+        a.click();
+        URL.revokeObjectURL(url);
+      }
+    } catch (e) {
+      notify.error('Export failed', String(e));
     }
   };
 

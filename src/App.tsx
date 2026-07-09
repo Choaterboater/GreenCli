@@ -22,6 +22,7 @@ import {
 
 import { useSessionStore } from './store/sessionStore';
 import { useSettingsStore } from './store/settingsStore';
+import { useDialogStore } from './store/dialogStore';
 import { loadSecrets, persistSecrets } from './utils/secretVault';
 import { useTheme } from './hooks/useTheme';
 import { ConnectionConfig, Protocol, DeviceType, vendorColor } from './types';
@@ -555,10 +556,23 @@ function App() {
         useSessionStore.getState().setShowQuickConnect(true);
       }
       // Ctrl+W: Close Tab. Skip popped-out sessions — closing from here would
-      // disconnect the backend while their pop-out window stays open.
+      // disconnect the backend while their pop-out window stays open. Also bail
+      // out while any overlay/modal is open or focus is in an input/editor (incl.
+      // Monaco's hidden textarea), so Cmd+W doesn't silently tear down the live
+      // session behind the overlay.
       if ((e.ctrlKey || e.metaKey) && e.key === 'w' && activeSessionId) {
+        const st = useSessionStore.getState();
+        const overlayOpen =
+          st.showSettings || st.showQuickConnect || st.showAuthDialog ||
+          st.showCommandPalette || st.showHelp || st.showVaultUnlock ||
+          st.showSftp || st.showSearch || st.showConfigEditor ||
+          st.showApiExplorer || st.showAiAssistant ||
+          useDialogStore.getState().current != null;
+        const t = e.target as HTMLElement | null;
+        const editable = !!t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable);
+        if (overlayOpen || editable) return; // let the overlay/input keep focus; don't kill the live session
         e.preventDefault();
-        if (!useSessionStore.getState().poppedSessions.includes(activeSessionId)) {
+        if (!st.poppedSessions.includes(activeSessionId)) {
           invoke('disconnect', { sessionId: activeSessionId }).catch(() => {});
           removeSession(activeSessionId);
         }

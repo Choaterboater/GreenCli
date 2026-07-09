@@ -36,6 +36,8 @@ export interface ConnectionConfig {
   authType?: 'password' | 'key' | 'agent';
   password?: string;
   privateKey?: string;
+  /** Path to a private-key file on disk (e.g. an imported ssh_config IdentityFile). */
+  keyPath?: string;
   keyPassphrase?: string;
   serialPort?: string;
   baudRate?: number;
