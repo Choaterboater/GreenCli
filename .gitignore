@@ -10,3 +10,7 @@ src-tauri/app-icon.png
 src-tauri/ai_keys.json
 .vscode/
 .idea/
+
+# Playwright run artifacts — regenerated on every local run, never commit
+playwright-report/
+test-results/
