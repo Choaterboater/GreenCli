@@ -40,6 +40,9 @@ One cockpit for **Aruba · Juniper · Mist**. A modern, cross-platform terminal,
 ```
 green-cli/
 ├── src/                          # React frontend
+│   ├── App.tsx                   # Root component / view routing
+│   ├── PopOutTerminal.tsx        # Pop-out terminal window entry
+│   ├── main.tsx                  # React entry point
 │   ├── components/               # UI components
 │   │   ├── Terminal.tsx          # xterm.js wrapper
 │   │   ├── TerminalTabs.tsx      # Tab bar
@@ -48,26 +51,48 @@ green-cli/
 │   │   ├── QuickConnect.tsx      # Quick connect dialog
 │   │   ├── SshAuthDialog.tsx     # SSH authentication
 │   │   ├── SettingsPanel.tsx     # Settings UI
-│   │   └── SearchOverlay.tsx     # Terminal search
+│   │   ├── SearchOverlay.tsx     # Terminal search
+│   │   ├── AiAssistant.tsx       # AI assistant panel
+│   │   ├── ApiExplorer.tsx       # REST API explorer (Central / device / Apstra)
+│   │   ├── BulkRunner.tsx        # Run one command across sessions
+│   │   ├── ConfigEditor.tsx      # Monaco config editor
+│   │   ├── HelpPanel.tsx         # In-app help (F1)
+│   │   ├── IntentPanel.tsx       # Network intent / desired state
+│   │   ├── McpServers.tsx        # MCP server manager
+│   │   ├── SftpBrowser.tsx       # SFTP file browser
+│   │   ├── TunnelsManager.tsx    # SSH local/dynamic forwards
+│   │   └── …                     # Command palette, vault, triggers, dialogs, toaster
 │   ├── syntax/                   # Syntax highlighting engine
 │   │   ├── highlighter.ts        # Core highlighting engine
 │   │   ├── grammar-aruba-cx.ts   # Aruba CX grammar (80 commands, 84 subcommands)
 │   │   ├── grammar-aruba-ap.ts   # Aruba AP grammar (51 commands, 77 subcommands)
 │   │   ├── grammar-aruba-ctrl.ts # Aruba Controller grammar (65 commands, 86 subcommands)
+│   │   ├── grammar-junos.ts      # Juniper Junos grammar
 │   │   └── ansi-processor.ts     # ANSI sequence processor
+│   ├── data/                     # Static content (help topics, intent packs)
 │   ├── hooks/                    # React hooks
 │   ├── store/                    # Zustand state stores
 │   ├── types/                    # TypeScript types
 │   └── styles/                   # Global CSS
+├── e2e/                          # Playwright end-to-end tests (npm run test:e2e)
+├── scripts/                      # Utility scripts (screenshot capture)
 ├── src-tauri/                    # Rust backend
 │   └── src/
 │       ├── main.rs               # Tauri commands
 │       ├── ssh/                  # SSH client (russh)
 │       ├── telnet/               # Telnet client
 │       ├── serial/               # Serial port client
+│       ├── sftp/                 # SFTP file transfer
 │       ├── vault/                # Credential vault (AES-256-GCM)
-│       └── session/              # Session manager
+│       ├── session/              # Session manager
+│       ├── ai/                   # AI provider backends
+│       ├── api/                  # On-box REST (AOS-CX/AOS-8/AOS-S)
+│       ├── central/              # Aruba Central client
+│       ├── intent/               # Network intent engine
+│       ├── local/                # Local PTY
+│       └── mcp/                  # MCP client (stdio + streamable HTTP)
 ├── package.json                  # Node dependencies
+├── playwright.config.ts          # Playwright configuration
 ├── Cargo.toml                    # Rust dependencies
 └── tauri.conf.json               # Tauri configuration
 ```
