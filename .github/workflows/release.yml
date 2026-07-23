@@ -107,8 +107,11 @@ jobs:
           # WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
         with:
           # The Tauri app lives at the repo root (this `project/` folder).
-          tagName: ${{ github.ref_type == 'tag' && github.ref_name || format('v0.0.0-{0}', github.run_number) }}
-          releaseName: "GreenCli ${{ github.ref_name }}"
+          # Manual (workflow_dispatch) runs release under the app's real
+          # version — tauri-action substitutes __VERSION__ from tauri.conf.json
+          # — so a rebuild without a tag still lands as e.g. v1.2.1.
+          tagName: ${{ github.ref_type == 'tag' && github.ref_name || 'v__VERSION__' }}
+          releaseName: ${{ github.ref_type == 'tag' && format('GreenCli {0}', github.ref_name) || 'GreenCli v__VERSION__' }}
           releaseDraft: true
           prerelease: false
           args: --target ${{ matrix.target }}
