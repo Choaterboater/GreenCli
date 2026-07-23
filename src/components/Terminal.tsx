@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Terminal as XTerm } from 'xterm';
 import type { ILink } from 'xterm';
 import { FitAddon } from 'xterm-addon-fit';
@@ -15,6 +15,7 @@ import { useTheme } from '../hooks/useTheme';
 import { DeviceType } from '../types';
 import { ArubaHighlighter, AnsiProcessor } from '../syntax';
 import { registerSearchAdapter, unregisterSearchAdapter, createSearchAdapter } from '../utils/terminalSearch';
+import { copyText, readClipboardText } from '../utils/clipboard';
 import { registerTerminalActionAdapter, unregisterTerminalActionAdapter } from '../utils/terminalActions';
 import { countPasteLines, useTerminalToolsStore } from '../store/terminalToolsStore';
 import { appWindow } from '@tauri-apps/api/window';
@@ -23,6 +24,15 @@ import 'xterm/css/xterm.css';
 // Pop-out windows render one session in a fresh store — the background-activity
 // logic below only makes sense in the main window with its tab strip.
 const isPopOutWindow = appWindow.label.startsWith('popout-');
+
+const isMac = navigator.platform.toUpperCase().includes('MAC');
+const isWindows = navigator.platform.toUpperCase().includes('WIN');
+
+interface CtxMenuState {
+  x: number;
+  y: number;
+  hasSelection: boolean;
+}
 
 interface TerminalProps {
   sessionId: string;
@@ -90,10 +100,9 @@ function semanticLinksForLine(term: XTerm, bufferLineNumber: number): ILink[] | 
         },
         decorations: { pointerCursor: true, underline: true },
         activate: () => {
-          navigator.clipboard
-            .writeText(text)
-            .then(() => notify.info(`Copied ${kind}`, text))
-            .catch(() => notify.warning('Copy failed', text));
+          copyText(text).then((ok) =>
+            ok ? notify.info(`Copied ${kind}`, text) : notify.warning('Copy failed', text)
+          );
         },
       });
     }
@@ -147,6 +156,15 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
   // keyboard selection is in progress.
   const selAnchorRef = useRef<number | null>(null);
   const selFocusRef = useRef<number | null>(null);
+  // Right-click context menu (Copy / Paste / Select All / Clear); null = closed.
+  const [ctxMenu, setCtxMenu] = useState<CtxMenuState | null>(null);
+  // Menu actions bound to the live xterm instance by the init effect below.
+  const ctxActionsRef = useRef<{
+    copy: () => void;
+    paste: () => void;
+    selectAll: () => void;
+    clear: () => void;
+  } | null>(null);
 
   // Short audible blip, reusing the shared AudioContext.
   const beep = () => {
@@ -182,6 +200,7 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
   const cursorStyle = useSettingsStore((s) => s.cursorStyle);
   const cursorBlink = useSettingsStore((s) => s.cursorBlink);
   const scrollback = useSettingsStore((s) => s.scrollback);
+  const rightClickBehavior = useSettingsStore((s) => s.rightClickBehavior);
   const updateSessionConnection = useSessionStore((s) => s.updateSessionConnection);
 
   useEffect(() => {
@@ -210,7 +229,10 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
       allowProposedApi: true,
       allowTransparency: false,
       macOptionIsMeta: true,
-      rightClickSelectsWord: true,
+      // Only in 'menu' mode: word-select-then-menu is handy (right-click a word
+      // → Copy), but in paste/copyPaste modes the implicit selection would turn
+      // every right-click paste into a word copy instead.
+      rightClickSelectsWord: useSettingsStore.getState().rightClickBehavior === 'menu',
       screenReaderMode: false,
       convertEol: false,
       overviewRulerWidth: 15,
@@ -262,6 +284,54 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
       });
     };
 
+    // Copy the current selection to the OS clipboard, surfacing failure (a
+    // silent .catch here is how "copy is broken" bug reports happen).
+    const copySelection = (): string => {
+      const selection = term.getSelection();
+      if (selection) {
+        copyText(selection).then((ok) => {
+          if (!ok) notify.warning('Copy failed', 'Clipboard is unavailable.');
+        });
+      }
+      return selection;
+    };
+
+    // Paste with the same multi-line confirm the DOM paste path gets, so
+    // keyboard chords / context menu / right-click paste can't blast a config
+    // at a device unguarded.
+    const guardedPaste = (text: string) => {
+      if (!text) return;
+      const currentSettings = useSettingsStore.getState();
+      const lineCount = countPasteLines(text);
+      if (currentSettings.pasteGuardEnabled && lineCount >= currentSettings.pasteGuardLineThreshold) {
+        askConfirm({
+          title: `Paste ${lineCount} lines into the terminal?`,
+          message: 'Multi-line pastes run each line as a command on the connected device.',
+          confirmLabel: 'Paste',
+        }).then((ok) => {
+          if (ok) {
+            recordPaste(text);
+            terminalRef.current?.focus();
+            terminalRef.current?.paste(text);
+          }
+        });
+      } else {
+        recordPaste(text);
+        term.focus();
+        term.paste(text);
+      }
+    };
+
+    const pasteFromClipboard = () => {
+      readClipboardText().then((text) => {
+        if (text === null) {
+          notify.warning('Paste failed', 'Clipboard is unavailable.');
+          return;
+        }
+        guardedPaste(text);
+      });
+    };
+
     registerTerminalActionAdapter(sessionId, {
       paste: (text) => {
         if (!text) return;
@@ -269,13 +339,7 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
         term.focus();
         term.paste(text);
       },
-      copySelection: () => {
-        const selection = term.getSelection();
-        if (selection) {
-          navigator.clipboard.writeText(selection).catch(() => {});
-        }
-        return selection;
-      },
+      copySelection,
       focus: () => term.focus(),
       clear: () => term.clear(),
     });
@@ -353,19 +417,25 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
     const NAV = new Set(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End']);
     term.attachCustomKeyEventHandler((event) => {
       if (event.type !== 'keydown') return true;
-      if (term.buffer.active.type === 'alternate') return true;
 
-      // Copy: Cmd+C (macOS) / Ctrl+C (Win/Linux) copies the selection when one
-      // exists; with no selection it falls through so Ctrl+C still sends SIGINT.
+      // ── Copy/paste chords ──────────────────────────────────────────────
+      // Handled BEFORE the alternate-buffer bailout so copy/paste also works
+      // inside full-screen TUIs (vim, htop, claude) — like every normal
+      // terminal. Cmd+C/V never reach the PTY anyway, and the Ctrl variants
+      // below only intercept when unambiguous (selection exists / Shift held).
+
+      // Copy: Cmd+C (macOS) / Ctrl+C with a selection / Ctrl+Shift+C /
+      // Ctrl+Insert. With no selection Ctrl+C falls through to SIGINT.
       if (
-        (event.key === 'c' || event.key === 'C') &&
-        (event.metaKey || (event.ctrlKey && !event.altKey)) &&
-        term.hasSelection()
+        term.hasSelection() &&
+        (((event.key === 'c' || event.key === 'C') &&
+          // On macOS copy is Cmd+C only — Ctrl+C always stays SIGINT there.
+          (event.metaKey || (!isMac && event.ctrlKey && !event.altKey))) ||
+          (event.key === 'Insert' && event.ctrlKey && !event.shiftKey && !event.altKey))
       ) {
-        const sel = term.getSelection();
-        if (sel) navigator.clipboard?.writeText(sel).catch(() => {});
+        copySelection();
         // Clear the selection after copying — getSelection() already captured
-        // `sel` synchronously, so the async clipboard write is unaffected — and
+        // it synchronously, so the async clipboard write is unaffected — and
         // drop the keyboard anchor. hasSelection() is now false, so the NEXT
         // Ctrl+C falls through and xterm emits \x03 (SIGINT); a lingering mouse
         // selection no longer swallows every abort.
@@ -374,6 +444,24 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
         selFocusRef.current = null;
         return false;
       }
+
+      // Paste: Cmd+V (macOS), Ctrl+Shift+V, Shift+Insert everywhere; plain
+      // Ctrl+V only on Windows (Windows Terminal convention) — on Linux/macOS
+      // Ctrl+V stays the shell's literal-next (^V). preventDefault stops the
+      // webview's own textarea paste from firing a second, unguarded paste.
+      if (
+        ((event.key === 'v' || event.key === 'V') &&
+          ((event.metaKey && isMac) ||
+            (event.ctrlKey && event.shiftKey && !event.altKey) ||
+            (event.ctrlKey && !event.shiftKey && !event.altKey && isWindows))) ||
+        (event.key === 'Insert' && event.shiftKey && !event.ctrlKey && !event.altKey)
+      ) {
+        event.preventDefault();
+        pasteFromClipboard();
+        return false;
+      }
+
+      if (term.buffer.active.type === 'alternate') return true;
 
       // Shift + navigation extends the keyboard selection.
       if (event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey && NAV.has(event.key)) {
@@ -392,7 +480,15 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
           case 'ArrowUp': f = Math.max(0, f - cols); break;
           case 'ArrowDown': f = Math.min(total, f + cols); break;
           case 'Home': f = Math.floor(f / cols) * cols; break;
-          case 'End': f = Math.floor(f / cols) * cols + cols; break;
+          case 'End': {
+            // When extending forward, f is an EXCLUSIVE bound sitting on the
+            // next row's first cell; computing the row from f directly made
+            // every repeated Shift+End walk the selection one line further.
+            // Anchor to the last actually-selected cell instead.
+            const refCell = f > selAnchorRef.current ? f - 1 : f;
+            f = Math.floor(refCell / cols) * cols + cols;
+            break;
+          }
         }
         selFocusRef.current = f;
         const start = Math.min(selAnchorRef.current, f);
@@ -405,7 +501,11 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
         // Keep the moving end of the selection on screen. viewportY is the
         // actual scroll position; baseY is the bottom-anchored page and would
         // cause wrong jumps whenever the user has scrolled up into scrollback.
-        const focusRow = Math.min(buf.length - 1, Math.floor(f / cols));
+        // Follow the last SELECTED cell when extending forward (f is exclusive
+        // there) — following f itself overscrolled one row on Shift+End at the
+        // bottom of the screen.
+        const followCell = f > selAnchorRef.current ? f - 1 : f;
+        const focusRow = Math.min(buf.length - 1, Math.floor(followCell / cols));
         if (focusRow < buf.viewportY) term.scrollToLine(focusRow);
         else if (focusRow > buf.viewportY + term.rows - 1) term.scrollToLine(focusRow - term.rows + 1);
         return false;
@@ -442,6 +542,57 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
     };
     containerRef.current.addEventListener('mousedown', resetKbSelection);
 
+    // ── Right-click ──────────────────────────────────────────────────────
+    // The webview's native menu is suppressed app-wide (main.tsx), so the
+    // terminal provides its own, like a real terminal app. Behavior is a
+    // setting: 'menu' shows Copy/Paste/Select All/Clear, 'paste' pastes
+    // immediately (PuTTY), 'copyPaste' copies the selection if there is one
+    // and pastes otherwise (Windows Terminal).
+    const handleContextMenu = (e: MouseEvent) => {
+      e.preventDefault();
+      const behavior = useSettingsStore.getState().rightClickBehavior;
+      if (behavior === 'paste') {
+        pasteFromClipboard();
+        return;
+      }
+      if (behavior === 'copyPaste') {
+        if (term.hasSelection()) {
+          copySelection();
+          term.clearSelection();
+        } else {
+          pasteFromClipboard();
+        }
+        return;
+      }
+      setCtxMenu({ x: e.clientX, y: e.clientY, hasSelection: term.hasSelection() });
+    };
+    containerRef.current.addEventListener('contextmenu', handleContextMenu);
+
+    // Copy-on-select (PuTTY-style), gated on the live setting: copy when a
+    // mouse selection gesture ends with text selected. Silent on failure —
+    // toasting every drag would be noise.
+    const handleCopyOnSelect = () => {
+      if (!useSettingsStore.getState().copyOnSelect) return;
+      if (term.hasSelection()) void copyText(term.getSelection());
+    };
+    containerRef.current.addEventListener('mouseup', handleCopyOnSelect);
+
+    ctxActionsRef.current = {
+      copy: () => {
+        copySelection();
+        term.focus();
+      },
+      paste: () => pasteFromClipboard(),
+      selectAll: () => {
+        term.selectAll();
+        term.focus();
+      },
+      clear: () => {
+        term.clear();
+        term.focus();
+      },
+    };
+
     terminalRef.current = term;
     fitAddonRef.current = fitAddon;
 
@@ -470,6 +621,35 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
     const ro = new ResizeObserver(() => handleResize());
     ro.observe(containerRef.current);
     const initialFit = setTimeout(handleResize, 100);
+
+    // Async font loading: the initial fit() measures cell size with the
+    // FALLBACK font — when the configured terminal font finishes loading the
+    // glyph metrics change and the grid no longer fills the container ("the
+    // screen doesn't stretch right") until some unrelated resize. Refit when
+    // fonts land — twice, because xterm re-measures cell size during the first
+    // resize and the corrected metrics need a second pass to settle.
+    const refitTwice = () => {
+      handleResize();
+      requestAnimationFrame(() => handleResize());
+    };
+    const onFontsLoaded = () => refitTwice();
+    if (document.fonts) {
+      document.fonts.ready.then(onFontsLoaded).catch(() => {});
+      document.fonts.addEventListener?.('loadingdone', onFontsLoaded);
+    }
+
+    // Same problem when the window moves to a display with different scaling:
+    // devicePixelRatio changes glyph rasterization/cell size but fires no
+    // resize event. matchMedia on the current resolution fires once per DPR
+    // change; re-arm against the new value each time.
+    let dprQuery = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+    const onDprChange = () => {
+      dprQuery.removeEventListener('change', onDprChange);
+      dprQuery = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+      dprQuery.addEventListener('change', onDprChange);
+      refitTwice();
+    };
+    dprQuery.addEventListener('change', onDprChange);
 
     // Pinch-to-zoom. WKWebView (Tauri on macOS) reports trackpad pinches via
     // proprietary GestureEvents (gesturestart/gesturechange) — NOT ctrl+wheel,
@@ -512,11 +692,17 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
     return () => {
       clearTimeout(initialFit); // don't fit()/resize a disposed xterm after a fast unmount
       window.removeEventListener('resize', handleResize);
+      document.fonts?.removeEventListener?.('loadingdone', onFontsLoaded);
+      dprQuery.removeEventListener('change', onDprChange);
       zoomEl.removeEventListener('gesturestart', onGestureStart);
       zoomEl.removeEventListener('gesturechange', onGestureChange);
       zoomEl.removeEventListener('gestureend', onGestureEnd);
       zoomEl.removeEventListener('wheel', handleWheelZoom);
       zoomEl.removeEventListener('mousedown', resetKbSelection);
+      zoomEl.removeEventListener('contextmenu', handleContextMenu);
+      zoomEl.removeEventListener('mouseup', handleCopyOnSelect);
+      ctxActionsRef.current = null;
+      setCtxMenu(null);
       term.textarea?.removeEventListener('paste', pasteGuard, true);
       semanticLinkProvider.dispose();
       unregisterTerminalActionAdapter(sessionId);
@@ -559,8 +745,18 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
           // codes abort xterm's half-parsed sequence — the user sees raw junk.
           text = ansiCarryRef.current + text;
           ansiCarryRef.current = '';
-          const incompleteEscape = text.match(/\x1b(?:[\[\]][0-9;:?]*)?$/);
-          if (incompleteEscape) {
+          // Hold back a trailing incomplete: bare ESC; CSI with params
+          // ([0-9:;<=>?]) and intermediates (0x20-0x2F, e.g. DECSCUSR's space);
+          // an unterminated OSC string (no BEL/ESC yet — titles, OSC 52); or
+          // ESC + intermediates (charset designation like ESC ( B). The old
+          // pattern only knew CSI param bytes, so an OSC payload or charset
+          // sequence split across batches leaked into the highlight path and
+          // its injected SGR codes aborted xterm's half-parsed sequence.
+          // Size cap: a rogue never-terminated OSC must not buffer forever.
+          const incompleteEscape = text.match(
+            /\x1b(?:\[[0-9:;<=>?]*[ -/]*|\][^\x07\x1b]*|[ -/]+)?$/
+          );
+          if (incompleteEscape && incompleteEscape[0].length < 8192) {
             ansiCarryRef.current = incompleteEscape[0];
             text = text.slice(0, -incompleteEscape[0].length);
             if (!text) return;
@@ -657,8 +853,11 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
             const hasDisruptiveChars = /[\x00-\x08\x0b\x0c\x0e-\x1a\x1c-\x1f\x7f]/.test(text);
 
             // Detect non-color ANSI sequences (cursor movement, erase line, etc.)
-            // Strip color codes first: \x1b[...m — if ESC remains, it's a control sequence
-            const withoutColorAnsi = text.replace(/\x1b\[[0-9;]*m/g, '');
+            // Strip color codes first: \x1b[...m — if ESC remains, it's a control
+            // sequence. ':' included for colon-form truecolor (38:2:R:G:Bm) —
+            // without it those SGRs read as "non-color escape" and silently
+            // switched highlighting off for the whole batch.
+            const withoutColorAnsi = text.replace(/\x1b\[[0-9;:]*m/g, '');
             const hasNonColorEscape = withoutColorAnsi.includes('\x1b');
 
             if (hasDisruptiveChars || hasNonColorEscape) {
@@ -666,9 +865,13 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
               term.write(text);
             } else {
               // Safe to highlight: strip device color ANSI, apply our syntax colors
-              const stripped = text.replace(/\x1b\[[0-9;]*m/g, '');
-              // Split preserving line endings
-              const parts = stripped.split(/(\r?\n)/);
+              const stripped = text.replace(/\x1b\[[0-9;:]*m/g, '');
+              // Split preserving line endings. Lone \r must be its own
+              // delimiter — /(\r?\n)/ never captured a bare CR, so the
+              // `part === '\r'` arm below was unreachable and a CR-overwrite
+              // run ("50%\r60%") was fed to the highlighter as one line,
+              // losing prompt/command position tracking after each CR.
+              const parts = stripped.split(/(\r\n|\n|\r)/);
               for (const part of parts) {
                 if (part === '\n' || part === '\r\n' || part === '\r') {
                   term.write(part);
@@ -742,6 +945,16 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
             }
             pending.push(new Uint8Array(event.payload.data));
             pendingSize += event.payload.data.length;
+            // While the pop-out seed replay holds flushing, bound the queue so
+            // a fast-producing session can't grow it without limit for the
+            // duration of the seed fetch. Dropping the OLDEST chunks loses the
+            // least: the seed tail being fetched covers that same output.
+            if (holdFlush) {
+              while (pendingSize > 4 * 1024 * 1024 && pending.length > 1) {
+                pendingSize -= pending[0].length;
+                pending.shift();
+              }
+            }
             // Flush immediately on a large burst, else batch ~8ms of chunks.
             if (pendingSize > 256 * 1024) {
               if (flushTimer != null) clearTimeout(flushTimer);
@@ -829,8 +1042,13 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
           // Fresh stream after a (re)connect — discard any partial multibyte bytes
           // the decoder held from before the drop so they can't corrupt the first
           // bytes of the new connection, and any held-back partial escape with them.
+          // The auto-detect window and trigger carry are pre-drop text too: left
+          // alone they could fingerprint a vendor or fire an output trigger off
+          // content straddling the disconnect.
           decoderRef.current = new TextDecoder('utf-8', { fatal: false });
           ansiCarryRef.current = '';
+          bufferRef.current = '';
+          triggerCarryRef.current = '';
         }
         if (event.payload.message && terminalRef.current && !connected) {
           // Surface drops/reconnect notices inline in the terminal.
@@ -864,6 +1082,7 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
     term.options.cursorBlink = cursorBlink;
     term.options.scrollback = scrollback;
     term.options.theme = terminalTheme;
+    term.options.rightClickSelectsWord = rightClickBehavior === 'menu';
 
     // Only fit() when actually visible. A hidden (display:none) background tab, or
     // the main-window copy of a popped-out session, has a zero-size box — but
@@ -883,16 +1102,69 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
     cursorBlink,
     scrollback,
     terminalTheme,
+    rightClickBehavior,
   ]);
 
+  const closeCtxMenu = () => setCtxMenu(null);
+  const runCtxAction = (action: 'copy' | 'paste' | 'selectAll' | 'clear') => {
+    setCtxMenu(null);
+    ctxActionsRef.current?.[action]();
+  };
+  const menuItemClass =
+    'w-full text-left px-3 py-1.5 text-xs text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] disabled:opacity-40 disabled:pointer-events-none flex items-center justify-between gap-4';
+  const menuHintClass = 'text-[10px] text-[var(--text-secondary)]';
+
   return (
-    <div
-      ref={containerRef}
-      className="w-full h-full"
-      // Match the xterm theme's own background — hardcoding dark/light left
-      // mismatched fringes around the cell grid on fixed schemes (Dracula,
-      // Nord, Solarized, …).
-      style={{ background: terminalTheme.background }}
-    />
+    <>
+      <div
+        ref={containerRef}
+        className="w-full h-full"
+        // Match the xterm theme's own background — hardcoding dark/light left
+        // mismatched fringes around the cell grid on fixed schemes (Dracula,
+        // Nord, Solarized, …).
+        style={{ background: terminalTheme.background }}
+      />
+      {ctxMenu && (
+        <>
+          <div
+            className="fixed inset-0 z-40"
+            onClick={closeCtxMenu}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              closeCtxMenu();
+            }}
+          />
+          <div
+            className="fixed z-50 min-w-[180px] py-1 rounded-md border border-[var(--border-strong)] bg-[var(--bg-secondary)] shadow-xl"
+            style={{
+              left: Math.min(ctxMenu.x, Math.max(0, window.innerWidth - 190)),
+              top: Math.min(ctxMenu.y, Math.max(0, window.innerHeight - 150)),
+            }}
+          >
+            <button
+              className={menuItemClass}
+              disabled={!ctxMenu.hasSelection}
+              onClick={() => runCtxAction('copy')}
+            >
+              <span>Copy</span>
+              <span className={menuHintClass}>{isMac ? '⌘C' : 'Ctrl+Shift+C'}</span>
+            </button>
+            <button className={menuItemClass} onClick={() => runCtxAction('paste')}>
+              <span>Paste</span>
+              <span className={menuHintClass}>
+                {isMac ? '⌘V' : isWindows ? 'Ctrl+V' : 'Ctrl+Shift+V'}
+              </span>
+            </button>
+            <div className="my-1 border-t border-[var(--border-strong)]" />
+            <button className={menuItemClass} onClick={() => runCtxAction('selectAll')}>
+              <span>Select All</span>
+            </button>
+            <button className={menuItemClass} onClick={() => runCtxAction('clear')}>
+              <span>Clear Buffer</span>
+            </button>
+          </div>
+        </>
+      )}
+    </>
   );
 }

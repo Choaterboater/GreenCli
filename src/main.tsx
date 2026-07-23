@@ -20,10 +20,20 @@ document.addEventListener("keydown", (e) => {
 });
 
 // Prevent the WebView's native context menu from exposing Reload. Keep Monaco's
-// editor menu working because users rely on it for editor actions.
+// editor menu working because users rely on it for editor actions, and keep the
+// native menu on text fields so right-click Copy/Paste works there (the field
+// menus don't carry Reload). The terminal renders its own context menu
+// (Terminal.tsx) — its hidden xterm textarea is excluded here so the native
+// field menu can't shadow it.
 document.addEventListener("contextmenu", (e) => {
   const target = e.target instanceof Element ? e.target : null;
-  if (target?.closest(".monaco-editor")) return;
+  if (!target) {
+    e.preventDefault();
+    return;
+  }
+  if (target.closest(".monaco-editor")) return;
+  if (target.closest(".xterm")) return; // Terminal.tsx handles + prevents
+  if (target.closest("input, textarea, [contenteditable='true'], [contenteditable='']")) return;
   e.preventDefault();
 });
 
