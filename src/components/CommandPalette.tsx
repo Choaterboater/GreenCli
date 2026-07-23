@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/tauri';
 import { WebviewWindow } from '@tauri-apps/api/window';
 import { fuzzyScore } from '../utils';
+import { notify } from '../store/toastStore';
 import {
   Search,
   Plug,
@@ -86,6 +87,10 @@ export default function CommandPalette({ onConnect, onLocalShell, onConnectRecen
           const adapter = getTerminalActionAdapter(activeSessionId);
           if (adapter) {
             adapter.clear();
+          } else {
+            // Terminal not mounted yet (still connecting / popped out) — say so
+            // instead of closing the palette as if it worked.
+            notify.warning('Nothing to clear', 'The active terminal is not ready.');
           }
         },
       },
@@ -203,7 +208,7 @@ export default function CommandPalette({ onConnect, onLocalShell, onConnectRecen
 
     return a;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [folders, sessions, activeSessionId, poppedSessions, theme, store.vaultUnlocked, recents]);
+  }, [folders, sessions, activeSessionId, poppedSessions, theme, store.vaultUnlocked, recents, onConnect, onLocalShell, onConnectRecent]);
 
   const filtered = useMemo(() => {
     const q = query.trim();

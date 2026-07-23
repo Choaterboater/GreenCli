@@ -113,6 +113,10 @@ export interface TerminalSettings {
   pasteGuardEnabled: boolean;
   pasteGuardLineThreshold: number;
   pasteHistoryEnabled: boolean;
+  /** Copy the terminal selection to the clipboard as soon as the mouse drag ends (PuTTY-style). */
+  copyOnSelect: boolean;
+  /** Right-click in the terminal: show a context menu, paste directly (PuTTY), or copy-selection-else-paste (Windows Terminal). */
+  rightClickBehavior: 'menu' | 'paste' | 'copyPaste';
   smartTerminalLinks: boolean;
   terminalActivityNotifications: boolean;
   terminalSilenceNotifications: boolean;
@@ -287,6 +291,8 @@ export const DEFAULT_SETTINGS: TerminalSettings = {
   pasteGuardEnabled: true,
   pasteGuardLineThreshold: 2,
   pasteHistoryEnabled: true,
+  copyOnSelect: false,
+  rightClickBehavior: 'menu',
   smartTerminalLinks: true,
   terminalActivityNotifications: true,
   terminalSilenceNotifications: false,

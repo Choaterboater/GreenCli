@@ -141,3 +141,20 @@ export const useSettingsStore = create<SettingsState>()(
     }
   )
 );
+
+// Pop-out terminal windows run their own copy of this store over the same
+// localStorage key. zustand's persist hydrates once at load and never watches
+// for writes from other windows, so a pop-out kept enforcing whatever paste
+// guard / font / theme it launched with. Re-hydrate whenever another window
+// writes the key, and on window focus as a WebKit fallback (storage events
+// across Tauri webviews are not guaranteed on every platform).
+if (typeof window !== 'undefined') {
+  window.addEventListener('storage', (e) => {
+    if (e.key === null || e.key === 'atp-settings') {
+      void useSettingsStore.persist.rehydrate();
+    }
+  });
+  window.addEventListener('focus', () => {
+    void useSettingsStore.persist.rehydrate();
+  });
+}

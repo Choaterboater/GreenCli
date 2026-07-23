@@ -539,6 +539,20 @@ function App() {
   // Keyboard shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      // Plain-Ctrl chords collide with readline/emacs shell keys (Ctrl+K =
+      // kill-line, Ctrl+T = transpose, Ctrl+F = forward-char, Ctrl+B =
+      // backward-char). xterm's capture-phase handler already forwarded the
+      // control char to the PTY by the time this bubble-phase handler runs, so
+      // acting here too made these chords BOTH edit the shell line AND pop an
+      // overlay over it. While focus is in the terminal (or any input), plain
+      // Ctrl belongs to the shell; the Cmd variants (macOS) never reach the
+      // PTY and stay app shortcuts everywhere.
+      const target = e.target as HTMLElement | null;
+      const inEditable =
+        !!target &&
+        (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable);
+      const shellCtrl = e.ctrlKey && !e.metaKey && inEditable;
+
       // F1: Help & documentation
       if (e.key === 'F1') {
         e.preventDefault();
@@ -546,12 +560,12 @@ function App() {
         s.setShowHelp(!s.showHelp);
       }
       // Ctrl+K: Command Palette
-      if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'k' && !shellCtrl) {
         e.preventDefault();
         useSessionStore.getState().setShowCommandPalette(true);
       }
       // Ctrl+T: Quick Connect
-      if ((e.ctrlKey || e.metaKey) && e.key === 't') {
+      if ((e.ctrlKey || e.metaKey) && e.key === 't' && !shellCtrl) {
         e.preventDefault();
         useSessionStore.getState().setShowQuickConnect(true);
       }
@@ -560,7 +574,7 @@ function App() {
       // out while any overlay/modal is open or focus is in an input/editor (incl.
       // Monaco's hidden textarea), so Cmd+W doesn't silently tear down the live
       // session behind the overlay.
-      if ((e.ctrlKey || e.metaKey) && e.key === 'w' && activeSessionId) {
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'w' || e.key === 'W') && activeSessionId) {
         const st = useSessionStore.getState();
         const overlayOpen =
           st.showSettings || st.showQuickConnect || st.showAuthDialog ||
@@ -568,9 +582,15 @@ function App() {
           st.showSftp || st.showSearch || st.showConfigEditor ||
           st.showApiExplorer || st.showAiAssistant ||
           useDialogStore.getState().current != null;
-        const t = e.target as HTMLElement | null;
-        const editable = !!t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable);
-        if (overlayOpen || editable) return; // let the overlay/input keep focus; don't kill the live session
+        if (overlayOpen) return; // let the overlay keep focus; don't kill the live session
+        // Plain Ctrl+W is the shell's delete-word when the terminal (or any
+        // input) is focused. Cmd+W (macOS) and Ctrl+Shift+W (Windows Terminal
+        // convention) close the tab even from inside the terminal — like
+        // normal terminal apps — but never while typing in some other field.
+        const closeChord = e.metaKey || (e.ctrlKey && e.shiftKey);
+        const inTerminal = !!target && !!target.closest?.('.xterm');
+        if (!closeChord && inEditable) return;
+        if (closeChord && inEditable && !inTerminal) return;
         e.preventDefault();
         if (!st.poppedSessions.includes(activeSessionId)) {
           invoke('disconnect', { sessionId: activeSessionId }).catch(() => {});
@@ -602,7 +622,7 @@ function App() {
         }
       }
       // Ctrl+F: Search
-      if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'f' && !shellCtrl) {
         e.preventDefault();
         setShowSearch(true);
       }
@@ -612,7 +632,7 @@ function App() {
         setShowSettings(true);
       }
       // Ctrl+B: Toggle Sidebar
-      if ((e.ctrlKey || e.metaKey) && e.key === 'b') {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'b' && !shellCtrl) {
         e.preventDefault();
         useSessionStore.getState().toggleSidebar();
       }

@@ -217,7 +217,11 @@ async fn write_and_emit(
         let mut logs = logs.lock().await;
         if let Some(file) = logs.get_mut(session_id) {
             use std::io::Write;
-            let _ = file.write_all(&data);
+            // Surface failures (full disk, revoked path) instead of silently
+            // dropping log data the user believes is being captured.
+            if let Err(e) = file.write_all(&data) {
+                log::warn!("session log write failed for {session_id}: {e}");
+            }
         }
     }
     let _ = app.emit_all(
@@ -1919,10 +1923,63 @@ async fn ai_cancel_stream(stream_id: String, state: State<'_, AppState>) -> Resu
 
 // ─── Main ───
 
+/// macOS requires a native menu for the standard editing key equivalents:
+/// without an Edit menu wired to the responder chain, WKWebView never receives
+/// Cmd+C/Cmd+V/Cmd+X/Cmd+A — copy/paste is dead in the terminal AND every text
+/// field. Windows/Linux route Ctrl+C/V through the webview directly and would
+/// only gain an unwanted visible menu bar, so the menu is macOS-only.
+#[cfg(target_os = "macos")]
+fn macos_menu() -> tauri::Menu {
+    use tauri::{AboutMetadata, Menu, MenuItem, Submenu};
+    let app_menu = Submenu::new(
+        "GreenCLI",
+        Menu::new()
+            .add_native_item(MenuItem::About(
+                "GreenCLI".to_string(),
+                AboutMetadata::default(),
+            ))
+            .add_native_item(MenuItem::Separator)
+            .add_native_item(MenuItem::Services)
+            .add_native_item(MenuItem::Separator)
+            .add_native_item(MenuItem::Hide)
+            .add_native_item(MenuItem::HideOthers)
+            .add_native_item(MenuItem::ShowAll)
+            .add_native_item(MenuItem::Separator)
+            .add_native_item(MenuItem::Quit),
+    );
+    let edit_menu = Submenu::new(
+        "Edit",
+        Menu::new()
+            .add_native_item(MenuItem::Undo)
+            .add_native_item(MenuItem::Redo)
+            .add_native_item(MenuItem::Separator)
+            .add_native_item(MenuItem::Cut)
+            .add_native_item(MenuItem::Copy)
+            .add_native_item(MenuItem::Paste)
+            .add_native_item(MenuItem::SelectAll),
+    );
+    let window_menu = Submenu::new(
+        "Window",
+        Menu::new()
+            .add_native_item(MenuItem::Minimize)
+            .add_native_item(MenuItem::Zoom)
+            .add_native_item(MenuItem::Separator)
+            .add_native_item(MenuItem::CloseWindow),
+    );
+    Menu::new()
+        .add_submenu(app_menu)
+        .add_submenu(edit_menu)
+        .add_submenu(window_menu)
+}
+
 fn main() {
     env_logger::init();
 
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    #[cfg(target_os = "macos")]
+    let builder = builder.menu(macos_menu());
+
+    builder
         .setup(|app| {
             let app_dir = app
                 .path_resolver()
@@ -1969,11 +2026,6 @@ fn main() {
                 }
             });
             Ok(())
-        })
-        .on_window_event(|event| {
-            if let WindowEvent::Destroyed = event.event() {
-                // Cleanup handled by drop
-            }
         })
         .invoke_handler(tauri::generate_handler![
             connect,

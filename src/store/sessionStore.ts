@@ -304,18 +304,28 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
       const remaining = state.sessions.filter(
         (s) => s.sessionId !== sessionId && !state.poppedSessions.includes(s.sessionId),
       );
+      // Hand the active tab to another visible session.
+      const activeSessionId =
+        state.activeSessionId === sessionId
+          ? remaining[remaining.length - 1]?.sessionId ?? null
+          : state.activeSessionId;
+      // Don't leave a split pane pointing at a popped-out session.
+      const splitPanes = state.splitPanes.filter((id) => id !== sessionId);
       return {
         poppedSessions: [...state.poppedSessions, sessionId],
         // A popped session's tab is never "viewed" here — clear (and stop
         // accruing) its activity dot; the data listener skips popped sessions.
-        unseenOutput: state.unseenOutput.filter((id) => id !== sessionId),
-        // Hand the active tab to another visible session.
-        activeSessionId:
-          state.activeSessionId === sessionId
-            ? remaining[remaining.length - 1]?.sessionId ?? null
-            : state.activeSessionId,
-        // Don't leave a split pane pointing at a popped-out session.
-        splitPanes: state.splitPanes.filter((id) => id !== sessionId),
+        // The newly-promoted active session is now in view — clear its dot too
+        // (mirrors removeSession / setActiveSession).
+        unseenOutput: state.unseenOutput.filter(
+          (id) => id !== sessionId && id !== activeSessionId,
+        ),
+        activeSessionId,
+        splitPanes,
+        // Popping out the last extra pane must exit split view, or the main
+        // window keeps rendering a split layout with an empty second pane
+        // (mirrors removeSplitPane / removeSession).
+        splitView: splitPanes.length > 0 ? state.splitView : false,
       };
     }),
   restorePoppedOut: (sessionId) =>
