@@ -217,7 +217,11 @@ async fn write_and_emit(
         let mut logs = logs.lock().await;
         if let Some(file) = logs.get_mut(session_id) {
             use std::io::Write;
-            let _ = file.write_all(&data);
+            // Surface failures (full disk, revoked path) instead of silently
+            // dropping log data the user believes is being captured.
+            if let Err(e) = file.write_all(&data) {
+                log::warn!("session log write failed for {session_id}: {e}");
+            }
         }
     }
     let _ = app.emit_all(
@@ -2022,11 +2026,6 @@ fn main() {
                 }
             });
             Ok(())
-        })
-        .on_window_event(|event| {
-            if let WindowEvent::Destroyed = event.event() {
-                // Cleanup handled by drop
-            }
         })
         .invoke_handler(tauri::generate_handler![
             connect,

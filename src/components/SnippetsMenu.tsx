@@ -94,6 +94,7 @@ export default function SnippetsMenu() {
                     autoFocus
                     value={label}
                     onChange={(e) => setLabel(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && saveNew()}
                     placeholder="Label (e.g. PoE status)"
                     className="w-full text-xs bg-[var(--bg-primary)] border border-[var(--border)] rounded px-2 py-1 text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[#58a6ff]"
                   />

@@ -574,7 +574,7 @@ function App() {
       // out while any overlay/modal is open or focus is in an input/editor (incl.
       // Monaco's hidden textarea), so Cmd+W doesn't silently tear down the live
       // session behind the overlay.
-      if ((e.ctrlKey || e.metaKey) && e.key === 'w' && activeSessionId) {
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'w' || e.key === 'W') && activeSessionId) {
         const st = useSessionStore.getState();
         const overlayOpen =
           st.showSettings || st.showQuickConnect || st.showAuthDialog ||
@@ -582,7 +582,15 @@ function App() {
           st.showSftp || st.showSearch || st.showConfigEditor ||
           st.showApiExplorer || st.showAiAssistant ||
           useDialogStore.getState().current != null;
-        if (overlayOpen || inEditable) return; // let the overlay/input keep focus; don't kill the live session
+        if (overlayOpen) return; // let the overlay keep focus; don't kill the live session
+        // Plain Ctrl+W is the shell's delete-word when the terminal (or any
+        // input) is focused. Cmd+W (macOS) and Ctrl+Shift+W (Windows Terminal
+        // convention) close the tab even from inside the terminal — like
+        // normal terminal apps — but never while typing in some other field.
+        const closeChord = e.metaKey || (e.ctrlKey && e.shiftKey);
+        const inTerminal = !!target && !!target.closest?.('.xterm');
+        if (!closeChord && inEditable) return;
+        if (closeChord && inEditable && !inTerminal) return;
         e.preventDefault();
         if (!st.poppedSessions.includes(activeSessionId)) {
           invoke('disconnect', { sessionId: activeSessionId }).catch(() => {});

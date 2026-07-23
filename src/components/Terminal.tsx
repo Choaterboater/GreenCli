@@ -622,6 +622,35 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
     ro.observe(containerRef.current);
     const initialFit = setTimeout(handleResize, 100);
 
+    // Async font loading: the initial fit() measures cell size with the
+    // FALLBACK font — when the configured terminal font finishes loading the
+    // glyph metrics change and the grid no longer fills the container ("the
+    // screen doesn't stretch right") until some unrelated resize. Refit when
+    // fonts land — twice, because xterm re-measures cell size during the first
+    // resize and the corrected metrics need a second pass to settle.
+    const refitTwice = () => {
+      handleResize();
+      requestAnimationFrame(() => handleResize());
+    };
+    const onFontsLoaded = () => refitTwice();
+    if (document.fonts) {
+      document.fonts.ready.then(onFontsLoaded).catch(() => {});
+      document.fonts.addEventListener?.('loadingdone', onFontsLoaded);
+    }
+
+    // Same problem when the window moves to a display with different scaling:
+    // devicePixelRatio changes glyph rasterization/cell size but fires no
+    // resize event. matchMedia on the current resolution fires once per DPR
+    // change; re-arm against the new value each time.
+    let dprQuery = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+    const onDprChange = () => {
+      dprQuery.removeEventListener('change', onDprChange);
+      dprQuery = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+      dprQuery.addEventListener('change', onDprChange);
+      refitTwice();
+    };
+    dprQuery.addEventListener('change', onDprChange);
+
     // Pinch-to-zoom. WKWebView (Tauri on macOS) reports trackpad pinches via
     // proprietary GestureEvents (gesturestart/gesturechange) — NOT ctrl+wheel,
     // which is a Chromium convention. Handle both: gestures for the trackpad,
@@ -663,6 +692,8 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
     return () => {
       clearTimeout(initialFit); // don't fit()/resize a disposed xterm after a fast unmount
       window.removeEventListener('resize', handleResize);
+      document.fonts?.removeEventListener?.('loadingdone', onFontsLoaded);
+      dprQuery.removeEventListener('change', onDprChange);
       zoomEl.removeEventListener('gesturestart', onGestureStart);
       zoomEl.removeEventListener('gesturechange', onGestureChange);
       zoomEl.removeEventListener('gestureend', onGestureEnd);
@@ -914,6 +945,16 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
             }
             pending.push(new Uint8Array(event.payload.data));
             pendingSize += event.payload.data.length;
+            // While the pop-out seed replay holds flushing, bound the queue so
+            // a fast-producing session can't grow it without limit for the
+            // duration of the seed fetch. Dropping the OLDEST chunks loses the
+            // least: the seed tail being fetched covers that same output.
+            if (holdFlush) {
+              while (pendingSize > 4 * 1024 * 1024 && pending.length > 1) {
+                pendingSize -= pending[0].length;
+                pending.shift();
+              }
+            }
             // Flush immediately on a large burst, else batch ~8ms of chunks.
             if (pendingSize > 256 * 1024) {
               if (flushTimer != null) clearTimeout(flushTimer);

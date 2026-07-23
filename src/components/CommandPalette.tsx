@@ -208,7 +208,7 @@ export default function CommandPalette({ onConnect, onLocalShell, onConnectRecen
 
     return a;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [folders, sessions, activeSessionId, poppedSessions, theme, store.vaultUnlocked, recents]);
+  }, [folders, sessions, activeSessionId, poppedSessions, theme, store.vaultUnlocked, recents, onConnect, onLocalShell, onConnectRecent]);
 
   const filtered = useMemo(() => {
     const q = query.trim();
