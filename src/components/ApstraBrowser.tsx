@@ -12,6 +12,7 @@ import {
   ChevronRight,
 } from 'lucide-react';
 import { useSessionStore } from '../store/sessionStore';
+import { copyText } from '../utils/clipboard';
 
 // A friendly Apstra blueprint browser: blueprint → spine/leaf nodes → rendered
 // Junos config + device context. Uses the apstra_request backend command (the
@@ -127,9 +128,11 @@ export default function ApstraBrowser() {
   };
 
   const copyConfig = () => {
-    navigator.clipboard.writeText(config).catch(() => {});
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
+    copyText(config).then((ok) => {
+      if (!ok) return;
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    });
   };
 
   if (!showApstra) return null;

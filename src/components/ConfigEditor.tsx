@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback, useMemo, useDeferredValue } from 'react';
 import Editor, { BeforeMount, DiffEditor, OnMount } from '@monaco-editor/react';
+import { copyText } from '../utils/clipboard';
 import type { editor as MonacoEditor } from 'monaco-editor';
 import {
   X,
@@ -1190,8 +1191,7 @@ export default function ConfigEditor() {
   };
 
   const copyToClipboard = () => {
-    navigator.clipboard.writeText(content).catch(() => {});
-    showStatus('Copied');
+    copyText(content).then((ok) => showStatus(ok ? 'Copied' : 'Copy failed'));
   };
 
   const loadTemplate = async (name: string) => {
