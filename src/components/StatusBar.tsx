@@ -24,7 +24,10 @@ interface StatusBarProps {
 
 export default function StatusBar({ onReconnect, onDisconnect, onMapDevice }: StatusBarProps) {
   const { sessions, activeSessionId } = useSessionStore();
-  const settings = useSettingsStore();
+  // Narrow selectors: subscribing to the whole settings store re-rendered the
+  // status bar on every unrelated settings change (font zoom, AI model, …).
+  const pasteGuardEnabled = useSettingsStore((s) => s.pasteGuardEnabled);
+  const pasteGuardLineThreshold = useSettingsStore((s) => s.pasteGuardLineThreshold);
   const { pasteHistory, clearPasteHistory, removePaste } = useTerminalToolsStore();
   const [logging, setLogging] = useState(false);
   const [logHint, setLogHint] = useState<string | null>(null);
@@ -84,7 +87,7 @@ export default function StatusBar({ onReconnect, onDisconnect, onMapDevice }: St
   const pasteFromHistory = async (text: string) => {
     if (!activeSession) return;
     const lineCount = countPasteLines(text);
-    if (settings.pasteGuardEnabled && lineCount >= settings.pasteGuardLineThreshold) {
+    if (pasteGuardEnabled && lineCount >= pasteGuardLineThreshold) {
       const ok = await askConfirm({
         title: `Paste ${lineCount} lines into ${activeSession.config.name || activeSession.config.host || 'terminal'}?`,
         message: 'This will send the saved paste directly to the active terminal.',

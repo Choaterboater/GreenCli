@@ -417,7 +417,7 @@ export default function SettingsPanel() {
           <div className="border-t border-[var(--bg-tertiary)]" />
 
           {/* Terminal Behavior */}
-          <section>
+          <section id="set-terminal">
             <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-3">
               Terminal
             </h3>
