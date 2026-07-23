@@ -18,6 +18,12 @@ interface TerminalToolsState {
 
 const MAX_PASTE_HISTORY = 30;
 
+// Monotonic suffix instead of Math.random(): toString(36) on a random float can
+// yield as little as one usable char after slice(2), and two pastes in the same
+// millisecond could collide — a duplicate id breaks removePaste (deletes both)
+// and duplicates React keys.
+let pasteSeq = 0;
+
 export function countPasteLines(text: string): number {
   return text.replace(/\r\n/g, '\n').split('\n').filter((line) => line.length > 0).length || 1;
 }
@@ -33,7 +39,7 @@ export const useTerminalToolsStore = create<TerminalToolsState>()((set) => ({
         ...entry,
         text,
         lineCount: countPasteLines(text),
-        id: `paste-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        id: `paste-${Date.now()}-${pasteSeq++}`,
         createdAt: Date.now(),
       };
       const deduped = state.pasteHistory.filter(

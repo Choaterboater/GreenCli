@@ -508,6 +508,11 @@ export default function SettingsPanel() {
                   onChange: (value: boolean) => settings.updateSettings({ pasteHistoryEnabled: value }),
                 },
                 {
+                  label: 'Copy on Select',
+                  value: settings.copyOnSelect,
+                  onChange: (value: boolean) => settings.updateSettings({ copyOnSelect: value }),
+                },
+                {
                   label: 'Smart Click-to-Copy Links',
                   value: settings.smartTerminalLinks,
                   onChange: (value: boolean) => settings.updateSettings({ smartTerminalLinks: value }),
@@ -540,6 +545,40 @@ export default function SettingsPanel() {
                   </div>
                 </label>
               ))}
+            </div>
+
+            {/* Right-Click Behavior */}
+            <div className="mt-4">
+              <label className="block text-xs text-[var(--text-secondary)] mb-1.5">
+                Right-Click in Terminal
+              </label>
+              <div className="flex gap-1">
+                {(
+                  [
+                    { value: 'menu', label: 'Context Menu' },
+                    { value: 'paste', label: 'Paste' },
+                    { value: 'copyPaste', label: 'Copy / Paste' },
+                  ] as const
+                ).map(({ value, label }) => (
+                  <button
+                    key={value}
+                    onClick={() => settings.updateSettings({ rightClickBehavior: value })}
+                    className={`
+                      flex-1 py-1.5 text-xs rounded-md border transition-colors
+                      ${
+                        settings.rightClickBehavior === value
+                          ? 'bg-[var(--bg-tertiary)] border-[var(--accent)] text-[var(--text-primary)]'
+                          : 'bg-[var(--bg-primary)] border-[var(--border)] text-[var(--text-secondary)] hover:border-[var(--text-muted)]'
+                      }
+                    `}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <p className="text-[11px] text-[var(--text-muted)] mt-1">
+                Paste = PuTTY style. Copy / Paste = copy the selection if there is one, otherwise paste (Windows Terminal style).
+              </p>
             </div>
 
             <div className="grid grid-cols-2 gap-3 mt-4">

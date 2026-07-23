@@ -1,5 +1,6 @@
 import { useState, useRef, useCallback, useMemo, useEffect } from 'react';
 import { useResizablePanel } from '../hooks/useResizablePanel';
+import { copyText } from '../utils/clipboard';
 import {
   X,
   Send,
@@ -536,13 +537,14 @@ export default function ApiExplorer() {
   const copyResponse = () => {
     if (!response) return;
     const text = showTable && tableRows ? toCsv(tableRows, allColumns(tableRows)) : JSON.stringify(response.body, null, 2);
-    navigator.clipboard
-      .writeText(text)
-      .then(() => {
+    copyText(text).then((ok) => {
+      if (ok) {
         setCopied(true);
         setTimeout(() => setCopied(false), 2000);
-      })
-      .catch(() => notify.error('Copy failed', 'Could not write to the clipboard.'));
+      } else {
+        notify.error('Copy failed', 'Could not write to the clipboard.');
+      }
+    });
   };
 
   const exportResponse = (format: 'json' | 'csv') => {

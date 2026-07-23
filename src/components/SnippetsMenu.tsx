@@ -3,6 +3,7 @@ import { Zap, ChevronDown, Plus, X, Send } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/tauri';
 import { useSnippetsStore } from '../store/snippetsStore';
 import { useSessionStore } from '../store/sessionStore';
+import { notify } from '../store/toastStore';
 
 // Title-bar dropdown of saved command snippets. Clicking one sends it to the
 // active terminal session; new ones can be added inline.
@@ -18,7 +19,9 @@ export default function SnippetsMenu() {
 
   const send = (cmd: string) => {
     if (!activeSession?.connected) return;
-    invoke('send_data', { sessionId: activeSession.sessionId, data: cmd + '\r' }).catch(() => {});
+    invoke('send_data', { sessionId: activeSession.sessionId, data: cmd + '\r' }).catch(() =>
+      notify.error('Snippet failed', 'Could not send to the active session.')
+    );
     setOpen(false);
   };
 
