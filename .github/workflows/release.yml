@@ -7,6 +7,12 @@ on:
   push:
     tags:
       - "v*"
+    # Pushing a release/* branch also builds — the escape hatch for
+    # environments whose credentials can push branches but not tags or
+    # workflow_dispatch. The release lands under the app's real version
+    # (v__VERSION__ below), not the branch name.
+    branches:
+      - "release/**"
   workflow_dispatch:
 
 # The default GITHUB_TOKEN is read-only in this repo; tauri-action needs to
