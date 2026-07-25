@@ -73,7 +73,8 @@ green-cli/
 │   ├── hooks/                    # React hooks
 │   ├── store/                    # Zustand state stores
 │   ├── types/                    # TypeScript types
-│   └── styles/                   # Global CSS
+│   ├── styles/                   # Global CSS
+│   └── utils/                    # Shared helpers (clipboard, backup, vault, intent, terminal)
 ├── e2e/                          # Playwright end-to-end tests (npm run test:e2e)
 ├── scripts/                      # Utility scripts (screenshot capture)
 ├── src-tauri/                    # Rust backend
