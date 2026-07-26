@@ -1003,6 +1003,10 @@ fn pop_out_session(
         .title(title.unwrap_or_else(|| "GreenCli".into()))
         .inner_size(960.0, 600.0)
         .min_inner_size(480.0, 320.0)
+        // Hidden until the frontend has painted (main.tsx shows it) so opening
+        // a pop-out never flashes an unpainted white webview; the fallback
+        // below guarantees it appears even if the frontend fails to run.
+        .visible(false)
         .build()
         .map_err(|e| e.to_string())?;
     let notify_app = app.clone();
@@ -1011,7 +1015,21 @@ fn pop_out_session(
             let _ = notify_app.emit_all("popout_closed", &session_id);
         }
     });
+    show_window_fallback(win);
     Ok(())
+}
+
+/// Safety net for hidden-at-creation windows: the frontend reveals the window
+/// after its first painted frame, but if the bundle ever fails to execute the
+/// window would otherwise stay invisible forever. Show it after a grace period
+/// regardless.
+fn show_window_fallback(win: tauri::Window) {
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+        if !win.is_visible().unwrap_or(true) {
+            let _ = win.show();
+        }
+    });
 }
 
 /// Recent captured output for a session (used by the AI assistant to read back
@@ -1987,6 +2005,14 @@ fn main() {
                 .expect("Failed to get app data dir");
             let state = AppState::new(app_dir)?;
             app.manage(state);
+
+            // The main window starts hidden (tauri.conf.json visible: false)
+            // and is revealed by the frontend after its first painted frame,
+            // eliminating the white flash at launch. Guarantee it appears even
+            // if the frontend fails to run.
+            if let Some(main_window) = app.get_window("main") {
+                show_window_fallback(main_window);
+            }
 
             // Auto-connect enabled MCP servers in the background so the AI's
             // tools survive an app restart without reconnecting each one by hand.
