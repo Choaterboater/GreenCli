@@ -92,6 +92,7 @@
         "fullscreen": false,
         "height": 800,
         "resizable": true,
+        "visible": false,
         "title": "GreenCLI",
         "width": 1320,
         "minWidth": 880,

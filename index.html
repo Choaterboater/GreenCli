@@ -2,13 +2,32 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <!-- First-paint background: the webview paints white before CSS arrives,
+         which flashed at every launch. Match the persisted theme (dark default)
+         inline so the very first frame already has the app's background. -->
+    <script>
+      (function () {
+        var bg = "#0a0e14";
+        try {
+          var s = JSON.parse(localStorage.getItem("atp-settings") || "{}");
+          if ((s.state || s).theme === "light") bg = "#ffffff";
+        } catch (e) { /* default to dark */ }
+        document.documentElement.style.background = bg;
+      })();
+    </script>
     <link rel="icon" type="image/svg+xml" href="/terminal.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <!-- media="print" + onload keeps this remote stylesheet OFF the render
+         path: on a slow or offline network (jump hosts!) a render-blocking
+         fonts request could stall first paint for seconds. Fonts swap in when
+         (if) they arrive; system fallbacks render immediately. -->
     <link
       href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap"
       rel="stylesheet"
+      media="print"
+      onload="this.media='all'"
     />
     <title>GreenCLI</title>
   </head>
