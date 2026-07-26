@@ -17,10 +17,18 @@ export default defineConfig(async () => ({
     rollupOptions: {
       output: {
         manualChunks(id) {
-          if (!id.includes("node_modules")) return;
-          if (id.includes("monaco-editor") || id.includes("@monaco-editor")) return "monaco";
-          if (id.includes("xterm")) return "xterm";
-          if (id.includes("react") || id.includes("scheduler")) return "react-vendor";
+          const p = id.replace(/\\/g, "/"); // Windows build runners
+          if (!p.includes("node_modules")) return;
+          if (p.includes("monaco-editor") || p.includes("@monaco-editor")) return "monaco";
+          if (p.includes("/node_modules/xterm")) return "xterm";
+          // ONLY React itself goes in the react chunk. The old substring match
+          // ("react" anywhere in the path) also captured react-markdown,
+          // react-syntax-highlighter, lucide-react, … whose own dependencies
+          // land in "vendor" — producing two chunks that import each other.
+          // With circular chunks the evaluation order is import-graph luck;
+          // when "vendor" ran first, React's exports were still undefined and
+          // the app died at startup on a white screen.
+          if (/\/node_modules\/(react|react-dom|scheduler)\//.test(p)) return "react-vendor";
           return "vendor";
         },
       },
