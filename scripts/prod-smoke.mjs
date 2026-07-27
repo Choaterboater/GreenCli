@@ -7,7 +7,7 @@
 import { chromium } from '@playwright/test';
 import { createServer } from 'http';
 import { readFileSync, existsSync } from 'fs';
-import { join, extname, dirname } from 'path';
+import { join, resolve, sep, extname, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
 const DIST = join(dirname(fileURLToPath(import.meta.url)), '..', 'dist');
@@ -21,12 +21,23 @@ const MIME = {
 };
 
 const server = createServer((req, res) => {
-  let p = join(DIST, req.url.split('?')[0] === '/' ? 'index.html' : req.url.split('?')[0]);
+  // Resolve against DIST and confine the result to it. join() normalizes a raw
+  // `..` request path away, so without this check any file readable by this
+  // user (~/.ssh, .env, …) was served for the lifetime of the smoke run.
+  let p = resolve(DIST, '.' + (req.url.split('?')[0] === '/' ? '/index.html' : req.url.split('?')[0]));
+  if (p !== DIST && !p.startsWith(DIST + sep)) p = join(DIST, 'index.html');
   if (!existsSync(p)) p = join(DIST, 'index.html');
   res.setHeader('content-type', MIME[extname(p)] || 'application/octet-stream');
-  res.end(readFileSync(p));
+  try {
+    res.end(readFileSync(p));
+  } catch {
+    // Directory requests (EISDIR) and read races are a 404, not a crashed run.
+    res.statusCode = 404;
+    res.end('not found');
+  }
 });
-await new Promise((r) => server.listen(4173, r));
+// Loopback only — this server also runs on shared CI runners and jump hosts.
+await new Promise((r) => server.listen(4173, '127.0.0.1', r));
 
 const browser = await chromium.launch();
 const page = await browser.newPage();
