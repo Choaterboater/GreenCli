@@ -1,0 +1,35 @@
+From: fleet health agent <agent@choatelabs.local>
+Date: Tue, 28 Jul 2026 00:00:00 +0000
+Subject: ci(release): gate installer builds on the production-bundle smoke test
+
+Apply from the repo root with:  git apply docs/health/2026-07-28-release-smoke-gate.patch
+(Stack on PR #7 / branch agent/health-2026-07-27 so the gate uses the
+hardened prod-smoke.mjs; merge that PR first.)
+---
+ .github/workflows/release.yml | 14 ++++++++++++++
+ 1 file changed, 14 insertions(+)
+
+diff --git a/.github/workflows/release.yml b/.github/workflows/release.yml
+index bd61fd8..0000000 100644
+--- a/.github/workflows/release.yml
++++ b/.github/workflows/release.yml
+@@ -52,6 +52,20 @@ jobs:
+       - name: Install frontend dependencies
+         run: npm ci
+ 
++      # Gate the release on the production-bundle smoke test (the v1.2.1
++      # white-screen crash class — a broken chunk graph must never ship in
++      # signed installers again). `npm run smoke` runs `vite build` and then
++      # scripts/prod-smoke.mjs against the built bundle on every matrix leg,
++      # failing the job before the expensive Rust compile. Chromium installs
++      # without --with-deps: macOS/Windows runners already carry the browser
++      # system libraries.
++      - name: Install Chromium for smoke test
++        run: npx playwright install chromium
++
++      - name: Production bundle smoke test
++        run: npm run smoke
++
+       # NOTARIZATION TEMPORARILY DISABLED (2026-06-06): the APPLE_ID /
+       # APPLE_PASSWORD secrets fail Apple auth with HTTP 401 (APPLE_PASSWORD is
+       # 20 chars; an app-specific password is exactly 19: xxxx-xxxx-xxxx-xxxx).
