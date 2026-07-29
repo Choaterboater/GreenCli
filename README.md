@@ -76,7 +76,7 @@ green-cli/
 │   ├── styles/                   # Global CSS
 │   └── utils/                    # Shared helpers (clipboard, backup, vault, intent, terminal)
 ├── e2e/                          # Playwright end-to-end tests (npm run test:e2e)
-├── scripts/                      # Utility scripts (screenshot capture)
+├── scripts/                      # Utility scripts (screenshot capture, production smoke test)
 ├── src-tauri/                    # Rust backend
 │   └── src/
 │       ├── main.rs               # Tauri commands
@@ -131,6 +131,17 @@ npm run tauri-build
 ```
 
 The built application will be in `src-tauri/target/release/`.
+
+### Production Smoke Test
+
+```bash
+# Build the web bundle, then verify it actually mounts in a headless browser
+npm run smoke
+```
+
+Serves `dist/` locally and fails if the app renders an empty root — this catches
+minified chunk evaluation-order bugs (the v1.2.1 white-screen class) that the
+dev-server e2e tests can't see. Run it before tagging a release.
 
 ### Cross-Platform Builds
 
