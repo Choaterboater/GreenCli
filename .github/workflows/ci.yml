@@ -56,6 +56,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.0-dev libgtk-3-dev librsvg2-dev
 
+      # generate_context!() validates the frontend bundle at compile time and
+      # panics if ../dist doesn't exist, so the rust gate needs a real build
+      # (CI-2). A stash/mkdir stub would mask what a real build needs.
+      - name: Build frontend bundle
+        run: |
+          npm ci
+          npm run build
+
       # Non-blocking for now: the tree predates a fmt gate, so a strict check
       # could be red on untouched code. Flip to required once the baseline is
       # formatted (or once clippy/tests prove the gate useful).
@@ -63,6 +71,14 @@ jobs:
         run: cargo fmt --check
         working-directory: src-tauri
         continue-on-error: true
+
+      # generate_context!() validates distDir ("../dist") at compile time; a
+      # fresh checkout has no dist/ until the frontend is built, so clippy and
+      # cargo test panic without this. Real build, not a mkdir stub.
+      - name: Build frontend bundle
+        run: |
+          npm ci
+          npm run build
 
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
