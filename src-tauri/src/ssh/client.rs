@@ -251,6 +251,9 @@ impl SshConnection {
                 .unwrap_or_else(|| self.config.username.clone());
             let jump_pass = self.config.jump_password.clone().unwrap_or_default();
             let mut jump_ok = false;
+            // Track WHY key auth to the bastion failed so the final error can
+            // say more than "tried password, key, and agent".
+            let mut jump_key_err: Option<String> = None;
             if !jump_pass.is_empty() {
                 jump_ok = jump
                     .authenticate_password(&jump_user, jump_pass)
@@ -259,14 +262,18 @@ impl SshConnection {
             }
             if !jump_ok {
                 if let Some(ref key_str) = self.config.private_key {
-                    if let Ok(kp) = SshKeyManager::load_private_key(
+                    match SshKeyManager::load_private_key(
                         key_str.as_bytes(),
                         self.config.key_passphrase.as_deref(),
                     ) {
-                        jump_ok = jump
+                        Ok(kp) => match jump
                             .authenticate_publickey(&jump_user, Arc::new(kp))
                             .await
-                            .unwrap_or(false);
+                        {
+                            Ok(v) => jump_ok = v,
+                            Err(e) => jump_key_err = Some(e.to_string()),
+                        },
+                        Err(e) => jump_key_err = Some(e.to_string()),
                     }
                 }
             }
@@ -286,9 +293,13 @@ impl SshConnection {
                 }
             }
             if !jump_ok {
-                return Err(AppError::AuthError(
-                    "Jump host authentication failed (tried password, key, and agent)".into(),
-                ));
+                let detail = jump_key_err
+                    .map(|e| format!("; key auth error: {}", e))
+                    .unwrap_or_default();
+                return Err(AppError::AuthError(format!(
+                    "Jump host authentication failed (tried password, key, and agent{})",
+                    detail
+                )));
             }
 
             // Open a tunnel from the jump host to the target and run SSH over it.
