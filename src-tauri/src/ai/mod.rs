@@ -9,7 +9,7 @@
 //   - openrouter (OpenAI-compatible aggregator)
 //   - moonshot   (Kimi / Moonshot, OpenAI-compatible)
 //   - ollama     (local, OpenAI-compatible)
-//   - local-cli  (shell out to a locally installed CLI such as `claude`)
+//   - local-cli  (spawn a locally installed CLI such as `claude` directly — no shell)
 
 use crate::error::AppError;
 use serde::Deserialize;
@@ -20,14 +20,28 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-/// Restrict a file to owner-only read/write (0600) on Unix; no-op elsewhere.
+/// Restrict a file to owner-only read/write: 0600 on Unix; an owner-only DACL
+/// (via icacls — std has no ACL API) on Windows. Best-effort on failure: the
+/// caller's temp-file + rename pattern still applies.
 fn restrict_perms(path: &Path) {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        // Strip inheritance and grant full control to the current user only, so
+        // provider keys aren't readable by other local accounts (fs::write gives
+        // the file the parent directory's ACL, which may be broad).
+        if let Ok(user) = std::env::var("USERNAME") {
+            let _ = std::process::Command::new("icacls")
+                .arg(path)
+                .args(["/inheritance:r", "/grant:r", &format!("{}:F", user)])
+                .output();
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
     let _ = path;
 }
 
@@ -60,6 +74,9 @@ fn write_key_file(path: &Path, content: &[u8]) -> Result<(), AppError> {
     #[cfg(not(unix))]
     {
         fs::write(&tmp, content).map_err(AppError::from)?;
+        // Lock the temp file down BEFORE the rename so the secret never sits on
+        // disk with the parent directory's (potentially broad) ACL.
+        restrict_perms(&tmp);
     }
     fs::rename(&tmp, path).map_err(AppError::from)?;
     restrict_perms(path); // belt-and-suspenders: also fixes perms if the target pre-existed
@@ -361,6 +378,88 @@ pub async fn chat_stream(
     Ok(())
 }
 
+/// Tokenize a configured CLI command into program + argv WITHOUT a shell, so
+/// metacharacters (`&`, `|`, `;`, backticks, …) in the string are passed
+/// literally to the program instead of being interpreted. Supports single and
+/// double quotes and backslash escapes, covering commands like
+/// `claude --name "my assistant"`.
+fn split_command(cmd: &str) -> Result<Vec<String>, AppError> {
+    let mut out: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut escaped = false;
+    let mut has_token = false;
+    for c in cmd.chars() {
+        if escaped {
+            cur.push(c);
+            escaped = false;
+            continue;
+        }
+        match c {
+            '\\' if !in_single => escaped = true,
+            '\'' if !in_double => {
+                in_single = !in_single;
+                has_token = true;
+            }
+            '"' if !in_single => {
+                in_double = !in_double;
+                has_token = true;
+            }
+            c if c.is_whitespace() && !in_single && !in_double => {
+                if has_token {
+                    out.push(std::mem::take(&mut cur));
+                    has_token = false;
+                }
+            }
+            c => {
+                cur.push(c);
+                has_token = true;
+            }
+        }
+    }
+    if escaped {
+        cur.push('\\');
+    }
+    if in_single || in_double {
+        return Err(AppError::ApiError(
+            "CLI command has an unterminated quote".into(),
+        ));
+    }
+    if has_token {
+        out.push(cur);
+    }
+    if out.is_empty() {
+        return Err(AppError::ApiError("Empty CLI command".into()));
+    }
+    Ok(out)
+}
+
+/// Max bytes kept from each of the CLI's stdout/stderr. The TAIL is kept — the
+/// answer is at the end of the output.
+const MAX_CLI_OUTPUT_BYTES: usize = 1024 * 1024;
+
+/// Drain a pipe to EOF, keeping at most the last `MAX_CLI_OUTPUT_BYTES` — an
+/// unbounded `read_to_end` would let a runaway CLI OOM the process before the
+/// caller's timeout fires.
+async fn read_tail_capped<R: tokio::io::AsyncRead + Unpin>(mut r: R) -> Vec<u8> {
+    use tokio::io::AsyncReadExt;
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 8192];
+    loop {
+        match r.read(&mut chunk).await {
+            Ok(0) | Err(_) => break,
+            Ok(n) => {
+                buf.extend_from_slice(&chunk[..n]);
+                if buf.len() > MAX_CLI_OUTPUT_BYTES {
+                    buf.drain(..buf.len() - MAX_CLI_OUTPUT_BYTES);
+                }
+            }
+        }
+    }
+    buf
+}
+
 /// Largest byte index `<= i` that lands on a UTF-8 char boundary of `s`
 /// (stable-Rust stand-in for `str::floor_char_boundary`). Slicing a String at
 /// an arbitrary byte offset panics mid-character, so all truncation cuts go
@@ -447,16 +546,17 @@ pub async fn cli_passthrough(command: &str, prompt: &str) -> Result<String, AppE
         prompt
     };
 
-    // Run through a LOGIN shell so the CLI inherits the user's full PATH
-    // (GUI apps get a minimal PATH and can't find brew/npm-installed CLIs).
-    let mut builder = if cfg!(windows) {
-        let mut c = Command::new("cmd");
-        c.arg("/C").arg(&command);
-        c
-    } else {
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
-        let mut c = Command::new(shell);
-        c.arg("-lc").arg(&command);
+    // Spawn the CLI DIRECTLY (no `cmd /C`, no `$SHELL -lc`): the configured
+    // command is tokenized into program + argv so shell metacharacters in it
+    // are passed literally instead of being interpreted. The unix PATH
+    // augmentation below replaces the PATH discovery the login shell used to
+    // provide (GUI apps get a minimal PATH and can't find brew/npm-installed
+    // CLIs otherwise).
+    let argv = split_command(&command)?;
+    let mut builder = Command::new(&argv[0]);
+    builder.args(&argv[1..]);
+    #[cfg(unix)]
+    {
         // Ensure user-local bin dirs are on PATH (GUI apps get minimal PATH).
         if let Ok(home) = std::env::var("HOME") {
             let extra = [
@@ -472,10 +572,9 @@ pub async fn cli_passthrough(command: &str, prompt: &str) -> Result<String, AppE
                     parts.push(p.as_str());
                 }
             }
-            c.env("PATH", parts.join(":"));
+            builder.env("PATH", parts.join(":"));
         }
-        c
-    };
+    }
 
     let mut child = builder
         .stdin(std::process::Stdio::piped())
@@ -495,23 +594,21 @@ pub async fn cli_passthrough(command: &str, prompt: &str) -> Result<String, AppE
 
     // Drain stdout/stderr on separate tasks so the child can never block on a
     // full pipe while we wait on it, and so a timeout can abandon the reads.
+    // Buffers are CAPPED (tail kept): a runaway or malicious CLI writing
+    // endlessly must not OOM the app before the timeout below fires.
     let mut stdout_pipe = child.stdout.take();
     let mut stderr_pipe = child.stderr.take();
     let stdout_task = tokio::spawn(async move {
-        use tokio::io::AsyncReadExt;
-        let mut buf = Vec::new();
-        if let Some(s) = stdout_pipe.as_mut() {
-            let _ = s.read_to_end(&mut buf).await;
+        match stdout_pipe.as_mut() {
+            Some(s) => read_tail_capped(s).await,
+            None => Vec::new(),
         }
-        buf
     });
     let stderr_task = tokio::spawn(async move {
-        use tokio::io::AsyncReadExt;
-        let mut buf = Vec::new();
-        if let Some(s) = stderr_pipe.as_mut() {
-            let _ = s.read_to_end(&mut buf).await;
+        match stderr_pipe.as_mut() {
+            Some(s) => read_tail_capped(s).await,
+            None => Vec::new(),
         }
-        buf
     });
 
     // A CLI stuck on an OAuth/login prompt, interactive mode, or a blocking
