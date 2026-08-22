@@ -23,19 +23,27 @@ const acctSecretIdentityKey = (id: string) => `set:central-acct:${id}:clientSecr
 const acctTokenIdentityKey = (id: string) => `set:central-acct:${id}:token:identity`;
 const K_INVALIDATED_IDENTITIES = 'greencli-invalidated-secret-identities-v1';
 
-async function put(key: string, value: string): Promise<void> {
+/** Store (or, for an empty value, delete) a vault entry.
+ *  Returns false when the write failed — including the everyday "vault locked"
+ *  case, which callers treat as expected — and logs the underlying error so
+ *  real storage failures (disk full, permissions, corruption) are no longer
+ *  indistinguishable from a locked vault. */
+async function put(key: string, value: string): Promise<boolean> {
   try {
     if (value) await invoke('vault_store', { key, value });
     else await invoke('vault_delete', { key });
-  } catch {
-    /* vault locked / unavailable — secret stays in-memory only */
+    return true;
+  } catch (err) {
+    console.error(`[secretVault] vault write failed for ${key} (locked or storage error):`, err);
+    return false;
   }
 }
 
 async function get(key: string): Promise<string> {
   try {
     return (await invoke<string | null>('vault_retrieve', { key })) ?? '';
-  } catch {
+  } catch (err) {
+    console.error(`[secretVault] vault read failed for ${key} (locked or storage error):`, err);
     return '';
   }
 }
@@ -94,60 +102,70 @@ function vaultSecretForIdentity(
  *  ever writes entries for accounts currently in settings, so a removed
  *  account's `set:central-acct:<id>:*` entries otherwise linger in the vault
  *  forever. */
-export async function deleteAccountSecrets(id: string): Promise<void> {
-  await Promise.all([
+export async function deleteAccountSecrets(id: string): Promise<boolean> {
+  const results = await Promise.all([
     put(acctSecretKey(id), ''),
     put(acctSecretIdentityKey(id), ''),
     put(acctTokenKey(id), ''),
     put(acctTokenIdentityKey(id), ''),
   ]);
+  return results.every(Boolean);
 }
 
-/** Write the current Central/Apstra secrets (and each saved account's secrets) to the vault. */
-export async function persistSecrets(s: TerminalSettings): Promise<void> {
-  await put(K_CLIENT_SECRET, s.centralClientSecret || '');
-  await put(
+/** Write the current Central/Apstra secrets (and each saved account's secrets) to the vault.
+ *  Returns false if any entry failed to persist (e.g. vault locked or a storage
+ *  error) so callers can warn instead of assuming the secrets survived. */
+export async function persistSecrets(s: TerminalSettings): Promise<boolean> {
+  let ok = true;
+  const track = async (key: string, value: string) => {
+    if (!(await put(key, value))) ok = false;
+  };
+  await track(K_CLIENT_SECRET, s.centralClientSecret || '');
+  await track(
     K_CLIENT_SECRET_IDENTITY,
     s.centralClientSecret
       ? identity({ baseUrl: s.centralBaseUrl, clientId: s.centralClientId, mode: 'creds' })
       : ''
   );
-  await put(K_TOKEN, s.centralToken || '');
-  await put(
+  await track(K_TOKEN, s.centralToken || '');
+  await track(
     K_TOKEN_IDENTITY,
     s.centralToken ? identity({ baseUrl: s.centralBaseUrl, mode: 'token' }) : ''
   );
-  await put(K_APSTRA, s.apstraPassword || '');
-  await put(
+  await track(K_APSTRA, s.apstraPassword || '');
+  await track(
     K_APSTRA_IDENTITY,
     s.apstraPassword ? identity({ host: s.apstraHost, username: s.apstraUsername }) : ''
   );
-  await put(K_MIST, s.mistToken || '');
-  await put(K_MIST_IDENTITY, s.mistToken ? identity({ baseUrl: s.mistBaseUrl }) : '');
+  await track(K_MIST, s.mistToken || '');
+  await track(K_MIST_IDENTITY, s.mistToken ? identity({ baseUrl: s.mistBaseUrl }) : '');
   for (const a of s.centralAccounts || []) {
-    await put(acctSecretKey(a.id), a.clientSecret || '');
-    await put(
+    await track(acctSecretKey(a.id), a.clientSecret || '');
+    await track(
       acctSecretIdentityKey(a.id),
       a.clientSecret
         ? identity({ baseUrl: a.baseUrl, clientId: a.clientId })
         : ''
     );
-    await put(acctTokenKey(a.id), a.token || '');
-    await put(
+    await track(acctTokenKey(a.id), a.token || '');
+    await track(
       acctTokenIdentityKey(a.id),
       a.token ? identity({ baseUrl: a.baseUrl }) : ''
     );
   }
-  clearSecretIdentitiesInvalidated([
-    ...(s.centralClientSecret ? ['centralClientSecret'] : []),
-    ...(s.centralToken ? ['centralToken'] : []),
-    ...(s.apstraPassword ? ['apstraPassword'] : []),
-    ...(s.mistToken ? ['mistToken'] : []),
-    ...(s.centralAccounts || []).flatMap((account) => [
-      ...(account.clientSecret ? [`centralAccountSecret:${account.id}`] : []),
-      ...(account.token ? [`centralAccountToken:${account.id}`] : []),
-    ]),
-  ]);
+  if (ok) {
+    clearSecretIdentitiesInvalidated([
+      ...(s.centralClientSecret ? ['centralClientSecret'] : []),
+      ...(s.centralToken ? ['centralToken'] : []),
+      ...(s.apstraPassword ? ['apstraPassword'] : []),
+      ...(s.mistToken ? ['mistToken'] : []),
+      ...(s.centralAccounts || []).flatMap((account) => [
+        ...(account.clientSecret ? [`centralAccountSecret:${account.id}`] : []),
+        ...(account.token ? [`centralAccountToken:${account.id}`] : []),
+      ]),
+    ]);
+  }
+  return ok;
 }
 
 /** Read secrets back from the vault, returning a patch to merge into settings. The

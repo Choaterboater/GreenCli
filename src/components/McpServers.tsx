@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, type CSSProperties } from 'react';
 import { invoke } from '@tauri-apps/api/tauri';
 import {
   Plus,
@@ -13,6 +13,8 @@ import {
   ClipboardPaste,
   Globe,
   TerminalSquare,
+  Eye,
+  EyeOff,
 } from 'lucide-react';
 import { notify } from '../store/toastStore';
 import { askConfirm } from '../store/dialogStore';
@@ -114,6 +116,8 @@ export default function McpServers() {
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({ ...blankForm });
   const [credsSaved, setCredsSaved] = useState(false);
+  // Credentials are masked by default; toggle only reveals them while editing.
+  const [showCreds, setShowCreds] = useState(false);
   // The name the form was opened on, so a rename can move the server instead of
   // leaving the old name behind as a duplicate.
   const [editingName, setEditingName] = useState<string | null>(null);
@@ -128,8 +132,13 @@ export default function McpServers() {
       const map: Record<string, McpStatus> = {};
       st.forEach((s) => (map[s.name] = s));
       setStatus(map);
-    } catch {
-      /* not running under Tauri */
+    } catch (err) {
+      // Outside Tauri (dev browser / tests) there is no backend at all — stay
+      // silent. Real backend failures get logged instead of being swallowed,
+      // but not toasted: this runs on a 5s poll and would spam the user.
+      if ('__TAURI_IPC__' in window) {
+        console.error('[McpServers] status refresh failed:', err);
+      }
     }
   }, []);
 
@@ -167,8 +176,12 @@ export default function McpServers() {
       danger: true,
     });
     if (!ok) return;
-    await invoke('mcp_delete_server', { name }).catch(() => {});
-    notify.info('MCP server removed', name);
+    try {
+      await invoke('mcp_delete_server', { name });
+      notify.info('MCP server removed', name);
+    } catch (err) {
+      notify.error(`Failed to remove "${name}"`, String(err));
+    }
     refresh();
   };
 
@@ -193,6 +206,7 @@ export default function McpServers() {
       .catch(() => setCredsSaved(false));
     setShowConfigPaste(false);
     setConfigPasteText('');
+    setShowCreds(false);
     setShowForm(true);
   };
 
@@ -215,6 +229,7 @@ export default function McpServers() {
     setCredsSaved(false);
     setShowConfigPaste(false);
     setConfigPasteText('');
+    setShowCreds(false);
     setShowForm(true);
   };
 
@@ -294,6 +309,7 @@ export default function McpServers() {
       setShowForm(false);
       setForm({ ...blankForm });
       setCredsSaved(false);
+      setShowCreds(false);
       setEditingName(null);
       setShowConfigPaste(false);
       setConfigPasteText('');
@@ -313,6 +329,7 @@ export default function McpServers() {
           onClick={() => {
             setForm({ ...blankForm });
             setCredsSaved(false);
+            setShowCreds(false);
             setEditingName(null);
             setShowConfigPaste(false);
             setConfigPasteText('');
@@ -532,17 +549,28 @@ export default function McpServers() {
                     title="Env var the server reads for its credentials file path"
                   />
                 </div>
-                <textarea
-                  className="input-field w-full px-2 py-1.5 text-xs font-mono resize-y"
-                  rows={4}
-                  value={form.credsContent}
-                  onChange={(e) => setForm({ ...form, credsContent: e.target.value })}
-                  placeholder={
-                    credsSaved
-                      ? '•••••••• saved — type to replace the credentials file'
-                      : 'Paste the server\'s credentials file (e.g. centralmcp credentials.yaml)…\ncentral_account:\n  client_id: ...\n  client_secret: ...\n  base_url: ...'
-                  }
-                />
+                <div className="relative">
+                  <textarea
+                    className="input-field w-full px-2 py-1.5 text-xs font-mono resize-y pr-8"
+                    rows={4}
+                    value={form.credsContent}
+                    onChange={(e) => setForm({ ...form, credsContent: e.target.value })}
+                    style={{ WebkitTextSecurity: showCreds ? 'none' : 'disc' } as CSSProperties}
+                    placeholder={
+                      credsSaved
+                        ? '•••••••• saved — type to replace the credentials file'
+                        : 'Paste the server\'s credentials file (e.g. centralmcp credentials.yaml)…\ncentral_account:\n  client_id: ...\n  client_secret: ...\n  base_url: ...'
+                    }
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowCreds((v) => !v)}
+                    title={showCreds ? 'Hide credentials' : 'Show credentials'}
+                    className="absolute top-1.5 right-1.5 p-1 rounded text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] transition-colors"
+                  >
+                    {showCreds ? <EyeOff size={13} /> : <Eye size={13} />}
+                  </button>
+                </div>
                 <p className="text-[10px] text-[var(--text-muted)]">
                   Stored in the app data dir (outside the browser). On connect it's written to a file and the env var
                   above is pointed at it — so you never keep a separate credentials file by hand.

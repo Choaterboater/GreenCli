@@ -336,7 +336,7 @@ function App() {
 
   // Load saved sessions from backend on mount
   useEffect(() => {
-    invoke<Array<{ id: string; name: string; items: Array<{ id: string; name: string; protocol: string; host?: string; port?: number; username?: string; authType?: string; deviceType: string; deviceProfileId?: string; serialPort?: string; baudRate?: number; dataBits?: number; parity?: string; stopBits?: number; startupCommands?: string; tags?: string[]; command?: string; args?: string[]; cwd?: string; jumpHost?: string; jumpPort?: number; jumpUsername?: string }>; expanded: boolean }>>('list_folders')
+    invoke<Array<{ id: string; name: string; items: Array<{ id: string; name: string; protocol: string; host?: string; port?: number; username?: string; authType?: string; keyPath?: string; deviceType: string; deviceProfileId?: string; serialPort?: string; baudRate?: number; dataBits?: number; parity?: string; stopBits?: number; startupCommands?: string; tags?: string[]; command?: string; args?: string[]; cwd?: string; jumpHost?: string; jumpPort?: number; jumpUsername?: string }>; expanded: boolean }>>('list_folders')
       .then((folders) => {
         setFolders(
           folders.map((f) => ({
@@ -351,6 +351,7 @@ function App() {
               port: s.port,
               username: s.username,
               authType: (s.authType ?? 'password') as 'password' | 'key' | 'agent',
+              keyPath: s.keyPath,
               deviceType: (s.deviceType ?? 'generic') as DeviceType,
               deviceProfileId: s.deviceProfileId,
               serialPort: s.serialPort,
@@ -389,25 +390,31 @@ function App() {
   const centralAuthMode = useSettingsStore((s) => s.centralAuthMode);
   const centralToken = useSettingsStore((s) => s.centralToken);
   useEffect(() => {
-    if (!centralBaseUrl) {
-      invoke('central_clear').catch(() => {});
-      return;
-    }
-    if (centralAuthMode === 'token') {
-      if (centralToken) {
-        invoke('central_set_token', { baseUrl: centralBaseUrl, token: centralToken }).catch(() => {});
+    // Debounce: settings inputs update per keystroke, and each push sends the
+    // secret over IPC and can trigger a backend auth attempt. Wait for typing
+    // to settle instead of pushing every intermediate value.
+    const t = setTimeout(() => {
+      if (!centralBaseUrl) {
+        invoke('central_clear').catch(() => {});
+        return;
+      }
+      if (centralAuthMode === 'token') {
+        if (centralToken) {
+          invoke('central_set_token', { baseUrl: centralBaseUrl, token: centralToken }).catch(() => {});
+        } else {
+          invoke('central_clear').catch(() => {});
+        }
+      } else if (centralClientId && centralClientSecret) {
+        invoke('central_configure', {
+          baseUrl: centralBaseUrl,
+          clientId: centralClientId,
+          clientSecret: centralClientSecret,
+        }).catch(() => {});
       } else {
         invoke('central_clear').catch(() => {});
       }
-    } else if (centralClientId && centralClientSecret) {
-      invoke('central_configure', {
-        baseUrl: centralBaseUrl,
-        clientId: centralClientId,
-        clientSecret: centralClientSecret,
-      }).catch(() => {});
-    } else {
-      invoke('central_clear').catch(() => {});
-    }
+    }, 500);
+    return () => clearTimeout(t);
   }, [centralBaseUrl, centralClientId, centralClientSecret, centralAuthMode, centralToken]);
 
   // Push Juniper Apstra credentials to the backend whenever they change.
@@ -416,33 +423,41 @@ function App() {
   const apstraPassword = useSettingsStore((s) => s.apstraPassword);
   const verifyDeviceTls = useSettingsStore((s) => s.verifyDeviceTls);
   useEffect(() => {
-    if (apstraHost && apstraUsername && apstraPassword) {
-      invoke('apstra_configure', {
-        host: apstraHost,
-        username: apstraUsername,
-        password: apstraPassword,
-        // Top-level command args use camelCase (Tauri maps to the snake_case Rust
-        // param). Honour the user's TLS-verification setting.
-        acceptInvalidCerts: !verifyDeviceTls,
-      }).catch((e) => notify.error('Apstra configuration failed', String(e)));
-    } else {
-      invoke('apstra_clear').catch(() => {});
-    }
+    // Debounced for the same reason as the Central push above.
+    const t = setTimeout(() => {
+      if (apstraHost && apstraUsername && apstraPassword) {
+        invoke('apstra_configure', {
+          host: apstraHost,
+          username: apstraUsername,
+          password: apstraPassword,
+          // Top-level command args use camelCase (Tauri maps to the snake_case Rust
+          // param). Honour the user's TLS-verification setting.
+          acceptInvalidCerts: !verifyDeviceTls,
+        }).catch((e) => notify.error('Apstra configuration failed', String(e)));
+      } else {
+        invoke('apstra_clear').catch(() => {});
+      }
+    }, 500);
+    return () => clearTimeout(t);
   }, [apstraHost, apstraUsername, apstraPassword, verifyDeviceTls]);
 
   // Push Juniper Mist cloud config to the backend whenever it changes.
   const mistBaseUrl = useSettingsStore((s) => s.mistBaseUrl);
   const mistToken = useSettingsStore((s) => s.mistToken);
   useEffect(() => {
-    if (mistToken) {
-      invoke('mist_configure', {
-        baseUrl: mistBaseUrl || 'https://api.mist.com',
-        token: mistToken,
-        acceptInvalidCerts: false,
-      }).catch(() => {});
-    } else {
-      invoke('mist_clear').catch(() => {});
-    }
+    // Debounced for the same reason as the Central push above.
+    const t = setTimeout(() => {
+      if (mistToken) {
+        invoke('mist_configure', {
+          baseUrl: mistBaseUrl || 'https://api.mist.com',
+          token: mistToken,
+          acceptInvalidCerts: false,
+        }).catch(() => {});
+      } else {
+        invoke('mist_clear').catch(() => {});
+      }
+    }, 500);
+    return () => clearTimeout(t);
   }, [mistBaseUrl, mistToken]);
 
   // ── Vault-backed persistence of Central / Apstra secrets ──
@@ -453,6 +468,8 @@ function App() {
   const centralAccounts = useSettingsStore((s) => s.centralAccounts);
   const secretsLoadedRef = useRef(false);
   const suppressSecretPersistRef = useRef(false);
+  // Handle on the pending debounced persist so it can be flushed on exit.
+  const secretPersistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     if (!vaultUnlocked || secretsLoadedRef.current) return;
@@ -469,10 +486,16 @@ function App() {
 
   useEffect(() => {
     if (!vaultUnlocked || suppressSecretPersistRef.current) return;
-    const t = setTimeout(() => {
+    secretPersistTimerRef.current = setTimeout(() => {
+      secretPersistTimerRef.current = null;
       persistSecrets(useSettingsStore.getState());
     }, 400);
-    return () => clearTimeout(t);
+    return () => {
+      if (secretPersistTimerRef.current) {
+        clearTimeout(secretPersistTimerRef.current);
+        secretPersistTimerRef.current = null;
+      }
+    };
     // The identity fields (base URL / client id / host / username) MUST be
     // deps too: each secret's vault record embeds them, and editing an
     // endpoint without retyping the secret left a stale identity behind —
@@ -491,6 +514,19 @@ function App() {
     apstraUsername,
     mistBaseUrl,
   ]);
+
+  // Flush a pending debounced persist on window close/reload — secrets typed
+  // within the debounce window would otherwise never reach the vault.
+  useEffect(() => {
+    const flushPendingPersist = () => {
+      if (!secretPersistTimerRef.current) return;
+      clearTimeout(secretPersistTimerRef.current);
+      secretPersistTimerRef.current = null;
+      persistSecrets(useSettingsStore.getState());
+    };
+    window.addEventListener('beforeunload', flushPendingPersist);
+    return () => window.removeEventListener('beforeunload', flushPendingPersist);
+  }, []);
 
   const activeSession = sessions.find((s) => s.sessionId === activeSessionId);
 
@@ -786,6 +822,10 @@ function App() {
             port: fullConfig.port,
             username: fullConfig.username,
             auth_type: fullConfig.authType || 'password',
+            // Wire name per the B17 contract: ConnectionConfigRequest.key_path ↔
+            // JSON `keyPath`. Backend reads the identity file at connect when
+            // private_key is absent and keyPath is set.
+            keyPath: fullConfig.keyPath,
             password,
             private_key: fullConfig.privateKey,
             key_passphrase: fullConfig.keyPassphrase,
@@ -965,6 +1005,7 @@ function App() {
             // Honour the auth type the user picked in the dialog.
             auth_type:
               creds.authType === 'key' ? 'key' : creds.authType === 'agent' ? 'agent' : 'password',
+            keyPath: pending.keyPath,
             password: creds.password,
             private_key: creds.privateKey,
             key_passphrase: creds.keyPassphrase,
