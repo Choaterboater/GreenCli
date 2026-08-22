@@ -72,14 +72,6 @@ jobs:
         working-directory: src-tauri
         continue-on-error: true
 
-      # generate_context!() validates distDir ("../dist") at compile time; a
-      # fresh checkout has no dist/ until the frontend is built, so clippy and
-      # cargo test panic without this. Real build, not a mkdir stub.
-      - name: Build frontend bundle
-        run: |
-          npm ci
-          npm run build
-
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
         working-directory: src-tauri
