@@ -15,20 +15,20 @@ One cockpit for **Aruba · Juniper · Mist**. A modern, cross-platform terminal,
 - **Juniper Junos** (EX/QFX/SRX/MX) syntax highlighting
 - **Juniper Mist** cloud awareness (API Explorer integration)
 - **Auto device detection** - identifies vendor/OS from the prompt
-- **Tabbed sessions** with drag-and-drop
+- **Tabbed sessions**
 - **Session manager** with folders and organization
 - **Encrypted credential vault** (AES-256-GCM + Argon2)
 - **Real-time syntax highlighting** with ANSI color injection
 - **Modern dark/light themes**
 - **Keyboard shortcuts** (Ctrl+T connect, Ctrl+W close, Ctrl+F search, Ctrl+, settings)
-- **WebGL-accelerated terminal** rendering via xterm.js
+- **Fast terminal rendering** via xterm.js
 
 ## Tech Stack
 
 | Layer | Technology |
 |-------|------------|
 | Frontend | React 18 + TypeScript + Tailwind CSS |
-| Terminal | xterm.js 5.x with WebGL addon |
+| Terminal | xterm.js 5.x |
 | Shell | Tauri 1.6 (Rust + WebView) |
 | SSH | russh (Rust native SSH library) |
 | Telnet | tokio async TCP |
@@ -64,9 +64,9 @@ green-cli/
 │   │   └── …                     # Command palette, vault, triggers, dialogs, toaster
 │   ├── syntax/                   # Syntax highlighting engine
 │   │   ├── highlighter.ts        # Core highlighting engine
-│   │   ├── grammar-aruba-cx.ts   # Aruba CX grammar (80 commands, 84 subcommands)
-│   │   ├── grammar-aruba-ap.ts   # Aruba AP grammar (51 commands, 77 subcommands)
-│   │   ├── grammar-aruba-ctrl.ts # Aruba Controller grammar (65 commands, 86 subcommands)
+│   │   ├── grammar-aruba-cx.ts   # Aruba CX grammar (100 commands, 120 subcommands)
+│   │   ├── grammar-aruba-ap.ts   # Aruba AP grammar (56 commands, 88 subcommands)
+│   │   ├── grammar-aruba-ctrl.ts # Aruba Controller grammar (76 commands, 80 subcommands)
 │   │   ├── grammar-junos.ts      # Juniper Junos grammar
 │   │   └── ansi-processor.ts     # ANSI sequence processor
 │   ├── data/                     # Static content (help topics, intent packs)
@@ -78,6 +78,8 @@ green-cli/
 ├── e2e/                          # Playwright end-to-end tests (npm run test:e2e)
 ├── scripts/                      # Utility scripts (screenshot capture)
 ├── src-tauri/                    # Rust backend
+│   ├── Cargo.toml                # Rust dependencies
+│   ├── tauri.conf.json           # Tauri configuration
 │   └── src/
 │       ├── main.rs               # Tauri commands
 │       ├── ssh/                  # SSH client (russh)
@@ -93,9 +95,7 @@ green-cli/
 │       ├── local/                # Local PTY
 │       └── mcp/                  # MCP client (stdio + streamable HTTP)
 ├── package.json                  # Node dependencies
-├── playwright.config.ts          # Playwright configuration
-├── Cargo.toml                    # Rust dependencies
-└── tauri.conf.json               # Tauri configuration
+└── playwright.config.ts          # Playwright configuration
 ```
 
 ## Quick Start
@@ -155,10 +155,20 @@ npm run tauri-build -- --target x86_64-unknown-linux-gnu
 | `Ctrl+,` | Open Settings |
 | `F1` | Help & documentation (in-app) |
 | `Ctrl+B` | Toggle Sidebar |
+| `Ctrl+K` | Command Palette |
+| `Ctrl+1`–`Ctrl+9` | Jump to tab N |
+| `Ctrl+Tab` | Cycle to next tab |
+| `Ctrl+Shift+A` | Toggle API Explorer |
+| `Ctrl+Shift+I` | Toggle AI Assistant |
+| `Ctrl+Shift+E` | Toggle Config Editor |
+| `Ctrl+=` / `Ctrl+-` | Zoom terminal font in / out |
+| `Ctrl+0` | Reset terminal font size |
+
+(On macOS use `Cmd` instead of `Ctrl`.)
 
 ## Aruba Syntax Highlighting
 
-The syntax highlighter supports **196 commands**, **247 subcommands**, and **95 keywords** across all three Aruba device types. It features:
+The syntax highlighter supports **232 commands**, **288 subcommands**, and **144 keywords** across all three Aruba device types. It features:
 
 - **Prompt detection** - Identifies device type from CLI prompt patterns
 - **Auto-detection** - Scans terminal buffer to automatically identify connected device type
@@ -170,16 +180,15 @@ The syntax highlighter supports **196 commands**, **247 subcommands**, and **95 
 
 | Device | Grammar Coverage |
 |--------|-----------------|
-| Aruba CX Switch | 80 commands, 84 subcommands, 38 keywords |
-| Aruba Wireless AP | 51 commands, 77 subcommands, 28 keywords |
-| Aruba Mobility Controller | 65 commands, 86 subcommands, 29 keywords |
+| Aruba CX Switch | 100 commands, 120 subcommands, 59 keywords |
+| Aruba Wireless AP | 56 commands, 88 subcommands, 44 keywords |
+| Aruba Mobility Controller | 76 commands, 80 subcommands, 41 keywords |
 
 ## Security Features
 
 - **AES-256-GCM encryption** for stored credentials
 - **Argon2id** password hashing for master password
-- **SSH key pair generation** (ED25519)
-- Password-protected credential vault with auto-lock
+- Password-protected credential vault
 
 ## License
 

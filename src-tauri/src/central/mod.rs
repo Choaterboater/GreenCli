@@ -91,18 +91,18 @@ pub struct CentralClient {
 }
 
 impl CentralClient {
-    pub fn new() -> Self {
-        Self {
+    pub fn new() -> Result<Self, AppError> {
+        Ok(Self {
             client: reqwest::Client::builder()
                 .timeout(Duration::from_secs(30))
                 .build()
-                .expect("Failed to build reqwest client — TLS stack unavailable"),
+                .map_err(AppError::from)?,
             base_url: String::new(),
             client_id: String::new(),
             client_secret: String::new(),
             token: None,
             token_expiry: None,
-        }
+        })
     }
 
     pub fn configure(&mut self, base_url: String, client_id: String, client_secret: String) {
@@ -227,7 +227,12 @@ impl CentralClient {
                 "PATCH" => self.client.patch(&url),
                 other => return Err(AppError::ApiError(format!("Unsupported method: {}", other))),
             };
-            rb = rb.bearer_auth(token);
+            // Only attach the bearer token when the target shares the configured
+            // Central origin — an absolute URL elsewhere goes out unauthenticated
+            // rather than leaking the token.
+            if crate::api::same_origin(&self.base_url, &url) {
+                rb = rb.bearer_auth(token);
+            }
             if let Some(b) = body {
                 if !b.trim().is_empty() {
                     rb = rb
@@ -252,8 +257,5 @@ impl CentralClient {
     }
 }
 
-impl Default for CentralClient {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+// NOTE: no `Default` impl — `new()` is fallible (reqwest client build) and a
+// silent default would have to unwrap.
