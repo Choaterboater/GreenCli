@@ -296,6 +296,45 @@ fn augment_path(cmd: &mut Command) {
     }
 }
 
+/// Validate a configured stdio MCP server command before spawning it. The
+/// process is spawned directly (no shell), so metacharacters can't inject —
+/// the risks this guards are (a) a shell interpreter named AS the server, which
+/// would re-introduce shell interpretation via `-c` args, and (b) an absolute
+/// path that doesn't exist, which should fail with a clear message. Bare
+/// command names (`uvx`, `npx`, …) are resolved by the OS at spawn time.
+fn validate_stdio_command(command: &str) -> Result<(), AppError> {
+    let trimmed = command.trim();
+    if trimmed.is_empty() {
+        return Err(AppError::ApiError(
+            "MCP server command is empty — configure the server binary to launch".into(),
+        ));
+    }
+    let file_name = std::path::Path::new(trimmed)
+        .file_name()
+        .and_then(|f| f.to_str())
+        .unwrap_or(trimmed)
+        .to_ascii_lowercase();
+    const SHELLS: [&str; 10] = [
+        "sh", "bash", "zsh", "fish", "cmd", "cmd.exe", "powershell", "powershell.exe", "pwsh",
+        "pwsh.exe",
+    ];
+    if SHELLS.contains(&file_name.as_str()) {
+        return Err(AppError::ApiError(format!(
+            "Refusing to launch shell interpreter '{}' as an MCP server (its args would be \
+             shell-interpreted). Configure the server binary directly (e.g. `uvx`, `node`, \
+             an absolute path) instead.",
+            trimmed
+        )));
+    }
+    if std::path::Path::new(trimmed).is_absolute() && !std::path::Path::new(trimmed).exists() {
+        return Err(AppError::ApiError(format!(
+            "MCP server binary '{}' does not exist",
+            trimmed
+        )));
+    }
+    Ok(())
+}
+
 /// Fetch every tool from a connected server, following `nextCursor` pagination
 /// — a large server (e.g. centralmcp's router mode, or its hundreds of direct
 /// tools in default mode) may page its list, and taking only the first page
@@ -452,7 +491,27 @@ async fn drain_sse(
 ) -> Option<Result<Value, AppError>> {
     let mut stream = resp.bytes_stream();
     let mut buf = String::new();
-    while let Some(chunk) = stream.next().await {
+    // Idle cap for the STANDALONE listener (awaiting_id == None): a server that
+    // accepts the GET and then stalls must not park the task forever. On expiry
+    // we return as if the stream ended — the caller re-establishes with backoff.
+    // (The awaiting_id case is already bounded by the caller's request timeout.)
+    const SSE_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
+    loop {
+        let next = if awaiting_id.is_none() {
+            match tokio::time::timeout(SSE_IDLE_TIMEOUT, stream.next()).await {
+                Ok(n) => n,
+                Err(_) => {
+                    log::warn!(
+                        "MCP: SSE stream idle for {}s; re-establishing",
+                        SSE_IDLE_TIMEOUT.as_secs()
+                    );
+                    return None;
+                }
+            }
+        } else {
+            stream.next().await
+        };
+        let Some(chunk) = next else { break };
         let chunk = match chunk {
             Ok(c) => c,
             Err(e) => {
@@ -536,6 +595,7 @@ impl McpClient {
     }
 
     async fn connect_stdio(def: &McpServerDef) -> Result<McpClient, AppError> {
+        validate_stdio_command(&def.command)?;
         let mut cmd = Command::new(&def.command);
         cmd.args(&def.args);
         augment_path(&mut cmd);
@@ -1257,13 +1317,25 @@ fn sanitize_filename(name: &str) -> String {
     format!("{}_{:016x}", base, h.finish())
 }
 
-/// Lock down a secrets file to owner-only (0600) on Unix.
+/// Lock down a secrets file to owner-only: 0600 on Unix; an owner-only DACL
+/// (via icacls — std has no ACL API) on Windows.
 #[cfg(unix)]
 fn restrict_perms(path: &std::path::Path) {
     use std::os::unix::fs::PermissionsExt;
     let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
 }
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn restrict_perms(path: &std::path::Path) {
+    // Strip inheritance and grant full control to the current user only, so
+    // credential files aren't readable by other local accounts.
+    if let Ok(user) = std::env::var("USERNAME") {
+        let _ = std::process::Command::new("icacls")
+            .arg(path)
+            .args(["/inheritance:r", "/grant:r", &format!("{}:F", user)])
+            .output();
+    }
+}
+#[cfg(not(any(unix, windows)))]
 fn restrict_perms(_path: &std::path::Path) {}
 
 /// Write a secret file owner-only WITHOUT a world-readable window: on Unix create
@@ -1285,6 +1357,11 @@ fn write_secret_file(path: &std::path::Path, content: &[u8]) -> Result<(), AppEr
     }
     #[cfg(not(unix))]
     {
+        // Create + lock down the (empty) file FIRST, then write the secret into
+        // the already-restricted file — the content never sits on disk under the
+        // parent directory's (potentially broad) ACL.
+        fs::write(path, b"").map_err(AppError::from)?;
+        restrict_perms(path);
         fs::write(path, content).map_err(AppError::from)?;
     }
     restrict_perms(path); // also fixes perms if the file pre-existed
@@ -1390,6 +1467,17 @@ impl McpManager {
             if let Some(content) = self.secrets.get(name) {
                 let dir = self.app_dir.join("mcp_creds");
                 std::fs::create_dir_all(&dir).map_err(AppError::from)?;
+                // The files inside are 0600, but the directory itself should not
+                // be world-traversable either (it reveals which servers have
+                // stored credentials).
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ = std::fs::set_permissions(
+                        &dir,
+                        std::fs::Permissions::from_mode(0o700),
+                    );
+                }
                 let path = dir.join(sanitize_filename(name));
                 write_secret_file(&path, content.as_bytes())?;
                 let var = def

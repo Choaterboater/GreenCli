@@ -2,16 +2,17 @@
 // AOS-S (AOS-Switch / ProVision) switches. Mirror the AOS-CX client so the AI
 // assistant + API Explorer can pull structured data without Aruba Central.
 
+use crate::api::same_origin;
 use crate::error::AppError;
 use serde_json::Value;
 
-fn http(accept_invalid_certs: bool) -> reqwest::Client {
+fn http(accept_invalid_certs: bool) -> Result<reqwest::Client, AppError> {
     reqwest::Client::builder()
         .danger_accept_invalid_certs(accept_invalid_certs)
         .cookie_store(true)
         .timeout(std::time::Duration::from_secs(30))
         .build()
-        .expect("Failed to build reqwest client — TLS stack unavailable")
+        .map_err(AppError::from)
 }
 
 /// Minimal percent-encoder for query values (show commands etc.).
@@ -38,12 +39,12 @@ pub struct Aos8Client {
 }
 
 impl Aos8Client {
-    pub fn new(host: String, accept_invalid_certs: bool) -> Self {
-        Self {
-            client: http(accept_invalid_certs),
+    pub fn new(host: String, accept_invalid_certs: bool) -> Result<Self, AppError> {
+        Ok(Self {
+            client: http(accept_invalid_certs)?,
             base: format!("https://{}:4343", host),
             uid: None,
-        }
+        })
     }
 
     pub async fn login(&mut self, username: &str, password: &str) -> Result<(), AppError> {
@@ -109,6 +110,9 @@ impl Aos8Client {
     }
 
     /// Generic request against the config API (UIDARUBA appended automatically).
+    /// The token is only attached when the target stays on the configured
+    /// controller — an absolute URL to another origin goes out WITHOUT it, so a
+    /// crafted path can't exfiltrate the session token.
     pub async fn request(
         &self,
         method: &str,
@@ -124,8 +128,12 @@ impl Aos8Client {
         } else {
             format!("{}{}", self.base, path)
         };
-        let sep = if target.contains('?') { '&' } else { '?' };
-        let url = format!("{}{}UIDARUBA={}", target, sep, uid);
+        let url = if same_origin(&self.base, &target) {
+            let sep = if target.contains('?') { '&' } else { '?' };
+            format!("{}{}UIDARUBA={}", target, sep, uid)
+        } else {
+            target
+        };
         let mut rb = match method.to_uppercase().as_str() {
             "GET" => self.client.get(&url),
             "POST" => self.client.post(&url),
@@ -156,20 +164,20 @@ pub struct ApstraClient {
 }
 
 impl ApstraClient {
-    pub fn new(host: String, username: String, password: String, accept_invalid_certs: bool) -> Self {
+    pub fn new(host: String, username: String, password: String, accept_invalid_certs: bool) -> Result<Self, AppError> {
         // Accept a bare host or a full URL.
         let base = if host.starts_with("http") {
             host.trim_end_matches('/').to_string()
         } else {
             format!("https://{}", host)
         };
-        Self {
-            client: http(accept_invalid_certs),
+        Ok(Self {
+            client: http(accept_invalid_certs)?,
             base,
             username,
             password,
             token: None,
-        }
+        })
     }
 
     pub async fn login(&mut self) -> Result<(), AppError> {
@@ -223,8 +231,12 @@ impl ApstraClient {
             "DELETE" => self.client.delete(&url),
             other => return Err(AppError::ApiError(format!("Unsupported method: {}", other))),
         };
-        if let Some(tok) = &self.token {
-            rb = rb.header("AuthToken", tok);
+        // Only attach the token when the request targets the configured Apstra
+        // origin — an absolute URL elsewhere must not receive it.
+        if same_origin(&self.base, &url) {
+            if let Some(tok) = &self.token {
+                rb = rb.header("AuthToken", tok);
+            }
         }
         if let Some(b) = body {
             if !b.trim().is_empty() {
@@ -264,11 +276,11 @@ pub struct AossClient {
 }
 
 impl AossClient {
-    pub fn new(host: String, accept_invalid_certs: bool) -> Self {
-        Self {
-            client: http(accept_invalid_certs),
+    pub fn new(host: String, accept_invalid_certs: bool) -> Result<Self, AppError> {
+        Ok(Self {
+            client: http(accept_invalid_certs)?,
             base: format!("https://{}", host),
-        }
+        })
     }
 
     pub async fn login(&self, username: &str, password: &str) -> Result<(), AppError> {
@@ -329,7 +341,7 @@ pub struct MistClient {
 }
 
 impl MistClient {
-    pub fn new(base_url: String, token: String, accept_invalid_certs: bool) -> Self {
+    pub fn new(base_url: String, token: String, accept_invalid_certs: bool) -> Result<Self, AppError> {
         let trimmed = base_url.trim().trim_end_matches('/');
         let base = if trimmed.starts_with("http") {
             trimmed.to_string()
@@ -338,11 +350,11 @@ impl MistClient {
         } else {
             format!("https://{}", trimmed)
         };
-        Self {
-            client: http(accept_invalid_certs),
+        Ok(Self {
+            client: http(accept_invalid_certs)?,
             base,
             token,
-        }
+        })
     }
 
     pub async fn request(
@@ -363,7 +375,11 @@ impl MistClient {
             "DELETE" => self.client.delete(&url),
             other => return Err(AppError::ApiError(format!("Unsupported method: {}", other))),
         };
-        rb = rb.header("Authorization", format!("Token {}", self.token));
+        // Only send the API token to the configured Mist origin — an absolute
+        // URL elsewhere goes out unauthenticated rather than leaking it.
+        if same_origin(&self.base, &url) {
+            rb = rb.header("Authorization", format!("Token {}", self.token));
+        }
         if let Some(b) = body {
             if !b.trim().is_empty() {
                 rb = rb.header("Content-Type", "application/json").body(b.to_string());
@@ -393,13 +409,13 @@ impl JunosClient {
         user: String,
         pass: String,
         accept_invalid_certs: bool,
-    ) -> Self {
-        Self {
-            client: http(accept_invalid_certs),
+    ) -> Result<Self, AppError> {
+        Ok(Self {
+            client: http(accept_invalid_certs)?,
             base: format!("https://{}:{}", host, port),
             user,
             pass,
-        }
+        })
     }
 
     /// Validate credentials + that REST is enabled, by fetching software-information.
@@ -434,9 +450,15 @@ impl JunosClient {
             "DELETE" => self.client.delete(&url),
             other => return Err(AppError::ApiError(format!("Unsupported method: {}", other))),
         };
-        rb = rb
-            .basic_auth(&self.user, Some(&self.pass))
-            .header("Accept", "application/json");
+        // HTTP Basic credentials are only attached on the configured device's
+        // origin; absolute URLs elsewhere go out unauthenticated.
+        if same_origin(&self.base, &url) {
+            rb = rb
+                .basic_auth(&self.user, Some(&self.pass))
+                .header("Accept", "application/json");
+        } else {
+            rb = rb.header("Accept", "application/json");
+        }
         if let Some(b) = body {
             if !b.trim().is_empty() {
                 // RPC parameters are XML.
