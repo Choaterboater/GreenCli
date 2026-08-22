@@ -98,7 +98,7 @@ impl AppState {
             apstra: Arc::new(AsyncMutex::new(None)),
             mist: Arc::new(AsyncMutex::new(None)),
             junos_clients: Arc::new(AsyncMutex::new(HashMap::new())),
-            central: Arc::new(AsyncMutex::new(CentralClient::new())),
+            central: Arc::new(AsyncMutex::new(CentralClient::new()?)),
             ai_keys: AiKeyStore::new(app_dir.clone()),
             intents: intent::IntentStore::new(app_dir.clone()),
             terminal_buffers: Arc::new(AsyncMutex::new(HashMap::new())),
@@ -160,6 +160,13 @@ pub struct ConnectionConfigRequest {
     pub jump_username: Option<String>,
     #[serde(default)]
     pub jump_password: Option<String>,
+    /// Path to a private-key FILE (ssh_config IdentityFile imports). Read at
+    /// connect time; contents are never persisted. Wire name is camelCase
+    /// `keyPath` per the B17 contract (the rest of this struct is snake_case,
+    /// so an explicit rename is required — plain `key_path` would be silently
+    /// dropped by serde otherwise). `alias` keeps the snake_case form accepted.
+    #[serde(default, rename = "keyPath", alias = "key_path")]
+    pub key_path: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -470,13 +477,26 @@ async fn connect(
             };
             let host = config.host.clone().unwrap_or_default();
 
+            // ssh_config-imported sessions carry a key PATH, not key contents
+            // (keeps key material out of sessions.json): load the file at
+            // connect time. Only read it when key auth is actually selected.
+            let private_key = match (config.private_key, config.key_path) {
+                (Some(pk), _) => Some(pk),
+                (None, Some(path)) if matches!(auth_type, AuthType::PublicKey) => Some(
+                    std::fs::read_to_string(&path).map_err(|e| {
+                        format!("Could not read SSH private key file '{}': {}", path, e)
+                    })?,
+                ),
+                _ => None,
+            };
+
             let ssh_config = ConnectionConfig {
                 host: host.clone(),
                 port: config.port.unwrap_or(22),
                 username: config.username.unwrap_or_default(),
                 auth_type,
                 password: config.password,
-                private_key: config.private_key,
+                private_key,
                 key_passphrase: config.key_passphrase,
                 keep_alive_interval: config.keep_alive_interval,
                 known_hosts_path: Some(state.app_dir.join("known_hosts.json")),
@@ -798,6 +818,7 @@ async fn save_session(
         jump_host: config.jump_host.filter(|h| !h.is_empty()),
         jump_port: config.jump_port,
         jump_username: config.jump_username,
+        key_path: config.key_path,
     };
 
     let mut store = state.session_store.lock().await;
@@ -1388,7 +1409,8 @@ async fn api_login(request: ApiLoginRequest, state: State<'_, AppState>) -> Resu
         request.host.clone(),
         request.accept_invalid_certs,
         request.base_url.clone(),
-    );
+    )
+    .map_err(|e| e.to_string())?;
     client
         .login(&request.username, &request.password)
         .await
@@ -1464,7 +1486,8 @@ async fn api_request(
 
 #[tauri::command]
 async fn aos8_login(request: ApiLoginRequest, state: State<'_, AppState>) -> Result<bool, String> {
-    let mut client = Aos8Client::new(request.host.clone(), request.accept_invalid_certs);
+    let mut client = Aos8Client::new(request.host.clone(), request.accept_invalid_certs)
+        .map_err(|e| e.to_string())?;
     client
         .login(&request.username, &request.password)
         .await
@@ -1508,7 +1531,8 @@ async fn aos8_request(
 
 #[tauri::command]
 async fn aoss_login(request: ApiLoginRequest, state: State<'_, AppState>) -> Result<bool, String> {
-    let client = AossClient::new(request.host.clone(), request.accept_invalid_certs);
+    let client = AossClient::new(request.host.clone(), request.accept_invalid_certs)
+        .map_err(|e| e.to_string())?;
     client
         .login(&request.username, &request.password)
         .await
@@ -1546,7 +1570,8 @@ async fn apstra_configure(
     accept_invalid_certs: bool,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let client = ApstraClient::new(host, username, password, accept_invalid_certs);
+    let client = ApstraClient::new(host, username, password, accept_invalid_certs)
+        .map_err(|e| e.to_string())?;
     *state.apstra.lock().await = Some(client);
     Ok(())
 }
@@ -1586,7 +1611,8 @@ async fn mist_configure(
     accept_invalid_certs: Option<bool>,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let client = MistClient::new(base_url, token, accept_invalid_certs.unwrap_or(false));
+    let client = MistClient::new(base_url, token, accept_invalid_certs.unwrap_or(false))
+        .map_err(|e| e.to_string())?;
     *state.mist.lock().await = Some(client);
     Ok(())
 }
@@ -1627,7 +1653,8 @@ async fn junos_login(request: ApiLoginRequest, state: State<'_, AppState>) -> Re
         request.username,
         request.password,
         request.accept_invalid_certs,
-    );
+    )
+    .map_err(|e| e.to_string())?;
     client.login().await.map_err(|e| e.to_string())?;
     state.junos_clients.lock().await.insert(request.host, client);
     Ok(true)

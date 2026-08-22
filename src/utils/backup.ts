@@ -27,6 +27,9 @@ export interface BackupImportResult {
   sessions: number;
   folders: number;
   intents: number;
+  /** Per-item failures that were skipped so the rest of the import could
+   *  continue. Empty means everything imported cleanly. */
+  warnings: string[];
 }
 
 const SECRET_SETTING_KEYS = new Set<keyof TerminalSettings>([
@@ -485,25 +488,35 @@ async function replaceSavedSessions(): Promise<void> {
     invoke<SessionFolder['items']>('list_sessions'),
   ]);
   const deleted = new Set<string>();
+  const remove = async (kind: string, id: string) => {
+    try {
+      await invoke(kind === 'folder' ? 'delete_folder' : 'delete_session', { id });
+    } catch (err) {
+      // Abort on the first failure: continuing would widen the half-deleted
+      // state, and the caller reports the abort instead of a false success.
+      throw new Error(`replace aborted — failed to delete existing ${kind} "${id}": ${String(err)}`);
+    }
+  };
   for (const folder of current) {
     for (const item of folder.items) {
-      await invoke('delete_session', { id: item.id });
+      await remove('session', item.id);
       deleted.add(item.id);
     }
   }
   for (const item of allSessions) {
     if (deleted.has(item.id)) continue;
-    await invoke('delete_session', { id: item.id });
+    await remove('session', item.id);
     deleted.add(item.id);
   }
   for (const folder of current) {
     if (folder.id !== 'default') {
-      await invoke('delete_folder', { id: folder.id });
+      await remove('folder', folder.id);
     }
   }
 }
 
-async function importFolders(folders: SessionFolder[], mode: BackupImportMode): Promise<{ folders: number; sessions: number }> {
+async function importFolders(folders: SessionFolder[], mode: BackupImportMode): Promise<{ folders: number; sessions: number; warnings: string[] }> {
+  const warnings: string[] = [];
   if (mode === 'replace') {
     await replaceSavedSessions();
   }
@@ -515,31 +528,40 @@ async function importFolders(folders: SessionFolder[], mode: BackupImportMode): 
   let sessionCount = 0;
   for (const folder of folders ?? []) {
     let targetFolderId = folder.id === 'default' ? 'default' : '';
-    if (!targetFolderId) {
-      const existing = existingFolders.find((candidate) => candidate.id === folder.id)
-        ?? existingFolders.find((candidate) => candidate.name === folder.name);
-      if (existing) {
-        targetFolderId = existing.id;
-      } else {
-        targetFolderId = await invoke<string>('create_folder', { name: folder.name });
-        folderCount += 1;
+    try {
+      if (!targetFolderId) {
+        const existing = existingFolders.find((candidate) => candidate.id === folder.id)
+          ?? existingFolders.find((candidate) => candidate.name === folder.name);
+        if (existing) {
+          targetFolderId = existing.id;
+        } else {
+          targetFolderId = await invoke<string>('create_folder', { name: folder.name });
+          folderCount += 1;
+        }
       }
+      await invoke('update_folder', {
+        id: targetFolderId,
+        name: folder.name,
+        expanded: folder.expanded,
+      });
+    } catch (err) {
+      warnings.push(`folder "${folder.name}": ${String(err)}`);
+      continue;
     }
-    await invoke('update_folder', {
-      id: targetFolderId,
-      name: folder.name,
-      expanded: folder.expanded,
-    });
 
     for (const item of folder.items ?? []) {
-      await invoke('save_session', {
-        config: saveSessionPayload(stripExecutableSessionFields(item)),
-        folderId: targetFolderId,
-      });
-      sessionCount += 1;
+      try {
+        await invoke('save_session', {
+          config: saveSessionPayload(stripExecutableSessionFields(item)),
+          folderId: targetFolderId,
+        });
+        sessionCount += 1;
+      } catch (err) {
+        warnings.push(`session "${item.name ?? item.id}": ${String(err)}`);
+      }
     }
   }
-  return { folders: folderCount, sessions: sessionCount };
+  return { folders: folderCount, sessions: sessionCount, warnings };
 }
 
 export async function importGreenCliBackup(
@@ -575,10 +597,15 @@ export async function importGreenCliBackup(
   useTriggersStore.setState({ triggers });
 
   const sessionResult = await importFolders(validated.folders, mode);
+  const warnings = [...sessionResult.warnings];
 
   if (mode === 'replace') {
     for (const intent of currentIntents) {
-      await invoke('intent_delete', { id: intent.id });
+      try {
+        await invoke('intent_delete', { id: intent.id });
+      } catch (err) {
+        warnings.push(`delete intent "${intent.id}": ${String(err)}`);
+      }
     }
   }
   // intent_save upserts by id, and imported intents are sanitized (command
@@ -590,8 +617,12 @@ export async function importGreenCliBackup(
   let intentsImported = 0;
   for (const intent of validated.intents) {
     if (existingIntentIds.has(intent.id)) continue;
-    await invoke('intent_save', { intent: sanitizeImportedIntent(intent) });
-    intentsImported++;
+    try {
+      await invoke('intent_save', { intent: sanitizeImportedIntent(intent) });
+      intentsImported++;
+    } catch (err) {
+      warnings.push(`intent "${intent.name ?? intent.id}": ${String(err)}`);
+    }
   }
 
   return {
@@ -603,5 +634,6 @@ export async function importGreenCliBackup(
     folders: sessionResult.folders,
     sessions: sessionResult.sessions,
     intents: intentsImported,
+    warnings,
   };
 }

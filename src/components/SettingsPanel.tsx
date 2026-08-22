@@ -112,6 +112,10 @@ export default function SettingsPanel() {
     if (wasOpenRef.current && !showSettings) {
       const { keyInput: pending, aiProvider: provider } = keyFlushRef.current;
       if (pending) invoke('ai_set_key', { provider, key: pending }).catch(() => {});
+      // The panel stays mounted across close (App renders it unconditionally),
+      // so the typed key would otherwise still be sitting in the input — and
+      // behind the reveal toggle — on reopen. Clear it on every close.
+      setKeyInput('');
     }
     wasOpenRef.current = showSettings;
   }, [showSettings]);
@@ -260,6 +264,12 @@ export default function SettingsPanel() {
         'Backup imported',
         `${backupMode === 'replace' ? 'Replaced' : 'Merged'} ${result.sessions} sessions, ${result.intents} intents, ${result.snippets} snippets, and ${result.triggers} triggers.`
       );
+      if (result.warnings.length) {
+        notify.warning(
+          `${result.warnings.length} item${result.warnings.length === 1 ? '' : 's'} failed to import`,
+          result.warnings.slice(0, 5).join('\n') + (result.warnings.length > 5 ? `\n…and ${result.warnings.length - 5} more` : '')
+        );
+      }
     } catch (e) {
       notify.error('Backup import failed', String(e));
     } finally {

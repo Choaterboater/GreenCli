@@ -49,6 +49,11 @@ pub struct StoredSession {
     pub jump_port: Option<u16>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub jump_username: Option<String>,
+    /// Path to a private-key FILE (e.g. an ssh_config-imported IdentityFile).
+    /// Only the path is persisted — key contents are read at connect time, so
+    /// sessions.json never holds key material.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_path: Option<String>,
 }
 
 /// A folder containing sessions
@@ -302,6 +307,7 @@ mod tests {
             jump_host: None,
             jump_port: None,
             jump_username: None,
+            key_path: None,
         }
     }
 

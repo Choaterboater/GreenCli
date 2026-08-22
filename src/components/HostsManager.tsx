@@ -124,7 +124,8 @@ export default function HostsManager() {
           port: cfg.port,
           username: cfg.username,
           auth_type: cfg.authType,
-          key_path: cfg.keyPath,
+          // B17 contract wire name (StoredSession.key_path ↔ JSON `keyPath`).
+          keyPath: cfg.keyPath,
           device_type: 'generic',
           jump_host: cfg.jumpHost,
           jump_port: cfg.jumpPort,

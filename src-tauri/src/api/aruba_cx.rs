@@ -87,13 +87,13 @@ impl ArubaCxClient {
     /// Create a new Aruba CX API client. `accept_invalid_certs` allows
     /// self-signed switch certificates (common in the field); pass `false` to
     /// enforce TLS validation.
-    pub fn new(host: String, accept_invalid_certs: bool, base_url: Option<String>) -> Self {
+    pub fn new(host: String, accept_invalid_certs: bool, base_url: Option<String>) -> Result<Self, AppError> {
         let client = reqwest::Client::builder()
             .danger_accept_invalid_certs(accept_invalid_certs)
             .cookie_store(true)
             .timeout(std::time::Duration::from_secs(30))
             .build()
-            .expect("Failed to build reqwest client — TLS stack unavailable");
+            .map_err(AppError::from)?;
 
         // Honour the UI Base URL when provided (a different REST version or a
         // non-standard port); strip a trailing slash so `{base}/login` joins cleanly.
@@ -102,11 +102,11 @@ impl ArubaCxClient {
             .filter(|u| !u.is_empty())
             .unwrap_or_else(|| format!("https://{}/rest/v10.09", host));
 
-        Self {
+        Ok(Self {
             client,
             base_url,
             csrf_token: None,
-        }
+        })
     }
 
     /// Login to the switch using cookie-based authentication. The resulting
@@ -312,10 +312,15 @@ impl ArubaCxClient {
         };
 
         // Same CSRF rule as `authenticated_request` — the Explorer issues raw
-        // mutating requests that 10.09+ firmware would otherwise reject.
-        if let Some(token) = &self.csrf_token {
-            if Self::is_mutating(method.as_str()) {
-                builder = builder.header("X-CSRF-Token", token);
+        // mutating requests that 10.09+ firmware would otherwise reject. The
+        // token (like the cookie, which reqwest origin-binds) is only attached
+        // when the target is the configured switch's origin — an absolute URL
+        // elsewhere must not receive it.
+        if crate::api::same_origin(&self.base_url, &url) {
+            if let Some(token) = &self.csrf_token {
+                if Self::is_mutating(method.as_str()) {
+                    builder = builder.header("X-CSRF-Token", token);
+                }
             }
         }
 

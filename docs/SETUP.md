@@ -76,13 +76,13 @@ npm run tauri-build -- --target x86_64-unknown-linux-gnu   # Linux
 ## 3. Where your data lives
 
 All state is stored **outside the webview**, in the OS app-data directory for bundle
-id `com.greencli.app`:
+id `com.choatelabs.greencli`:
 
 | OS | Path |
 |----|------|
-| macOS | `~/Library/Application Support/com.greencli.app/` |
-| Linux | `~/.local/share/com.greencli.app/` |
-| Windows | `%APPDATA%\com.greencli.app\` |
+| macOS | `~/Library/Application Support/com.choatelabs.greencli/` |
+| Linux | `~/.local/share/com.choatelabs.greencli/` |
+| Windows | `%APPDATA%\com.choatelabs.greencli\` |
 
 | File | Contents | Notes |
 |------|----------|-------|
@@ -142,11 +142,11 @@ Open the AI panel from the title bar. Settings → **AI Assistant**:
 2. **API key** — stored `0600` in `ai_keys.json`, **never** in the webview.
 3. **Model** — per provider.
 4. **Assistant tools (opt-in, all off by default except terminal):**
-   - *Run device CLI commands* — execute show/config on the active session.
+   - *Run device CLI commands* — execute show/config on the active session (also
+     covers the network-intent checks, see §9).
    - *Aruba device REST APIs* — on-box REST for CX / AOS-S / AOS-8 (no Central).
    - *MCP server tools* — tools from connected MCP servers (see §6).
    - *Juniper Apstra* — query the configured Apstra controller.
-   - *Evaluate network intents* — run the desired-state checks (see §9).
 5. **References / standards** — free-text grounding the AI applies (golden-config
    rules, doc links, your org standards).
 
@@ -273,6 +273,16 @@ live compliance:
 | `Ctrl+,` | Settings |
 | `F1` | Help & documentation |
 | `Ctrl+B` | Toggle sidebar |
+| `Ctrl+K` | Command palette |
+| `Ctrl+1`–`Ctrl+9` | Jump to tab N |
+| `Ctrl+Tab` | Cycle to next tab |
+| `Ctrl+Shift+A` | Toggle API Explorer |
+| `Ctrl+Shift+I` | Toggle AI Assistant |
+| `Ctrl+Shift+E` | Toggle Config Editor |
+| `Ctrl+=` / `Ctrl+-` | Zoom terminal font in / out |
+| `Ctrl+0` | Reset terminal font size |
+
+(On macOS use `Cmd` instead of `Ctrl`.)
 
 ---
 

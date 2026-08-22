@@ -11,6 +11,7 @@
     "tauri-dev": "tauri dev",
     "tauri-build": "tauri build",
     "lint": "eslint src --ext ts,tsx",
+    "test": "vitest run",
     "test:e2e": "playwright test",
     "smoke": "npm run build && node scripts/prod-smoke.mjs"
   },
