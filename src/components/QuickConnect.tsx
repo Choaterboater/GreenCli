@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { X, Plug, Monitor, Server, Wifi, RadioTower, Cloud, Network, TerminalSquare, FolderOpen } from 'lucide-react';
 import { open as openDialog } from '@tauri-apps/api/dialog';
 import { useSessionStore } from '../store/sessionStore';
@@ -71,6 +71,23 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
     setDeviceType(profile.deviceType);
     setDeviceProfileId(profile.id);
   }, [showQuickConnect, settings.lastUsedDeviceType, settings.lastUsedDeviceProfileId, profiles]);
+
+  // Clear host/credential fields when the dialog closes. The component stays
+  // mounted (App renders it unconditionally; close = `return null` below), so
+  // without this the previous host/username/jump password would reappear on
+  // reopen and could be sent to a different host.
+  const wasOpenRef = useRef(showQuickConnect);
+  useEffect(() => {
+    if (wasOpenRef.current && !showQuickConnect) {
+      setHost('');
+      setUsername('');
+      setJumpHost('');
+      setJumpUsername('');
+      setJumpPassword('');
+      setError(null);
+    }
+    wasOpenRef.current = showQuickConnect;
+  }, [showQuickConnect]);
 
   if (!showQuickConnect) return null;
 

@@ -151,7 +151,12 @@ async function downloadText(filename: string, contents: string, type = 'text/pla
       filters: [{ name: ext.toUpperCase(), extensions: [ext] }],
     }).catch(() => null);
     if (!path) return;
-    await invoke('write_file_text', { path, contents }).catch(() => {});
+    try {
+      await invoke('write_file_text', { path, contents });
+      notify.success('Export saved', path);
+    } catch (err) {
+      notify.error('Export failed', String(err));
+    }
     return;
   }
   const blob = new Blob([contents], { type });
@@ -260,7 +265,11 @@ export default function ApiExplorer() {
 
   useEffect(() => {
     if (!savedRequestsLoaded) return;
-    localStorage.setItem(SAVED_REQUESTS_KEY, JSON.stringify(savedRequests.slice(0, 50)));
+    // Never persist request bodies: they can carry tokens/passwords and
+    // localStorage is unencrypted on disk. Bodies stay in-memory only; loading
+    // a saved request restores everything except the body.
+    const persisted = savedRequests.slice(0, 50).map((r) => ({ ...r, requestBody: '' }));
+    localStorage.setItem(SAVED_REQUESTS_KEY, JSON.stringify(persisted));
   }, [savedRequests, savedRequestsLoaded]);
 
   // Auto-fill from active session

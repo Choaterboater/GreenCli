@@ -836,7 +836,10 @@ export default function ConfigEditor() {
 
   // Load opened text into the active buffer if it's blank and clean, otherwise
   // into a new tab. Applies terminal-capture cleaning if needed.
-  const ingest = useCallback((name: string, filePath: string | null, text: string) => {
+  // `preferredId` pins the target buffer: the native file picker in openFile is
+  // awaited, and the user can switch tabs while it's open — without the pin the
+  // file would land in whichever buffer became active in the meantime.
+  const ingest = useCallback((name: string, filePath: string | null, text: string, preferredId?: string) => {
     const isCapture = looksLikeTerminalCapture(text);
     const patch = {
       name,
@@ -846,7 +849,7 @@ export default function ConfigEditor() {
       dirty: false,
       langExplicit: false,
     };
-    const activeBuf = buffersRef.current.find((b) => b.id === activeIdRef.current);
+    const activeBuf = buffersRef.current.find((b) => b.id === (preferredId ?? activeIdRef.current));
     let targetId: string;
     if (activeBuf && !activeBuf.dirty && activeBuf.content === '' && !activeBuf.filePath) {
       targetId = activeBuf.id;
@@ -865,16 +868,19 @@ export default function ConfigEditor() {
   }, [openInNewTab]);
 
   const openFile = useCallback(async () => {
+    // Pin the target tab before awaiting the pickers — the active tab can
+    // change while a picker is open, and the file must not land in it.
+    const targetAtOpen = activeIdRef.current;
     try {
       if (isTauri) {
         const path = await tauriOpen();
         if (!path) return;
         const text = await tauriReadText(path);
-        ingest(basename(path), path, text);
+        ingest(basename(path), path, text, targetAtOpen);
       } else {
         const result = await browserOpen();
         if (!result) return;
-        ingest(result.name, result.name, result.content);
+        ingest(result.name, result.name, result.content, targetAtOpen);
       }
     } catch (e) {
       showStatus(`Open failed: ${e}`);

@@ -219,6 +219,10 @@ export function saveSessionPayload(config: ConnectionConfig) {
     port: config.port,
     username: config.username,
     auth_type: config.authType || 'password',
+    // Backend contract: StoredSession.key_path ↔ JSON `keyPath`. Keeps the
+    // identity-file path (not key contents) so key-auth sessions survive
+    // re-saves and ssh_config imports.
+    keyPath: config.keyPath,
     device_type: config.deviceType,
     device_profile_id: config.deviceProfileId,
     tags: config.tags,
