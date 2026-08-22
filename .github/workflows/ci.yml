@@ -32,7 +32,11 @@ jobs:
         run: npx vitest run
 
   rust:
-    runs-on: ubuntu-latest
+    # Pinned to 22.04: ubuntu-latest (24.04/noble) dropped libwebkit2gtk-4.0-dev,
+    # and Cargo.lock pins webkit2gtk 0.18 / wry 0.24 (the 4.0/soup2 API), so the
+    # 4.1 package cannot link. Unpin only with the Tauri v2 / webkit2gtk-4.1
+    # migration (backlog NW-8).
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
 
