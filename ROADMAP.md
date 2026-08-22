@@ -37,7 +37,7 @@ issues**, and **105 missing features**. Items are grouped Done / Next / Backlog.
 - **Telnet**: disconnect now closes the socket + aborts the reader; `DO ECHO` instead of backwards `WILL ECHO`; IAC sequences carried across read boundaries.
 - **Serial**: disconnect aborts the reader so the port is released.
 - **Forwarder**: telnet/serial/local now drop the dead session from the manager on stream end → `is_connected()` is truthful.
-- **Terminal**: streaming UTF-8 decoder (no multibyte corruption); WebGL `onContextLoss` fallback (no permanent blank); device auto-detect only when type is `generic` (no mid-session grammar thrash); soft foreground-only reset in the highlighter (no clobbering device bold/underline).
+- **Terminal**: streaming UTF-8 decoder (no multibyte corruption); device auto-detect only when type is `generic` (no mid-session grammar thrash); soft foreground-only reset in the highlighter (no clobbering device bold/underline).
 - **UX**: broadcast-to-zero now warns; connect success/failure now toasts; bell setting wired (`onBell`); AI tool output renders in `<pre>` (whitespace preserved).
 
 ---
@@ -157,8 +157,8 @@ _Still not exercised against real hardware (no gear/keys here): AOS-8/AOS-S/Apst
 - **Tab activity dots** — background tabs pulse a vendor-colored dot when new output lands (`unseenOutput`), cleared on view.
 
 ### iTerm2/xterm parity backlog (from the 2026-06-03 sweep)
-Already had: search overlay, multi-send/broadcast, vault (≈password manager), profiles/tags, WebGL-class renderer, URL clicking, scrollback/cursor settings, **session logging** (`start_session_log`), **output triggers** (`triggersStore`).
-- **Paste history** (Cmd+Shift+H) — ring buffer of recent pastes/sends.
+Already had: search overlay, multi-send/broadcast, vault (≈password manager), profiles/tags, fast xterm.js renderer, URL clicking, scrollback/cursor settings, **session logging** (`start_session_log`), **output triggers** (`triggersStore`).
+- ~~**Paste history** (Cmd+Shift+H) — ring buffer of recent pastes/sends.~~ ✅ Paste-history popover ships (StatusBar); only the Cmd+Shift+H binding is still missing.
 - **Semantic history** — Cmd-click a file path in output to open it in the editor panel.
 - **Regex toggle in search overlay** (SearchAddon supports it).
 - **Smart selection** — tune `wordSeparator` so double-click grabs IPs/paths cleanly.
