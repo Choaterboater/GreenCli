@@ -17,29 +17,10 @@
         "writeText": true,
         "readText": true
       },
-      "shell": {
-        "open": true
-      },
       "dialog": {
         "all": false,
         "open": true,
         "save": true
-      },
-      "fs": {
-        "all": false,
-        "readFile": true,
-        "writeFile": true,
-        "readDir": true,
-        "createDir": true,
-        "removeDir": true,
-        "removeFile": true,
-        "exists": true
-      },
-      "path": {
-        "all": true
-      },
-      "os": {
-        "all": true
       },
       "window": {
         "all": false,
@@ -82,7 +63,7 @@
       }
     },
     "security": {
-      "csp": "default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; font-src 'self' data: https://cdn.jsdelivr.net; img-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost https://cdn.jsdelivr.net; worker-src 'self' blob: https://cdn.jsdelivr.net; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
     },
     "updater": {
       "active": false
