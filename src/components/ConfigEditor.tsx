@@ -1674,6 +1674,7 @@ export default function ConfigEditor() {
               readOnly: true,
               fontSize: settings.fontSize,
               fontFamily: 'JetBrains Mono, Consolas, "Courier New", monospace',
+              lineHeight: Math.round(settings.fontSize * 1.5),
               mouseWheelZoom: true,
               minimap: { enabled: false },
               scrollBeyondLastLine: false,

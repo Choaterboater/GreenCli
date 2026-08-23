@@ -283,6 +283,7 @@ export default function ConfigArchive({ onOpenSnapshot, onClose }: ConfigArchive
                     readOnly: true,
                     fontSize,
                     fontFamily: 'JetBrains Mono, Consolas, "Courier New", monospace',
+                    lineHeight: Math.round(fontSize * 1.5),
                     mouseWheelZoom: true,
                     minimap: { enabled: false },
                     scrollBeyondLastLine: false,
