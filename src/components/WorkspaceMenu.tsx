@@ -22,6 +22,7 @@ interface MenuItem {
   key: string;
   icon: LucideIcon;
   label: string;
+  title?: string;
   hint?: string;
   active: boolean;
   onClick: () => void;
@@ -44,7 +45,8 @@ export default function WorkspaceMenu({
     {
       key: 'split',
       icon: Columns2,
-      label: 'Split into two panes',
+      label: 'Split view',
+      title: 'Split into two synchronized panes',
       active: splitView,
       onClick: () => {
         onToggleSplit();
@@ -54,7 +56,8 @@ export default function WorkspaceMenu({
     {
       key: 'tunnels',
       icon: Waypoints,
-      label: 'SSH tunnels / port forwarding',
+      label: 'SSH Tunnels',
+      title: 'SSH tunnels / port forwarding',
       active: showTunnels,
       onClick: () => {
         setShowTunnels(true);
@@ -64,7 +67,8 @@ export default function WorkspaceMenu({
     {
       key: 'intent',
       icon: Target,
-      label: 'Network intent / desired-state assurance',
+      label: 'Network Intent',
+      title: 'Network intent / desired-state assurance',
       active: showIntent,
       onClick: () => {
         setShowIntent(true);
@@ -74,7 +78,8 @@ export default function WorkspaceMenu({
     {
       key: 'help',
       icon: HelpCircle,
-      label: 'Help & documentation',
+      label: 'Help',
+      title: 'Help & documentation',
       hint: 'F1',
       active: showHelp,
       onClick: () => {
@@ -85,7 +90,8 @@ export default function WorkspaceMenu({
     {
       key: 'broadcast',
       icon: Radio,
-      label: 'Multi-send: run a command on multiple sessions',
+      label: 'Multi-send',
+      title: 'Multi-send: run a command on multiple sessions',
       active: broadcastMode,
       onClick: () => {
         onToggleBroadcast();
@@ -113,11 +119,12 @@ export default function WorkspaceMenu({
       {open && (
         <>
           <div className="fixed inset-0 z-20" onClick={() => setOpen(false)} />
-          <div className="absolute top-full left-0 mt-1 z-30 w-72 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg shadow-xl flex flex-col py-1">
+          <div className="absolute top-full left-0 mt-1 z-30 w-56 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg shadow-xl flex flex-col py-1">
             {items.map((item) => (
               <button
                 key={item.key}
                 onClick={item.onClick}
+                title={item.title ?? item.label}
                 className={`flex items-center gap-2.5 px-3 py-2 text-left transition-colors ${
                   item.active
                     ? 'text-[var(--accent)] bg-[var(--accent-soft)]'
