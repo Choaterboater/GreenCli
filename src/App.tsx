@@ -10,11 +10,7 @@ import {
   Sparkles,
   FileCode,
   Radio,
-  Columns2,
   TerminalSquare,
-  Waypoints,
-  Target,
-  HelpCircle,
   X,
   Plus,
 } from 'lucide-react';
@@ -45,6 +41,7 @@ import ApiExplorer from './components/ApiExplorer';
 import AiAssistant from './components/AiAssistant';
 import ConfigEditor from './components/ConfigEditor';
 import SnippetsMenu from './components/SnippetsMenu';
+import WorkspaceMenu from './components/WorkspaceMenu';
 import CommandPalette from './components/CommandPalette';
 import TunnelsManager from './components/TunnelsManager';
 import IntentPanel from './components/IntentPanel';
@@ -1131,53 +1128,16 @@ function App() {
           </div>
 
           <div className="flex items-center gap-0.5">
-            <button
-              onClick={() => {
+            <WorkspaceMenu
+              splitView={splitView}
+              onToggleSplit={() => {
                 toggleSplitView();
                 refitTerminals();
               }}
-              className={`flex items-center justify-center w-8 h-8 rounded-md transition-colors ${
-                splitView
-                  ? 'text-[var(--accent)] bg-[var(--accent-soft)]'
-                  : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
-              }`}
-              title="Split into two panes"
-            >
-              <Columns2 size={15} />
-            </button>
+              broadcastMode={broadcastMode}
+              onToggleBroadcast={toggleBroadcast}
+            />
             <SnippetsMenu />
-            <button
-              onClick={() => useSessionStore.getState().setShowTunnels(true)}
-              className="flex items-center justify-center w-8 h-8 rounded-md text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] transition-colors"
-              title="SSH tunnels / port forwarding"
-            >
-              <Waypoints size={15} />
-            </button>
-            <button
-              onClick={() => useSessionStore.getState().setShowIntent(true)}
-              className="flex items-center justify-center w-8 h-8 rounded-md text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] transition-colors"
-              title="Network intent / desired-state assurance"
-            >
-              <Target size={15} />
-            </button>
-            <button
-              onClick={() => useSessionStore.getState().setShowHelp(true)}
-              className="flex items-center justify-center w-8 h-8 rounded-md text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] transition-colors"
-              title="Help & documentation (F1)"
-            >
-              <HelpCircle size={15} />
-            </button>
-            <button
-              onClick={toggleBroadcast}
-              className={`flex items-center justify-center w-8 h-8 rounded-md transition-colors ${
-                broadcastMode
-                  ? 'text-[var(--accent-2)] bg-[var(--accent-2-soft)]'
-                  : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
-              }`}
-              title="Multi-send: run a command on multiple sessions"
-            >
-              <Radio size={15} />
-            </button>
           </div>
         </div>
 
