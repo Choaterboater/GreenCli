@@ -14,8 +14,11 @@ import {
   ChevronRight,
   PencilLine,
   LayoutTemplate,
+  RefreshCw,
+  Clock,
 } from 'lucide-react';
 import { useSessionStore } from '../store/sessionStore';
+import { useSettingsStore } from '../store/settingsStore';
 import { askConfirm } from '../store/dialogStore';
 import { notify } from '../store/toastStore';
 import { generateId } from '../utils';
@@ -40,6 +43,11 @@ const statusMeta: Record<IntentStatus, { icon: typeof CheckCircle2; color: strin
 
 export default function IntentPanel() {
   const { showIntent, setShowIntent, sessions } = useSessionStore();
+  // Scheduled-eval state lives in settings (App.tsx arms armIntentScheduler on
+  // these two) — surface it truthfully so the panel reads as continuous
+  // assurance, not one-shot snippet checking.
+  const intentScheduling = useSettingsStore((s) => s.intentScheduling);
+  const intentScheduleMinutes = useSettingsStore((s) => s.intentScheduleMinutes);
   const [intents, setIntents] = useState<Intent[]>([]);
   const [form, setForm] = useState<Intent | null>(null);
   const [tagsText, setTagsText] = useState('');
@@ -216,6 +224,18 @@ export default function IntentPanel() {
           )}
           <span className="flex-1" />
           <span className="text-[11px] text-[var(--text-muted)]">{connectedCount} connected</span>
+          <span
+            className="flex items-center gap-1 text-[11px] shrink-0 whitespace-nowrap"
+            style={{ color: intentScheduling ? 'var(--accent-success)' : 'var(--text-muted)' }}
+            title={
+              intentScheduling
+                ? `Sweep every ${intentScheduleMinutes} min; drift alerts fire on ok/unknown → violation transitions. Change in Settings → Scheduled intent evaluation.`
+                : 'Scheduled sweeps are off — run Evaluate all (or per-intent Evaluate) on demand. Enable in Settings → Scheduled intent evaluation.'
+            }
+          >
+            {intentScheduling ? <RefreshCw size={11} /> : <Clock size={11} />}
+            {intentScheduling ? `Auto-evaluate every ${intentScheduleMinutes} min` : 'Manual only'}
+          </span>
           <button onClick={runAll} disabled={running !== null} className="btn-accent flex items-center gap-1.5 h-8 px-3 text-[12px] disabled:opacity-50">
             {running === '*' ? <Loader2 size={13} className="animate-spin" /> : <Play size={13} />}
             Evaluate all
@@ -302,7 +322,12 @@ export default function IntentPanel() {
             <div className="flex flex-col items-center justify-center h-full text-center px-6 text-[var(--text-muted)]">
               <Target size={28} className="mb-3 opacity-40" />
               <p className="text-sm text-[var(--text-secondary)]">No intents yet</p>
-              <p className="text-[11px] mt-1">Define the desired state of your network — config that must be present, or operational expectations (links up, BGP established, reachability).</p>
+              <p className="text-[11px] mt-1 max-w-[420px]">
+                Intents define the <span className="text-[var(--text-secondary)]">desired state</span> of your network — config that must be present,
+                or operational expectations (links up, BGP established, reachability). They're enforced, not just run:
+                evaluate on demand, or schedule a recurring sweep (Settings → Scheduled intent evaluation) and get a
+                drift alert the moment the network stops matching this state.
+              </p>
             </div>
           ) : (
             intents.map((i) => {
