@@ -115,6 +115,8 @@ export interface TerminalSettings {
   pasteHistoryEnabled: boolean;
   /** Copy the terminal selection to the clipboard as soon as the mouse drag ends (PuTTY-style). */
   copyOnSelect: boolean;
+  /** Middle-click pastes the clipboard into the terminal (X11 / SecureCRT convention). Off by default (W2-12). */
+  middleClickPaste: boolean;
   /** Right-click in the terminal: show a context menu, paste directly (PuTTY), or copy-selection-else-paste (Windows Terminal). */
   rightClickBehavior: 'menu' | 'paste' | 'copyPaste';
   smartTerminalLinks: boolean;
@@ -296,6 +298,7 @@ export const DEFAULT_SETTINGS: TerminalSettings = {
   pasteGuardLineThreshold: 2,
   pasteHistoryEnabled: true,
   copyOnSelect: false,
+  middleClickPaste: false,
   rightClickBehavior: 'menu',
   smartTerminalLinks: true,
   terminalActivityNotifications: true,
