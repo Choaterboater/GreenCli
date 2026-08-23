@@ -578,6 +578,18 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
     };
     containerRef.current.addEventListener('mouseup', handleCopyOnSelect);
 
+    // Middle-click paste (X11 / SecureCRT muscle memory, W2-12): opt-in
+    // setting, off by default. Goes through pasteFromClipboard → guardedPaste,
+    // so a long clipboard still shows the paste-guard confirm; preventDefault
+    // stops the webview's middle-click autoscroll/selection default.
+    const handleMiddleClickPaste = (e: MouseEvent) => {
+      if (e.button !== 1) return;
+      if (!useSettingsStore.getState().middleClickPaste) return;
+      e.preventDefault();
+      pasteFromClipboard();
+    };
+    containerRef.current.addEventListener('mousedown', handleMiddleClickPaste);
+
     ctxActionsRef.current = {
       copy: () => {
         copySelection();
@@ -702,6 +714,7 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
       zoomEl.removeEventListener('mousedown', resetKbSelection);
       zoomEl.removeEventListener('contextmenu', handleContextMenu);
       zoomEl.removeEventListener('mouseup', handleCopyOnSelect);
+      zoomEl.removeEventListener('mousedown', handleMiddleClickPaste);
       ctxActionsRef.current = null;
       setCtxMenu(null);
       term.textarea?.removeEventListener('paste', pasteGuard, true);
