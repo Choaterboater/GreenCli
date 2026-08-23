@@ -609,7 +609,8 @@ export interface ApiEndpoint {
   category: 'System' | 'Interfaces' | 'VLANs' | 'LLDP' | 'Configuration' | 'CLI'
     | 'Monitoring' | 'Clients' | 'Sites' | 'Config Groups' | 'Firmware' | 'Alerts'
     | 'Blueprints' | 'Fabric' | 'Design' | 'Resources'
-    | 'Ports' | 'MAC' | 'Show';
+    | 'Ports' | 'MAC' | 'Show'
+    | 'WLAN' | 'RF' | 'Audits' | 'Subscribers';
 }
 
 /** Which on-box device REST flavour a connection speaks. */
@@ -699,18 +700,85 @@ export const JUNOS_ENDPOINTS: ApiEndpoint[] = [
 ];
 
 // Juniper Mist Cloud API. Token auth; replace {org_id}/{site_id} with real ids
-// (run "Whoami" first to find them).
+// (run "Whoami" first to find them). Paths verified against the official
+// Mistral OpenAPI spec (api.mist.com, v2606.1.1 — same manifest the HPE MCP
+// backend's generated Mist tools derive from).
 export const MIST_ENDPOINTS: ApiEndpoint[] = [
-  { name: 'Whoami (self)', method: 'GET', path: '/api/v1/self', description: 'Your account + org/site ids', category: 'System' },
+  // Identity — run "Whoami" first to learn your {org_id}/{site_id}
+  { name: 'Whoami (self)', method: 'GET', path: '/api/v1/self', description: 'Your account + org/site ids — run first to fill {org_id}/{site_id}', category: 'System' },
+  { name: 'My Audit Logs', method: 'GET', path: '/api/v1/self/logs', description: 'Audit logs for your own account', category: 'Audits' },
+
+  // Org — identity, config, stats
   { name: 'Org Info', method: 'GET', path: '/api/v1/orgs/{org_id}', description: 'Organization details', category: 'System' },
+  { name: 'Org Settings', method: 'GET', path: '/api/v1/orgs/{org_id}/setting', description: 'Org-level settings (RADIUS, SSR, integrations)', category: 'Configuration' },
+  { name: 'Org Stats', method: 'GET', path: '/api/v1/orgs/{org_id}/stats', description: 'Org-level aggregate stats', category: 'Monitoring' },
   { name: 'Org Sites', method: 'GET', path: '/api/v1/orgs/{org_id}/sites', description: 'Sites in the org', category: 'Sites' },
-  { name: 'Org Inventory', method: 'GET', path: '/api/v1/orgs/{org_id}/inventory', description: 'Claimed devices', category: 'Monitoring' },
+
+  // Org — inventory & devices
+  { name: 'Org Inventory', method: 'GET', path: '/api/v1/orgs/{org_id}/inventory', description: 'Claimed devices in org inventory', category: 'Monitoring' },
+  { name: 'Org Inventory Search', method: 'GET', path: '/api/v1/orgs/{org_id}/inventory/search', description: 'Inventory detail rows — filter by mac/serial/model/site', category: 'Monitoring' },
   { name: 'Org Devices', method: 'GET', path: '/api/v1/orgs/{org_id}/devices', description: 'Devices in the org', category: 'Monitoring' },
-  { name: 'Site Devices', method: 'GET', path: '/api/v1/sites/{site_id}/devices', description: 'Devices at a site', category: 'Monitoring' },
-  { name: 'Site Device Stats', method: 'GET', path: '/api/v1/sites/{site_id}/stats/devices', description: 'Live device stats', category: 'Monitoring' },
-  { name: 'Site Clients', method: 'GET', path: '/api/v1/sites/{site_id}/stats/clients', description: 'Connected clients', category: 'Clients' },
-  { name: 'Site WLANs', method: 'GET', path: '/api/v1/sites/{site_id}/wlans', description: 'WLANs at a site', category: 'Config Groups' },
-  { name: 'Org Alarms', method: 'GET', path: '/api/v1/orgs/{org_id}/alarms/search', description: 'Recent alarms', category: 'Alerts' },
+  { name: 'Org Device Search', method: 'GET', path: '/api/v1/orgs/{org_id}/devices/search', description: 'Org-wide device search (mac/serial/site/name)', category: 'Monitoring' },
+  { name: 'Org Device Stats', method: 'GET', path: '/api/v1/orgs/{org_id}/stats/devices', description: 'Live stats for all org devices', category: 'Monitoring' },
+  { name: 'Org Clients Search', method: 'GET', path: '/api/v1/orgs/{org_id}/clients/search', description: 'Org-wide wireless client search', category: 'Clients' },
+
+  // Org — config templates ("config groups")
+  { name: 'Org Templates', method: 'GET', path: '/api/v1/orgs/{org_id}/templates', description: 'Org config templates (applied site-wide)', category: 'Config Groups' },
+  { name: 'Org Network Templates', method: 'GET', path: '/api/v1/orgs/{org_id}/networktemplates', description: 'Switch network config-group templates', category: 'Config Groups' },
+  { name: 'Org AP Templates', method: 'GET', path: '/api/v1/orgs/{org_id}/aptemplates', description: 'AP matching/config templates', category: 'Config Groups' },
+  { name: 'Org Gateway Templates', method: 'GET', path: '/api/v1/orgs/{org_id}/gatewaytemplates', description: 'WAN gateway config templates', category: 'Config Groups' },
+  { name: 'Org Site Templates', method: 'GET', path: '/api/v1/orgs/{org_id}/sitetemplates', description: 'Site config-group templates', category: 'Config Groups' },
+  { name: 'Org RF Templates', method: 'GET', path: '/api/v1/orgs/{org_id}/rftemplates', description: 'RF/radio templates used by RRM', category: 'RF' },
+
+  // Org — WLAN (SSID) catalogs
+  { name: 'Org WLANs', method: 'GET', path: '/api/v1/orgs/{org_id}/wlans', description: 'Org-level WLAN (SSID) definitions', category: 'WLAN' },
+
+  // Org — alarms, audits, subscribers
+  { name: 'Org Alarms Search', method: 'GET', path: '/api/v1/orgs/{org_id}/alarms/search', description: 'Search org alarms (start/end/severity/type filters)', category: 'Alerts' },
+  { name: 'Org Audit Logs', method: 'GET', path: '/api/v1/orgs/{org_id}/logs/search', description: 'Search org audit logs (admin actions)', category: 'Audits' },
+  { name: 'Org Subscribers (NAC)', method: 'GET', path: '/api/v1/orgs/{org_id}/nac_clients/search', description: 'Access Assurance subscribers — endpoints authenticated against NAC', category: 'Subscribers' },
+
+  // Site — identity & config
+  { name: 'Site Info', method: 'GET', path: '/api/v1/sites/{site_id}', description: 'Site details', category: 'Sites' },
+  { name: 'Site Settings', method: 'GET', path: '/api/v1/sites/{site_id}/setting', description: 'Site settings (RADIUS, auth, SNMP)', category: 'Configuration' },
+
+  // Site — devices & per-site inventory
+  { name: 'Site Devices', method: 'GET', path: '/api/v1/sites/{site_id}/devices', description: 'Devices assigned to the site (per-site inventory)', category: 'Monitoring' },
+  { name: 'Site Device Detail', method: 'GET', path: '/api/v1/sites/{site_id}/devices/{device_id}', description: 'Single device record at the site', category: 'Monitoring' },
+  { name: 'Site Stats', method: 'GET', path: '/api/v1/sites/{site_id}/stats', description: 'Site-level aggregate stats', category: 'Monitoring' },
+  { name: 'Site Device Stats', method: 'GET', path: '/api/v1/sites/{site_id}/stats/devices', description: 'Live stats for all site devices', category: 'Monitoring' },
+  { name: 'Site Device Stats Detail', method: 'GET', path: '/api/v1/sites/{site_id}/stats/devices/{device_id}', description: 'Live stats for one device', category: 'Monitoring' },
+  { name: 'Site Device Clients', method: 'GET', path: '/api/v1/sites/{site_id}/stats/devices/{device_id}/clients', description: 'Clients currently connected via one device', category: 'Clients' },
+  { name: 'Site Device Config', method: 'GET', path: '/api/v1/sites/{site_id}/devices/{device_id}/config_cmd', description: 'Config commands applied to a device', category: 'Configuration' },
+  { name: 'Site Device Config Search', method: 'GET', path: '/api/v1/sites/{site_id}/devices/last_config/search', description: 'Search last-known device configs at the site', category: 'Configuration' },
+
+  // Site — clients
+  { name: 'Site Clients', method: 'GET', path: '/api/v1/sites/{site_id}/stats/clients', description: 'Connected clients with live stats', category: 'Clients' },
+  { name: 'Site Client Search', method: 'GET', path: '/api/v1/sites/{site_id}/clients/search', description: 'Search site wireless clients', category: 'Clients' },
+  { name: 'Site Client Detail', method: 'GET', path: '/api/v1/sites/{site_id}/stats/clients/{client_mac}', description: 'Live stats for one client by MAC', category: 'Clients' },
+
+  // Site — WLAN CRUD
+  { name: 'Site WLANs', method: 'GET', path: '/api/v1/sites/{site_id}/wlans', description: 'WLAN (SSID) configs at the site', category: 'WLAN' },
+  { name: 'Create WLAN', method: 'POST', path: '/api/v1/sites/{site_id}/wlans', description: 'Create a site WLAN — SSID config body required', category: 'WLAN' },
+  { name: 'WLAN Detail', method: 'GET', path: '/api/v1/sites/{site_id}/wlans/{wlan_id}', description: 'One WLAN config', category: 'WLAN' },
+  { name: 'Update WLAN', method: 'PUT', path: '/api/v1/sites/{site_id}/wlans/{wlan_id}', description: 'Update a WLAN config', category: 'WLAN' },
+  { name: 'Delete WLAN', method: 'DELETE', path: '/api/v1/sites/{site_id}/wlans/{wlan_id}', description: 'Delete a WLAN', category: 'WLAN' },
+  { name: 'Derived WLANs', method: 'GET', path: '/api/v1/sites/{site_id}/wlans/derived', description: 'Effective WLAN config incl. template-applied values', category: 'WLAN' },
+
+  // Site — effective config-group templates
+  { name: 'Site RF Template', method: 'GET', path: '/api/v1/sites/{site_id}/rftemplates/derived', description: 'Effective RF template at the site', category: 'RF' },
+  { name: 'Site Network Template', method: 'GET', path: '/api/v1/sites/{site_id}/networktemplates/derived', description: 'Effective switch config-group template at the site', category: 'Config Groups' },
+  { name: 'Site AP Template', method: 'GET', path: '/api/v1/sites/{site_id}/aptemplates/derived', description: 'Effective AP template at the site', category: 'Config Groups' },
+  { name: 'Site Gateway Template', method: 'GET', path: '/api/v1/sites/{site_id}/gatewaytemplates/derived', description: 'Effective gateway template at the site', category: 'Config Groups' },
+
+  // Site — alarms, subscribers
+  { name: 'Site Alarms Search', method: 'GET', path: '/api/v1/sites/{site_id}/alarms/search', description: 'Search site alarms (start/end/severity/acked filters)', category: 'Alerts' },
+  { name: 'Site Subscribers (NAC)', method: 'GET', path: '/api/v1/sites/{site_id}/nac_clients/search', description: 'Access Assurance subscribers at the site', category: 'Subscribers' },
+
+  // Firmware
+  { name: 'Org Firmware Versions', method: 'GET', path: '/api/v1/orgs/{org_id}/devices/versions', description: 'Available firmware versions for org devices (by type/model)', category: 'Firmware' },
+  { name: 'Site Firmware Versions', method: 'GET', path: '/api/v1/sites/{site_id}/devices/versions', description: 'Available firmware versions at the site', category: 'Firmware' },
+  { name: 'Site Upgrade Jobs', method: 'GET', path: '/api/v1/sites/{site_id}/devices/upgrade', description: 'Firmware upgrade jobs at the site', category: 'Firmware' },
 ];
 
 // Aruba Central API endpoint catalog.
