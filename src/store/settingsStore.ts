@@ -128,14 +128,13 @@ export const useSettingsStore = create<SettingsState>()(
     {
       name: 'atp-settings',
       // Keep plaintext secrets OUT of localStorage (it sits unencrypted on disk).
-      // API keys live in the Rust key store; Central/Apstra secrets stay in memory
+      // API keys live in the Rust key store; Central secrets stay in memory
       // for the session (and Rust holds the configured copy). Account metadata
       // still persists, just without its secret material — re-enter on next load.
       partialize: (state) => {
         const {
           centralToken: _t,
           centralClientSecret: _cs,
-          apstraPassword: _ap,
           mistToken: _mt,
           centralAccounts,
           ...rest
