@@ -19,6 +19,7 @@ interface SettingsState extends TerminalSettings {
   setIntentScheduling: (enabled: boolean) => void;
   setIntentScheduleMinutes: (minutes: number) => void;
   setIntentWebhookUrl: (url: string) => void;
+  setCaptureOnConnect: (enabled: boolean) => void;
   setLastUsedDeviceType: (deviceType: DeviceType) => void;
   setLastUsedDeviceProfileId: (profileId: string) => void;
   addDeviceProfile: (profile: DeviceProfile) => void;
@@ -64,6 +65,7 @@ export const useSettingsStore = create<SettingsState>()(
       setIntentScheduleMinutes: (intentScheduleMinutes) =>
         set({ intentScheduleMinutes: Math.min(1440, Math.max(1, Math.round(intentScheduleMinutes))) }),
       setIntentWebhookUrl: (intentWebhookUrl) => set({ intentWebhookUrl }),
+      setCaptureOnConnect: (captureOnConnect) => set({ captureOnConnect }),
       setLastUsedDeviceType: (lastUsedDeviceType) => set({ lastUsedDeviceType }),
       setLastUsedDeviceProfileId: (lastUsedDeviceProfileId) => set({ lastUsedDeviceProfileId }),
       setAiModel: (aiModel) => set({ aiModel }),
