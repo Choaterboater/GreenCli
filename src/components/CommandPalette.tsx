@@ -22,6 +22,9 @@ import {
   History,
   X,
   CornerDownLeft,
+  ZoomIn,
+  ZoomOut,
+  RotateCcw,
 } from 'lucide-react';
 import { useSessionStore } from '../store/sessionStore';
 import { getTerminalActionAdapter } from '../utils/terminalActions';
@@ -119,6 +122,33 @@ export default function CommandPalette({ onConnect, onLocalShell, onConnectRecen
         },
       },
       { id: 'toggle-sidebar', label: 'Toggle Sidebar', hint: 'Ctrl+B', icon: <PanelLeft size={14} />, run: store.toggleSidebar },
+      // Zoom the terminal + config-editor font — same persisted setting as the
+      // Ctrl+= / Ctrl+- / Ctrl+0 bindings (W2-11).
+      {
+        id: 'zoom-in',
+        label: 'Increase font size (terminal + editor)',
+        hint: 'Ctrl+=',
+        keywords: 'zoom bigger larger font size',
+        icon: <ZoomIn size={14} />,
+        run: () =>
+          useSettingsStore.getState().setFontSize(Math.min(24, useSettingsStore.getState().fontSize + 1)),
+      },
+      {
+        id: 'zoom-out',
+        label: 'Decrease font size (terminal + editor)',
+        hint: 'Ctrl+-',
+        keywords: 'zoom smaller font size',
+        icon: <ZoomOut size={14} />,
+        run: () => useSettingsStore.getState().setFontSize(Math.max(8, useSettingsStore.getState().fontSize - 1)),
+      },
+      {
+        id: 'zoom-reset',
+        label: 'Reset font size (terminal + editor)',
+        hint: 'Ctrl+0',
+        keywords: 'zoom reset default font size',
+        icon: <RotateCcw size={14} />,
+        run: () => useSettingsStore.getState().setFontSize(14),
+      },
       { id: 'search', label: 'Search in Terminal', hint: 'Ctrl+F', icon: <Search size={14} />, run: () => store.setShowSearch(true) },
       { id: 'settings', label: 'Open Settings', hint: 'Ctrl+,', icon: <SettingsIcon size={14} />, run: () => store.setShowSettings(true) },
       { id: 'help', label: 'Help & Documentation', hint: 'F1', keywords: 'help docs guide setup how to configure', icon: <HelpCircle size={14} />, run: () => store.setShowHelp(true) },
