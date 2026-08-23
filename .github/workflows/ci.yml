@@ -50,11 +50,13 @@ jobs:
         with:
           workspaces: src-tauri -> target
 
-      # Tauri v1 links against webkit2gtk even for `cargo test`.
+      # Tauri v1 links against webkit2gtk even for `cargo test`; the
+      # serialport crate needs libudev.pc (CI-3: libudev-sys build script
+      # panics without it).
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.0-dev libgtk-3-dev librsvg2-dev
+          sudo apt-get install -y libwebkit2gtk-4.0-dev libgtk-3-dev librsvg2-dev libudev-dev
 
       # generate_context!() validates the frontend bundle at compile time and
       # panics if ../dist doesn't exist, so the rust gate needs a real build
