@@ -108,7 +108,8 @@ impl CredentialVault {
     pub fn store(&self, key: &str, value: &str) -> Result<(), AppError> {
         self.with_cipher(|cipher| {
             let mut data = self.storage.read_decrypted(cipher)?;
-            data.insert(key.to_string(), value.to_string());
+            // Wrapped so the in-memory copy wipes on drop (and on re-encryption).
+            data.insert(key.to_string(), zeroize::Zeroizing::new(value.to_string()));
             self.storage.write_encrypted(cipher, &data)
         })
     }
@@ -116,7 +117,9 @@ impl CredentialVault {
     pub fn retrieve(&self, key: &str) -> Result<Option<String>, AppError> {
         self.with_cipher(|cipher| {
             let data = self.storage.read_decrypted(cipher)?;
-            Ok(data.get(key).cloned())
+            // The returned String crosses to the webview — an unavoidable plaintext
+            // copy at the IPC boundary (documented in the F6 design).
+            Ok(data.get(key).map(|v| v.to_string()))
         })
     }
 

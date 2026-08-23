@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback, useMemo, useDeferredValue } from 'react';
 import Editor, { BeforeMount, DiffEditor, OnMount } from '@monaco-editor/react';
+import ConfigArchive from './ConfigArchive';
 import { copyText } from '../utils/clipboard';
 import type { editor as MonacoEditor } from 'monaco-editor';
 import {
@@ -16,6 +17,7 @@ import {
   Eraser,
   DownloadCloud,
   GitCompare,
+  History,
   Maximize2,
   Minimize2,
   ListTree,
@@ -728,6 +730,8 @@ export default function ConfigEditor() {
   // Diff mode: compare current editor content against a loaded baseline.
   const [diffMode, setDiffMode] = useState(false);
   const [diffOriginal, setDiffOriginal] = useState('');
+  // Config archive panel (NW-16): per-device snapshot history + golden diff.
+  const [showArchive, setShowArchive] = useState(false);
 
   const editorRef = useRef<MonacoEditor.IStandaloneCodeEditor | null>(null);
   const monacoRef = useRef<typeof import('monaco-editor') | null>(null);
@@ -1635,6 +1639,18 @@ export default function ConfigEditor() {
           {diffMode ? 'Exit Diff' : 'Diff'}
         </button>
 
+        {/* Config archive history + golden diff */}
+        <button
+          onClick={() => setShowArchive((v) => !v)}
+          className={`flex items-center gap-1.5 px-2 py-1 text-xs rounded transition-colors ${
+            showArchive ? 'text-[var(--accent)] bg-[#58a6ff20]' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
+          }`}
+          title="Per-device config history + golden-config diff"
+        >
+          <History size={12} />
+          {showArchive ? 'Close Archive' : 'Archive'}
+        </button>
+
         <div className="flex-1" />
 
         {diagnostics.length > 0 && (
@@ -1723,6 +1739,23 @@ export default function ConfigEditor() {
         />
         )}
       </div>
+      {/* Config archive modal (NW-16) — history, golden mark, current/golden +
+          current/previous diffs via the same Monaco DiffEditor as the panel */}
+      {showArchive && (
+        <ConfigArchive
+          onOpenSnapshot={(name, content, language) =>
+            openInNewTab({
+              name,
+              content,
+              language,
+              filePath: null,
+              dirty: false,
+              langExplicit: false,
+            })
+          }
+          onClose={() => setShowArchive(false)}
+        />
+      )}
     </div>
   );
 }

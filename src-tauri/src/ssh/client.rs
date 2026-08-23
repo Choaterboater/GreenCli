@@ -47,15 +47,17 @@ pub struct SshConnection {
     pub last_size: Mutex<(u16, u16)>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct ConnectionConfig {
     pub host: String,
     pub port: u16,
     pub username: String,
     pub auth_type: AuthType,
-    pub password: Option<String>,
+    /// Wiped on drop so a freed-but-unzeroed password never lingers in memory.
+    pub password: Option<zeroize::Zeroizing<String>>,
     pub private_key: Option<String>,
-    pub key_passphrase: Option<String>,
+    /// Wiped on drop (see `password`).
+    pub key_passphrase: Option<zeroize::Zeroizing<String>>,
     /// Seconds between SSH keepalive probes. `None`/`0` disables keepalives.
     pub keep_alive_interval: Option<u64>,
     /// Path to the TOFU known_hosts store. `None` disables host-key checking.
@@ -64,7 +66,31 @@ pub struct ConnectionConfig {
     pub jump_host: Option<String>,
     pub jump_port: Option<u16>,
     pub jump_username: Option<String>,
-    pub jump_password: Option<String>,
+    /// Wiped on drop (see `password`).
+    pub jump_password: Option<zeroize::Zeroizing<String>>,
+}
+
+impl std::fmt::Debug for ConnectionConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Redact every secret-bearing field: Debug output (logs, panics, `{:?}`)
+        // must never dump passwords, passphrases, or key material.
+        let redact = |v: &Option<zeroize::Zeroizing<String>>| v.as_ref().map(|_| "[REDACTED]");
+        f.debug_struct("ConnectionConfig")
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("username", &self.username)
+            .field("auth_type", &self.auth_type)
+            .field("password", &redact(&self.password))
+            .field("private_key", &self.private_key.as_ref().map(|_| "[REDACTED]"))
+            .field("key_passphrase", &redact(&self.key_passphrase))
+            .field("keep_alive_interval", &self.keep_alive_interval)
+            .field("known_hosts_path", &self.known_hosts_path)
+            .field("jump_host", &self.jump_host)
+            .field("jump_port", &self.jump_port)
+            .field("jump_username", &self.jump_username)
+            .field("jump_password", &redact(&self.jump_password))
+            .finish()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -249,7 +275,12 @@ impl SshConnection {
                 .clone()
                 .filter(|u| !u.is_empty())
                 .unwrap_or_else(|| self.config.username.clone());
-            let jump_pass = self.config.jump_password.clone().unwrap_or_default();
+            let jump_pass = self
+                .config
+                .jump_password
+                .as_ref()
+                .map(|z| z.as_str())
+                .unwrap_or_default();
             let mut jump_ok = false;
             // Track WHY key auth to the bastion failed so the final error can
             // say more than "tried password, key, and agent".
@@ -264,7 +295,7 @@ impl SshConnection {
                 if let Some(ref key_str) = self.config.private_key {
                     match SshKeyManager::load_private_key(
                         key_str.as_bytes(),
-                        self.config.key_passphrase.as_deref(),
+                        self.config.key_passphrase.as_ref().map(|z| z.as_str()),
                     ) {
                         Ok(kp) => match jump
                             .authenticate_publickey(&jump_user, Arc::new(kp))
@@ -334,9 +365,14 @@ impl SshConnection {
         // Authenticate
         match self.config.auth_type {
             AuthType::Password => {
-                let password = self.config.password.clone().unwrap_or_default();
+                let password: &str = self
+                    .config
+                    .password
+                    .as_ref()
+                    .map(|z| z.as_str())
+                    .unwrap_or_default();
                 let auth_res = handle
-                    .authenticate_password(&self.config.username, password.clone())
+                    .authenticate_password(&self.config.username, password)
                     .await
                     .map_err(|e| AppError::SshError(format!("Auth failed: {}", e)))?;
 
@@ -374,7 +410,11 @@ impl SshConnection {
                                     .enumerate()
                                     .map(|(i, _)| {
                                         if first_round && i == 0 {
-                                            password.clone()
+                                            // russh's API takes owned responses — the
+                                            // answer String here is an unavoidable
+                                            // boundary copy (single first-round answer,
+                                            // consumed by russh, never retained locally).
+                                            password.to_string()
                                         } else {
                                             String::new()
                                         }
@@ -407,7 +447,7 @@ impl SshConnection {
             }
             AuthType::PublicKey => {
                 let key_pair = if let Some(ref key_str) = self.config.private_key {
-                    let passphrase = self.config.key_passphrase.as_deref();
+                    let passphrase = self.config.key_passphrase.as_ref().map(|z| z.as_str());
                     SshKeyManager::load_private_key(key_str.as_bytes(), passphrase)?
                 } else {
                     return Err(AppError::AuthError("No private key provided".into()));
