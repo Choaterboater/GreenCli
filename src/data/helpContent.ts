@@ -8,7 +8,6 @@ import {
   Bot,
   Server,
   Cloud,
-  Network,
   ShieldCheck,
   Target,
   Waypoints,
@@ -98,7 +97,7 @@ export const HELP_TOPICS: HelpTopic[] = [
     keywords: ['vault', 'password', 'master', 'encrypt', 'argon2', 'aes', 'credentials', 'secret'],
     blocks: [
       { kind: 'p', text: 'Unlock the vault with a master password; saved SSH passwords are encrypted (AES-256-GCM, Argon2id key) and offered automatically on the next connect.' },
-      { kind: 'p', text: 'Aruba Central / Apstra **secrets** are also stored in the vault (encrypted) once it is unlocked, so they survive a restart. While the vault is locked they live in memory for the session only.' },
+      { kind: 'p', text: 'Aruba Central / Mist **secrets** are also stored in the vault (encrypted) once it is unlocked, so they survive a restart. While the vault is locked they live in memory for the session only.' },
       { kind: 'note', text: 'A corrupt/incompatible `vault.enc` is never auto-overwritten — it errors and is preserved so nothing is silently lost.' },
     ],
   },
@@ -115,7 +114,7 @@ export const HELP_TOPICS: HelpTopic[] = [
         items: [
           'Pick a **provider** (Anthropic / OpenRouter / Moonshot need a key; Ollama is local; Local CLI shells out to an installed agent).',
           'Enter the **API key** and choose a **model**.',
-          'Enable the opt-in **Assistant tools** you want (run CLI commands, device REST, MCP tools, Apstra, evaluate intents).',
+          'Enable the opt-in **Assistant tools** you want (run CLI commands, device REST, MCP tools, evaluate intents).',
         ],
       },
       { kind: 'note', text: 'Responses stream token-by-token; **Stop** actually aborts the provider request, not just the UI.' },
@@ -181,18 +180,6 @@ export const HELP_TOPICS: HelpTopic[] = [
     action: { label: 'Open Central settings', id: 'open-settings', focus: 'central' },
   },
   {
-    id: 'apstra',
-    title: 'Juniper Apstra & on-prem REST',
-    icon: Network,
-    summary: 'Apstra fabric controller + AOS-CX/AOS-8/AOS-S on-box REST.',
-    keywords: ['apstra', 'juniper', 'fabric', 'blueprint', 'aos-cx', 'aos-8', 'aos-s', 'rest', 'on-prem', 'on-box'],
-    blocks: [
-      { kind: 'bullets', items: ['**AOS-CX / AOS-8 / AOS-S** — the AI auto-logs in with the active session’s SSH creds; enable *Assistant tools → Aruba device REST APIs*.', '**Juniper Apstra** — Settings → Juniper Apstra: host, username, password (token auth, auto-refresh); enable *Assistant tools → Juniper Apstra*.'] },
-      { kind: 'p', text: 'Explore the same endpoints interactively in the **API Explorer** (target = device or apstra).' },
-    ],
-    action: { label: 'Set up Apstra', id: 'open-settings', focus: 'apstra' },
-  },
-  {
     id: 'tls',
     title: 'Device REST security (TLS)',
     icon: ShieldCheck,
@@ -200,7 +187,7 @@ export const HELP_TOPICS: HelpTopic[] = [
     keywords: ['tls', 'ssl', 'certificate', 'verify', 'self-signed', 'security', 'mitm'],
     blocks: [
       { kind: 'p', text: 'Settings → **Device REST security → Verify device TLS certificates**. Off by default because field gear usually ships a self-signed cert.' },
-      { kind: 'note', text: 'Turn it **on** to reject untrusted certs across AOS-CX/AOS-8/AOS-S/Apstra. The API Explorer’s per-login Verify-TLS checkbox defaults from this setting.' },
+      { kind: 'note', text: 'Turn it **on** to reject untrusted certs across AOS-CX/AOS-8/AOS-S. The API Explorer’s per-login Verify-TLS checkbox defaults from this setting.' },
     ],
     action: { label: 'Open TLS setting', id: 'open-settings', focus: 'tls' },
   },
@@ -211,7 +198,7 @@ export const HELP_TOPICS: HelpTopic[] = [
     summary: 'Declare desired state and check live compliance.',
     keywords: ['intent', 'desired state', 'assurance', 'compliance', 'drift', 'matcher', 'operational', 'config'],
     blocks: [
-      { kind: 'p', text: 'Title-bar **Target** icon → Network Intent. Declare what should be true and check live compliance.' },
+      { kind: 'p', text: 'Header **Tools** menu → Network Intent. Declare what should be true and check live compliance.' },
       {
         kind: 'steps',
         items: [
@@ -233,7 +220,7 @@ export const HELP_TOPICS: HelpTopic[] = [
       {
         kind: 'bullets',
         items: [
-          '**Tunnels** (title bar): local (`-L`) and dynamic SOCKS5 (`-D`) forwards over any SSH session.',
+          '**Tunnels** (header **Tools** menu): local (`-L`) and dynamic SOCKS5 (`-D`) forwards over any SSH session.',
           '**SFTP**: browse/upload/download; uploads confirm before overwriting a remote file.',
           '**Output triggers** (Settings): toast/beep on a keyword/regex in any terminal.',
           '**Bulk Runner**: run one command across many sessions; export CSV.',

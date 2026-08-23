@@ -30,7 +30,7 @@ const JVD_REFERENCES = `# Juniper Validated Design (JVD) best-practices
 - WAN/SD-WAN: Mist WAN Assurance + application-aware routing; redundant edges.
 - Verification (operational intent): underlay/overlay BGP all Established, EVPN
   routes present (bgp.evpn.0), VXLAN VTEPs up, no interface errors/drops.
-- General: out-of-band mgmt, RFC5549 or lo0 /32s, config via Apstra where managed,
+- General: out-of-band mgmt, RFC5549 or lo0 /32s, config via automation where managed,
   golden config + commit confirmed.`;
 
 const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
@@ -296,7 +296,7 @@ export default function SettingsPanel() {
                 const ok = await askConfirm({
                   title: 'Reset all settings?',
                   message:
-                    'This clears every saved Central account, the Apstra config, AI references, and all tool toggles back to defaults. This cannot be undone.',
+                    'This clears every saved Central account, AI references, and all tool toggles back to defaults. This cannot be undone.',
                   confirmLabel: 'Reset',
                   danger: true,
                 });
@@ -1083,7 +1083,6 @@ export default function SettingsPanel() {
                       { key: 'aiUseTerminal', label: 'Run device CLI commands', hint: 'Execute show/config on the active SSH/terminal session' },
                       { key: 'aiUseCxRest', label: 'Aruba device REST APIs', hint: 'On-box REST for CX / AOS-S / AOS-8 — structured data, no Central' },
                       { key: 'aiUseMcp', label: 'MCP server tools', hint: 'Tools from connected MCP servers (centralmcp, etc.)' },
-                      { key: 'aiUseApstra', label: 'Juniper Apstra', hint: 'Query the configured Apstra fabric controller (AOS REST)' },
                     ] as const
                   ).map(({ key, label, hint }) => {
                     const val = settings[key] as boolean;
@@ -1164,47 +1163,6 @@ export default function SettingsPanel() {
 
           <div className="border-t border-[var(--bg-tertiary)]" />
 
-          {/* Juniper Apstra (DC fabric) */}
-          <section id="set-apstra">
-            <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-3">Juniper Apstra</h3>
-            <div className="space-y-3">
-              <div>
-                <label className="block text-xs text-[var(--text-secondary)] mb-1.5">Controller host / URL</label>
-                <input
-                  value={settings.apstraHost}
-                  onChange={(e) => settings.updateSettings({ apstraHost: e.target.value })}
-                  placeholder="apstra.example.com  (or https://apstra:443)"
-                  className="input-field w-full h-8 px-2 text-sm font-mono"
-                />
-              </div>
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="block text-xs text-[var(--text-secondary)] mb-1.5">Username</label>
-                  <input
-                    value={settings.apstraUsername}
-                    onChange={(e) => settings.updateSettings({ apstraUsername: e.target.value })}
-                    placeholder="admin"
-                    className="input-field w-full h-8 px-2 text-sm font-mono"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs text-[var(--text-secondary)] mb-1.5">Password</label>
-                  <input
-                    type="password"
-                    value={settings.apstraPassword}
-                    onChange={(e) => settings.updateSettings({ apstraPassword: e.target.value })}
-                    placeholder="password"
-                    className="input-field w-full h-8 px-2 text-sm font-mono"
-                  />
-                </div>
-              </div>
-              <p className="text-[10px] text-[var(--text-muted)]">
-                Intent-based DC fabric (AOS REST). Token auth with auto-refresh. Enable
-                <strong> Assistant tools → Juniper Apstra</strong> to let the AI query blueprints, systems, and anomalies.
-              </p>
-            </div>
-          </section>
-
           {/* Juniper Mist (cloud) */}
           <section id="set-mist">
             <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-3">Juniper Mist</h3>
@@ -1242,7 +1200,7 @@ export default function SettingsPanel() {
               <span className="min-w-0">
                 <span className="text-sm text-[var(--text-primary)]">Verify device TLS certificates</span>
                 <span className="block text-[10px] text-[var(--text-muted)]">
-                  Reject untrusted/self-signed certs on AOS-CX / AOS-8 / AOS-S / Apstra REST. Most
+                  Reject untrusted/self-signed certs on AOS-CX / AOS-8 / AOS-S REST. Most
                   field gear ships a self-signed cert, so this is off by default — turn it on to
                   enforce verification.
                 </span>

@@ -2,7 +2,7 @@ pub mod aruba_cx;
 pub mod onprem;
 
 pub use aruba_cx::ArubaCxClient;
-pub use onprem::{Aos8Client, ApstraClient, AossClient, JunosClient, MistClient};
+pub use onprem::{Aos8Client, AossClient, JunosClient, MistClient};
 
 /// Whether an absolute `url` shares an origin (scheme + host + effective port)
 /// with the client's configured `base` URL.
