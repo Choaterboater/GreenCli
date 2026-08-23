@@ -198,7 +198,7 @@ export const HELP_TOPICS: HelpTopic[] = [
     summary: 'Declare desired state and check live compliance.',
     keywords: ['intent', 'desired state', 'assurance', 'compliance', 'drift', 'matcher', 'operational', 'config'],
     blocks: [
-      { kind: 'p', text: 'Title-bar **Target** icon → Network Intent. Declare what should be true and check live compliance.' },
+      { kind: 'p', text: 'Header **Tools** menu → Network Intent. Declare what should be true and check live compliance.' },
       {
         kind: 'steps',
         items: [
@@ -220,7 +220,7 @@ export const HELP_TOPICS: HelpTopic[] = [
       {
         kind: 'bullets',
         items: [
-          '**Tunnels** (title bar): local (`-L`) and dynamic SOCKS5 (`-D`) forwards over any SSH session.',
+          '**Tunnels** (header **Tools** menu): local (`-L`) and dynamic SOCKS5 (`-D`) forwards over any SSH session.',
           '**SFTP**: browse/upload/download; uploads confirm before overwriting a remote file.',
           '**Output triggers** (Settings): toast/beep on a keyword/regex in any terminal.',
           '**Bulk Runner**: run one command across many sessions; export CSV.',
