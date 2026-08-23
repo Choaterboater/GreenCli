@@ -27,6 +27,10 @@ import {
   Braces,
   FileSpreadsheet,
   Download,
+  Wifi,
+  Signal,
+  ScrollText,
+  Users,
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/tauri';
 import { useSessionStore } from '../store/sessionStore';
@@ -192,6 +196,11 @@ const CATEGORY_ICONS: Record<string, React.ReactNode> = {
   'Config Groups': <FileCode size={14} className="text-[#e3b341]" />,
   Firmware: <Server size={14} className="text-[#d2a8ff]" />,
   Alerts: <Radio size={14} className="text-[var(--accent-danger)]" />,
+  // Juniper Mist
+  WLAN: <Wifi size={14} className="text-[#93c5fd]" />,
+  RF: <Signal size={14} className="text-[#c4b5fd]" />,
+  Audits: <ScrollText size={14} className="text-[#fcd28f]" />,
+  Subscribers: <Users size={14} className="text-[#7ee2a8]" />,
 };
 
 const CATEGORY_COLORS: Record<string, string> = {
@@ -199,6 +208,7 @@ const CATEGORY_COLORS: Record<string, string> = {
   LLDP: '#d2a8ff', Configuration: '#e3b341', CLI: '#56d4dd',
   Monitoring: '#58a6ff', Clients: '#3fb950', Sites: '#d29922',
   'Config Groups': '#e3b341', Firmware: '#d2a8ff', Alerts: '#ff7b72',
+  WLAN: '#93c5fd', RF: '#c4b5fd', Audits: '#fcd28f', Subscribers: '#7ee2a8',
 };
 
 const METHOD_COLORS: Record<string, string> = {
