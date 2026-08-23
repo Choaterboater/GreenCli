@@ -656,7 +656,11 @@ function App() {
         e.preventDefault();
         toggleConfigEditor();
       }
-      // Ctrl/Cmd +/− /0: zoom terminal font (pinch on the trackpad works too)
+      // Ctrl/Cmd +/− /0: zoom terminal + config-editor font (pinch on the
+      // trackpad works too). The config editors run Monaco pinned to this same
+      // persisted fontSize (ConfigEditor/ConfigArchive), so the shortcut,
+      // palette actions, and Settings slider all scale them alike and the size
+      // survives restarts.
       if ((e.ctrlKey || e.metaKey) && (e.key === '=' || e.key === '+')) {
         e.preventDefault();
         const s = useSettingsStore.getState();

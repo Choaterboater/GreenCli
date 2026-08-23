@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { X, Crown, History, GitCompare, RefreshCw, FileText } from 'lucide-react';
 import { BeforeMount, DiffEditor } from '@monaco-editor/react';
 import { useSessionStore } from '../store/sessionStore';
+import { useSettingsStore } from '../store/settingsStore';
 import { useTheme } from '../hooks/useTheme';
 import { notify } from '../store/toastStore';
 import {
@@ -47,6 +48,9 @@ interface ConfigArchiveProps {
 export default function ConfigArchive({ onOpenSnapshot, onClose }: ConfigArchiveProps) {
   const { activeSessionId, sessions } = useSessionStore();
   const { isDark } = useTheme();
+  // Follow the persisted terminal font size so archive diffs zoom like the
+  // editor + terminals (W2-11).
+  const fontSize = useSettingsStore((s) => s.fontSize);
   const editorTheme = isDark ? 'aruba-dark' : 'aruba-light';
 
   const activeSession = sessions.find((s) => s.sessionId === activeSessionId);
@@ -277,8 +281,10 @@ export default function ConfigArchive({ onOpenSnapshot, onClose }: ConfigArchive
                   beforeMount={defineEditorThemes}
                   options={{
                     readOnly: true,
-                    fontSize: 13,
+                    fontSize,
                     fontFamily: 'JetBrains Mono, Consolas, "Courier New", monospace',
+                    lineHeight: Math.round(fontSize * 1.5),
+                    mouseWheelZoom: true,
                     minimap: { enabled: false },
                     scrollBeyondLastLine: false,
                     renderSideBySide: true,
