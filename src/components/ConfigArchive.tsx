@@ -96,11 +96,6 @@ export default function ConfigArchive({ onOpenSnapshot, onClose }: ConfigArchive
     setDiffTarget('none');
   }, [device, loadHistory]);
 
-  useEffect(() => {
-    void loadHistory(device);
-    setDiffTarget('none');
-  }, [device, loadHistory]);
-
   // Diff "current" = the newest snapshot for the device; "original" = the
   // chosen baseline (golden or second-newest).
   const diffAgainst = useCallback(
@@ -136,7 +131,7 @@ export default function ConfigArchive({ onOpenSnapshot, onClose }: ConfigArchive
     if (!activeSession) return;
     setBusy(true);
     try {
-      const ts = await captureNow(activeSession);
+      const ts = await captureNow(activeSession, 'manual');
       if (ts == null) {
         notify.info('No change captured', 'Config identical to the latest snapshot (or no output).');
       } else {
