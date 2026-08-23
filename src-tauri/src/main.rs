@@ -17,7 +17,7 @@ mod telnet;
 mod vault;
 
 use ai::{AiChatRequest, AiKeyStore};
-use api::{Aos8Client, ApstraClient, ArubaCxClient, AossClient, JunosClient, MistClient};
+use api::{Aos8Client, ArubaCxClient, AossClient, JunosClient, MistClient};
 use central::CentralClient;
 use error::AppError;
 use local::{LocalConfig, LocalConnection};
@@ -59,8 +59,6 @@ struct AppState {
     api_clients: Arc<AsyncMutex<HashMap<String, ArubaCxClient>>>,
     aos8_clients: Arc<AsyncMutex<HashMap<String, Aos8Client>>>,
     aoss_clients: Arc<AsyncMutex<HashMap<String, AossClient>>>,
-    /// Juniper Apstra fabric controller (single configured target).
-    apstra: Arc<AsyncMutex<Option<ApstraClient>>>,
     /// Juniper Mist cloud (single configured target, token auth).
     mist: Arc<AsyncMutex<Option<MistClient>>>,
     /// Juniper Junos REST clients keyed by host (HTTP Basic, optional on-box REST).
@@ -98,7 +96,6 @@ impl AppState {
             api_clients: Arc::new(AsyncMutex::new(HashMap::new())),
             aos8_clients: Arc::new(AsyncMutex::new(HashMap::new())),
             aoss_clients: Arc::new(AsyncMutex::new(HashMap::new())),
-            apstra: Arc::new(AsyncMutex::new(None)),
             mist: Arc::new(AsyncMutex::new(None)),
             junos_clients: Arc::new(AsyncMutex::new(HashMap::new())),
             central: Arc::new(AsyncMutex::new(CentralClient::new()?)),
@@ -1645,48 +1642,6 @@ async fn aoss_request(
     Ok(serde_json::json!({ "status": status, "body": parsed }))
 }
 
-// ─── Juniper Apstra ───
-
-#[tauri::command]
-async fn apstra_configure(
-    host: String,
-    username: String,
-    password: String,
-    accept_invalid_certs: bool,
-    state: State<'_, AppState>,
-) -> Result<(), String> {
-    let client = ApstraClient::new(host, username, password, accept_invalid_certs)
-        .map_err(|e| e.to_string())?;
-    *state.apstra.lock().await = Some(client);
-    Ok(())
-}
-
-#[tauri::command]
-async fn apstra_clear(state: State<'_, AppState>) -> Result<(), String> {
-    *state.apstra.lock().await = None;
-    Ok(())
-}
-
-#[tauri::command]
-async fn apstra_request(
-    method: String,
-    path: String,
-    body: Option<String>,
-    state: State<'_, AppState>,
-) -> Result<serde_json::Value, String> {
-    let mut guard = state.apstra.lock().await;
-    let client = guard
-        .as_mut()
-        .ok_or("Apstra not configured. Add it in Settings → Juniper Apstra.")?;
-    let (status, text) = client
-        .request(&method, &path, body.as_deref())
-        .await
-        .map_err(|e| e.to_string())?;
-    let parsed: serde_json::Value =
-        serde_json::from_str(&text).unwrap_or(serde_json::Value::String(text));
-    Ok(serde_json::json!({ "status": status, "body": parsed }))
-}
-
 // ─── Juniper Mist Cloud ───
 
 #[tauri::command]
@@ -2209,9 +2164,6 @@ fn main() {
             aos8_request,
             aoss_login,
             aoss_request,
-            apstra_configure,
-            apstra_clear,
-            apstra_request,
             mist_configure,
             mist_clear,
             mist_request,

@@ -155,16 +155,10 @@ export interface TerminalSettings {
   aiUseCxRest: boolean;
   /** Offer tools from connected MCP servers (e.g. centralmcp) to the AI. */
   aiUseMcp: boolean;
-  /** Let the AI query a configured Juniper Apstra fabric controller. */
-  aiUseApstra: boolean;
   /** Verify TLS certificates when talking to on-prem device REST APIs
-   *  (AOS-CX/AOS-8/AOS-S/Apstra). Default off because field gear usually ships a
+   *  (AOS-CX/AOS-8/AOS-S). Default off because field gear usually ships a
    *  self-signed cert; turn on to enforce verification (reject untrusted certs). */
   verifyDeviceTls: boolean;
-  // Juniper Apstra (intent-based DC fabric) controller config.
-  apstraHost: string;
-  apstraUsername: string;
-  apstraPassword: string;
   // Juniper Mist cloud — region API base + API token.
   mistBaseUrl: string;
   mistToken: string;
@@ -325,11 +319,7 @@ export const DEFAULT_SETTINGS: TerminalSettings = {
   aiUseTerminal: true,
   aiUseCxRest: false,
   aiUseMcp: false,
-  aiUseApstra: false,
   verifyDeviceTls: false,
-  apstraHost: '',
-  apstraUsername: '',
-  apstraPassword: '',
   mistBaseUrl: 'https://api.mist.com',
   mistToken: '',
   aiReferences: `# Best-practice references the AI should apply (edit/extend freely)
@@ -756,31 +746,6 @@ export const CENTRAL_ENDPOINTS: ApiEndpoint[] = [
   { name: 'Available Versions',    method: 'GET', path: '/firmware/v1/versions',           description: 'Available firmware versions', category: 'Firmware' },
   // Alerts / notifications
   { name: 'Active Alerts',         method: 'GET', path: '/central/v1/notifications',       description: 'Active alerts/notifications (classic Central has no /central/v1/alerts)', category: 'Alerts' },
-];
-
-// Juniper Apstra (AOS) endpoint catalog — paths relative to /api.
-// Modeled on the Apstra resource set (terraform-provider-apstra / apstra-go-sdk).
-export const APSTRA_ENDPOINTS: ApiEndpoint[] = [
-  { name: 'Version',              method: 'GET', path: '/api/version',                                       description: 'Apstra controller version', category: 'System' },
-  { name: 'Blueprints',           method: 'GET', path: '/api/blueprints',                                    description: 'All blueprints (fabrics)', category: 'Blueprints' },
-  { name: 'Blueprint',            method: 'GET', path: '/api/blueprints/{blueprint_id}',                     description: 'Single blueprint detail', category: 'Blueprints' },
-  { name: 'Anomalies',            method: 'GET', path: '/api/blueprints/{blueprint_id}/anomalies',           description: 'Blueprint anomalies (health/intent deviations)', category: 'Blueprints' },
-  { name: 'Deploy status',        method: 'GET', path: '/api/blueprints/{blueprint_id}/deploy',              description: 'Staged vs deployed status', category: 'Blueprints' },
-  { name: 'Nodes — systems',      method: 'GET', path: '/api/blueprints/{blueprint_id}/nodes?node_type=system', description: 'Graph nodes filtered to systems (switches)', category: 'Fabric' },
-  { name: 'Security Zones (VRFs)',method: 'GET', path: '/api/blueprints/{blueprint_id}/security-zones',      description: 'Routing zones / VRFs', category: 'Fabric' },
-  { name: 'Virtual Networks',     method: 'GET', path: '/api/blueprints/{blueprint_id}/virtual-networks',    description: 'Virtual networks (VLAN/VXLAN)', category: 'Fabric' },
-  { name: 'Racks',                method: 'GET', path: '/api/blueprints/{blueprint_id}/racks',               description: 'Racks in the blueprint', category: 'Fabric' },
-  { name: 'Blueprint configlets', method: 'GET', path: '/api/blueprints/{blueprint_id}/configlets',          description: 'Configlets applied to this blueprint', category: 'Fabric' },
-  { name: 'Managed devices',      method: 'GET', path: '/api/systems',                                       description: 'Managed device system-agents', category: 'Resources' },
-  { name: 'ASN pools',            method: 'GET', path: '/api/resources/asn-pools',                           description: 'ASN resource pools', category: 'Resources' },
-  { name: 'IPv4 pools',           method: 'GET', path: '/api/resources/ip-pools',                            description: 'IPv4 resource pools', category: 'Resources' },
-  { name: 'VNI pools',            method: 'GET', path: '/api/resources/vni-pools',                           description: 'VNI pools', category: 'Resources' },
-  { name: 'Templates',            method: 'GET', path: '/api/design/templates',                             description: 'Pod / rack-based templates', category: 'Design' },
-  { name: 'Rack types',           method: 'GET', path: '/api/design/rack-types',                            description: 'Rack types', category: 'Design' },
-  { name: 'Logical devices',      method: 'GET', path: '/api/design/logical-devices',                       description: 'Logical devices', category: 'Design' },
-  { name: 'Interface maps',       method: 'GET', path: '/api/design/interface-maps',                        description: 'Interface maps', category: 'Design' },
-  { name: 'Design configlets',    method: 'GET', path: '/api/design/configlets',                            description: 'Global configlet catalog', category: 'Design' },
-  { name: 'Property sets',        method: 'GET', path: '/api/property-sets',                                description: 'Property sets', category: 'Design' },
 ];
 
 export const CENTRAL_DOCS = [

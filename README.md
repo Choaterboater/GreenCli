@@ -4,7 +4,7 @@ One cockpit for **Aruba · Juniper · Mist**. A modern, cross-platform terminal,
 
 > 📘 **New here? See the [Setup & Configuration Guide](docs/SETUP.md)** — installing,
 > running, and configuring every feature (SSH/vault, AI providers, MCP, Aruba Central,
-> Juniper Apstra, on-prem REST, network intent, TLS, screenshots).
+> on-prem REST, network intent, TLS, screenshots).
 
 ![GreenCLI — home](docs/screenshots/01-home.png)
 
@@ -53,7 +53,7 @@ green-cli/
 │   │   ├── SettingsPanel.tsx     # Settings UI
 │   │   ├── SearchOverlay.tsx     # Terminal search
 │   │   ├── AiAssistant.tsx       # AI assistant panel
-│   │   ├── ApiExplorer.tsx       # REST API explorer (Central / device / Apstra)
+│   │   ├── ApiExplorer.tsx       # REST API explorer (Central / device / Mist)
 │   │   ├── BulkRunner.tsx        # Run one command across sessions
 │   │   ├── ConfigEditor.tsx      # Monaco config editor
 │   │   ├── HelpPanel.tsx         # In-app help (F1)

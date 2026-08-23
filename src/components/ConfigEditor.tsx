@@ -309,23 +309,6 @@ set interfaces ge-0/0/3 unit 0 family ethernet-switching interface-mode access
 set interfaces ge-0/0/3 unit 0 family ethernet-switching vlan members USERS
 commit confirmed 5 comment "GreenCLI staged access baseline"
 `,
-  'Apstra configlet: NTP': `/* Apstra configlet (Junos) — NTP. Paste the body into an Apstra
-   configlet (style "junos", section "system"); assign by role/tag. */
-set system ntp server 10.0.0.1 prefer
-set system ntp server 10.0.0.2
-set system time-zone UTC
-`,
-  'Apstra configlet: SNMPv3': `/* Apstra configlet (Junos) — SNMPv3 */
-set snmp v3 usm local-engine user netops authentication-sha authentication-key "<sha>"
-set snmp v3 usm local-engine user netops privacy-aes128 privacy-key "<aes>"
-set snmp v3 vacm security-to-group security-model usm security-name netops group ro
-set snmp v3 vacm access group ro default-context-prefix security-model usm security-level privacy read-view all
-set snmp view all oid .1
-`,
-  'Apstra configlet: Syslog': `/* Apstra configlet (Junos) — remote syslog */
-set system syslog host 10.0.0.10 any info
-set system syslog host 10.0.0.10 source-address 10.10.10.1
-`,
 
   // ─── Juniper Validated Design starters (Junos) — edit ids/addresses ───
   'JVD: EVPN-VXLAN leaf (ERB)': `/* JVD EVPN-VXLAN — leaf (edge-routed bridging). Replace ASNs/IPs/VNIs. */
@@ -1210,7 +1193,7 @@ export default function ConfigEditor() {
       name,
       content: TEMPLATES[name],
       language:
-        name.startsWith('Junos') || name.startsWith('JVD') || name.startsWith('Apstra')
+        name.startsWith('Junos') || name.startsWith('JVD')
           ? 'juniper-junos'
           : name.startsWith('Mist')
             ? 'mist'

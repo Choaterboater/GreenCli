@@ -35,7 +35,6 @@ export interface BackupImportResult {
 const SECRET_SETTING_KEYS = new Set<keyof TerminalSettings>([
   'centralClientSecret',
   'centralToken',
-  'apstraPassword',
   'mistToken',
 ]);
 
@@ -47,7 +46,6 @@ const UNSAFE_IMPORT_SETTING_KEYS = new Set<keyof TerminalSettings>([
   'aiUseTerminal',
   'aiUseCxRest',
   'aiUseMcp',
-  'aiUseApstra',
   'verifyDeviceTls',
 ]);
 
@@ -365,12 +363,6 @@ function mergedSettingsPatch(
   if (incoming.centralBaseUrl != null && incoming.centralBaseUrl !== current.centralBaseUrl) {
     patch.centralToken = '';
   }
-  if (
-    (incoming.apstraHost != null && incoming.apstraHost !== current.apstraHost) ||
-    (incoming.apstraUsername != null && incoming.apstraUsername !== current.apstraUsername)
-  ) {
-    patch.apstraPassword = '';
-  }
   if (incoming.mistBaseUrl != null && incoming.mistBaseUrl !== current.mistBaseUrl) {
     patch.mistToken = '';
   }
@@ -389,12 +381,6 @@ function secretInvalidationsForImport(incoming: Partial<TerminalSettings>): stri
   }
   if (incoming.centralBaseUrl != null && incoming.centralBaseUrl !== current.centralBaseUrl) {
     invalidations.push('centralToken');
-  }
-  if (
-    (incoming.apstraHost != null && incoming.apstraHost !== current.apstraHost) ||
-    (incoming.apstraUsername != null && incoming.apstraUsername !== current.apstraUsername)
-  ) {
-    invalidations.push('apstraPassword');
   }
   if (incoming.mistBaseUrl != null && incoming.mistBaseUrl !== current.mistBaseUrl) {
     invalidations.push('mistToken');

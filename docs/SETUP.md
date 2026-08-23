@@ -94,7 +94,7 @@ id `com.choatelabs.greencli`:
 | `known_hosts.json` | TOFU SSH host-key fingerprints | atomic writes |
 | `intents.json` | Network-intent definitions + last result | atomic; corrupt file is preserved, never silently wiped |
 
-> Secrets are deliberately kept out of browser `localStorage`. Aruba Central / Apstra
+> Secrets are deliberately kept out of browser `localStorage`. Aruba Central / Mist
 > credentials entered in Settings are stored **encrypted in the credential vault**
 > (`vault.enc`) when it is unlocked, so they survive a restart; while the vault is
 > locked they live in memory for the session only (same model as saved SSH
@@ -146,7 +146,6 @@ Open the AI panel from the title bar. Settings → **AI Assistant**:
      covers the network-intent checks, see §9).
    - *Aruba device REST APIs* — on-box REST for CX / AOS-S / AOS-8 (no Central).
    - *MCP server tools* — tools from connected MCP servers (see §6).
-   - *Juniper Apstra* — query the configured Apstra controller.
 5. **References / standards** — free-text grounding the AI applies (golden-config
    rules, doc links, your org standards).
 
@@ -206,23 +205,21 @@ through the MCP client.
 
 ---
 
-## 8. On-prem REST (no Central) + Juniper Apstra
+## 8. On-prem REST (no Central)
 
 For air-gapped / no-Central environments the AI can talk to device REST directly:
 
 - **AOS-CX / AOS-8 / AOS-S** — auto-login with the active session's SSH credentials;
   enable *Assistant tools → Aruba device REST APIs*.
-- **Juniper Apstra** — Settings → **Juniper Apstra**: controller host/URL, username,
-  password (token auth with auto-refresh). Enable *Assistant tools → Juniper Apstra*.
 
 Explore the same endpoints interactively in the **API Explorer** (target = device or
-apstra); pick a REST version in the Base URL and it's honoured at login.
+mist); pick a REST version in the Base URL and it's honoured at login.
 
 ### Device REST security (TLS)
 
 Settings → **Device REST security → Verify device TLS certificates**. Off by default
 because field gear usually ships a self-signed cert; **turn it on to enforce
-verification** (reject untrusted certs) across AOS-CX/AOS-8/AOS-S/Apstra. The API
+verification** (reject untrusted certs) across AOS-CX/AOS-8/AOS-S. The API
 Explorer's per-login *Verify TLS* checkbox defaults from this setting.
 
 ---

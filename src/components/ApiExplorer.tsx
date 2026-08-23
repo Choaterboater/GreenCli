@@ -44,7 +44,6 @@ import {
   JUNOS_ENDPOINTS,
   MIST_ENDPOINTS,
   CENTRAL_ENDPOINTS,
-  APSTRA_ENDPOINTS,
   CENTRAL_DOCS,
 } from '../types';
 
@@ -83,7 +82,7 @@ const SAVED_REQUESTS_KEY = 'greencli-api-saved-requests-v1';
 interface SavedApiRequest {
   id: string;
   name: string;
-  target: 'device' | 'central' | 'apstra' | 'mist';
+  target: 'device' | 'central' | 'mist';
   deviceKind: DeviceApiKind;
   method: 'GET' | 'POST' | 'PUT' | 'DELETE';
   url: string;
@@ -231,7 +230,7 @@ export default function ApiExplorer() {
   const [newConnPass, setNewConnPass] = useState('');
   // Default this per-login checkbox from the global "Verify device TLS" setting.
   const [verifyTls, setVerifyTls] = useState(verifyDeviceTls);
-  const [target, setTarget] = useState<'device' | 'central' | 'apstra' | 'mist'>('device');
+  const [target, setTarget] = useState<'device' | 'central' | 'mist'>('device');
   // Which on-box device REST flavour the "Device REST" target speaks.
   const [deviceKind, setDeviceKind] = useState<DeviceApiKind>('cx');
   const [loggingIn, setLoggingIn] = useState(false);
@@ -292,8 +291,6 @@ export default function ApiExplorer() {
   const activeEndpoints =
     target === 'central'
       ? CENTRAL_ENDPOINTS
-      : target === 'apstra'
-      ? APSTRA_ENDPOINTS
       : target === 'mist'
       ? MIST_ENDPOINTS
       : DEVICE_KINDS[deviceKind].endpoints;
@@ -351,12 +348,6 @@ export default function ApiExplorer() {
       const data =
         target === 'central'
           ? await invoke<{ status: number; body: unknown }>('central_request', {
-              method,
-              path: endpointPath,
-              body,
-            })
-          : target === 'apstra'
-          ? await invoke<{ status: number; body: unknown }>('apstra_request', {
               method,
               path: endpointPath,
               body,
@@ -622,9 +613,9 @@ export default function ApiExplorer() {
         </div>
       </div>
 
-      {/* Target toggle: on-box REST · Aruba Central · Juniper Apstra */}
+      {/* Target toggle: on-box REST · Aruba Central · Juniper Mist */}
       <div className="flex gap-1 px-3 py-2 border-b border-[var(--bg-tertiary)] bg-[var(--bg-secondary)]">
-        {(['device', 'central', 'apstra', 'mist'] as const).map((t) => (
+        {(['device', 'central', 'mist'] as const).map((t) => (
           <button
             key={t}
             onClick={() => setTarget(t)}
@@ -634,7 +625,7 @@ export default function ApiExplorer() {
                 : 'bg-[var(--bg-primary)] border-[var(--border)] text-[var(--text-secondary)]'
             }`}
           >
-            {t === 'device' ? 'Device REST' : t === 'central' ? 'Aruba Central' : t === 'apstra' ? 'Apstra' : 'Mist'}
+            {t === 'device' ? 'Device REST' : t === 'central' ? 'Aruba Central' : 'Mist'}
           </button>
         ))}
       </div>
@@ -684,14 +675,6 @@ export default function ApiExplorer() {
           Uses the API token from <span className="text-[var(--text-secondary)]">Settings → Juniper Mist</span>. Replace
           <code className="text-[var(--accent)] mx-1">{'{org_id}'}</code>/
           <code className="text-[var(--accent)] mx-1">{'{site_id}'}</code>in paths (run "Whoami" first to find them).
-        </div>
-      )}
-
-      {/* Apstra hint */}
-      {target === 'apstra' && (
-        <div className="px-3 py-2 border-b border-[var(--bg-tertiary)] bg-[var(--bg-secondary)] text-[10px] text-[var(--text-muted)]">
-          Uses the controller configured in <span className="text-[var(--text-secondary)]">Settings → Juniper Apstra</span>. Replace
-          <code className="text-[var(--accent)] mx-1">{'{blueprint_id}'}</code>in paths with a real id (run "Blueprints" first).
         </div>
       )}
 
