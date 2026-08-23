@@ -1672,8 +1672,10 @@ export default function ConfigEditor() {
             beforeMount={defineEditorThemes}
             options={{
               readOnly: true,
-              fontSize: 13,
+              fontSize: settings.fontSize,
               fontFamily: 'JetBrains Mono, Consolas, "Courier New", monospace',
+              lineHeight: Math.round(settings.fontSize * 1.5),
+              mouseWheelZoom: true,
               minimap: { enabled: false },
               scrollBeyondLastLine: false,
               renderSideBySide: true,
@@ -1696,9 +1698,15 @@ export default function ConfigEditor() {
           beforeMount={defineEditorThemes}
           onMount={handleEditorMount}
           options={{
-            fontSize: 13,
+            // Follow the persisted terminal font size (W2-11): Ctrl+= / Ctrl+-
+            // / Ctrl+0 and pinch-zoom land in setFontSize via App.tsx and flow
+            // here through the settings store — so editor zoom matches the
+            // terminals and survives restarts. mouseWheelZoom gives native
+            // Ctrl+wheel zoom inside the editor.
+            fontSize: settings.fontSize,
             fontFamily: 'JetBrains Mono, Consolas, "Courier New", monospace',
-            lineHeight: 20,
+            lineHeight: Math.round(settings.fontSize * 1.5),
+            mouseWheelZoom: true,
             minimap: { enabled: false },
             scrollBeyondLastLine: false,
             wordWrap: 'on',

@@ -264,6 +264,7 @@ export const HELP_TOPICS: HelpTopic[] = [
           '`Ctrl+,` — Settings · `F1` — Help',
           '`Ctrl+Shift+E / A / I` — Editor / API / AI',
           '`Ctrl+B` — Toggle sidebar',
+          '`Ctrl+= / Ctrl+- / Ctrl+0` — Zoom terminal + config-editor font (Ctrl+wheel inside the editor)',
         ],
       },
     ],
