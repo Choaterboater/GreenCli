@@ -557,6 +557,33 @@ export default function SettingsPanel() {
               ))}
             </div>
 
+            {/* Terminal ergonomics (W2-12): SecureCRT-style mouse behaviors,
+                opt-in. copy-on-select + right-click paste already live above;
+                middle-click paste is the new gate. */}
+            <div className="mt-4">
+              <label className="block text-xs text-[var(--text-secondary)] mb-1.5">
+                Terminal ergonomics
+              </label>
+              <div className="space-y-2">
+                <label className="flex items-center justify-between cursor-pointer py-1">
+                  <span className="text-sm text-[var(--text-primary)]">Middle-Click Paste</span>
+                  <div
+                    onClick={() => settings.setMiddleClickPaste(!settings.middleClickPaste)}
+                    className="w-9 h-5 rounded-full transition-colors cursor-pointer relative"
+                    style={{ background: settings.middleClickPaste ? 'var(--accent)' : 'var(--border-strong)' }}
+                  >
+                    <div
+                      className="absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow-sm transition-transform"
+                      style={{ transform: settings.middleClickPaste ? 'translateX(16px)' : 'translateX(0)' }}
+                    />
+                  </div>
+                </label>
+              </div>
+              <p className="text-[11px] text-[var(--text-muted)] mt-1">
+                Paste the clipboard on middle-click (SecureCRT convention). Multi-line pastes still hit the paste guard.
+              </p>
+            </div>
+
             {/* Right-Click Behavior */}
             <div className="mt-4">
               <label className="block text-xs text-[var(--text-secondary)] mb-1.5">
