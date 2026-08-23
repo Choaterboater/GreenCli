@@ -225,7 +225,7 @@ export default function IntentPanel() {
           <span className="flex-1" />
           <span className="text-[11px] text-[var(--text-muted)]">{connectedCount} connected</span>
           <span
-            className="flex items-center gap-1 text-[11px]"
+            className="flex items-center gap-1 text-[11px] shrink-0 whitespace-nowrap"
             style={{ color: intentScheduling ? 'var(--accent-success)' : 'var(--text-muted)' }}
             title={
               intentScheduling
