@@ -32,7 +32,11 @@ jobs:
         run: npx vitest run
 
   rust:
-    runs-on: ubuntu-latest
+    # Pinned to 22.04: ubuntu-latest (24.04/noble) dropped libwebkit2gtk-4.0-dev,
+    # and Cargo.lock pins webkit2gtk 0.18 / wry 0.24 (the 4.0/soup2 API), so the
+    # 4.1 package cannot link. Unpin only with the Tauri v2 / webkit2gtk-4.1
+    # migration (backlog NW-8).
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
 
@@ -46,11 +50,21 @@ jobs:
         with:
           workspaces: src-tauri -> target
 
-      # Tauri v1 links against webkit2gtk even for `cargo test`.
+      # Tauri v1 links against webkit2gtk even for `cargo test`; the
+      # serialport crate needs libudev.pc (CI-3: libudev-sys build script
+      # panics without it).
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.0-dev libgtk-3-dev librsvg2-dev
+          sudo apt-get install -y libwebkit2gtk-4.0-dev libgtk-3-dev librsvg2-dev libudev-dev
+
+      # generate_context!() validates the frontend bundle at compile time and
+      # panics if ../dist doesn't exist, so the rust gate needs a real build
+      # (CI-2). A stash/mkdir stub would mask what a real build needs.
+      - name: Build frontend bundle
+        run: |
+          npm ci
+          npm run build
 
       # Non-blocking for now: the tree predates a fmt gate, so a strict check
       # could be red on untouched code. Flip to required once the baseline is
