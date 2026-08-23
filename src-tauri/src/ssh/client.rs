@@ -81,7 +81,10 @@ impl std::fmt::Debug for ConnectionConfig {
             .field("username", &self.username)
             .field("auth_type", &self.auth_type)
             .field("password", &redact(&self.password))
-            .field("private_key", &self.private_key.as_ref().map(|_| "[REDACTED]"))
+            .field(
+                "private_key",
+                &self.private_key.as_ref().map(|_| "[REDACTED]"),
+            )
             .field("key_passphrase", &redact(&self.key_passphrase))
             .field("keep_alive_interval", &self.keep_alive_interval)
             .field("known_hosts_path", &self.known_hosts_path)
