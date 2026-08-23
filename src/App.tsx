@@ -30,6 +30,7 @@ import { generateId, shellQuote } from './utils';
 import { listen } from '@tauri-apps/api/event';
 import { notify } from './store/toastStore';
 import { useRecentStore, timeAgo, RecentConnection } from './store/recentStore';
+import { armIntentScheduler } from './utils/intentScheduler';
 import Toaster from './components/Toaster';
 import DialogHost from './components/DialogHost';
 
@@ -707,6 +708,15 @@ function App() {
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [activeSessionId, sessions, removeSession, setShowSearch, setShowSettings, toggleApiExplorer, toggleAiAssistant, toggleConfigEditor]);
+
+  // Scheduled intent evaluation (NW-15): re-arm whenever the toggle or interval
+  // changes; cleanup disarms on unmount. The sweep never overlaps itself, and
+  // drift alerts fire only on new ok/unknown→violation transitions.
+  const intentScheduling = useSettingsStore((s) => s.intentScheduling);
+  const intentScheduleMinutes = useSettingsStore((s) => s.intentScheduleMinutes);
+  useEffect(() => {
+    return armIntentScheduler(intentScheduling, intentScheduleMinutes);
+  }, [intentScheduling, intentScheduleMinutes]);
 
   // iTerm2-style file drop: while the SFTP browser is closed, dropping a file
   // on the window inserts its shell-quoted path into the active terminal at the

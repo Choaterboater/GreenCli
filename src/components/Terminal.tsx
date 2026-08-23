@@ -15,6 +15,7 @@ import { useTheme } from '../hooks/useTheme';
 import { DeviceType } from '../types';
 import { ArubaHighlighter, AnsiProcessor } from '../syntax';
 import { registerSearchAdapter, unregisterSearchAdapter, createSearchAdapter } from '../utils/terminalSearch';
+import { captureOnConnect } from '../utils/configArchive';
 import { copyText, readClipboardText } from '../utils/clipboard';
 import { registerTerminalActionAdapter, unregisterTerminalActionAdapter } from '../utils/terminalActions';
 import { countPasteLines, useTerminalToolsStore } from '../store/terminalToolsStore';
@@ -1038,6 +1039,14 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
               ? 'connected'
               : 'disconnected';
         updateSessionConnection(sessionId, connected, connectionStatus);
+        if (event.payload.status === 'connected') {
+          // Connect-time config-archive snapshot (NW-16): best-effort, async,
+          // never blocks or disturbs the stream. Serial/local sessions are
+          // skipped (unsupported) and straggler buffers are ignored.
+          const st = useSessionStore.getState();
+          const sess = st.sessions.find((s) => s.sessionId === sessionId);
+          if (sess) captureOnConnect(sess);
+        }
         if (event.payload.status === 'connected' || event.payload.status === 'reconnecting') {
           // Fresh stream after a (re)connect — discard any partial multibyte bytes
           // the decoder held from before the drop so they can't corrupt the first

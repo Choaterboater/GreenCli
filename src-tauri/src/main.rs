@@ -4,6 +4,7 @@
 mod ai;
 mod api;
 mod central;
+mod config_archive;
 mod error;
 mod intent;
 mod local;
@@ -68,6 +69,8 @@ struct AppState {
     ai_keys: AiKeyStore,
     /// Durable network-intent / desired-state store.
     intents: intent::IntentStore,
+    /// Per-device versioned config snapshot history + golden baseline.
+    config_archive: config_archive::ConfigArchiveStore,
     /// Recent terminal output per session, so the AI assistant can read back
     /// command results (bounded tail, plain bytes lossily decoded).
     terminal_buffers: Arc<AsyncMutex<HashMap<String, String>>>,
@@ -101,6 +104,7 @@ impl AppState {
             central: Arc::new(AsyncMutex::new(CentralClient::new()?)),
             ai_keys: AiKeyStore::new(app_dir.clone()),
             intents: intent::IntentStore::new(app_dir.clone()),
+            config_archive: config_archive::ConfigArchiveStore::new(app_dir.clone()),
             terminal_buffers: Arc::new(AsyncMutex::new(HashMap::new())),
             terminal_sizes: Arc::new(AsyncMutex::new(HashMap::new())),
             session_logs: Arc::new(AsyncMutex::new(HashMap::new())),
@@ -495,15 +499,17 @@ async fn connect(
                 port: config.port.unwrap_or(22),
                 username: config.username.unwrap_or_default(),
                 auth_type,
-                password: config.password,
+                // Wrapped so the in-memory copies wipe on drop (BH-2: reconnect
+                // passwords must not linger as freed-but-unzeroed plaintext).
+                password: config.password.map(zeroize::Zeroizing::new),
                 private_key,
-                key_passphrase: config.key_passphrase,
+                key_passphrase: config.key_passphrase.map(zeroize::Zeroizing::new),
                 keep_alive_interval: config.keep_alive_interval,
                 known_hosts_path: Some(state.app_dir.join("known_hosts.json")),
                 jump_host: config.jump_host.filter(|h| !h.is_empty()),
                 jump_port: config.jump_port,
                 jump_username: config.jump_username,
-                jump_password: config.jump_password,
+                jump_password: config.jump_password.map(zeroize::Zeroizing::new),
             };
 
             let auto_reconnect = config.auto_reconnect.unwrap_or(false);
@@ -1331,6 +1337,85 @@ fn intent_set_result(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     state.intents.set_result(&id, result).map_err(|e| e.to_string())
+}
+
+/// POST an intent drift-alert payload to a webhook URL. The frontend CSP's
+/// `connect-src` can't reach arbitrary origins, so the scheduled-eval sweep
+/// delegates delivery here. Fire-and-forget: failures (unreachable host,
+/// timeout, non-2xx) are logged and swallowed — an alerting hiccup must never
+/// crash the eval sweep or surface as an error to the sweeper.
+#[tauri::command]
+async fn intent_webhook_notify(url: String, payload: serde_json::Value) -> Result<(), String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| e.to_string())?;
+    match client.post(&url).json(&payload).send().await {
+        Ok(resp) if resp.status().is_success() => Ok(()),
+        Ok(resp) => {
+            log::warn!("intent webhook {url} returned HTTP {}", resp.status());
+            Ok(())
+        }
+        Err(e) => {
+            log::warn!("intent webhook {url} failed: {e}");
+            Ok(())
+        }
+    }
+}
+
+// ─── Config archive (NW-16): per-device versioned config history + golden diff ───
+
+#[tauri::command]
+fn config_archive_capture(
+    device: String,
+    source: String,
+    content: String,
+    state: State<'_, AppState>,
+) -> Result<Option<u64>, String> {
+    state
+        .config_archive
+        .capture(&device, &source, &content)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn config_archive_list(
+    device: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<config_archive::ArchiveEntry>, String> {
+    state
+        .config_archive
+        .list(&device)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn config_archive_get(
+    device: String,
+    ts: u64,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    state
+        .config_archive
+        .get(&device, ts)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn config_archive_devices(state: State<'_, AppState>) -> Result<Vec<String>, String> {
+    state.config_archive.devices().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn config_archive_set_golden(
+    device: String,
+    ts: u64,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    state
+        .config_archive
+        .set_golden(&device, ts)
+        .map_err(|e| e.to_string())
 }
 
 // ─── SSH port forwarding ───
@@ -2171,6 +2256,12 @@ fn main() {
             intent_save,
             intent_delete,
             intent_set_result,
+            intent_webhook_notify,
+            config_archive_capture,
+            config_archive_list,
+            config_archive_get,
+            config_archive_devices,
+            config_archive_set_golden,
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")

@@ -758,6 +758,71 @@ export default function SettingsPanel() {
 
           <div className="border-t border-[var(--bg-tertiary)]" />
 
+          {/* Scheduled intent evaluation (drift alerting) */}
+          <section id="set-intent-schedule">
+            <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-1.5">
+              Scheduled intent evaluation
+            </h3>
+            <p className="text-[11px] text-[var(--text-secondary)] mb-3">
+              Re-run the intent-assurance sweep on an interval and alert on{' '}
+              <em>new</em> violations only — a drift toast fires once per
+              ok/unknown→violation transition, never on unchanged violations.
+              Configure a webhook to get the same drift alerts off-box.
+            </p>
+
+            <label className="flex items-center justify-between cursor-pointer py-1">
+              <span className="text-sm text-[var(--text-primary)]">Scheduled evaluation</span>
+              <div
+                onClick={() => settings.setIntentScheduling(!settings.intentScheduling)}
+                className="w-9 h-5 rounded-full transition-colors cursor-pointer relative"
+                style={{ background: settings.intentScheduling ? 'var(--accent)' : 'var(--border-strong)' }}
+              >
+                <div
+                  className="absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow-sm transition-transform"
+                  style={{ transform: settings.intentScheduling ? 'translateX(16px)' : 'translateX(0)' }}
+                />
+              </div>
+            </label>
+
+            <div className="mt-3">
+              <label className="block text-xs text-[var(--text-secondary)] mb-1.5">
+                Interval (minutes)
+              </label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="range"
+                  min={1}
+                  max={240}
+                  step={5}
+                  value={settings.intentScheduleMinutes}
+                  onChange={(e) => settings.setIntentScheduleMinutes(Number(e.target.value))}
+                  className="flex-1 accent-[var(--accent)]"
+                />
+                <span className="text-sm text-[var(--text-primary)] w-12 text-right">
+                  {settings.intentScheduleMinutes}
+                </span>
+              </div>
+            </div>
+
+            <div className="mt-3">
+              <label className="block text-xs text-[var(--text-secondary)] mb-1.5">
+                Drift webhook URL (optional)
+              </label>
+              <input
+                type="url"
+                value={settings.intentWebhookUrl}
+                onChange={(e) => settings.setIntentWebhookUrl(e.target.value)}
+                placeholder="https://hooks.example.com/drift"
+                className="input-field w-full h-9 px-2.5 text-sm font-mono"
+              />
+              <p className="text-[10px] text-[var(--text-muted)] mt-1">
+                POSTed only on new-violation transitions ({'{'}event, count, violations{'}'}). Empty octets / failures are logged and skipped.
+              </p>
+            </div>
+          </section>
+
+          <div className="border-t border-[var(--bg-tertiary)]" />
+
           {/* Connection */}
           <section>
             <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-3">
