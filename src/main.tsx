@@ -1,6 +1,10 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { appWindow } from "@tauri-apps/api/window";
+// Bundled monaco wiring — must run before any <Editor>/<DiffEditor> mounts so
+// the editor resolves from the local npm build, never the jsdelivr CDN (which
+// is no longer in the CSP).
+import "./monacoEnv";
 import App from "./App";
 import PopOutTerminal from "./PopOutTerminal";
 import "./styles/index.css";

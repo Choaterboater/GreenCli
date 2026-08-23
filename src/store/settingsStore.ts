@@ -16,6 +16,9 @@ interface SettingsState extends TerminalSettings {
   setKeepAliveInterval: (seconds: number) => void;
   setSyntaxHighlighting: (enabled: boolean) => void;
   setSidebarWidth: (width: number) => void;
+  setIntentScheduling: (enabled: boolean) => void;
+  setIntentScheduleMinutes: (minutes: number) => void;
+  setIntentWebhookUrl: (url: string) => void;
   setLastUsedDeviceType: (deviceType: DeviceType) => void;
   setLastUsedDeviceProfileId: (profileId: string) => void;
   addDeviceProfile: (profile: DeviceProfile) => void;
@@ -55,6 +58,12 @@ export const useSettingsStore = create<SettingsState>()(
       setKeepAliveInterval: (keepAliveInterval) => set({ keepAliveInterval }),
       setSyntaxHighlighting: (syntaxHighlighting) => set({ syntaxHighlighting }),
       setSidebarWidth: (sidebarWidth) => set({ sidebarWidth }),
+      setIntentScheduling: (intentScheduling) => set({ intentScheduling }),
+      // Clamp to a sane sweep cadence (1 min .. 24 h) — an accidental 0 in the
+      // settings JSON must not turn into a busy-loop of terminal sweeps.
+      setIntentScheduleMinutes: (intentScheduleMinutes) =>
+        set({ intentScheduleMinutes: Math.min(1440, Math.max(1, Math.round(intentScheduleMinutes))) }),
+      setIntentWebhookUrl: (intentWebhookUrl) => set({ intentWebhookUrl }),
       setLastUsedDeviceType: (lastUsedDeviceType) => set({ lastUsedDeviceType }),
       setLastUsedDeviceProfileId: (lastUsedDeviceProfileId) => set({ lastUsedDeviceProfileId }),
       setAiModel: (aiModel) => set({ aiModel }),

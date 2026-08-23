@@ -123,6 +123,13 @@ export interface TerminalSettings {
   terminalSilenceThresholdSeconds: number;
   /** Width of the left session sidebar in px (drag the divider to resize). */
   sidebarWidth: number;
+  /** Scheduled intent evaluation (NW-15): re-run the eval sweep on an
+   *  interval and alert on new-violation transitions (toast + webhook). */
+  intentScheduling: boolean;
+  /** Minutes between scheduled intent-evaluation sweeps. */
+  intentScheduleMinutes: number;
+  /** Optional webhook URL POSTed on new-violation transitions (drift alerts). */
+  intentWebhookUrl: string;
   /** Last selected device type/profile base used by Quick Connect. */
   lastUsedDeviceType: DeviceType;
   /** Last selected built-in/custom profile used by Quick Connect. */
@@ -298,6 +305,9 @@ export const DEFAULT_SETTINGS: TerminalSettings = {
   terminalSilenceNotifications: false,
   terminalSilenceThresholdSeconds: 60,
   sidebarWidth: 256,
+  intentScheduling: false,
+  intentScheduleMinutes: 30,
+  intentWebhookUrl: '',
   lastUsedDeviceType: 'generic',
   lastUsedDeviceProfileId: 'builtin-generic',
   customDeviceProfiles: [],

@@ -173,7 +173,7 @@ impl VaultStorage {
     pub fn read_decrypted(
         &self,
         cipher: &VaultCipher,
-    ) -> Result<HashMap<String, String>, AppError> {
+    ) -> Result<HashMap<String, zeroize::Zeroizing<String>>, AppError> {
         let env = match self.load()? {
             Some(env) => env,
             None => return Ok(HashMap::new()),
@@ -190,7 +190,9 @@ impl VaultStorage {
             String::from_utf8(cipher.decrypt(&data_ct)?)
                 .map_err(|e| AppError::VaultError(format!("UTF-8 decode: {}", e)))?,
         );
-        let data: HashMap<String, String> =
+        // Every decrypted secret is wrapped so it is wiped from memory on drop
+        // rather than lingering as freed-but-unzeroed plaintext.
+        let data: HashMap<String, zeroize::Zeroizing<String>> =
             serde_json::from_str(&json_str).map_err(AppError::from)?;
         Ok(data)
     }
@@ -199,14 +201,19 @@ impl VaultStorage {
     pub fn write_encrypted(
         &self,
         cipher: &VaultCipher,
-        data: &HashMap<String, String>,
+        data: &HashMap<String, zeroize::Zeroizing<String>>,
     ) -> Result<(), AppError> {
         let mut env = self.load()?.ok_or_else(|| {
             AppError::VaultError("Vault not initialized. Call unlock() first.".into())
         })?;
-        // Wrap the serialized-all-secrets blob so it is wiped from memory after
-        // encryption rather than lingering as freed-but-unzeroed plaintext.
-        let json_str = zeroize::Zeroizing::new(serde_json::to_string(data).map_err(AppError::from)?);
+        // Serialize through BORROWED views of the secrets (no plaintext copies
+        // materialized), then wrap the serialized-all-secrets blob so it is wiped
+        // from memory after encryption rather than lingering as freed-but-unzeroed
+        // plaintext.
+        let refs: HashMap<&str, &str> =
+            data.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        let json_str =
+            zeroize::Zeroizing::new(serde_json::to_string(&refs).map_err(AppError::from)?);
         let encrypted = cipher.encrypt(json_str.as_bytes())?;
         env.data = B64.encode(encrypted);
         self.save(&env)
@@ -217,10 +224,12 @@ impl VaultStorage {
         &self,
         salt: &[u8],
         cipher: &VaultCipher,
-        data: &HashMap<String, String>,
+        data: &HashMap<String, zeroize::Zeroizing<String>>,
     ) -> Result<(), AppError> {
         let check = cipher.encrypt(CHECK_PLAINTEXT)?;
-        let json_str = zeroize::Zeroizing::new(serde_json::to_string(data)?);
+        let refs: HashMap<&str, &str> =
+            data.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        let json_str = zeroize::Zeroizing::new(serde_json::to_string(&refs)?);
         let data_ct = cipher.encrypt(json_str.as_bytes())?;
         let env = Envelope {
             v: VERSION,
