@@ -237,22 +237,6 @@ const AOSS_REST_TOOL = {
   },
 };
 
-// Juniper Apstra (intent-based DC fabric) — AOS REST.
-const APSTRA_TOOL = {
-  name: 'juniper_apstra',
-  description:
-    "Query the configured Juniper Apstra fabric controller (AOS REST) and return JSON. path is relative to /api. Common reads: '/blueprints' (fabrics), '/blueprints/<id>/anomalies' (health), '/blueprints/<id>/nodes?node_type=system' (switches), '/blueprints/<id>/security-zones' (VRFs), '/blueprints/<id>/virtual-networks', '/blueprints/<id>/racks', '/blueprints/<id>/configlets', '/systems' (managed devices), '/design/templates', '/design/rack-types', '/resources/asn-pools'. Get a blueprint id from '/blueprints' first. method defaults to GET. Reads are safe; ALWAYS confirm before any write.",
-  input_schema: {
-    type: 'object',
-    properties: {
-      path: { type: 'string', description: "e.g. '/blueprints'" },
-      method: { type: 'string', enum: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] },
-      body: { type: 'string' },
-    },
-    required: ['path'],
-  },
-};
-
 // Evaluate the saved network intents (desired state) against live devices.
 const INTENT_TOOL = {
   name: 'evaluate_network_intents',
@@ -484,26 +468,6 @@ async function executeTool(
         }
       }
       return toolErr(`Could not reach the AOS-S REST API on ${host} (${e}). It may need \`rest-interface\` enabled.`);
-    }
-  }
-  // Juniper Apstra fabric controller (configured in Settings, not session-bound).
-  if (name === 'juniper_apstra') {
-    const method = (args.method as string) || 'GET';
-    const path = (args.path as string) || '';
-    const body = (args.body as string) || undefined;
-    if (method.toUpperCase() !== 'GET') {
-      const ok = await askConfirm({
-        title: `Run ${method.toUpperCase()} ${path} on Apstra?`,
-        message: body || 'This request may change fabric/blueprint state.',
-        confirmLabel: 'Run request',
-        danger: method.toUpperCase() === 'DELETE',
-      });
-      if (!ok) return toolErr('User declined this write request.');
-    }
-    try {
-      return toolOk(capToolResult(JSON.stringify(await invoke('apstra_request', { method, path, body }), null, 2)));
-    } catch (e) {
-      return toolErr(`Apstra error: ${e}. Configure the controller in Settings → Juniper Apstra.`);
     }
   }
   // Evaluate desired-state intents against the live network.
@@ -1302,7 +1266,6 @@ export default function AiAssistant() {
       else if (dt === 'aruba-aos-s') builtinTools.push(AOSS_REST_TOOL);
       else if (dt === 'aruba-controller') builtinTools.push(AOS8_SHOW_TOOL);
     }
-    if (settings.aiUseApstra) builtinTools.push(APSTRA_TOOL);
 
     // MCP tools — only when enabled — available to EVERY provider (Anthropic
     // and the OpenAI-compatible ones alike), not just Claude.

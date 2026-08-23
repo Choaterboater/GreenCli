@@ -15,7 +15,6 @@ import {
   Waypoints,
   Target,
   HelpCircle,
-  Network,
   X,
   Plus,
 } from 'lucide-react';
@@ -50,7 +49,6 @@ import CommandPalette from './components/CommandPalette';
 import TunnelsManager from './components/TunnelsManager';
 import IntentPanel from './components/IntentPanel';
 import HelpPanel from './components/HelpPanel';
-import ApstraBrowser from './components/ApstraBrowser';
 import VaultUnlock from './components/VaultUnlock';
 import BulkRunner from './components/BulkRunner';
 import SftpBrowser from './components/SftpBrowser';
@@ -418,30 +416,6 @@ function App() {
     return () => clearTimeout(t);
   }, [centralBaseUrl, centralClientId, centralClientSecret, centralAuthMode, centralToken]);
 
-  // Push Juniper Apstra credentials to the backend whenever they change.
-  const apstraHost = useSettingsStore((s) => s.apstraHost);
-  const apstraUsername = useSettingsStore((s) => s.apstraUsername);
-  const apstraPassword = useSettingsStore((s) => s.apstraPassword);
-  const verifyDeviceTls = useSettingsStore((s) => s.verifyDeviceTls);
-  useEffect(() => {
-    // Debounced for the same reason as the Central push above.
-    const t = setTimeout(() => {
-      if (apstraHost && apstraUsername && apstraPassword) {
-        invoke('apstra_configure', {
-          host: apstraHost,
-          username: apstraUsername,
-          password: apstraPassword,
-          // Top-level command args use camelCase (Tauri maps to the snake_case Rust
-          // param). Honour the user's TLS-verification setting.
-          acceptInvalidCerts: !verifyDeviceTls,
-        }).catch((e) => notify.error('Apstra configuration failed', String(e)));
-      } else {
-        invoke('apstra_clear').catch(() => {});
-      }
-    }, 500);
-    return () => clearTimeout(t);
-  }, [apstraHost, apstraUsername, apstraPassword, verifyDeviceTls]);
-
   // Push Juniper Mist cloud config to the backend whenever it changes.
   const mistBaseUrl = useSettingsStore((s) => s.mistBaseUrl);
   const mistToken = useSettingsStore((s) => s.mistToken);
@@ -461,7 +435,7 @@ function App() {
     return () => clearTimeout(t);
   }, [mistBaseUrl, mistToken]);
 
-  // ── Vault-backed persistence of Central / Apstra secrets ──
+  // ── Vault-backed persistence of Central / Mist secrets ──
   // These secrets are kept out of localStorage; when the vault is unlocked we load
   // them from the encrypted vault into the in-memory settings (once), then persist
   // any changes back to the vault. While the vault is locked they live in memory
@@ -506,13 +480,10 @@ function App() {
     vaultUnlocked,
     centralClientSecret,
     centralToken,
-    apstraPassword,
     mistToken,
     centralAccounts,
     centralBaseUrl,
     centralClientId,
-    apstraHost,
-    apstraUsername,
     mistBaseUrl,
   ]);
 
@@ -1190,13 +1161,6 @@ function App() {
               <Target size={15} />
             </button>
             <button
-              onClick={() => useSessionStore.getState().setShowApstra(true)}
-              className="flex items-center justify-center w-8 h-8 rounded-md text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] transition-colors"
-              title="Apstra blueprints (rendered configs)"
-            >
-              <Network size={15} />
-            </button>
-            <button
               onClick={() => useSessionStore.getState().setShowHelp(true)}
               className="flex items-center justify-center w-8 h-8 rounded-md text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] transition-colors"
               title="Help & documentation (F1)"
@@ -1671,7 +1635,6 @@ function App() {
       <TunnelsManager />
       <IntentPanel />
       <HelpPanel />
-      <ApstraBrowser />
       <QuickConnect onConnect={handleConnect} />
       <SshAuthDialog onAuthenticate={handleAuthenticate} />
       <DeviceMapper sessionId={mappingSessionId} onClose={() => setMappingSessionId(null)} />

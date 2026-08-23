@@ -1,4 +1,4 @@
-// Vault-backed persistence for Central / Apstra secrets.
+// Vault-backed persistence for Central / Mist secrets.
 //
 // These secrets are intentionally kept OUT of localStorage (see settingsStore
 // partialize). To survive a restart they're stored — encrypted, owner-only — in
@@ -13,8 +13,6 @@ const K_CLIENT_SECRET = 'set:central:clientSecret';
 const K_CLIENT_SECRET_IDENTITY = 'set:central:clientSecret:identity';
 const K_TOKEN = 'set:central:token';
 const K_TOKEN_IDENTITY = 'set:central:token:identity';
-const K_APSTRA = 'set:apstra:password';
-const K_APSTRA_IDENTITY = 'set:apstra:password:identity';
 const K_MIST = 'set:mist:token';
 const K_MIST_IDENTITY = 'set:mist:token:identity';
 const acctSecretKey = (id: string) => `set:central-acct:${id}:clientSecret`;
@@ -112,7 +110,7 @@ export async function deleteAccountSecrets(id: string): Promise<boolean> {
   return results.every(Boolean);
 }
 
-/** Write the current Central/Apstra secrets (and each saved account's secrets) to the vault.
+/** Write the current Central/Mist secrets (and each saved account's secrets) to the vault.
  *  Returns false if any entry failed to persist (e.g. vault locked or a storage
  *  error) so callers can warn instead of assuming the secrets survived. */
 export async function persistSecrets(s: TerminalSettings): Promise<boolean> {
@@ -131,11 +129,6 @@ export async function persistSecrets(s: TerminalSettings): Promise<boolean> {
   await track(
     K_TOKEN_IDENTITY,
     s.centralToken ? identity({ baseUrl: s.centralBaseUrl, mode: 'token' }) : ''
-  );
-  await track(K_APSTRA, s.apstraPassword || '');
-  await track(
-    K_APSTRA_IDENTITY,
-    s.apstraPassword ? identity({ host: s.apstraHost, username: s.apstraUsername }) : ''
   );
   await track(K_MIST, s.mistToken || '');
   await track(K_MIST_IDENTITY, s.mistToken ? identity({ baseUrl: s.mistBaseUrl }) : '');
@@ -157,7 +150,6 @@ export async function persistSecrets(s: TerminalSettings): Promise<boolean> {
     clearSecretIdentitiesInvalidated([
       ...(s.centralClientSecret ? ['centralClientSecret'] : []),
       ...(s.centralToken ? ['centralToken'] : []),
-      ...(s.apstraPassword ? ['apstraPassword'] : []),
       ...(s.mistToken ? ['mistToken'] : []),
       ...(s.centralAccounts || []).flatMap((account) => [
         ...(account.clientSecret ? [`centralAccountSecret:${account.id}`] : []),
@@ -178,8 +170,6 @@ export async function loadSecrets(s: TerminalSettings): Promise<Partial<Terminal
     vSecretIdentity,
     vToken,
     vTokenIdentity,
-    vApstra,
-    vApstraIdentity,
     vMist,
     vMistIdentity,
   ] = await Promise.all([
@@ -187,8 +177,6 @@ export async function loadSecrets(s: TerminalSettings): Promise<Partial<Terminal
     get(K_CLIENT_SECRET_IDENTITY),
     get(K_TOKEN),
     get(K_TOKEN_IDENTITY),
-    get(K_APSTRA),
-    get(K_APSTRA_IDENTITY),
     get(K_MIST),
     get(K_MIST_IDENTITY),
   ]);
@@ -236,13 +224,6 @@ export async function loadSecrets(s: TerminalSettings): Promise<Partial<Terminal
       'centralToken',
     )
       || s.centralToken,
-    apstraPassword: vaultSecretForIdentity(
-      vApstra,
-      vApstraIdentity,
-      { host: s.apstraHost, username: s.apstraUsername },
-      'apstraPassword',
-    )
-      || s.apstraPassword,
     mistToken: vaultSecretForIdentity(
       vMist,
       vMistIdentity,

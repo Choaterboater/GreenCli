@@ -37,7 +37,6 @@ interface SessionState {
   showTunnels: boolean;
   showIntent: boolean;
   showHelp: boolean;
-  showApstra: boolean;
   /** When opening Settings via a Help deep-link, the section id to scroll to + flash. */
   settingsFocus: string | null;
 
@@ -70,7 +69,6 @@ interface SessionState {
   setShowTunnels: (show: boolean) => void;
   setShowIntent: (show: boolean) => void;
   setShowHelp: (show: boolean) => void;
-  setShowApstra: (show: boolean) => void;
   setSettingsFocus: (id: string | null) => void;
   showConfigEditor: boolean;
   toggleConfigEditor: () => void;
@@ -127,7 +125,6 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
   showTunnels: false,
   showIntent: false,
   showHelp: false,
-  showApstra: false,
   settingsFocus: null,
 
   addSession: (config, sessionId) =>
@@ -254,7 +251,6 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
   setShowTunnels: (show) => set({ showTunnels: show }),
   setShowIntent: (show) => set({ showIntent: show }),
   setShowHelp: (show) => set({ showHelp: show }),
-  setShowApstra: (show) => set({ showApstra: show }),
   setSettingsFocus: (id) => set({ settingsFocus: id }),
   toggleConfigEditor: () => set((state) => ({ showConfigEditor: !state.showConfigEditor })),
   // Panels coexist — Editor, API, and AI can all be open side-by-side (each is
