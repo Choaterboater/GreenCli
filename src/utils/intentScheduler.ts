@@ -104,8 +104,12 @@ export async function sweepOnce(): Promise<void> {
       await invoke('intent_webhook_notify', {
         url,
         payload: driftWebhookPayload(Date.now(), violations),
-      }).catch(() => undefined); // never crash the sweep on a webhook failure
+      });
     }
+  } catch (err) {
+    // A failed sweep must not become an unhandled rejection every tick (W2-4):
+    // log and continue; the next interval tick retries with a clean slate.
+    console.warn('intent sweep failed, will retry next tick:', err);
   } finally {
     sweeping = false;
   }
