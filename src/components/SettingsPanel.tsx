@@ -767,7 +767,7 @@ export default function SettingsPanel() {
               Snapshot the device running-config into archive history once on
               every ssh/telnet connect. Off by default; the manual{' '}
               {'"'}Capture now{'"'} button in the Config Archive panel is
-              unaffected.
+              unaffected. This choice persists across app updates.
             </p>
 
             <label className="flex items-center justify-between cursor-pointer py-1">
