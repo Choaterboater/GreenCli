@@ -130,6 +130,9 @@ export interface TerminalSettings {
   intentScheduleMinutes: number;
   /** Optional webhook URL POSTed on new-violation transitions (drift alerts). */
   intentWebhookUrl: string;
+  /** Auto-capture the device running-config once on ssh/telnet connect (NW-16).
+   *  Off by default (W2-6) — the manual "Capture now" button always works. */
+  captureOnConnect: boolean;
   /** Last selected device type/profile base used by Quick Connect. */
   lastUsedDeviceType: DeviceType;
   /** Last selected built-in/custom profile used by Quick Connect. */
@@ -308,6 +311,7 @@ export const DEFAULT_SETTINGS: TerminalSettings = {
   intentScheduling: false,
   intentScheduleMinutes: 30,
   intentWebhookUrl: '',
+  captureOnConnect: false,
   lastUsedDeviceType: 'generic',
   lastUsedDeviceProfileId: 'builtin-generic',
   customDeviceProfiles: [],

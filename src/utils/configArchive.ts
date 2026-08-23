@@ -45,8 +45,10 @@ export function captureSupported(session: Session): boolean {
 }
 
 /** Pull the running config NOW and store it under the device's archive key.
- *  Returns the snapshot ts, or null when nothing was stored (deduped repeat). */
-export async function captureNow(session: Session): Promise<number | null> {
+ *  Returns the snapshot ts, or null when nothing was stored (deduped repeat).
+ *  `source` labels the history row: 'connect' (auto on ssh/telnet connect) vs
+ *  'manual' (Capture-now button). */
+export async function captureNow(session: Session, source: 'connect' | 'manual'): Promise<number | null> {
   if (!captureSupported(session)) return null;
   if (!session.connected) return null;
   const profile = profileForSession(session.config, useSettingsStore.getState().customDeviceProfiles);
@@ -75,7 +77,7 @@ export async function captureNow(session: Session): Promise<number | null> {
     if (!out?.trim()) return null;
     const ts = await invoke<number | null>('config_archive_capture', {
       device: getDeviceId(session),
-      source: 'connect',
+      source,
       content: out,
     });
     return ts;
@@ -86,7 +88,7 @@ export async function captureNow(session: Session): Promise<number | null> {
 
 /** Fire-and-forget connect-time capture (NW-16 acceptance: connect -> history). */
 export function captureOnConnect(session: Session): void {
-  void captureNow(session).catch(() => undefined);
+  void captureNow(session, 'connect').catch(() => undefined);
 }
 
 export async function archiveDevices(): Promise<string[]> {

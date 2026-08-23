@@ -758,6 +758,35 @@ export default function SettingsPanel() {
 
           <div className="border-t border-[var(--bg-tertiary)]" />
 
+          {/* Config archive — capture on connect (NW-16 / W2-6 opt-in) */}
+          <section id="set-config-archive">
+            <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-1.5">
+              Config archive
+            </h3>
+            <p className="text-[11px] text-[var(--text-secondary)] mb-3">
+              Snapshot the device running-config into archive history once on
+              every ssh/telnet connect. Off by default; the manual{' '}
+              {'"'}Capture now{'"'} button in the Config Archive panel is
+              unaffected.
+            </p>
+
+            <label className="flex items-center justify-between cursor-pointer py-1">
+              <span className="text-sm text-[var(--text-primary)]">Capture running-config on connect</span>
+              <div
+                onClick={() => settings.setCaptureOnConnect(!settings.captureOnConnect)}
+                className="w-9 h-5 rounded-full transition-colors cursor-pointer relative"
+                style={{ background: settings.captureOnConnect ? 'var(--accent)' : 'var(--border-strong)' }}
+              >
+                <div
+                  className="absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow-sm transition-transform"
+                  style={{ transform: settings.captureOnConnect ? 'translateX(16px)' : 'translateX(0)' }}
+                />
+              </div>
+            </label>
+          </section>
+
+          <div className="border-t border-[var(--bg-tertiary)]" />
+
           {/* Scheduled intent evaluation (drift alerting) */}
           <section id="set-intent-schedule">
             <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-1.5">

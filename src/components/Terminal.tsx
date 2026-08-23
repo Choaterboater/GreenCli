@@ -1045,7 +1045,9 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
           // skipped (unsupported) and straggler buffers are ignored.
           const st = useSessionStore.getState();
           const sess = st.sessions.find((s) => s.sessionId === sessionId);
-          if (sess) captureOnConnect(sess);
+          // Connect-time capture is opt-in (W2-6): skipped unless enabled in
+          // settings. The manual Capture-now button stays unaffected.
+          if (sess && useSettingsStore.getState().captureOnConnect) captureOnConnect(sess);
         }
         if (event.payload.status === 'connected' || event.payload.status === 'reconnecting') {
           // Fresh stream after a (re)connect — discard any partial multibyte bytes
