@@ -1112,9 +1112,23 @@ function App() {
               <PanelLeft size={15} />
             </button>
           )}
+
+          {/* Workspace utilities: Tools + Snippets, anchored under the brand like a file menu */}
+          <div className="no-drag flex items-center gap-0.5">
+            <WorkspaceMenu
+              splitView={splitView}
+              onToggleSplit={() => {
+                toggleSplitView();
+                refitTerminals();
+              }}
+              broadcastMode={broadcastMode}
+              onToggleBroadcast={toggleBroadcast}
+            />
+            <SnippetsMenu />
+          </div>
         </div>
 
-        {/* Center: panel segmented control + workspace utilities */}
+        {/* Center: panel segmented control */}
         <div className="flex items-center gap-2 no-drag">
           <div className="segmented">
             <button data-active={showConfigEditor} onClick={toggleConfigEditor} title="Config Editor (Ctrl+Shift+E)">
@@ -1129,19 +1143,6 @@ function App() {
               <Sparkles size={13} style={showAiAssistant ? { color: 'var(--vendor-mist)' } : undefined} />
               <span>AI</span>
             </button>
-          </div>
-
-          <div className="flex items-center gap-0.5">
-            <WorkspaceMenu
-              splitView={splitView}
-              onToggleSplit={() => {
-                toggleSplitView();
-                refitTerminals();
-              }}
-              broadcastMode={broadcastMode}
-              onToggleBroadcast={toggleBroadcast}
-            />
-            <SnippetsMenu />
           </div>
         </div>
 
