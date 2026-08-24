@@ -100,6 +100,11 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # macOS runners have 7 GB RAM, so Node 20 sizes its default old-space
+          # heap near 2 GB and `vite build` (the beforeBuildCommand) aborts with
+          # "JavaScript heap out of memory". Linux/Windows runners have 16 GB and
+          # get a 4 GB default, which is why only the macOS legs failed.
+          NODE_OPTIONS: --max-old-space-size=4096
           # macOS signing (notarization disabled — see comment above; presence
           # of APPLE_ID/APPLE_PASSWORD is what makes Tauri attempt notarization)
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
