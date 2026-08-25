@@ -751,7 +751,7 @@ export const MIST_ENDPOINTS: ApiEndpoint[] = [
   { name: 'Site Stats', method: 'GET', path: '/api/v1/sites/{site_id}/stats', description: 'Site-level aggregate stats', category: 'Monitoring' },
   { name: 'Site Device Stats', method: 'GET', path: '/api/v1/sites/{site_id}/stats/devices', description: 'Live stats for all site devices', category: 'Monitoring' },
   { name: 'Site Device Stats Detail', method: 'GET', path: '/api/v1/sites/{site_id}/stats/devices/{device_id}', description: 'Live stats for one device', category: 'Monitoring' },
-  { name: 'Site Device Clients', method: 'GET', path: '/api/v1/sites/{site_id}/devices/{device_id}/clients', description: 'Clients currently connected via one device', category: 'Clients' },
+  { name: 'Site Device Clients', method: 'GET', path: '/api/v1/sites/{site_id}/stats/devices/{device_id}/clients', description: 'Clients currently connected via one device', category: 'Clients' },
   { name: 'Site Device Config', method: 'GET', path: '/api/v1/sites/{site_id}/devices/{device_id}/config_cmd', description: 'Config commands applied to a device', category: 'Configuration' },
   { name: 'Site Device Config Search', method: 'GET', path: '/api/v1/sites/{site_id}/devices/last_config/search', description: 'Search last-known device configs at the site', category: 'Configuration' },
 
