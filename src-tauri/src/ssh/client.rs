@@ -15,6 +15,10 @@ pub struct ConnectResponse {
     pub session_id: String,
     pub success: bool,
     pub error: Option<String>,
+    /// Non-fatal host-key advisory (e.g. a NEW key algorithm was recorded for
+    /// an already-known host) for the frontend to surface as a warning toast.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -55,12 +59,15 @@ pub struct ConnectionConfig {
     pub auth_type: AuthType,
     /// Wiped on drop so a freed-but-unzeroed password never lingers in memory.
     pub password: Option<zeroize::Zeroizing<String>>,
-    pub private_key: Option<String>,
+    /// Wiped on drop (see `password`) — key material must not linger as
+    /// freed-but-unzeroed plaintext either.
+    pub private_key: Option<zeroize::Zeroizing<String>>,
     /// Wiped on drop (see `password`).
     pub key_passphrase: Option<zeroize::Zeroizing<String>>,
     /// Seconds between SSH keepalive probes. `None`/`0` disables keepalives.
     pub keep_alive_interval: Option<u64>,
-    /// Path to the TOFU known_hosts store. `None` disables host-key checking.
+    /// Path to the TOFU known_hosts store. `None` REJECTS every host key
+    /// (fail closed) — all production call sites must pass a path.
     pub known_hosts_path: Option<PathBuf>,
     /// Optional jump host (bastion / ProxyJump) — connect to the target through it.
     pub jump_host: Option<String>,
@@ -81,10 +88,7 @@ impl std::fmt::Debug for ConnectionConfig {
             .field("username", &self.username)
             .field("auth_type", &self.auth_type)
             .field("password", &redact(&self.password))
-            .field(
-                "private_key",
-                &self.private_key.as_ref().map(|_| "[REDACTED]"),
-            )
+            .field("private_key", &redact(&self.private_key))
             .field("key_passphrase", &redact(&self.key_passphrase))
             .field("keep_alive_interval", &self.keep_alive_interval)
             .field("known_hosts_path", &self.known_hosts_path)
@@ -122,6 +126,9 @@ pub struct ClientHandler {
     /// the mismatch details (possible MITM / re-imaged device) instead of
     /// russh's opaque "unknown key" error.
     reject_reason: Arc<std::sync::Mutex<Option<String>>>,
+    /// Non-fatal host-key advisory (new algorithm recorded for a known host),
+    /// surfaced to the frontend so it can toast a warning on connect.
+    warning: Arc<std::sync::Mutex<Option<String>>>,
 }
 
 #[async_trait]
@@ -142,7 +149,26 @@ impl Handler for ClientHandler {
                     key_type,
                     &fingerprint,
                 ) {
-                    Ok(accepted) => Ok(accepted),
+                    Ok(outcome) => {
+                        // A previously-known host presenting a NEW key algorithm
+                        // is accepted (TOFU), but an unexpected algorithm can
+                        // signal a downgrade attempt — flag it so connect() can
+                        // surface a warning to the user.
+                        if outcome == crate::ssh::known_hosts::KeyVerifyResult::NewAlgorithm {
+                            let msg = format!(
+                                "Host {} presented a new host key algorithm ({}) with fingerprint \
+                                 {}. It was recorded alongside the existing trusted key(s) — verify \
+                                 this change was expected (firmware upgrade / new key); otherwise \
+                                 this could be a downgrade attempt.",
+                                self.host_port, key_type, fingerprint
+                            );
+                            log::warn!("{}", msg);
+                            if let Ok(mut g) = self.warning.lock() {
+                                *g = Some(msg);
+                            }
+                        }
+                        Ok(true)
+                    }
                     Err(reason) => {
                         log::warn!("Rejected SSH host key: {}", reason);
                         if let Ok(mut g) = self.reject_reason.lock() {
@@ -152,8 +178,18 @@ impl Handler for ClientHandler {
                     }
                 }
             }
-            // No store configured → preserve legacy accept-all behaviour.
-            None => Ok(true),
+            // No store configured → REJECT (fail closed). Accepting any key
+            // here would silently re-open the MITM hole; every production call
+            // site passes a path, so a missing one is a programming error.
+            None => {
+                let reason =
+                    "No known_hosts store configured — refusing to accept an unverified host key";
+                log::warn!("Rejected SSH host key: {}", reason);
+                if let Ok(mut g) = self.reject_reason.lock() {
+                    *g = Some(reason.to_string());
+                }
+                Ok(false)
+            }
         }
     }
 
@@ -224,6 +260,10 @@ impl SshConnection {
 
         let reject_reason: Arc<std::sync::Mutex<Option<String>>> =
             Arc::new(std::sync::Mutex::new(None));
+        // Non-fatal host-key advisories recorded by check_server_key (e.g. a
+        // new algorithm on a known host); threaded back like reject_reason.
+        let warning: Arc<std::sync::Mutex<Option<String>>> =
+            Arc::new(std::sync::Mutex::new(None));
         // Turn a host-key rejection into an actionable error: russh only says
         // "unknown key", but the handler records WHY (mismatch = possible MITM
         // or re-imaged device, and how to clear the old entry).
@@ -246,6 +286,7 @@ impl SshConnection {
             host_port: format!("{}:{}", self.config.host, self.config.port),
             known_hosts_path: self.config.known_hosts_path.clone(),
             reject_reason: reject_reason.clone(),
+            warning: warning.clone(),
         };
 
         // Connect directly, or tunnel through a jump host (ProxyJump) when set.
@@ -259,6 +300,7 @@ impl SshConnection {
                 host_port: format!("{}:{}", jump_host, jump_port),
                 known_hosts_path: self.config.known_hosts_path.clone(),
                 reject_reason: reject_reason.clone(),
+                warning: warning.clone(),
             };
             let mut jump = russh::client::connect(
                 client_config.clone(),
@@ -547,6 +589,7 @@ impl SshConnection {
             session_id: self.session_id.clone(),
             success: true,
             error: None,
+            warning: warning.lock().ok().and_then(|g| g.clone()),
         })
     }
 
