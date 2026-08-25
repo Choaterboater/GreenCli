@@ -122,7 +122,13 @@ impl McpConfigStore {
     }
 
     fn save(&self, defs: &[McpServerDef]) -> Result<(), AppError> {
-        fs::write(&self.path, serde_json::to_vec_pretty(defs)?).map_err(AppError::from)?;
+        // Atomic write: serialize to a sibling temp file then rename over the
+        // target (rename is atomic on the same filesystem), so a crash mid-write
+        // can't truncate the server list and a concurrent reader never sees a
+        // torn file (mirrors intent::IntentStore::save_locked).
+        let tmp = self.path.with_extension("json.tmp");
+        fs::write(&tmp, serde_json::to_vec_pretty(defs)?).map_err(AppError::from)?;
+        fs::rename(&tmp, &self.path).map_err(AppError::from)?;
         Ok(())
     }
 
