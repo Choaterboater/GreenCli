@@ -83,10 +83,6 @@ impl CredentialVault {
         let _ = self.cipher.lock().map(|mut c| *c = None);
     }
 
-    pub fn is_unlocked(&self) -> bool {
-        self.cipher.lock().map(|c| c.is_some()).unwrap_or(false)
-    }
-
     pub fn is_initialized(&self) -> bool {
         self.storage.exists()
     }

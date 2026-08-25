@@ -230,9 +230,9 @@ impl Connection for LocalConnection {
             .ok_or_else(|| AppError::LocalError("Local session not connected".into()))?;
         let data = data.to_vec();
         tokio::task::spawn_blocking(move || -> std::io::Result<()> {
-            let mut w = writer.lock().map_err(|_| {
-                std::io::Error::new(std::io::ErrorKind::Other, "writer mutex poisoned")
-            })?;
+            let mut w = writer
+                .lock()
+                .map_err(|_| std::io::Error::other("writer mutex poisoned"))?;
             w.write_all(&data)?;
             w.flush()
         })
