@@ -971,21 +971,24 @@ export default function ConfigEditor() {
         await invoke('send_data', { sessionId: sid, data: disable + '\r' });
         await sleep(300);
       }
-      const { output: out } = await sendAndCapture(sid, show);
+      const { output: out, truncated } = await sendAndCapture(sid, show);
       if (restore) {
         await invoke('send_data', { sessionId: sid, data: restore + '\r' });
         await sleep(150);
       }
       if (!out) {
-        showStatus('No output captured');
+        showStatus(truncated ? 'No output captured (capture may be truncated)' : 'No output captured');
         return;
       }
       // Device grammars highlight show output fine (same as the terminal), so
       // show-command tabs get the session's device language too. dirty:true —
       // the capture exists nowhere else, so closing/clearing it must confirm
       // (same protection the old single-buffer pull had).
+      // Do not inject a truncation banner into the buffer — it could be sent
+      // back to the device; label the tab + status instead.
+      const tabName = (command ?? show).replace(/\s*\|\s*no-more\s*$/i, '').trim() || label;
       openInNewTab({
-        name: (command ?? show).replace(/\s*\|\s*no-more\s*$/i, '').trim() || label,
+        name: truncated ? `${tabName} [truncated]` : tabName,
         content: out,
         language: profile.deviceType === 'generic' ? 'plaintext' : profile.deviceType,
         filePath: null,
@@ -994,9 +997,13 @@ export default function ConfigEditor() {
       });
       if (command == null) {
         setDiffOriginal(out);
-        showStatus('Running-config pulled; baseline saved');
+        showStatus(
+          truncated
+            ? 'Running-config pulled; baseline may be truncated'
+            : 'Running-config pulled; baseline saved'
+        );
       } else {
-        showStatus(`Pulled ${label}`);
+        showStatus(truncated ? `Pulled ${label} (capture may be truncated)` : `Pulled ${label}`);
       }
     } catch (e) {
       showStatus(`Pull failed: ${e}`);

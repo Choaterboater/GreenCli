@@ -70,6 +70,30 @@ function safeWorkspaceConfig(config: ConnectionConfig): ConnectionConfig {
   return safe;
 }
 
+/** Shape of the `connect` invoke result (matches `ConnectResponse` in ssh/client.rs). */
+type ConnectInvokeResult = {
+  success: boolean;
+  error?: string;
+  warning?: string;
+};
+
+type HostKeyWarningPayload = {
+  sessionId?: string;
+  message?: string;
+};
+
+// Direct connect both emits `host-key-warning` and returns `warning` on the
+// invoke result; reconnect only emits the event. Dedupe so the user sees one toast.
+let lastHostKeyToast = { message: '', at: 0 };
+function toastHostKeyWarning(message: string | undefined) {
+  const text = message?.trim();
+  if (!text) return;
+  const now = Date.now();
+  if (text === lastHostKeyToast.message && now - lastHostKeyToast.at < 2000) return;
+  lastHostKeyToast = { message: text, at: now };
+  notify.warning('Host key warning', text);
+}
+
 function runStartupCommands(sessionId: string, startupCommands?: string) {
   const startup = startupCommands?.trim();
   if (!startup) return;
@@ -214,6 +238,17 @@ function App() {
       } catch {
         /* ignore */
       }
+    });
+    return () => {
+      un.then((f) => f());
+    };
+  }, []);
+
+  // Reconnect (and connect) emit this when a known host presents a new key
+  // algorithm. Toast only — no confirm dialog this change.
+  useEffect(() => {
+    const un = listen<HostKeyWarningPayload>('host-key-warning', (e) => {
+      toastHostKeyWarning(e.payload?.message);
     });
     return () => {
       un.then((f) => f());
@@ -829,10 +864,7 @@ function App() {
 
       try {
         const settingsState = useSettingsStore.getState();
-        const result = await invoke<{
-          success: boolean;
-          error?: string;
-        }>('connect', {
+        const result = await invoke<ConnectInvokeResult>('connect', {
           config: buildConnectPayload(
             fullConfig,
             { password },
@@ -878,6 +910,7 @@ function App() {
               ? fullConfig.command || 'local shell'
               : `${fullConfig.username ? fullConfig.username + '@' : ''}${fullConfig.host || fullConfig.serialPort || ''}`;
           notify.success('Connected', `${fullConfig.name || where} is online.`);
+          toastHostKeyWarning(result.warning);
 
           // Per-host startup commands: run them once the shell is ready.
           runStartupCommands(sessionId, fullConfig.startupCommands);
@@ -987,10 +1020,7 @@ function App() {
       try {
         useSessionStore.getState().updateSessionConnection(pending.id, false, 'connecting');
         const settingsState = useSettingsStore.getState();
-        const result = await invoke<{
-          success: boolean;
-          error?: string;
-        }>('connect', {
+        const result = await invoke<ConnectInvokeResult>('connect', {
           // Same builder as the direct-connect path, so the auth retry keeps the
           // serial line settings (data_bits/parity/stop_bits) and local-shell
           // launch details (command/args/cwd) it used to drop.
@@ -1029,6 +1059,7 @@ function App() {
           useSessionStore.getState().updateSessionConnection(pending.id, true);
           recordRecent(pending);
           setShowAuthDialog(false);
+          toastHostKeyWarning(result.warning);
 
           // Run per-host startup commands here too — this is the common SSH path
           // (no inline/vault password, so the first connect fails and the user

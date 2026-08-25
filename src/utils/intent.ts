@@ -158,10 +158,19 @@ export async function evaluateIntent(
         await invoke('send_data', { sessionId: s.sessionId, data: profile.pagingDisableCommand + '\r' });
         await sleep(300);
       }
-      const { output: out } = await sendAndCapture(s.sessionId, cmd);
+      const { output: out, truncated } = await sendAndCapture(s.sessionId, cmd);
       if (profile.pagingRestoreCommand) {
         await invoke('send_data', { sessionId: s.sessionId, data: profile.pagingRestoreCommand + '\r' });
         await sleep(150);
+      }
+      if (truncated) {
+        // Fail closed: a partial capture must not count as a pass.
+        perDevice.push({
+          device,
+          status: 'unknown',
+          detail: 'capture may be truncated',
+        });
+        continue;
       }
       const oc = matchOutcome(intent.matcher, out);
       perDevice.push({ device, status: oc.status, detail: oc.detail });
