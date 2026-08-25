@@ -6,7 +6,7 @@ authors = ["ChoateLabs"]
 license = "MIT"
 repository = "https://github.com/Choaterboater/GreenCli"
 edition = "2021"
-rust-version = "1.77.2"
+rust-version = "1.85"
 
 [build-dependencies]
 tauri-build = { version = "1.5.1", features = [] }
@@ -19,13 +19,16 @@ tokio = { version = "1.35", features = ["full"] }
 tokio-serial = "5.4"
 async-trait = "0.1"
 futures = "0.3"
-russh = "0.43"
-russh-keys = "0.43"
-russh-sftp = "2.3"
+# default crypto backend is aws-lc-rs (needs NASM on Windows). `ring` is the
+# portable backend that builds on the Windows MSVC toolchain and ubuntu-22.04 CI.
+russh = { version = "0.63.1", default-features = false, features = ["flate2", "ring", "rsa"] }
+russh-sftp = "2.4"
 aes-gcm = "0.10"
 argon2 = "0.5"
 zeroize = { version = "1", features = ["serde"] }
 rand = "0.8"
+# ssh-key 0.7 (via russh 0.63) needs rand_core 0.10 CryptoRng; rand 0.8 does not implement it.
+rand_os = { package = "rand", version = "0.10" }
 base64 = "0.21"
 log = "0.4"
 env_logger = "0.11"
@@ -38,6 +41,7 @@ reqwest = { version = "0.12", features = ["json", "cookies", "stream"] }
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
-# Opt-in RSA key generation (for legacy network gear). Off by default because it
-# pulls in the openssl backend; build with `--features rsa-keys` to enable.
-rsa-keys = ["russh-keys/openssl"]
+# Opt-in RSA key generation (for legacy network gear). Off by default.
+# russh 0.63 ships RSA via the `rsa` feature (on by default); this flag only
+# un-gates our generator, it no longer pulls openssl.
+rsa-keys = []
