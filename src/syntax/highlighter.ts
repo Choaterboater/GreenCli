@@ -72,7 +72,7 @@ const DEVICE_PATTERNS: DevicePattern[] = [
   {
     type: 'aruba-ap',
     patterns: [
-      /^\(?(?:iap|Aruba Instant VC)[-#\s]?\)?\s*[\(]?\w*[\)]?[#>]\s?/i,
+      /^\(?(?:iap|Aruba Instant VC)[-#\s]?\)?\s*[\(\?\w*[\)]?[#>]\s?/i,
       /^AP[A-Fa-f0-9]{6}#\s?/,
       /^[A-Za-z][A-Za-z0-9-_]*-VC\s*#\s?/,
     ],
@@ -135,6 +135,11 @@ export class ArubaHighlighter {
     const tokens: Token[] = [];
     let pos = 0;
     let promptProcessed = false;
+    // Lowercase the line ONCE per call: matchFromList previously did
+    // line.slice(pos).toLowerCase() at every position (O(n²) allocations per
+    // line). Grammar tokens are ASCII, so lowercasing is length-preserving and
+    // positions in `lowerLine` line up 1:1 with `line`.
+    const lowerLine = line.toLowerCase();
 
     while (pos < line.length) {
       // 1. Handle prompt prefix. The live terminal path can't flag prompt lines
@@ -182,7 +187,7 @@ export class ArubaHighlighter {
       // run BEFORE operators, otherwise the bare '|' is consumed as an operator
       // and the multi-word filter flag never gets a chance to match.
       if (line[pos] === '|') {
-        const pipeMatch = this.matchFromList(line, pos, this.sortedFlagsLower, 'token-cmd-flag');
+        const pipeMatch = this.matchFromList(line, lowerLine, pos, this.sortedFlagsLower, 'token-cmd-flag');
         if (pipeMatch) {
           tokens.push(pipeMatch);
           pos = pipeMatch.endPos;
@@ -191,7 +196,7 @@ export class ArubaHighlighter {
       }
 
       // 4. Try operators
-      const opMatch = this.matchFromList(line, pos, this.sortedOperatorsLower, 'token-cmd-operator');
+      const opMatch = this.matchFromList(line, lowerLine, pos, this.sortedOperatorsLower, 'token-cmd-operator');
       if (opMatch) {
         tokens.push(opMatch);
         pos = opMatch.endPos;
@@ -199,7 +204,7 @@ export class ArubaHighlighter {
       }
 
       // 5. Try flags
-      const flagMatch = this.matchFromList(line, pos, this.sortedFlagsLower, 'token-cmd-flag');
+      const flagMatch = this.matchFromList(line, lowerLine, pos, this.sortedFlagsLower, 'token-cmd-flag');
       if (flagMatch) {
         tokens.push(flagMatch);
         pos = flagMatch.endPos;
@@ -221,7 +226,7 @@ export class ArubaHighlighter {
 
       // 8. Try commands (only at command position)
       if (isCommandPosition) {
-        const cmdMatch = this.matchFromList(line, pos, this.sortedCommandsLower, 'token-cmd-keyword');
+        const cmdMatch = this.matchFromList(line, lowerLine, pos, this.sortedCommandsLower, 'token-cmd-keyword');
         if (cmdMatch) {
           tokens.push(cmdMatch);
           pos = cmdMatch.endPos;
@@ -230,7 +235,7 @@ export class ArubaHighlighter {
       }
 
       // 9. Try subcommands
-      const subMatch = this.matchFromList(line, pos, this.sortedSubcommandsLower, 'token-cmd-subcommand');
+      const subMatch = this.matchFromList(line, lowerLine, pos, this.sortedSubcommandsLower, 'token-cmd-subcommand');
       if (subMatch) {
         tokens.push(subMatch);
         pos = subMatch.endPos;
@@ -238,7 +243,7 @@ export class ArubaHighlighter {
       }
 
       // 10. Try keywords
-      const kwMatch = this.matchFromList(line, pos, this.sortedKeywordsLower, 'token-cmd-keyword');
+      const kwMatch = this.matchFromList(line, lowerLine, pos, this.sortedKeywordsLower, 'token-cmd-keyword');
       if (kwMatch) {
         tokens.push(kwMatch);
         pos = kwMatch.endPos;
@@ -438,6 +443,7 @@ export class ArubaHighlighter {
 
   private matchFromList(
     line: string,
+    lowerLine: string,
     pos: number,
     sortedListLower: string[],
     className: string
@@ -447,18 +453,17 @@ export class ArubaHighlighter {
       return null;
     }
 
-    const remaining = line.slice(pos);
-    // Lowercase the remaining substring once (not once per list item). The
-    // emitted token text is sliced from `remaining` so its original case is
-    // preserved, and ASCII grammar tokens keep the same length when lowercased.
-    const lowerRemaining = remaining.toLowerCase();
+    // Match against the pre-lowercased line (computed once per processLine) via
+    // index arithmetic — no per-position slice+lowercase. The emitted token text
+    // is sliced from the ORIGINAL line so its case is preserved, and ASCII
+    // grammar tokens keep the same length when lowercased.
     for (const itemLower of sortedListLower) {
-      if (lowerRemaining.startsWith(itemLower)) {
+      if (lowerLine.startsWith(itemLower, pos)) {
         // Word boundary after match — next char must be whitespace, operator, or EOL
-        const after = remaining[itemLower.length];
+        const after = line[pos + itemLower.length];
         if (!after || /[\s|><;!&()\[\]{}]/.test(after)) {
           return {
-            text: remaining.slice(0, itemLower.length),
+            text: line.slice(pos, pos + itemLower.length),
             className,
             startPos: pos,
             endPos: pos + itemLower.length,
