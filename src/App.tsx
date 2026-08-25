@@ -1,4 +1,4 @@
-import { useEffect, useCallback, useState, useRef } from 'react';
+import { useEffect, useCallback, useState, useRef, memo } from 'react';
 import { invoke } from '@tauri-apps/api/tauri';
 import {
   Settings,
@@ -26,6 +26,7 @@ import { listen } from '@tauri-apps/api/event';
 import { notify } from './store/toastStore';
 import { useRecentStore, timeAgo, RecentConnection } from './store/recentStore';
 import { armIntentScheduler } from './utils/intentScheduler';
+import { buildConnectPayload } from './utils/connect';
 import Toaster from './components/Toaster';
 import DialogHost from './components/DialogHost';
 
@@ -80,6 +81,27 @@ function runStartupCommands(sessionId: string, startupCommands?: string) {
   }, 700);
 }
 
+// One stable onSend per session id — the memoized per-session Terminal below
+// would otherwise be re-rendered by a fresh inline closure on every App render.
+const sessionSendHandlers = new Map<string, (data: string) => void>();
+function sendHandlerFor(sessionId: string): (data: string) => void {
+  let handler = sessionSendHandlers.get(sessionId);
+  if (!handler) {
+    handler = (data: string) => {
+      const current = useSessionStore
+        .getState()
+        .sessions.find((session) => session.sessionId === sessionId);
+      if (!current?.connected) return;
+      invoke('send_data', { sessionId, data }).catch(console.error);
+    };
+    sessionSendHandlers.set(sessionId, handler);
+  }
+  return handler;
+}
+
+// Keep-mounted terminals re-render only when their own props change.
+const MemoTerminal = memo(Terminal);
+
 // GreenCLI brand glyph — a terminal prompt `>_` (uses currentColor).
 function PromptGlyph({ size, style }: { size: number; style?: React.CSSProperties }) {
   return (
@@ -92,40 +114,41 @@ function PromptGlyph({ size, style }: { size: number; style?: React.CSSPropertie
 
 function App() {
   const { theme } = useTheme();
-  const {
-    sessions,
-    activeSessionId,
-    sidebarVisible,
-    showApiExplorer,
-    showAiAssistant,
-    showConfigEditor,
-    setShowSettings,
-    setShowSearch,
-    addSession,
-    removeSession,
-    setPendingConnection,
-    setShowAuthDialog,
-    toggleApiExplorer,
-    toggleAiAssistant,
-    toggleConfigEditor,
-    broadcastMode,
-    toggleBroadcast,
-    splitView,
-    splitPanes,
-    toggleSplitView,
-    addSplitPane,
-    removeSplitPane,
-    setSplitPaneAt,
-    poppedSessions,
-    markPoppedOut,
-    restorePoppedOut,
-    vaultUnlocked,
-    setVaultUnlocked,
-    setShowVaultUnlock,
-    setFolders,
-    showSftp,
-    setShowSftp,
-  } = useSessionStore();
+  // Narrow per-field selectors (the pattern Terminal.tsx uses): subscribing to
+  // the whole store re-rendered App — and every session's terminal — on any
+  // session/UI state change.
+  const sessions = useSessionStore((s) => s.sessions);
+  const activeSessionId = useSessionStore((s) => s.activeSessionId);
+  const sidebarVisible = useSessionStore((s) => s.sidebarVisible);
+  const showApiExplorer = useSessionStore((s) => s.showApiExplorer);
+  const showAiAssistant = useSessionStore((s) => s.showAiAssistant);
+  const showConfigEditor = useSessionStore((s) => s.showConfigEditor);
+  const setShowSettings = useSessionStore((s) => s.setShowSettings);
+  const setShowSearch = useSessionStore((s) => s.setShowSearch);
+  const addSession = useSessionStore((s) => s.addSession);
+  const removeSession = useSessionStore((s) => s.removeSession);
+  const setPendingConnection = useSessionStore((s) => s.setPendingConnection);
+  const setShowAuthDialog = useSessionStore((s) => s.setShowAuthDialog);
+  const toggleApiExplorer = useSessionStore((s) => s.toggleApiExplorer);
+  const toggleAiAssistant = useSessionStore((s) => s.toggleAiAssistant);
+  const toggleConfigEditor = useSessionStore((s) => s.toggleConfigEditor);
+  const broadcastMode = useSessionStore((s) => s.broadcastMode);
+  const toggleBroadcast = useSessionStore((s) => s.toggleBroadcast);
+  const splitView = useSessionStore((s) => s.splitView);
+  const splitPanes = useSessionStore((s) => s.splitPanes);
+  const toggleSplitView = useSessionStore((s) => s.toggleSplitView);
+  const addSplitPane = useSessionStore((s) => s.addSplitPane);
+  const removeSplitPane = useSessionStore((s) => s.removeSplitPane);
+  const setSplitPaneAt = useSessionStore((s) => s.setSplitPaneAt);
+  const poppedSessions = useSessionStore((s) => s.poppedSessions);
+  const markPoppedOut = useSessionStore((s) => s.markPoppedOut);
+  const restorePoppedOut = useSessionStore((s) => s.restorePoppedOut);
+  const vaultUnlocked = useSessionStore((s) => s.vaultUnlocked);
+  const setVaultUnlocked = useSessionStore((s) => s.setVaultUnlocked);
+  const setShowVaultUnlock = useSessionStore((s) => s.setShowVaultUnlock);
+  const setFolders = useSessionStore((s) => s.setFolders);
+  const showSftp = useSessionStore((s) => s.showSftp);
+  const setShowSftp = useSessionStore((s) => s.setShowSftp);
 
   const recents = useRecentStore((s) => s.recents);
   const clearRecents = useRecentStore((s) => s.clearRecents);
@@ -234,18 +257,23 @@ function App() {
 
   useEffect(() => {
     if (!workspaceLoaded) return;
-    const snapshot: WorkspaceSnapshot = {
-      activeSessionId,
-      sessions: sessions.map((session) => ({
-        sessionId: session.sessionId,
-        config: safeWorkspaceConfig(session.config),
-      })),
-    };
-    try {
-      localStorage.setItem(WORKSPACE_KEY, JSON.stringify(snapshot));
-    } catch {
-      // Workspace persistence is best-effort; active sessions continue normally.
-    }
+    // Debounced: session objects churn on every connection-status/activity
+    // update, and serializing the whole workspace per change is wasted work.
+    const t = setTimeout(() => {
+      const snapshot: WorkspaceSnapshot = {
+        activeSessionId,
+        sessions: sessions.map((session) => ({
+          sessionId: session.sessionId,
+          config: safeWorkspaceConfig(session.config),
+        })),
+      };
+      try {
+        localStorage.setItem(WORKSPACE_KEY, JSON.stringify(snapshot));
+      } catch {
+        // Workspace persistence is best-effort; active sessions continue normally.
+      }
+    }, 500);
+    return () => clearTimeout(t);
   }, [activeSessionId, sessions, workspaceLoaded]);
 
   // Browser/WebView reloads destroy the React state while backend sessions are
@@ -579,8 +607,10 @@ function App() {
       // out while any overlay/modal is open or focus is in an input/editor (incl.
       // Monaco's hidden textarea), so Cmd+W doesn't silently tear down the live
       // session behind the overlay.
-      if ((e.ctrlKey || e.metaKey) && (e.key === 'w' || e.key === 'W') && activeSessionId) {
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'w' || e.key === 'W')) {
         const st = useSessionStore.getState();
+        const activeId = st.activeSessionId;
+        if (!activeId) return;
         const overlayOpen =
           st.showSettings || st.showQuickConnect || st.showAuthDialog ||
           st.showCommandPalette || st.showHelp || st.showVaultUnlock ||
@@ -597,31 +627,34 @@ function App() {
         if (!closeChord && inEditable) return;
         if (closeChord && inEditable && !inTerminal) return;
         e.preventDefault();
-        if (!st.poppedSessions.includes(activeSessionId)) {
-          invoke('disconnect', { sessionId: activeSessionId }).catch(() => {});
-          removeSession(activeSessionId);
+        if (!st.poppedSessions.includes(activeId)) {
+          invoke('disconnect', { sessionId: activeId }).catch(() => {});
+          st.removeSession(activeId);
         }
       }
       // Ctrl+1..9: jump to tab N. Popped-out sessions live in their own window —
       // activating one here blanks the whole terminal area, so skip them.
       if ((e.ctrlKey || e.metaKey) && /^[1-9]$/.test(e.key)) {
+        const st = useSessionStore.getState();
         const idx = parseInt(e.key, 10) - 1;
-        if (sessions[idx] && !useSessionStore.getState().poppedSessions.includes(sessions[idx].sessionId)) {
+        if (st.sessions[idx] && !st.poppedSessions.includes(st.sessions[idx].sessionId)) {
           e.preventDefault();
-          useSessionStore.getState().setActiveSession(sessions[idx].sessionId);
+          st.setActiveSession(st.sessions[idx].sessionId);
         }
       }
       // Ctrl+Tab: cycle to the next tab still living in this window (popped-out
       // sessions render in their own window, so cycle past them).
-      if (e.ctrlKey && e.key === 'Tab' && sessions.length > 1) {
+      const tabSessions = useSessionStore.getState().sessions;
+      if (e.ctrlKey && e.key === 'Tab' && tabSessions.length > 1) {
         e.preventDefault();
-        const popped = useSessionStore.getState().poppedSessions;
-        const cur = sessions.findIndex((s) => s.sessionId === activeSessionId);
-        for (let step = 1; step <= sessions.length; step++) {
-          const next = sessions[(cur + step) % sessions.length];
+        const st = useSessionStore.getState();
+        const popped = st.poppedSessions;
+        const cur = tabSessions.findIndex((s) => s.sessionId === st.activeSessionId);
+        for (let step = 1; step <= tabSessions.length; step++) {
+          const next = tabSessions[(cur + step) % tabSessions.length];
           if (popped.includes(next.sessionId)) continue;
-          if (next.sessionId !== activeSessionId) {
-            useSessionStore.getState().setActiveSession(next.sessionId);
+          if (next.sessionId !== st.activeSessionId) {
+            st.setActiveSession(next.sessionId);
           }
           break;
         }
@@ -629,12 +662,12 @@ function App() {
       // Ctrl+F: Search
       if ((e.ctrlKey || e.metaKey) && e.key === 'f' && !shellCtrl) {
         e.preventDefault();
-        setShowSearch(true);
+        useSessionStore.getState().setShowSearch(true);
       }
       // Ctrl+,: Settings
       if ((e.ctrlKey || e.metaKey) && e.key === ',') {
         e.preventDefault();
-        setShowSettings(true);
+        useSessionStore.getState().setShowSettings(true);
       }
       // Ctrl+B: Toggle Sidebar
       if ((e.ctrlKey || e.metaKey) && e.key === 'b' && !shellCtrl) {
@@ -644,17 +677,17 @@ function App() {
       // Ctrl+Shift+A: Toggle API Explorer
       if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'A') {
         e.preventDefault();
-        toggleApiExplorer();
+        useSessionStore.getState().toggleApiExplorer();
       }
       // Ctrl+Shift+I: Toggle AI Assistant
       if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'I') {
         e.preventDefault();
-        toggleAiAssistant();
+        useSessionStore.getState().toggleAiAssistant();
       }
       // Ctrl+Shift+E: Toggle Config Editor
       if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'E') {
         e.preventDefault();
-        toggleConfigEditor();
+        useSessionStore.getState().toggleConfigEditor();
       }
       // Ctrl/Cmd +/− /0: zoom terminal + config-editor font (pinch on the
       // trackpad works too). The config editors run Monaco pinned to this same
@@ -679,7 +712,10 @@ function App() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [activeSessionId, sessions, removeSession, setShowSearch, setShowSettings, toggleApiExplorer, toggleAiAssistant, toggleConfigEditor]);
+    // Attached ONCE: the handler reads live sessions/UI state through
+    // useSessionStore.getState() / useSettingsStore.getState(), so it never
+    // needs to re-subscribe (and re-attach the window listener) on tab changes.
+  }, []);
 
   // Scheduled intent evaluation (NW-15): re-arm whenever the toggle or interval
   // changes; cleanup disarms on unmount. The sweep never overlaps itself, and
@@ -792,42 +828,19 @@ function App() {
       }
 
       try {
+        const settingsState = useSettingsStore.getState();
         const result = await invoke<{
           success: boolean;
           error?: string;
         }>('connect', {
-          config: {
-            id: sessionId,
-            name: fullConfig.name,
-            protocol: fullConfig.protocol,
-            host: fullConfig.host,
-            port: fullConfig.port,
-            username: fullConfig.username,
-            auth_type: fullConfig.authType || 'password',
-            // Wire name per the B17 contract: ConnectionConfigRequest.key_path ↔
-            // JSON `keyPath`. Backend reads the identity file at connect when
-            // private_key is absent and keyPath is set.
-            keyPath: fullConfig.keyPath,
-            password,
-            private_key: fullConfig.privateKey,
-            key_passphrase: fullConfig.keyPassphrase,
-            serial_port: fullConfig.serialPort,
-            baud_rate: fullConfig.baudRate,
-            data_bits: fullConfig.dataBits,
-            parity: fullConfig.parity,
-            stop_bits: fullConfig.stopBits,
-            device_type: fullConfig.deviceType,
-            device_profile_id: fullConfig.deviceProfileId,
-            keep_alive_interval: useSettingsStore.getState().keepAliveInterval,
-            auto_reconnect: useSettingsStore.getState().autoReconnect,
-            command: fullConfig.command,
-            args: fullConfig.args,
-            cwd: fullConfig.cwd,
-            jump_host: fullConfig.jumpHost,
-            jump_port: fullConfig.jumpPort,
-            jump_username: fullConfig.jumpUsername,
-            jump_password: fullConfig.jumpPassword,
-          },
+          config: buildConnectPayload(
+            fullConfig,
+            { password },
+            {
+              keepAliveInterval: settingsState.keepAliveInterval,
+              autoReconnect: settingsState.autoReconnect,
+            }
+          ),
         });
 
         // The SSH auth dialog only makes sense for credential-based protocols.
@@ -973,35 +986,29 @@ function App() {
 
       try {
         useSessionStore.getState().updateSessionConnection(pending.id, false, 'connecting');
+        const settingsState = useSettingsStore.getState();
         const result = await invoke<{
           success: boolean;
           error?: string;
         }>('connect', {
-          config: {
-            id: pending.id,
-            name: pending.name,
-            protocol: pending.protocol,
-            host: pending.host,
-            port: pending.port,
-            username: pending.username,
-            // Honour the auth type the user picked in the dialog.
-            auth_type:
-              creds.authType === 'key' ? 'key' : creds.authType === 'agent' ? 'agent' : 'password',
-            keyPath: pending.keyPath,
-            password: creds.password,
-            private_key: creds.privateKey,
-            key_passphrase: creds.keyPassphrase,
-            serial_port: pending.serialPort,
-            baud_rate: pending.baudRate,
-            device_type: pending.deviceType,
-            device_profile_id: pending.deviceProfileId,
-            keep_alive_interval: useSettingsStore.getState().keepAliveInterval,
-            auto_reconnect: useSettingsStore.getState().autoReconnect,
-            jump_host: pending.jumpHost,
-            jump_port: pending.jumpPort,
-            jump_username: pending.jumpUsername,
-            jump_password: pending.jumpPassword,
-          },
+          // Same builder as the direct-connect path, so the auth retry keeps the
+          // serial line settings (data_bits/parity/stop_bits) and local-shell
+          // launch details (command/args/cwd) it used to drop.
+          config: buildConnectPayload(
+            pending,
+            {
+              password: creds.password,
+              privateKey: creds.privateKey,
+              keyPassphrase: creds.keyPassphrase,
+              // Honour the auth type the user picked in the dialog.
+              authType:
+                creds.authType === 'key' ? 'key' : creds.authType === 'agent' ? 'agent' : 'password',
+            },
+            {
+              keepAliveInterval: settingsState.keepAliveInterval,
+              autoReconnect: settingsState.autoReconnect,
+            }
+          ),
         });
         const currentState = useSessionStore.getState();
         const stillOpen = currentState.sessions.some((s) => s.sessionId === pending.id);
@@ -1427,16 +1434,10 @@ function App() {
                         : { position: 'absolute', inset: 0 };
                       return (
                         <div key={s.sessionId} style={style}>
-                          <Terminal
+                          <MemoTerminal
                             sessionId={s.sessionId}
                             deviceType={s.config.deviceType}
-                            onSend={(data) => {
-                              const current = useSessionStore
-                                .getState()
-                                .sessions.find((session) => session.sessionId === s.sessionId);
-                              if (!current?.connected) return;
-                              invoke('send_data', { sessionId: s.sessionId, data }).catch(console.error);
-                            }}
+                            onSend={sendHandlerFor(s.sessionId)}
                           />
                         </div>
                       );
@@ -1578,14 +1579,17 @@ function App() {
               />
             </div>
 
-            {/* Config Editor Panel */}
-            {showConfigEditor && <ConfigEditor />}
+            {/* Config Editor Panel — always MOUNTED (hidden via CSS when closed,
+                like the per-session terminals) so editor buffers/undo history
+                survive closing the panel. Monaco re-lays out on unhide. */}
+            <ConfigEditor />
 
             {/* API Explorer Panel */}
             {showApiExplorer && <ApiExplorer />}
 
-            {/* AI Assistant Panel */}
-            {showAiAssistant && <AiAssistant />}
+            {/* AI Assistant Panel — always mounted for the same reason: closing
+                the panel must not destroy the chat history. */}
+            <AiAssistant />
           </div>
         </div>
       </div>
