@@ -30,11 +30,17 @@ interface QuickConnectProps {
 }
 
 export default function QuickConnect({ onConnect }: QuickConnectProps) {
-  const { showQuickConnect, setShowQuickConnect } = useSessionStore();
-  const settings = useSettingsStore();
+  // Narrow per-field selectors instead of whole-store subscriptions.
+  const showQuickConnect = useSessionStore((s) => s.showQuickConnect);
+  const setShowQuickConnect = useSessionStore((s) => s.setShowQuickConnect);
+  const customDeviceProfiles = useSettingsStore((s) => s.customDeviceProfiles);
+  const lastUsedDeviceType = useSettingsStore((s) => s.lastUsedDeviceType);
+  const lastUsedDeviceProfileId = useSettingsStore((s) => s.lastUsedDeviceProfileId);
+  const setLastUsedDeviceType = useSettingsStore((s) => s.setLastUsedDeviceType);
+  const setLastUsedDeviceProfileId = useSettingsStore((s) => s.setLastUsedDeviceProfileId);
   const profiles = useMemo(
-    () => allDeviceProfiles(settings.customDeviceProfiles),
-    [settings.customDeviceProfiles],
+    () => allDeviceProfiles(customDeviceProfiles),
+    [customDeviceProfiles],
   );
   const [protocol, setProtocol] = useState<Protocol>('ssh');
   const [host, setHost] = useState('');
@@ -62,15 +68,15 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
   const [error, setError] = useState<string | null>(null);
 
   const lastUsedProfile = () =>
-    profiles.find((profile) => profile.id === settings.lastUsedDeviceProfileId) ??
-    profileForDeviceType(settings.lastUsedDeviceType);
+    profiles.find((profile) => profile.id === lastUsedDeviceProfileId) ??
+    profileForDeviceType(lastUsedDeviceType);
 
   useEffect(() => {
     if (!showQuickConnect) return;
     const profile = lastUsedProfile();
     setDeviceType(profile.deviceType);
     setDeviceProfileId(profile.id);
-  }, [showQuickConnect, settings.lastUsedDeviceType, settings.lastUsedDeviceProfileId, profiles]);
+  }, [showQuickConnect, lastUsedDeviceType, lastUsedDeviceProfileId, profiles]);
 
   // Clear host/credential fields when the dialog closes. The component stays
   // mounted (App renders it unconditionally; close = `return null` below), so
@@ -157,8 +163,8 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
         jumpPassword: protocol === 'ssh' && showJump && jumpHost ? jumpPassword : undefined,
       };
       if (protocol !== 'local') {
-        settings.setLastUsedDeviceType(config.deviceType);
-        settings.setLastUsedDeviceProfileId(config.deviceProfileId || 'builtin-generic');
+        setLastUsedDeviceType(config.deviceType);
+        setLastUsedDeviceProfileId(config.deviceProfileId || 'builtin-generic');
       }
 
       if (saveSession) {
@@ -202,8 +208,8 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
     const profile = profiles.find((p) => p.id === profileId) ?? profiles[0];
     setDeviceProfileId(profile.id);
     setDeviceType(profile.deviceType);
-    settings.setLastUsedDeviceType(profile.deviceType);
-    settings.setLastUsedDeviceProfileId(profile.id);
+    setLastUsedDeviceType(profile.deviceType);
+    setLastUsedDeviceProfileId(profile.id);
   };
 
   const inputCls = 'input-field w-full h-9 px-3 text-sm';
