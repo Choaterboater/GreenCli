@@ -487,12 +487,14 @@ async function executeTool(
       if (!ok) return toolErr('User declined to run this command.');
     }
     try {
-      const { output: cleaned } = await sendAndCapture(activeSession.sessionId, command);
+      const { output: cleaned, truncated } = await sendAndCapture(activeSession.sessionId, command);
       if (!cleaned) {
-        return toolOk(`Command \`${command}\` sent — no output captured (may be interactive, paged, or still running).`);
+        const empty = `Command \`${command}\` sent — no output captured (may be interactive, paged, or still running).`;
+        return toolOk(truncated ? `[capture may be truncated]\n${empty}` : empty);
       }
       // Cap to keep token usage sane; keep the tail (most relevant).
-      return toolOk(cleaned.length > 12000 ? '…(truncated)…\n' + cleaned.slice(-12000) : cleaned);
+      const body = cleaned.length > 12000 ? '…(truncated)…\n' + cleaned.slice(-12000) : cleaned;
+      return toolOk(truncated ? `[capture may be truncated]\n${body}` : body);
     } catch (e) {
       return toolErr(`Failed to run command: ${e}`);
     }
