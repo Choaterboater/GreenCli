@@ -50,6 +50,9 @@ export default function DialogHost() {
     >
       <div
         className="surface-elevated animate-scale-in w-[420px] max-w-[90vw] p-5"
+        role="dialog"
+        aria-modal="true"
+        aria-label={current.title}
         onKeyDown={(e) => {
           if (e.key === 'Enter') {
             // Let a focused button other than confirm (e.g. Cancel) handle Enter natively.
