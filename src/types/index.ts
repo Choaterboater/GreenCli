@@ -322,4 +322,221 @@ export const DEFAULT_SETTINGS: TerminalSettings = {
   aiUseTerminal: true,
   aiUseCxRest: false,
   aiUseMcp: false,
-  verifyDeviceTls: true
+  verifyDeviceTls: true,
+  aiReferences: '',
+  mistBaseUrl: 'https://api.mist.com',
+  mistToken: '',
+  centralBaseUrl: 'https://app1-apigw.central.arubanetworks.com',
+  centralClientId: '',
+  centralClientSecret: '',
+  centralAuthMode: 'creds',
+  centralToken: '',
+  centralAccounts: [],
+  aiAgents: BUILTIN_AGENTS,
+  sessionAgents: {},
+};
+
+// ── Terminal color schemes ──
+export interface TerminalScheme {
+  name: string;
+  label: string;
+  colors: Record<string, string>;
+}
+
+/** Minimal base16 palette — extended schemes may add ANSI named keys on top. */
+const BASE16 = {
+  base00: '#0D1B12', base01: '#12241A', base02: '#1A2E22', base03: '#2E4A3B',
+  base04: '#5C7A6B', base05: '#8FA89B', base06: '#C6D8CD', base07: '#E8F2EB',
+  base08: '#E5534B', base09: '#D97706', base0A: '#EAB308', base0B: '#22C55E',
+  base0C: '#14B8A6', base0D: '#3B82F6', base0E: '#A855F7', base0F: '#B4643C',
+};
+
+export const TERMINAL_SCHEMES: TerminalScheme[] = [
+  {
+    name: 'greencli',
+    label: 'GreenCLI (default)',
+    colors: {
+      background: '#0B1410', foreground: '#D4E8DC', cursor: '#4ADE80',
+      selection: '#1F3D2B',
+      black: '#0D1B12', red: '#E5534B', green: '#22C55E', yellow: '#EAB308',
+      blue: '#3B82F6', magenta: '#A855F7', cyan: '#14B8A6', white: '#C6D8CD',
+      brightBlack: '#2E4A3B', brightRed: '#F87168', brightGreen: '#4ADE80',
+      brightYellow: '#FDE047', brightBlue: '#60A5FA', brightMagenta: '#C084FC',
+      brightCyan: '#2DD4BF', brightWhite: '#E8F2EB',
+    },
+  },
+  {
+    name: 'solarized-dark',
+    label: 'Solarized Dark',
+    colors: {
+      background: '#002B36', foreground: '#839496', cursor: '#93A1A1',
+      selection: '#073642',
+      black: '#073642', red: '#DC322F', green: '#859900', yellow: '#B58900',
+      blue: '#268BD2', magenta: '#D33682', cyan: '#2AA198', white: '#EEE8D5',
+      brightBlack: '#002B36', brightRed: '#CB4B16', brightGreen: '#586E75',
+      brightYellow: '#657B83', brightBlue: '#839496', brightMagenta: '#6C71C4',
+      brightCyan: '#93A1A1', brightWhite: '#FDF6E3',
+    },
+  },
+  {
+    name: 'dracula',
+    label: 'Dracula',
+    colors: {
+      background: '#282A36', foreground: '#F8F8F2', cursor: '#F8F8F2',
+      selection: '#44475A',
+      black: '#21222C', red: '#FF5555', green: '#50FA7B', yellow: '#F1FA8C',
+      blue: '#BD93F9', magenta: '#FF79C6', cyan: '#8BE9FD', white: '#F8F8F2',
+      brightBlack: '#6272A4', brightRed: '#FF6E6E', brightGreen: '#69FF94',
+      brightYellow: '#FFFFA5', brightBlue: '#D6ACFF', brightMagenta: '#FF92DF',
+      brightCyan: '#A4FFFF', brightWhite: '#FFFFFF',
+    },
+  },
+  {
+    name: 'monokai',
+    label: 'Monokai',
+    colors: {
+      background: '#272822', foreground: '#F8F8F2', cursor: '#F8F8F0',
+      selection: '#49483E',
+      black: '#272822', red: '#F92672', green: '#A6E22E', yellow: '#F4BF75',
+      blue: '#66D9EF', magenta: '#AE81FF', cyan: '#A1EFE4', white: '#F8F8F2',
+      brightBlack: '#75715E', brightRed: '#F92672', brightGreen: '#A6E22E',
+      brightYellow: '#E6DB74', brightBlue: '#66D9EF', brightMagenta: '#AE81FF',
+      brightCyan: '#A1EFE4', brightWhite: '#F9F8F5',
+    },
+  },
+];
+
+export type TerminalColorScheme = 'greencli' | 'solarized-dark' | 'dracula' | 'monokai';
+
+/** Look up a scheme by name, falling back to the GreenCLI default. */
+export function terminalSchemeColors(name: string): Record<string, string> {
+  return (TERMINAL_SCHEMES.find((s) => s.name === name) ?? TERMINAL_SCHEMES[0]).colors;
+}
+
+// ── AI context types (chat / tool loop) ──
+
+export type AiChatRole = 'user' | 'assistant' | 'tool';
+
+export interface AiChatMessage {
+  role: AiChatRole;
+  content: string;
+  /** Tool calls the assistant asked for (assistant messages only). */
+  toolCalls?: AiToolCall[];
+  /** For role 'tool': id of the call this content answers. */
+  toolCallId?: string;
+  /** For role 'tool': name of the tool that produced this content. */
+  toolName?: string;
+}
+
+export interface AiToolCall {
+  id: string;
+  name: string;
+  /** JSON-encoded argument object as produced by the model. */
+  arguments: string;
+}
+
+/** JSON-schema-ish description of a tool for Anthropic/OpenRouter/Moonshot. */
+export interface AiToolSpec {
+  name: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
+}
+
+// ── MCP (Model Context Protocol) types ──
+
+export interface McpServerConfig {
+  id: string;
+  name: string;
+  command: string;
+  args: string[];
+  env: Record<string, string>;
+  enabled: boolean;
+}
+
+export interface McpToolInfo {
+  serverId: string;
+  serverName: string;
+  name: string;
+  description?: string;
+  inputSchema?: Record<string, unknown>;
+}
+
+export type McpServerStatus = 'connecting' | 'connected' | 'failed' | 'stopped';
+
+// ── Trigger / automation types ──
+
+export interface TriggerAction {
+  type: 'send' | 'notify' | 'highlight' | 'log' | 'sound' | 'mark' | 'stop';
+  /** For 'send': text to send (may reference $1..$9 regex groups). */
+  text?: string;
+  /** For 'highlight': colour name. */
+  color?: string;
+}
+
+export interface Trigger {
+  id: string;
+  name: string;
+  pattern: string;
+  isRegex: boolean;
+  caseSensitive: boolean;
+  enabled: boolean;
+  actions: TriggerAction[];
+  /** Only fire on sessions whose deviceType matches (empty = all). */
+  deviceTypes: DeviceType[];
+}
+
+// ── Snippet types ──
+
+export interface Snippet {
+  id: string;
+  name: string;
+  command: string;
+  description?: string;
+  tags: string[];
+  /** If set, snippet is offered only for these device types. */
+  deviceTypes: DeviceType[];
+}
+
+// ── Port forwarding / tunnel types ──
+
+export type TunnelType = 'local' | 'remote' | 'dynamic';
+
+export interface Tunnel {
+  id: string;
+  sessionId: string;
+  type: TunnelType;
+  localPort: number;
+  remoteHost?: string;
+  remotePort?: number;
+  active: boolean;
+}
+
+// ── SFTP types ──
+
+export interface SftpEntry {
+  name: string;
+  path: string;
+  isDir: boolean;
+  size: number;
+  modified?: number;
+  permissions?: string;
+}
+
+// ── Wire format types (kept in sync with src-tauri/src/) ──
+
+export interface ConnectionResult {
+  success: boolean;
+  error?: string;
+}
+
+/** Event payload emitted on `terminal-output`. */
+export interface TerminalOutputEvent {
+  sessionId: string;
+  data: string;
+}
+
+/** Event payload emitted on `session-closed`. */
+export interface SessionClosedEvent {
+  sessionId: string;
+  reason: string;
+}
