@@ -322,7 +322,7 @@ export const DEFAULT_SETTINGS: TerminalSettings = {
   aiUseTerminal: true,
   aiUseCxRest: false,
   aiUseMcp: false,
-  verifyDeviceTls: false,
+  verifyDeviceTls: true,
   mistBaseUrl: 'https://api.mist.com',
   mistToken: '',
   aiReferences: `# Best-practice references the AI should apply (edit/extend freely)

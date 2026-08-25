@@ -86,7 +86,7 @@ impl Connection for LocalConnection {
                     }
                 } else if !a.is_empty()
                     && a.chars()
-                        .all(|c| c.is_ascii_alphanumeric() || "-_./=:@%+,".contains(c))
+                        .all(|c| c.is_ascii_alphanumeric() || "-_./=:@%,".contains(c))
                 {
                     a.clone()
                 } else {
@@ -189,6 +189,7 @@ impl Connection for LocalConnection {
             session_id: self.session_id.clone(),
             success: true,
             error: None,
+            warning: None,
         })
     }
 
@@ -229,9 +230,9 @@ impl Connection for LocalConnection {
             .ok_or_else(|| AppError::LocalError("Local session not connected".into()))?;
         let data = data.to_vec();
         tokio::task::spawn_blocking(move || -> std::io::Result<()> {
-            let mut w = writer.lock().map_err(|_| {
-                std::io::Error::new(std::io::ErrorKind::Other, "writer mutex poisoned")
-            })?;
+            let mut w = writer
+                .lock()
+                .map_err(|_| std::io::Error::other("writer mutex poisoned"))?;
             w.write_all(&data)?;
             w.flush()
         })
