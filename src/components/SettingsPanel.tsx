@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, type ReactNode } from 'react';
 import { X, RotateCcw, Moon, Sun, Eye, EyeOff, CheckCircle2, Download, Upload } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/tauri';
 import { open as openDialog, save as saveDialog } from '@tauri-apps/api/dialog';
@@ -34,6 +34,42 @@ const JVD_REFERENCES = `# Juniper Validated Design (JVD) best-practices
   golden config + commit confirmed.`;
 
 const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
+
+type SettingsNavId = 'appearance' | 'terminal' | 'ai' | 'cloud' | 'backup';
+
+const SETTINGS_NAV: { id: SettingsNavId; label: string }[] = [
+  { id: 'appearance', label: 'Appearance' },
+  { id: 'terminal', label: 'Terminal' },
+  { id: 'ai', label: 'AI + MCP' },
+  { id: 'cloud', label: 'Cloud' },
+  { id: 'backup', label: 'Backup' },
+];
+
+const FOCUS_NAV: Record<string, SettingsNavId> = {
+  appearance: 'appearance',
+  terminal: 'terminal',
+  'device-profiles': 'terminal',
+  ai: 'ai',
+  mcp: 'ai',
+  central: 'cloud',
+  mist: 'cloud',
+  tls: 'cloud',
+  backup: 'backup',
+  'config-archive': 'backup',
+  'intent-schedule': 'backup',
+};
+
+function NavGroup({
+  nav,
+  active,
+  children,
+}: {
+  nav: SettingsNavId;
+  active: SettingsNavId;
+  children: ReactNode;
+}) {
+  return <div hidden={active !== nav}>{children}</div>;
+}
 
 export default function SettingsPanel() {
   // Narrow per-field selectors — whole-store subscriptions re-rendered the
@@ -114,10 +150,14 @@ export default function SettingsPanel() {
     verifyDeviceTls: useSettingsStore((s) => s.verifyDeviceTls),
   };
 
-  // When opened via a Help deep-link, scroll the targeted section into view and
-  // flash it so the user sees exactly which field to edit.
+  const [activeNav, setActiveNav] = useState<SettingsNavId>('appearance');
+
+  // When opened via a Help deep-link (or Tools → MCP), switch to the nav
+  // group that owns the section, then scroll + flash it.
   useEffect(() => {
     if (!showSettings || !settingsFocus) return;
+    const group = FOCUS_NAV[settingsFocus];
+    if (group) setActiveNav(group);
     const id = setTimeout(() => {
       const el = document.getElementById(`set-${settingsFocus}`);
       if (el) {
@@ -361,7 +401,7 @@ export default function SettingsPanel() {
         if (e.target === e.currentTarget) setShowSettings(false);
       }}
     >
-      <div className="w-[520px] max-h-[80vh] bg-[var(--bg-secondary)] border border-[var(--border)] rounded-xl shadow-2xl flex flex-col">
+      <div className="w-[720px] max-w-[92vw] max-h-[80vh] bg-[var(--bg-secondary)] border border-[var(--border)] rounded-xl shadow-2xl flex flex-col">
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--bg-tertiary)]">
           <h2 className="text-lg font-semibold text-[var(--text-primary)]">Settings</h2>
@@ -391,10 +431,28 @@ export default function SettingsPanel() {
           </div>
         </div>
 
-        {/* Content */}
+        {/* Left nav + content */}
+        <div className="flex min-h-0 flex-1">
+          <nav className="w-36 shrink-0 border-r border-[var(--bg-tertiary)] py-2 overflow-y-auto">
+            {SETTINGS_NAV.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => setActiveNav(item.id)}
+                className={`w-full text-left px-3 py-2 text-xs transition-colors ${
+                  activeNav === item.id
+                    ? 'text-[var(--accent)] bg-[var(--accent-soft)]'
+                    : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
+                }`}
+              >
+                {item.label}
+              </button>
+            ))}
+          </nav>
         <div className="flex-1 overflow-y-auto px-5 py-4 space-y-5">
+          <NavGroup nav="appearance" active={activeNav}>
           {/* Appearance */}
-          <section>
+          <section id="set-appearance">
             <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-3">
               Appearance
             </h3>
@@ -498,9 +556,9 @@ export default function SettingsPanel() {
               </div>
             </div>
           </section>
+          </NavGroup>
 
-          <div className="border-t border-[var(--bg-tertiary)]" />
-
+          <NavGroup nav="terminal" active={activeNav}>
           {/* Terminal Behavior */}
           <section id="set-terminal">
             <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-3">
@@ -803,9 +861,9 @@ export default function SettingsPanel() {
               </div>
             </div>
           </section>
+          </NavGroup>
 
-          <div className="border-t border-[var(--bg-tertiary)]" />
-
+          <NavGroup nav="backup" active={activeNav}>
           {/* Backup / transfer */}
           <section id="set-backup">
             <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-2">
@@ -951,9 +1009,9 @@ export default function SettingsPanel() {
               </p>
             </div>
           </section>
+          </NavGroup>
 
-          <div className="border-t border-[var(--bg-tertiary)]" />
-
+          <NavGroup nav="terminal" active={activeNav}>
           {/* Connection */}
           <section>
             <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-3">
@@ -985,9 +1043,9 @@ export default function SettingsPanel() {
 
           {/* SSH config import + host-key management */}
           <HostsManager />
+          </NavGroup>
 
-          <div className="border-t border-[var(--bg-tertiary)]" />
-
+          <NavGroup nav="ai" active={activeNav}>
           {/* AI */}
           <section id="set-ai">
             <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-3">
@@ -1255,9 +1313,9 @@ export default function SettingsPanel() {
           <div id="set-mcp">
             <McpServers />
           </div>
+          </NavGroup>
 
-          <div className="border-t border-[var(--bg-tertiary)]" />
-
+          <NavGroup nav="cloud" active={activeNav}>
           {/* Aruba Central (cloud API) — multi-account + token */}
           <div id="set-central">
             <CentralSettings />
@@ -1328,6 +1386,8 @@ export default function SettingsPanel() {
               </div>
             </label>
           </section>
+          </NavGroup>
+        </div>
         </div>
       </div>
     </div>

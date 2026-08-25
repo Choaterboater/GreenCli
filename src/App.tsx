@@ -290,6 +290,20 @@ function App() {
     };
   }, [addSession]);
 
+  // First-run: open Help once on an empty workspace, then never again.
+  useEffect(() => {
+    if (!workspaceLoaded) return;
+    if (useSessionStore.getState().sessions.length > 0) return;
+    const FLAG = 'greencli-help-seen-v1';
+    try {
+      if (localStorage.getItem(FLAG)) return;
+      localStorage.setItem(FLAG, '1');
+    } catch {
+      return;
+    }
+    useSessionStore.getState().setShowHelp(true);
+  }, [workspaceLoaded]);
+
   useEffect(() => {
     if (!workspaceLoaded) return;
     // Debounced: session objects churn on every connection-status/activity
@@ -1526,6 +1540,16 @@ function App() {
                         Local Shell
                       </button>
                     </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        useSessionStore.getState().setSettingsFocus('mcp');
+                        useSessionStore.getState().setShowSettings(true);
+                      }}
+                      className="mt-3 text-[11px] text-[var(--text-muted)] hover:text-[var(--text-secondary)] transition-colors"
+                    >
+                      AI / MCP: Settings → MCP Servers
+                    </button>
 
                     {/* Recent connections — one click back into the last hosts */}
                     {recents.length > 0 && (

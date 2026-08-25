@@ -722,8 +722,9 @@ export default function ConfigEditor() {
   // Diff mode: compare current editor content against a loaded baseline.
   const [diffMode, setDiffMode] = useState(false);
   const [diffOriginal, setDiffOriginal] = useState('');
-  // Config archive panel (NW-16): per-device snapshot history + golden diff.
-  const [showArchive, setShowArchive] = useState(false);
+  // Config archive panel (NW-16): store-lifted so Tools / palette can open it.
+  const showArchive = useSessionStore((s) => s.showArchive);
+  const setShowArchive = useSessionStore((s) => s.setShowArchive);
 
   const editorRef = useRef<MonacoEditor.IStandaloneCodeEditor | null>(null);
   const monacoRef = useRef<typeof import('monaco-editor') | null>(null);
@@ -1661,7 +1662,7 @@ export default function ConfigEditor() {
 
         {/* Config archive history + golden diff */}
         <button
-          onClick={() => setShowArchive((v) => !v)}
+          onClick={() => setShowArchive(!showArchive)}
           className={`flex items-center gap-1.5 px-2 py-1 text-xs rounded transition-colors ${
             showArchive ? 'text-[var(--accent)] bg-[#58a6ff20]' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
           }`}
