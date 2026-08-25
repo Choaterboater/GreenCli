@@ -6,7 +6,7 @@ authors = ["ChoateLabs"]
 license = "MIT"
 repository = "https://github.com/Choaterboater/GreenCli"
 edition = "2021"
-rust-version = "1.70"
+rust-version = "1.77.2"
 
 [build-dependencies]
 tauri-build = { version = "1.5.1", features = [] }
@@ -26,9 +26,7 @@ aes-gcm = "0.10"
 argon2 = "0.5"
 zeroize = { version = "1", features = ["serde"] }
 rand = "0.8"
-sha2 = "0.10"
 base64 = "0.21"
-thiserror = "1.0"
 log = "0.4"
 env_logger = "0.11"
 serialport = "4.3"

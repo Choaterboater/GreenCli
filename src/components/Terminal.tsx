@@ -29,6 +29,9 @@ const isPopOutWindow = appWindow.label.startsWith('popout-');
 const isMac = navigator.platform.toUpperCase().includes('MAC');
 const isWindows = navigator.platform.toUpperCase().includes('WIN');
 
+// Max lines syntax-highlighted per output flush (see the output listener).
+const HIGHLIGHT_LINE_CAP = 1500;
+
 interface CtxMenuState {
   x: number;
   y: number;
@@ -117,9 +120,13 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
   const terminalRef = useRef<XTerm | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const searchAddonRef = useRef<SearchAddon | null>(null);
-  const highlighterRef = useRef<ArubaHighlighter>(
-    ArubaHighlighter.forDeviceType(deviceType)
-  );
+  // Lazy init: the useRef INITIALIZER runs on every render (its value is just
+  // discarded after the first), and forDeviceType sorts every grammar — so an
+  // eager initializer paid that cost per render. Null-check builds it once.
+  const highlighterRef = useRef<ArubaHighlighter | null>(null);
+  if (highlighterRef.current === null) {
+    highlighterRef.current = ArubaHighlighter.forDeviceType(deviceType);
+  }
   // Mirror the deviceType prop into a ref so the data listener can read it
   // without being torn down and re-subscribed (which drops in-flight output).
   const deviceTypeRef = useRef(deviceType);
@@ -846,8 +853,8 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
           // flipped mid-session by transient output. Read from a ref so the
           // listener never needs to be torn down + re-subscribed on prop change.
           if (deviceTypeRef.current === 'generic' && autoDetectedRef.current === null) {
-            const detected = highlighterRef.current.detectDeviceType(bufferRef.current);
-            if (detected !== 'generic') {
+            const detected = highlighterRef.current?.detectDeviceType(bufferRef.current);
+            if (detected && detected !== 'generic') {
               // Latch the vendor: build its highlighter once and stop re-detecting
               // (and re-sorting every grammar) on subsequent flushes, and stop the
               // active grammar thrashing as fingerprints scroll out of bufferRef.
@@ -857,10 +864,11 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
           }
 
           const term = terminalRef.current;
+          const highlighter = highlighterRef.current;
 
           // Read the setting live (getState) instead of via a closure dep, so
           // toggling it does not re-subscribe the listener (which loses output).
-          if (useSettingsStore.getState().syntaxHighlighting && !highlighterRef.current.isGeneric()) {
+          if (useSettingsStore.getState().syntaxHighlighting && highlighter && !highlighter.isGeneric()) {
             // Detect control chars that would corrupt highlighting:
             // backspace (\x08), terminal control sequences, etc.
             // Allow: \t (0x09), \n (0x0a), \r (0x0d)
@@ -886,11 +894,19 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
               // run ("50%\r60%") was fed to the highlighter as one line,
               // losing prompt/command position tracking after each CR.
               const parts = stripped.split(/(\r\n|\n|\r)/);
+              // Cap highlighting work per flush: a huge paste/`show tech` batch
+              // would otherwise tokenize tens of thousands of lines in one go
+              // and pin the main thread. Past the cap the rest of the batch
+              // passes through unhighlighted (output stays correct, just plain).
+              let highlightedLines = 0;
               for (const part of parts) {
                 if (part === '\n' || part === '\r\n' || part === '\r') {
                   term.write(part);
                 } else if (part.length > 0) {
-                  term.write(highlighterRef.current.applyToTerminal(part));
+                  highlightedLines++;
+                  term.write(
+                    highlightedLines <= HIGHLIGHT_LINE_CAP ? highlighter.applyToTerminal(part) : part
+                  );
                 }
               }
             }

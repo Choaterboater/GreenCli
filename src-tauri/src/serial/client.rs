@@ -148,6 +148,7 @@ impl Connection for SerialConnection {
             session_id: self.session_id.clone(),
             success: true,
             error: None,
+            warning: None,
         })
     }
 

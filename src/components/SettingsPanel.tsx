@@ -36,8 +36,83 @@ const JVD_REFERENCES = `# Juniper Validated Design (JVD) best-practices
 const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
 
 export default function SettingsPanel() {
-  const { showSettings, setShowSettings, settingsFocus, setSettingsFocus, setFolders } = useSessionStore();
-  const settings = useSettingsStore();
+  // Narrow per-field selectors — whole-store subscriptions re-rendered the
+  // whole settings modal on every unrelated session/settings change.
+  const showSettings = useSessionStore((s) => s.showSettings);
+  const setShowSettings = useSessionStore((s) => s.setShowSettings);
+  const settingsFocus = useSessionStore((s) => s.settingsFocus);
+  const setSettingsFocus = useSessionStore((s) => s.setSettingsFocus);
+  const setFolders = useSessionStore((s) => s.setFolders);
+  const settings = {
+    addDeviceProfile: useSettingsStore((s) => s.addDeviceProfile),
+    aiModel: useSettingsStore((s) => s.aiModel),
+    aiProvider: useSettingsStore((s) => s.aiProvider),
+    aiReferences: useSettingsStore((s) => s.aiReferences),
+    aiUseCxRest: useSettingsStore((s) => s.aiUseCxRest),
+    aiUseMcp: useSettingsStore((s) => s.aiUseMcp),
+    aiUseTerminal: useSettingsStore((s) => s.aiUseTerminal),
+    autoReconnect: useSettingsStore((s) => s.autoReconnect),
+    bell: useSettingsStore((s) => s.bell),
+    captureOnConnect: useSettingsStore((s) => s.captureOnConnect),
+    colorScheme: useSettingsStore((s) => s.colorScheme),
+    copyOnSelect: useSettingsStore((s) => s.copyOnSelect),
+    cursorBlink: useSettingsStore((s) => s.cursorBlink),
+    cursorStyle: useSettingsStore((s) => s.cursorStyle),
+    customDeviceProfiles: useSettingsStore((s) => s.customDeviceProfiles),
+    fontFamily: useSettingsStore((s) => s.fontFamily),
+    fontSize: useSettingsStore((s) => s.fontSize),
+    intentScheduleMinutes: useSettingsStore((s) => s.intentScheduleMinutes),
+    intentScheduling: useSettingsStore((s) => s.intentScheduling),
+    intentWebhookUrl: useSettingsStore((s) => s.intentWebhookUrl),
+    keepAliveInterval: useSettingsStore((s) => s.keepAliveInterval),
+    localCliCommand: useSettingsStore((s) => s.localCliCommand),
+    middleClickPaste: useSettingsStore((s) => s.middleClickPaste),
+    mistBaseUrl: useSettingsStore((s) => s.mistBaseUrl),
+    mistToken: useSettingsStore((s) => s.mistToken),
+    moonshotModel: useSettingsStore((s) => s.moonshotModel),
+    ollamaModel: useSettingsStore((s) => s.ollamaModel),
+    ollamaUrl: useSettingsStore((s) => s.ollamaUrl),
+    openrouterModel: useSettingsStore((s) => s.openrouterModel),
+    pasteGuardEnabled: useSettingsStore((s) => s.pasteGuardEnabled),
+    pasteGuardLineThreshold: useSettingsStore((s) => s.pasteGuardLineThreshold),
+    pasteHistoryEnabled: useSettingsStore((s) => s.pasteHistoryEnabled),
+    removeDeviceProfile: useSettingsStore((s) => s.removeDeviceProfile),
+    resetToDefaults: useSettingsStore((s) => s.resetToDefaults),
+    rightClickBehavior: useSettingsStore((s) => s.rightClickBehavior),
+    scrollback: useSettingsStore((s) => s.scrollback),
+    setAiModel: useSettingsStore((s) => s.setAiModel),
+    setAiProvider: useSettingsStore((s) => s.setAiProvider),
+    setAiReferences: useSettingsStore((s) => s.setAiReferences),
+    setAutoReconnect: useSettingsStore((s) => s.setAutoReconnect),
+    setBell: useSettingsStore((s) => s.setBell),
+    setCaptureOnConnect: useSettingsStore((s) => s.setCaptureOnConnect),
+    setColorScheme: useSettingsStore((s) => s.setColorScheme),
+    setCursorBlink: useSettingsStore((s) => s.setCursorBlink),
+    setCursorStyle: useSettingsStore((s) => s.setCursorStyle),
+    setFontFamily: useSettingsStore((s) => s.setFontFamily),
+    setFontSize: useSettingsStore((s) => s.setFontSize),
+    setIntentScheduleMinutes: useSettingsStore((s) => s.setIntentScheduleMinutes),
+    setIntentScheduling: useSettingsStore((s) => s.setIntentScheduling),
+    setIntentWebhookUrl: useSettingsStore((s) => s.setIntentWebhookUrl),
+    setKeepAliveInterval: useSettingsStore((s) => s.setKeepAliveInterval),
+    setLocalCliCommand: useSettingsStore((s) => s.setLocalCliCommand),
+    setMiddleClickPaste: useSettingsStore((s) => s.setMiddleClickPaste),
+    setMoonshotModel: useSettingsStore((s) => s.setMoonshotModel),
+    setOllamaModel: useSettingsStore((s) => s.setOllamaModel),
+    setOllamaUrl: useSettingsStore((s) => s.setOllamaUrl),
+    setOpenrouterModel: useSettingsStore((s) => s.setOpenrouterModel),
+    setScrollback: useSettingsStore((s) => s.setScrollback),
+    setSyntaxHighlighting: useSettingsStore((s) => s.setSyntaxHighlighting),
+    setTheme: useSettingsStore((s) => s.setTheme),
+    smartTerminalLinks: useSettingsStore((s) => s.smartTerminalLinks),
+    syntaxHighlighting: useSettingsStore((s) => s.syntaxHighlighting),
+    terminalActivityNotifications: useSettingsStore((s) => s.terminalActivityNotifications),
+    terminalSilenceNotifications: useSettingsStore((s) => s.terminalSilenceNotifications),
+    terminalSilenceThresholdSeconds: useSettingsStore((s) => s.terminalSilenceThresholdSeconds),
+    theme: useSettingsStore((s) => s.theme),
+    updateSettings: useSettingsStore((s) => s.updateSettings),
+    verifyDeviceTls: useSettingsStore((s) => s.verifyDeviceTls),
+  };
 
   // When opened via a Help deep-link, scroll the targeted section into view and
   // flash it so the user sees exactly which field to edit.
@@ -1227,15 +1302,24 @@ export default function SettingsPanel() {
               <span className="min-w-0">
                 <span className="text-sm text-[var(--text-primary)]">Verify device TLS certificates</span>
                 <span className="block text-[10px] text-[var(--text-muted)]">
-                  Reject untrusted/self-signed certs on AOS-CX / AOS-8 / AOS-S REST. Most
-                  field gear ships a self-signed cert, so this is off by default — turn it on to
-                  enforce verification.
+                  Reject untrusted/self-signed certs on AOS-CX / AOS-8 / AOS-S REST. On by
+                  default — most field gear ships a self-signed cert, so turn it off only for
+                  lab devices you trust.
                 </span>
+                {!settings.verifyDeviceTls && (
+                  <span className="block text-[10px] text-[var(--accent-warning)] mt-1">
+                    Device admin and SSH credentials can be intercepted on untrusted networks
+                    when TLS verification is off. Disable only for self-signed lab devices.
+                  </span>
+                )}
               </span>
               <div
                 onClick={() => settings.updateSettings({ verifyDeviceTls: !settings.verifyDeviceTls })}
                 className="w-9 h-5 rounded-full relative cursor-pointer transition-colors flex-shrink-0"
                 style={{ background: settings.verifyDeviceTls ? 'var(--accent)' : 'var(--border-strong)' }}
+                role="switch"
+                aria-checked={settings.verifyDeviceTls}
+                aria-label="Verify device TLS certificates"
               >
                 <div
                   className="absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow-sm transition-transform"

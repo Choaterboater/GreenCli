@@ -1,8 +1,28 @@
 import { useState, useRef, useEffect, useCallback, useMemo, memo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
+// PrismLight + per-language registration instead of the full Prism bundle:
+// `Prism` pulls in ~600KB of language grammars; chat code fences only ever
+// carry shell/CLI, JSON, and the odd script.
+import { PrismLight as SyntaxHighlighter } from 'react-syntax-highlighter';
+import bash from 'react-syntax-highlighter/dist/esm/languages/prism/bash';
+import json from 'react-syntax-highlighter/dist/esm/languages/prism/json';
+import yaml from 'react-syntax-highlighter/dist/esm/languages/prism/yaml';
+import python from 'react-syntax-highlighter/dist/esm/languages/prism/python';
+import javascript from 'react-syntax-highlighter/dist/esm/languages/prism/javascript';
+import typescript from 'react-syntax-highlighter/dist/esm/languages/prism/typescript';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
+
+SyntaxHighlighter.registerLanguage('bash', bash);
+SyntaxHighlighter.registerLanguage('shell', bash);
+SyntaxHighlighter.registerLanguage('sh', bash);
+SyntaxHighlighter.registerLanguage('json', json);
+SyntaxHighlighter.registerLanguage('yaml', yaml);
+SyntaxHighlighter.registerLanguage('python', python);
+SyntaxHighlighter.registerLanguage('javascript', javascript);
+SyntaxHighlighter.registerLanguage('js', javascript);
+SyntaxHighlighter.registerLanguage('typescript', typescript);
+SyntaxHighlighter.registerLanguage('ts', typescript);
 import {
   X,
   Send,
@@ -29,6 +49,7 @@ import { useSettingsStore } from '../store/settingsStore';
 import { askConfirm } from '../store/dialogStore';
 import { ChatMessage, Session, AiProvider, AI_PROVIDERS } from '../types';
 import { sleep, stripAnsi, sendAndCapture } from '../utils/terminal';
+import { aiIsWriteCommand, aiMcpLooksWrite, AI_DANGER_CMD } from '../utils/aiGating';
 import { Intent, evaluateAll, summarize } from '../utils/intent';
 import { useResizablePanel } from '../hooks/useResizablePanel';
 
@@ -318,43 +339,8 @@ interface ToolOutcome {
 const toolOk = (text: string): ToolOutcome => ({ text, isError: false });
 const toolErr = (text: string): ToolOutcome => ({ text, isError: true });
 
-// ─── Write-confirmation gate for AI-issued device actions ───
-//
-// The AI tool loop is reachable by prompt injection: device output (LLDP
-// neighbor names, banners), MCP-server responses, and REST payloads are fed
-// back to the model as tool results, so injected text could drive a destructive
-// command with no user interaction. The manual paths already confirm writes
-// (ApiExplorer confirms non-GET, Terminal confirms multi-line pastes); this is
-// the code-level equivalent for the AI path. Obvious reads pass with no dialog
-// to keep the diagnostic path fast; everything else is confirmed (fail-safe).
-const AI_READ_ONLY_CMD =
-  /^\s*(do\s+)?(sh(ow)?|disp(lay)?|get|ping|traceroute|tracert|monitor|dir|more|less|cat|tail|head|echo|whoami|who|uptime|date|\?)\b/i;
-const AI_CONFIG_ENTER = /^\s*conf(ig(ure)?)?\b/i;
-const AI_DESTRUCTIVE_CMD =
-  /\b(write|erase|delete|clear|reload|reboot|boot|commit|rollback|copy|format|factory-reset|factory-default|zeroize|request\s+system|install|upgrade)\b/i;
-const AI_DANGER_CMD = /\b(erase|delete|reload|reboot|format|factory|write|zeroize|rollback)\b/i;
-
-/** Heuristic: does this (possibly multi-line) command modify device state? */
-function aiIsWriteCommand(cmd: string): boolean {
-  return cmd.split(/\r?\n/).some((line) => {
-    const c = line.trim();
-    if (!c) return false;
-    if (AI_CONFIG_ENTER.test(c) || AI_DESTRUCTIVE_CMD.test(c)) return true;
-    if (AI_READ_ONLY_CMD.test(c)) return false;
-    return true; // unknown verb (set/no/interface/vlan/…): confirm to be safe
-  });
-}
-
-/** MCP tool names are opaque, so confirm anything that looks like a write. */
-function aiMcpLooksWrite(tool: string): boolean {
-  const looksRead =
-    /(^|_)(get|list|read|show|describe|search|find|query|fetch|status|inspect)\b/i.test(tool);
-  const looksWrite =
-    /(^|_)(write|create|update|delete|remove|set|put|post|patch|reboot|erase|apply|deploy|provision|add|modify|enable|disable|move|rename)\b/i.test(
-      tool
-    );
-  return looksWrite && !looksRead;
-}
+// Write-confirmation gate for AI-issued device actions lives in
+// src/utils/aiGating.ts (imported above) so it is unit-testable.
 
 async function executeTool(
   name: string,
@@ -501,7 +487,7 @@ async function executeTool(
       if (!ok) return toolErr('User declined to run this command.');
     }
     try {
-      const cleaned = await sendAndCapture(activeSession.sessionId, command);
+      const { output: cleaned } = await sendAndCapture(activeSession.sessionId, command);
       if (!cleaned) {
         return toolOk(`Command \`${command}\` sent — no output captured (may be interactive, paged, or still running).`);
       }
@@ -1076,8 +1062,27 @@ const MessageItem = memo(function MessageItem({ msg }: { msg: DisplayMessage }) 
 // ─── Component ───
 
 export default function AiAssistant() {
-  const { showAiAssistant, toggleAiAssistant, activeSessionId, sessions } = useSessionStore();
-  const settings = useSettingsStore();
+  // Narrow per-field selectors — whole-store subscriptions re-rendered the
+  // panel on every unrelated session/settings change.
+  const showAiAssistant = useSessionStore((s) => s.showAiAssistant);
+  const toggleAiAssistant = useSessionStore((s) => s.toggleAiAssistant);
+  const activeSessionId = useSessionStore((s) => s.activeSessionId);
+  const sessions = useSessionStore((s) => s.sessions);
+  const settings = {
+    aiProvider: useSettingsStore((s) => s.aiProvider),
+    aiAgents: useSettingsStore((s) => s.aiAgents),
+    sessionAgents: useSettingsStore((s) => s.sessionAgents),
+    aiReferences: useSettingsStore((s) => s.aiReferences),
+    aiUseTerminal: useSettingsStore((s) => s.aiUseTerminal),
+    aiUseCxRest: useSettingsStore((s) => s.aiUseCxRest),
+    aiUseMcp: useSettingsStore((s) => s.aiUseMcp),
+    aiModel: useSettingsStore((s) => s.aiModel),
+    localCliCommand: useSettingsStore((s) => s.localCliCommand),
+    ollamaUrl: useSettingsStore((s) => s.ollamaUrl),
+    ollamaModel: useSettingsStore((s) => s.ollamaModel),
+    openrouterModel: useSettingsStore((s) => s.openrouterModel),
+    moonshotModel: useSettingsStore((s) => s.moonshotModel),
+  };
 
   const { width: panelWidth, onDragStart: handleDragStart, handleClass: dragHandleClass } =
     useResizablePanel(420, 300, 800);
@@ -1430,11 +1435,12 @@ export default function AiAssistant() {
     );
   }, []);
 
-  // App renders this panel conditionally, so toggling it off UNMOUNTS the
-  // component mid-request. Without this cleanup the in-flight tool loop keeps
-  // running commands on the live device with no UI attached (shouldCancel reads
-  // requestSeq, which nothing would bump). Mirrors cancelRequest, minus the
-  // state updates that are meaningless on an unmounted component.
+  // On a REAL unmount (window close — App now keeps the panel mounted across
+  // open/close so chat history survives), abandon any in-flight request:
+  // without this the tool loop keeps running commands on the live device with
+  // no UI attached (shouldCancel reads requestSeq, which nothing would bump).
+  // Mirrors cancelRequest, minus the state updates that are meaningless on an
+  // unmounted component.
   useEffect(
     () => () => {
       requestSeq.current++;
@@ -1455,7 +1461,8 @@ export default function AiAssistant() {
     }
   };
 
-  if (!showAiAssistant) return null;
+  // App keeps this panel MOUNTED across open/close (chat history survives);
+  // "closed" just hides the root via CSS below.
 
   // Effective provider/model for the header — an attached agent may override both.
   const provider = (activeAgent?.provider || settings.aiProvider || 'ollama') as AiProvider;
@@ -1477,11 +1484,14 @@ export default function AiAssistant() {
   return (
     <div
       className={
+        `${showAiAssistant ? '' : 'hidden '}${
         maximized
           ? 'fixed left-0 right-0 bottom-0 top-11 z-40 flex flex-col bg-[var(--bg-primary)] overflow-hidden animate-fade-in'
           : 'flex-shrink-0 flex flex-col bg-[var(--bg-primary)] border-l border-[var(--border)] overflow-hidden relative'
+        }`
       }
       style={maximized ? undefined : { width: panelWidth }}
+      aria-hidden={!showAiAssistant}
     >
       {/* Drag handle (hidden when maximized) */}
       {!maximized && <div className={dragHandleClass} onMouseDown={handleDragStart} />}

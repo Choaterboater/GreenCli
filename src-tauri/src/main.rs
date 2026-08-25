@@ -53,17 +53,30 @@ struct AppState {
     session_manager: Arc<SessionManager>,
     session_store: Arc<AsyncMutex<SessionStore>>,
     vault: Arc<Mutex<CredentialVault>>,
+    /// Cheap unlocked/initialized mirrors of the vault state, maintained by
+    /// vault_unlock / vault_change_password / vault_lock, so the status
+    /// commands never take the vault mutex (which vault_unlock holds across
+    /// the deliberately-slow Argon2 KDF).
+    vault_unlocked: Arc<std::sync::atomic::AtomicBool>,
+    vault_initialized: Arc<std::sync::atomic::AtomicBool>,
     /// Outbound MCP client manager — connects to external MCP servers so the AI
     /// assistant can use their tools (provider-agnostic).
     mcp_manager: Arc<AsyncMutex<McpManager>>,
-    api_clients: Arc<AsyncMutex<HashMap<String, ArubaCxClient>>>,
-    aos8_clients: Arc<AsyncMutex<HashMap<String, Aos8Client>>>,
-    aoss_clients: Arc<AsyncMutex<HashMap<String, AossClient>>>,
+    /// API clients live behind Arc so request commands can clone the handle
+    /// out under a brief map lock and run the (up-to-30s) network round-trip
+    /// WITHOUT holding it — holding the map lock across the await serialized
+    /// every API command behind the slowest device (see mcp_call's
+    /// caller_for() pattern).
+    api_clients: Arc<AsyncMutex<HashMap<String, Arc<ArubaCxClient>>>>,
+    aos8_clients: Arc<AsyncMutex<HashMap<String, Arc<Aos8Client>>>>,
+    aoss_clients: Arc<AsyncMutex<HashMap<String, Arc<AossClient>>>>,
     /// Juniper Mist cloud (single configured target, token auth).
-    mist: Arc<AsyncMutex<Option<MistClient>>>,
+    mist: Arc<AsyncMutex<Option<Arc<MistClient>>>>,
     /// Juniper Junos REST clients keyed by host (HTTP Basic, optional on-box REST).
-    junos_clients: Arc<AsyncMutex<HashMap<String, JunosClient>>>,
-    central: Arc<AsyncMutex<CentralClient>>,
+    junos_clients: Arc<AsyncMutex<HashMap<String, Arc<JunosClient>>>>,
+    /// Central client has interior mutability (config + token cache behind a
+    /// std Mutex), so requests never hold an outer lock across an await.
+    central: Arc<CentralClient>,
     ai_keys: AiKeyStore,
     /// Durable network-intent / desired-state store.
     intents: intent::IntentStore,
@@ -88,17 +101,21 @@ struct AppState {
 impl AppState {
     fn new(app_dir: std::path::PathBuf) -> Result<Self, AppError> {
         let vault_dir = app_dir.clone();
+        let vault = CredentialVault::new(vault_dir)?;
+        let vault_initialized = vault.is_initialized();
         Ok(Self {
             session_manager: Arc::new(SessionManager::new()),
             session_store: Arc::new(AsyncMutex::new(SessionStore::new(app_dir.clone())?)),
-            vault: Arc::new(Mutex::new(CredentialVault::new(vault_dir)?)),
+            vault: Arc::new(Mutex::new(vault)),
+            vault_unlocked: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            vault_initialized: Arc::new(std::sync::atomic::AtomicBool::new(vault_initialized)),
             mcp_manager: Arc::new(AsyncMutex::new(McpManager::new(app_dir.clone()))),
             api_clients: Arc::new(AsyncMutex::new(HashMap::new())),
             aos8_clients: Arc::new(AsyncMutex::new(HashMap::new())),
             aoss_clients: Arc::new(AsyncMutex::new(HashMap::new())),
             mist: Arc::new(AsyncMutex::new(None)),
             junos_clients: Arc::new(AsyncMutex::new(HashMap::new())),
-            central: Arc::new(AsyncMutex::new(CentralClient::new()?)),
+            central: Arc::new(CentralClient::new()?),
             ai_keys: AiKeyStore::new(app_dir.clone()),
             intents: intent::IntentStore::new(app_dir.clone()),
             config_archive: config_archive::ConfigArchiveStore::new(app_dir.clone()),
@@ -365,8 +382,21 @@ fn spawn_ssh_supervisor(
                     conn.set_initial_size(cols, rows).await;
                 }
                 match conn.connect().await {
-                    Ok(_) => match conn.take_data_receiver() {
+                    Ok(resp) => match conn.take_data_receiver() {
                         Some(nrx) => {
+                            // Surface a non-fatal host-key advisory recorded
+                            // during the handshake (a NEW key algorithm was
+                            // recorded for an already-known host) so the
+                            // frontend can toast it.
+                            if let Some(ref warning) = resp.warning {
+                                let _ = app.emit_all(
+                                    "host-key-warning",
+                                    serde_json::json!({
+                                        "sessionId": session_id,
+                                        "message": warning,
+                                    }),
+                                );
+                            }
                             // Atomically swap in the new connection ONLY if we
                             // still own the registration. This closes the TOCTOU
                             // window the old contains_gen-then-add_session had: a
@@ -400,7 +430,39 @@ fn spawn_ssh_supervisor(
                         }
                         None => return,
                     },
-                    Err(_) => {
+                    Err(e) => {
+                        // Classify the failure: a host-key rejection (possible
+                        // MITM / re-imaged device) or an authentication failure
+                        // will fail IDENTICALLY on every retry, so retrying
+                        // forever both spams the network and hides a security
+                        // signal. Stop the supervisor and surface a terminal
+                        // status instead; keep exponential backoff only for
+                        // transient network errors.
+                        let msg = e.to_string();
+                        let lower = msg.to_lowercase();
+                        let fatal = matches!(e, AppError::AuthError(_))
+                            || lower.contains("host key")
+                            || lower.contains("fingerprint");
+                        if fatal {
+                            log::warn!(
+                                "auto-reconnect for session {session_id} stopped (fatal): {msg}"
+                            );
+                            if session_manager
+                                .remove_session_if(&session_id, generation)
+                                .await
+                            {
+                                close_session_forwards(&forwards, &session_id).await;
+                                let _ = app.emit_all(
+                                    "connection_status",
+                                    ConnectionStatusEvent {
+                                        session_id: session_id.clone(),
+                                        status: "failed".to_string(),
+                                        message: Some(format!("Reconnect failed: {}", msg)),
+                                    },
+                                );
+                            }
+                            return;
+                        }
                         backoff = (backoff * 2).min(30);
                         if !session_manager.contains_gen(&session_id, generation).await {
                             return;
@@ -499,7 +561,7 @@ async fn connect(
                 // Wrapped so the in-memory copies wipe on drop (BH-2: reconnect
                 // passwords must not linger as freed-but-unzeroed plaintext).
                 password: config.password.map(zeroize::Zeroizing::new),
-                private_key,
+                private_key: private_key.map(zeroize::Zeroizing::new),
                 key_passphrase: config.key_passphrase.map(zeroize::Zeroizing::new),
                 keep_alive_interval: config.keep_alive_interval,
                 known_hosts_path: Some(state.app_dir.join("known_hosts.json")),
@@ -513,6 +575,19 @@ async fn connect(
             let mut connection = SshConnection::new(session_id.clone(), ssh_config.clone());
             let response = connection.connect().await.map_err(|e| e.to_string())?;
             let rx_opt = connection.take_data_receiver();
+
+            // Surface a non-fatal host-key advisory recorded during the
+            // handshake (a NEW key algorithm was recorded for an already-known
+            // host) so the frontend can toast it.
+            if let Some(ref warning) = response.warning {
+                let _ = app.emit_all(
+                    "host-key-warning",
+                    serde_json::json!({
+                        "sessionId": session_id,
+                        "message": warning,
+                    }),
+                );
+            }
 
             let generation = state
                 .session_manager.add_session(session_id.clone(), Box::new(connection))
@@ -909,9 +984,15 @@ async fn vault_unlock(password: String, state: State<'_, AppState>) -> Result<bo
     // The Argon2 KDF is deliberately slow; as a sync command it ran on the
     // main thread and froze every window for the whole derivation.
     let vault = state.vault.clone();
+    let vault_unlocked = state.vault_unlocked.clone();
+    let vault_initialized = state.vault_initialized.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let vault = vault.lock().map_err(|e| e.to_string())?;
         vault.unlock(&password).map_err(|e| e.to_string())?;
+        // Maintain the cheap status mirrors (a first unlock also initializes
+        // the vault on disk).
+        vault_unlocked.store(true, std::sync::atomic::Ordering::SeqCst);
+        vault_initialized.store(vault.is_initialized(), std::sync::atomic::Ordering::SeqCst);
         Ok(true)
     })
     .await
@@ -927,51 +1008,88 @@ async fn vault_change_password(
     // change_password runs the Argon2 KDF twice (verify old + derive new), so
     // like vault_unlock it must run off the main thread to avoid freezing the UI.
     let vault = state.vault.clone();
+    let vault_unlocked = state.vault_unlocked.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let vault = vault.lock().map_err(|e| e.to_string())?;
         vault
             .change_password(&old_password, &new_password)
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
+        // change_password installs a fresh cipher, so the vault is unlocked now.
+        vault_unlocked.store(true, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+// The remaining vault commands take the same std Mutex vault_unlock holds
+// across the Argon2 KDF. As SYNC commands they ran on the main thread and
+// froze the whole UI while an unlock was in flight — so they are async and do
+// their (also blocking: file I/O + AES-GCM) work on the blocking pool, exactly
+// like vault_unlock above.
+
+#[tauri::command]
+async fn vault_lock(state: State<'_, AppState>) -> Result<(), String> {
+    let vault = state.vault.clone();
+    let vault_unlocked = state.vault_unlocked.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let vault = vault.lock().map_err(|e| e.to_string())?;
+        vault.lock();
+        vault_unlocked.store(false, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
     })
     .await
     .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-fn vault_lock(state: State<'_, AppState>) -> Result<(), String> {
-    let vault = state.vault.lock().map_err(|e| e.to_string())?;
-    vault.lock();
-    Ok(())
+async fn vault_store(key: String, value: String, state: State<'_, AppState>) -> Result<(), String> {
+    let vault = state.vault.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let vault = vault.lock().map_err(|e| e.to_string())?;
+        vault.store(&key, &value).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-fn vault_store(key: String, value: String, state: State<'_, AppState>) -> Result<(), String> {
-    let vault = state.vault.lock().map_err(|e| e.to_string())?;
-    vault.store(&key, &value).map_err(|e| e.to_string())
+async fn vault_retrieve(
+    key: String,
+    state: State<'_, AppState>,
+) -> Result<Option<String>, String> {
+    let vault = state.vault.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let vault = vault.lock().map_err(|e| e.to_string())?;
+        vault.retrieve(&key).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-fn vault_retrieve(key: String, state: State<'_, AppState>) -> Result<Option<String>, String> {
-    let vault = state.vault.lock().map_err(|e| e.to_string())?;
-    vault.retrieve(&key).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn vault_delete(key: String, state: State<'_, AppState>) -> Result<(), String> {
-    let vault = state.vault.lock().map_err(|e| e.to_string())?;
-    vault.delete(&key).map_err(|e| e.to_string())
+async fn vault_delete(key: String, state: State<'_, AppState>) -> Result<(), String> {
+    let vault = state.vault.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let vault = vault.lock().map_err(|e| e.to_string())?;
+        vault.delete(&key).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
 fn vault_is_unlocked(state: State<'_, AppState>) -> Result<bool, String> {
-    let vault = state.vault.lock().map_err(|e| e.to_string())?;
-    Ok(vault.is_unlocked())
+    // Cheap atomic mirror (maintained by unlock/change_password/lock) — never
+    // takes the vault mutex, so it can't block behind an in-flight Argon2 KDF.
+    Ok(state.vault_unlocked.load(std::sync::atomic::Ordering::SeqCst))
 }
 
 #[tauri::command]
 fn vault_is_initialized(state: State<'_, AppState>) -> Result<bool, String> {
-    let vault = state.vault.lock().map_err(|e| e.to_string())?;
-    Ok(vault.is_initialized())
+    Ok(state
+        .vault_initialized
+        .load(std::sync::atomic::Ordering::SeqCst))
 }
 
 // ─── Utility Commands ───
@@ -1067,6 +1185,25 @@ async fn get_terminal_output(
     Ok(map.get(&session_id).cloned().unwrap_or_default())
 }
 
+/// Open a session-log file for appending, creating it owner-only (0600) from
+/// the moment it exists on Unix — captured terminal output can contain pasted
+/// credentials / device secrets, so it must never be briefly group/world-
+/// readable between create and chmod. Mirrors vault::storage::create_restricted
+/// (private there) with append mode instead of truncate.
+#[cfg(unix)]
+fn open_log_file(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .mode(0o600)
+        .open(path)
+}
+#[cfg(not(unix))]
+fn open_log_file(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+    std::fs::OpenOptions::new().create(true).append(true).open(path)
+}
+
 /// Begin streaming a session's raw output to a timestamped log file under the
 /// app data dir's `logs/` folder. Returns the file path.
 #[tauri::command]
@@ -1097,11 +1234,7 @@ async fn start_session_log(
         safe
     };
     let path = dir.join(format!("{}_{}.log", safe, millis));
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-        .map_err(|e| e.to_string())?;
+    let file = open_log_file(&path).map_err(|e| e.to_string())?;
     state.session_logs.lock().await.insert(session_id, file);
     Ok(path.to_string_lossy().into_owned())
 }
@@ -1343,6 +1476,22 @@ fn intent_set_result(
 /// crash the eval sweep or surface as an error to the sweeper.
 #[tauri::command]
 async fn intent_webhook_notify(url: String, payload: serde_json::Value) -> Result<(), String> {
+    // Drift alerts can carry device identity/config details — refuse to POST
+    // them cleartext. HTTPS only, except loopback targets (local alert bridges
+    // like a localhost relay). Unlike delivery failures below, a policy
+    // rejection IS returned so a misconfigured webhook is visible to the user.
+    let parsed = reqwest::Url::parse(&url).map_err(|e| format!("Invalid webhook URL: {}", e))?;
+    let host = parsed.host_str().unwrap_or_default();
+    let is_loopback = host.eq_ignore_ascii_case("localhost")
+        || host == "::1"
+        || host.starts_with("127.");
+    if parsed.scheme() != "https" && !is_loopback {
+        log::warn!("intent webhook rejected (non-HTTPS, non-loopback): {url}");
+        return Err(
+            "Webhook URL must use https:// (plain http:// is only allowed for loopback hosts)"
+                .to_string(),
+        );
+    }
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
         .build()
@@ -1498,7 +1647,7 @@ async fn api_login(request: ApiLoginRequest, state: State<'_, AppState>) -> Resu
         .await
         .map_err(|e| e.to_string())?;
     let mut clients = state.api_clients.lock().await;
-    clients.insert(request.host, client);
+    clients.insert(request.host, Arc::new(client));
     Ok(true)
 }
 
@@ -1507,10 +1656,13 @@ async fn api_get_interfaces(
     host: String,
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
-    let clients = state.api_clients.lock().await;
-    let client = clients
-        .get(&host)
-        .ok_or("Not logged in. Call api_login first.")?;
+    // Clone the client handle out under a brief lock, then release it before
+    // the network round-trip (see AppState::api_clients note).
+    let client = {
+        let clients = state.api_clients.lock().await;
+        clients.get(&host).cloned()
+    };
+    let client = client.ok_or("Not logged in. Call api_login first.")?;
     let interfaces = client.get_interfaces().await.map_err(|e| e.to_string())?;
     serde_json::to_value(interfaces).map_err(|e| e.to_string())
 }
@@ -1520,10 +1672,11 @@ async fn api_get_vlans(
     host: String,
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
-    let clients = state.api_clients.lock().await;
-    let client = clients
-        .get(&host)
-        .ok_or("Not logged in. Call api_login first.")?;
+    let client = {
+        let clients = state.api_clients.lock().await;
+        clients.get(&host).cloned()
+    };
+    let client = client.ok_or("Not logged in. Call api_login first.")?;
     let vlans = client.get_vlans().await.map_err(|e| e.to_string())?;
     serde_json::to_value(vlans).map_err(|e| e.to_string())
 }
@@ -1533,10 +1686,11 @@ async fn api_get_system(
     host: String,
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
-    let clients = state.api_clients.lock().await;
-    let client = clients
-        .get(&host)
-        .ok_or("Not logged in. Call api_login first.")?;
+    let client = {
+        let clients = state.api_clients.lock().await;
+        clients.get(&host).cloned()
+    };
+    let client = client.ok_or("Not logged in. Call api_login first.")?;
     let system = client.get_system().await.map_err(|e| e.to_string())?;
     serde_json::to_value(system).map_err(|e| e.to_string())
 }
@@ -1551,10 +1705,11 @@ async fn api_request(
     body: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
-    let clients = state.api_clients.lock().await;
-    let client = clients
-        .get(&host)
-        .ok_or("Not logged in. Connect to the device first.")?;
+    let client = {
+        let clients = state.api_clients.lock().await;
+        clients.get(&host).cloned()
+    };
+    let client = client.ok_or("Not logged in. Connect to the device first.")?;
     let (status, text) = client
         .request(&method, &path, body.as_deref())
         .await
@@ -1574,7 +1729,11 @@ async fn aos8_login(request: ApiLoginRequest, state: State<'_, AppState>) -> Res
         .login(&request.username, &request.password)
         .await
         .map_err(|e| e.to_string())?;
-    state.aos8_clients.lock().await.insert(request.host, client);
+    state
+        .aos8_clients
+        .lock()
+        .await
+        .insert(request.host, Arc::new(client));
     Ok(true)
 }
 
@@ -1584,8 +1743,11 @@ async fn aos8_show(
     command: String,
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
-    let clients = state.aos8_clients.lock().await;
-    let client = clients.get(&host).ok_or("Not logged in to AOS-8 controller.")?;
+    let client = {
+        let clients = state.aos8_clients.lock().await;
+        clients.get(&host).cloned()
+    };
+    let client = client.ok_or("Not logged in to AOS-8 controller.")?;
     let (status, text) = client.show(&command).await.map_err(|e| e.to_string())?;
     let parsed: serde_json::Value =
         serde_json::from_str(&text).unwrap_or(serde_json::Value::String(text));
@@ -1600,8 +1762,11 @@ async fn aos8_request(
     body: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
-    let clients = state.aos8_clients.lock().await;
-    let client = clients.get(&host).ok_or("Not logged in to AOS-8 controller.")?;
+    let client = {
+        let clients = state.aos8_clients.lock().await;
+        clients.get(&host).cloned()
+    };
+    let client = client.ok_or("Not logged in to AOS-8 controller.")?;
     let (status, text) = client
         .request(&method, &path, body.as_deref())
         .await
@@ -1619,7 +1784,11 @@ async fn aoss_login(request: ApiLoginRequest, state: State<'_, AppState>) -> Res
         .login(&request.username, &request.password)
         .await
         .map_err(|e| e.to_string())?;
-    state.aoss_clients.lock().await.insert(request.host, client);
+    state
+        .aoss_clients
+        .lock()
+        .await
+        .insert(request.host, Arc::new(client));
     Ok(true)
 }
 
@@ -1631,8 +1800,11 @@ async fn aoss_request(
     body: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
-    let clients = state.aoss_clients.lock().await;
-    let client = clients.get(&host).ok_or("Not logged in to AOS-S switch.")?;
+    let client = {
+        let clients = state.aoss_clients.lock().await;
+        clients.get(&host).cloned()
+    };
+    let client = client.ok_or("Not logged in to AOS-S switch.")?;
     let (status, text) = client
         .request(&method, &path, body.as_deref())
         .await
@@ -1653,7 +1825,7 @@ async fn mist_configure(
 ) -> Result<(), String> {
     let client = MistClient::new(base_url, token, accept_invalid_certs.unwrap_or(false))
         .map_err(|e| e.to_string())?;
-    *state.mist.lock().await = Some(client);
+    *state.mist.lock().await = Some(Arc::new(client));
     Ok(())
 }
 
@@ -1670,10 +1842,12 @@ async fn mist_request(
     body: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
-    let guard = state.mist.lock().await;
-    let client = guard
-        .as_ref()
-        .ok_or("Mist not configured. Add a token in Settings → Juniper Mist.")?;
+    let client = {
+        let guard = state.mist.lock().await;
+        guard.as_ref().cloned()
+    };
+    let client =
+        client.ok_or("Mist not configured. Add a token in Settings → Juniper Mist.")?;
     let (status, text) = client
         .request(&method, &path, body.as_deref())
         .await
@@ -1696,7 +1870,11 @@ async fn junos_login(request: ApiLoginRequest, state: State<'_, AppState>) -> Re
     )
     .map_err(|e| e.to_string())?;
     client.login().await.map_err(|e| e.to_string())?;
-    state.junos_clients.lock().await.insert(request.host, client);
+    state
+        .junos_clients
+        .lock()
+        .await
+        .insert(request.host, Arc::new(client));
     Ok(true)
 }
 
@@ -1708,10 +1886,12 @@ async fn junos_request(
     body: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
-    let clients = state.junos_clients.lock().await;
-    let client = clients
-        .get(&host)
-        .ok_or("Not logged in to this Junos device (Junos REST must be enabled).")?;
+    let client = {
+        let clients = state.junos_clients.lock().await;
+        clients.get(&host).cloned()
+    };
+    let client =
+        client.ok_or("Not logged in to this Junos device (Junos REST must be enabled).")?;
     let (status, text) = client
         .request(&method, &path, body.as_deref())
         .await
@@ -1727,10 +1907,11 @@ async fn api_execute_cli(
     command: String,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
-    let clients = state.api_clients.lock().await;
-    let client = clients
-        .get(&host)
-        .ok_or("Not logged in. Call api_login first.")?;
+    let client = {
+        let clients = state.api_clients.lock().await;
+        clients.get(&host).cloned()
+    };
+    let client = client.ok_or("Not logged in. Call api_login first.")?;
     client
         .execute_cli(&command)
         .await
@@ -1746,11 +1927,7 @@ async fn central_configure(
     client_secret: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    state
-        .central
-        .lock()
-        .await
-        .configure(base_url, client_id, client_secret);
+    state.central.configure(base_url, client_id, client_secret);
     Ok(())
 }
 
@@ -1760,19 +1937,19 @@ async fn central_set_token(
     token: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    state.central.lock().await.configure_token(base_url, token);
+    state.central.configure_token(base_url, token);
     Ok(())
 }
 
 #[tauri::command]
 async fn central_clear(state: State<'_, AppState>) -> Result<(), String> {
-    state.central.lock().await.clear();
+    state.central.clear();
     Ok(())
 }
 
 #[tauri::command]
 async fn central_is_configured(state: State<'_, AppState>) -> Result<bool, String> {
-    Ok(state.central.lock().await.is_configured())
+    Ok(state.central.is_configured())
 }
 
 #[tauri::command]
@@ -1782,10 +1959,11 @@ async fn central_request(
     body: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
+    // The client is internally synchronized (config + token cache behind a
+    // std Mutex, never held across a network await), so no outer lock is held
+    // here for the duration of the round-trip.
     let (status, text) = state
         .central
-        .lock()
-        .await
         .request(&method, &path, body.as_deref())
         .await
         .map_err(|e| e.to_string())?;
@@ -1975,11 +2153,20 @@ async fn ai_chat_stream(
 ) -> Result<(), String> {
     // Register a cancel flag the Stop button (ai_cancel_stream) can trip.
     let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    state
+    // A reused stream id must not silently replace a live stream's flag (the
+    // displaced stream would leak, uncancellable, running to completion and
+    // being billed): trip the OLD flag so that stream aborts before we swap in.
+    if let Some(displaced) = state
         .ai_cancels
         .lock()
         .await
-        .insert(stream_id.clone(), cancel.clone());
+        .insert(stream_id.clone(), cancel.clone())
+    {
+        log::warn!(
+            "ai_chat_stream: stream id '{stream_id}' reused — cancelling the displaced stream"
+        );
+        displaced.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
 
     let result = ai::chat_stream(&state.ai_keys, request, &app, &stream_id, cancel).await;
 

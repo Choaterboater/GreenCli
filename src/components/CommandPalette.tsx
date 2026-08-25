@@ -48,17 +48,19 @@ interface CommandPaletteProps {
 }
 
 export default function CommandPalette({ onConnect, onLocalShell, onConnectRecent }: CommandPaletteProps) {
-  const store = useSessionStore();
-  const { theme, setTheme } = useSettingsStore();
+  // Narrow selectors — a whole-store subscription re-rendered the palette on
+  // every session/UI change. Action callbacks read the store imperatively
+  // (getState) so the memoized action list stays stable.
+  const showCommandPalette = useSessionStore((s) => s.showCommandPalette);
+  const setShowCommandPalette = useSessionStore((s) => s.setShowCommandPalette);
+  const folders = useSessionStore((s) => s.folders);
+  const sessions = useSessionStore((s) => s.sessions);
+  const activeSessionId = useSessionStore((s) => s.activeSessionId);
+  const poppedSessions = useSessionStore((s) => s.poppedSessions);
+  const vaultUnlocked = useSessionStore((s) => s.vaultUnlocked);
+  const theme = useSettingsStore((s) => s.theme);
+  const setTheme = useSettingsStore((s) => s.setTheme);
   const recents = useRecentStore((s) => s.recents);
-  const {
-    showCommandPalette,
-    setShowCommandPalette,
-    folders,
-    sessions,
-    activeSessionId,
-    poppedSessions,
-  } = store;
 
   const [query, setQuery] = useState('');
   const [selected, setSelected] = useState(0);
@@ -72,14 +74,14 @@ export default function CommandPalette({ onConnect, onLocalShell, onConnectRecen
 
   const actions: PaletteAction[] = useMemo(() => {
     const a: PaletteAction[] = [
-      { id: 'quick-connect', label: 'Quick Connect', hint: 'Ctrl+T', icon: <Plug size={14} />, run: () => store.setShowQuickConnect(true) },
+      { id: 'quick-connect', label: 'Quick Connect', hint: 'Ctrl+T', icon: <Plug size={14} />, run: () => useSessionStore.getState().setShowQuickConnect(true) },
       { id: 'local-shell', label: 'New Local Shell', keywords: 'terminal cli claude kimi', icon: <TerminalSquare size={14} />, run: onLocalShell },
-      { id: 'toggle-editor', label: 'Toggle Config Editor', hint: 'Ctrl+Shift+E', icon: <FileCode size={14} />, run: store.toggleConfigEditor },
-      { id: 'toggle-api', label: 'Toggle API Explorer', hint: 'Ctrl+Shift+A', icon: <Globe size={14} />, run: store.toggleApiExplorer },
-      { id: 'toggle-ai', label: 'Toggle AI Assistant', hint: 'Ctrl+Shift+I', icon: <Sparkles size={14} />, run: store.toggleAiAssistant },
-      { id: 'toggle-broadcast', label: 'Toggle Multi-send', keywords: 'send all multiple sessions broadcast subset', icon: <Radio size={14} />, run: store.toggleBroadcast },
-      { id: 'bulk-runner', label: 'Bulk Command Runner', keywords: 'run all devices batch collect csv', icon: <Radio size={14} />, run: () => store.setShowBulkRunner(true) },
-      { id: 'sftp', label: 'SFTP File Transfer', keywords: 'sftp upload download file transfer scp', icon: <HardDrive size={14} />, run: () => store.setShowSftp(true) },
+      { id: 'toggle-editor', label: 'Toggle Config Editor', hint: 'Ctrl+Shift+E', icon: <FileCode size={14} />, run: () => useSessionStore.getState().toggleConfigEditor() },
+      { id: 'toggle-api', label: 'Toggle API Explorer', hint: 'Ctrl+Shift+A', icon: <Globe size={14} />, run: () => useSessionStore.getState().toggleApiExplorer() },
+      { id: 'toggle-ai', label: 'Toggle AI Assistant', hint: 'Ctrl+Shift+I', icon: <Sparkles size={14} />, run: () => useSessionStore.getState().toggleAiAssistant() },
+      { id: 'toggle-broadcast', label: 'Toggle Multi-send', keywords: 'send all multiple sessions broadcast subset', icon: <Radio size={14} />, run: () => useSessionStore.getState().toggleBroadcast() },
+      { id: 'bulk-runner', label: 'Bulk Command Runner', keywords: 'run all devices batch collect csv', icon: <Radio size={14} />, run: () => useSessionStore.getState().setShowBulkRunner(true) },
+      { id: 'sftp', label: 'SFTP File Transfer', keywords: 'sftp upload download file transfer scp', icon: <HardDrive size={14} />, run: () => useSessionStore.getState().setShowSftp(true) },
       {
         id: 'clear-terminal',
         label: 'Clear Active Terminal',
@@ -106,7 +108,7 @@ export default function CommandPalette({ onConnect, onLocalShell, onConnectRecen
           sessions.forEach((s) => {
             if (!poppedSessions.includes(s.sessionId)) {
               invoke('disconnect', { sessionId: s.sessionId }).catch(() => {});
-              store.removeSession(s.sessionId);
+              useSessionStore.getState().removeSession(s.sessionId);
             }
           });
         },
@@ -117,11 +119,11 @@ export default function CommandPalette({ onConnect, onLocalShell, onConnectRecen
         keywords: 'pane side by side two terminals',
         icon: <Columns2 size={14} />,
         run: () => {
-          store.toggleSplitView();
+          useSessionStore.getState().toggleSplitView();
           setTimeout(() => window.dispatchEvent(new Event('resize')), 60);
         },
       },
-      { id: 'toggle-sidebar', label: 'Toggle Sidebar', hint: 'Ctrl+B', icon: <PanelLeft size={14} />, run: store.toggleSidebar },
+      { id: 'toggle-sidebar', label: 'Toggle Sidebar', hint: 'Ctrl+B', icon: <PanelLeft size={14} />, run: () => useSessionStore.getState().toggleSidebar() },
       // Zoom the terminal + config-editor font — same persisted setting as the
       // Ctrl+= / Ctrl+- / Ctrl+0 bindings (W2-11).
       {
@@ -149,19 +151,19 @@ export default function CommandPalette({ onConnect, onLocalShell, onConnectRecen
         icon: <RotateCcw size={14} />,
         run: () => useSettingsStore.getState().setFontSize(14),
       },
-      { id: 'search', label: 'Search in Terminal', hint: 'Ctrl+F', icon: <Search size={14} />, run: () => store.setShowSearch(true) },
-      { id: 'settings', label: 'Open Settings', hint: 'Ctrl+,', icon: <SettingsIcon size={14} />, run: () => store.setShowSettings(true) },
-      { id: 'help', label: 'Help & Documentation', hint: 'F1', keywords: 'help docs guide setup how to configure', icon: <HelpCircle size={14} />, run: () => store.setShowHelp(true) },
+      { id: 'search', label: 'Search in Terminal', hint: 'Ctrl+F', icon: <Search size={14} />, run: () => useSessionStore.getState().setShowSearch(true) },
+      { id: 'settings', label: 'Open Settings', hint: 'Ctrl+,', icon: <SettingsIcon size={14} />, run: () => useSessionStore.getState().setShowSettings(true) },
+      { id: 'help', label: 'Help & Documentation', hint: 'F1', keywords: 'help docs guide setup how to configure', icon: <HelpCircle size={14} />, run: () => useSessionStore.getState().setShowHelp(true) },
       {
         id: 'vault',
-        label: store.vaultUnlocked ? 'Lock credential vault' : 'Unlock credential vault',
+        label: vaultUnlocked ? 'Lock credential vault' : 'Unlock credential vault',
         keywords: 'vault password credential secure',
         icon: <ShieldCheck size={14} />,
         run: () => {
-          if (store.vaultUnlocked) {
-            invoke('vault_lock').then(() => store.setVaultUnlocked(false)).catch(() => {});
+          if (vaultUnlocked) {
+            invoke('vault_lock').then(() => useSessionStore.getState().setVaultUnlocked(false)).catch(() => {});
           } else {
-            store.setShowVaultUnlock(true);
+            useSessionStore.getState().setShowVaultUnlock(true);
           }
         },
       },
@@ -215,7 +217,7 @@ export default function CommandPalette({ onConnect, onLocalShell, onConnectRecen
           if (isPopped) {
             WebviewWindow.getByLabel(`popout-${s.sessionId}`)?.setFocus();
           } else {
-            store.setActiveSession(s.sessionId);
+            useSessionStore.getState().setActiveSession(s.sessionId);
           }
         },
       });
@@ -231,14 +233,14 @@ export default function CommandPalette({ onConnect, onLocalShell, onConnectRecen
         icon: <X size={14} className="text-[#ff7b72]" />,
         run: () => {
           invoke('disconnect', { sessionId: activeSessionId }).catch(() => {});
-          store.removeSession(activeSessionId);
+          useSessionStore.getState().removeSession(activeSessionId);
         },
       });
     }
 
     return a;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [folders, sessions, activeSessionId, poppedSessions, theme, store.vaultUnlocked, recents, onConnect, onLocalShell, onConnectRecent]);
+  }, [folders, sessions, activeSessionId, poppedSessions, theme, vaultUnlocked, recents, onConnect, onLocalShell, onConnectRecent]);
 
   const filtered = useMemo(() => {
     const q = query.trim();
@@ -308,7 +310,7 @@ export default function CommandPalette({ onConnect, onLocalShell, onConnectRecen
           <kbd className="text-[10px] text-[var(--text-muted)] border border-[var(--border)] rounded px-1">esc</kbd>
         </div>
 
-        <div ref={listRef} className="max-h-[50vh] overflow-y-auto py-1">
+        <div ref={listRef} role="listbox" aria-label="Commands" className="max-h-[50vh] overflow-y-auto py-1">
           {filtered.length === 0 && (
             <p className="px-4 py-6 text-center text-xs text-[var(--text-muted)]">No matching commands</p>
           )}
@@ -316,6 +318,8 @@ export default function CommandPalette({ onConnect, onLocalShell, onConnectRecen
             <button
               key={a.id}
               data-idx={i}
+              role="option"
+              aria-selected={i === selected}
               onMouseEnter={() => setSelected(i)}
               onClick={() => runAt(i)}
               className={`flex items-center gap-3 w-full px-4 py-2 text-left transition-colors ${

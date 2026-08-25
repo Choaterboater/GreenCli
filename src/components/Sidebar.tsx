@@ -50,17 +50,17 @@ interface SidebarProps {
 }
 
 export default function Sidebar({ onConnect }: SidebarProps) {
-  const {
-    folders,
-    sidebarVisible,
-    sessions,
-    toggleSidebar,
-    updateFolder,
-    addFolder,
-    removeFolder,
-    removeSessionFromFolder,
-    moveSessionToFolder,
-  } = useSessionStore();
+  // Narrow per-field selectors — a whole-store subscription re-rendered the
+  // sidebar on every unrelated session/UI state change.
+  const folders = useSessionStore((s) => s.folders);
+  const sidebarVisible = useSessionStore((s) => s.sidebarVisible);
+  const sessions = useSessionStore((s) => s.sessions);
+  const toggleSidebar = useSessionStore((s) => s.toggleSidebar);
+  const updateFolder = useSessionStore((s) => s.updateFolder);
+  const addFolder = useSessionStore((s) => s.addFolder);
+  const removeFolder = useSessionStore((s) => s.removeFolder);
+  const removeSessionFromFolder = useSessionStore((s) => s.removeSessionFromFolder);
+  const moveSessionToFolder = useSessionStore((s) => s.moveSessionToFolder);
   const aiAgents = useSettingsStore((s) => s.aiAgents) ?? [];
   const sessionAgents = useSettingsStore((s) => s.sessionAgents) ?? {};
   const setSessionAgent = useSettingsStore((s) => s.setSessionAgent);

@@ -121,19 +121,20 @@ impl KnownHosts {
     }
 
     /// Verify a fingerprint for `host:port` presented under key algorithm
-    /// `key_type`. Returns `Ok(true)` to accept, `Err(reason)` to reject.
+    /// `key_type`. Returns `Ok(outcome)` to accept, `Err(reason)` to reject.
     ///
     /// The fingerprint is accepted if it matches ANY key already trusted for the
     /// host (a host may legitimately offer several key types, and RSA signature
     /// variants share one fingerprint); a NEW algorithm for a known host is
-    /// recorded (TOFU); only a changed fingerprint under the SAME algorithm is
-    /// treated as a possible MITM. Unknown hosts are recorded and accepted.
+    /// recorded (TOFU) and reported as `NewAlgorithm` so the caller can warn the
+    /// user; only a changed fingerprint under the SAME algorithm is treated as a
+    /// possible MITM. Unknown hosts are recorded and accepted (`FirstSeen`).
     pub fn verify_or_record(
         &self,
         host_port: &str,
         key_type: &str,
         fingerprint: &str,
-    ) -> Result<bool, String> {
+    ) -> Result<KeyVerifyResult, String> {
         // Hold the lock across the whole read-modify-write so two parallel first-time
         // connects can't each load the same snapshot and clobber each other's record.
         let _guard = WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -142,13 +143,14 @@ impl KnownHosts {
 
         // Snapshot the read-only decisions about this host's current record so the
         // borrow ends before we mutate `map`.
-        let (matches_any, same_type_stored, legacy_matches) = match map.get(host_port) {
+        let (known_host, matches_any, same_type_stored, legacy_matches) = match map.get(host_port) {
             Some(keys) => (
+                true,
                 keys.values().any(|fp| fp == fingerprint),
                 keys.get(key_type).cloned(),
                 keys.get(LEGACY_SLOT).map(String::as_str) == Some(fingerprint),
             ),
-            None => (false, None, false),
+            None => (false, false, None, false),
         };
 
         // Already trusted under some algorithm — covers extra key types, RSA
@@ -165,7 +167,7 @@ impl KnownHosts {
                 keys.insert(key_type.to_string(), fingerprint.to_string());
                 self.save(&map);
             }
-            return Ok(true);
+            return Ok(KeyVerifyResult::Trusted);
         }
 
         // Same algorithm on record but a different fingerprint (matches_any was
@@ -183,8 +185,28 @@ impl KnownHosts {
             .or_default()
             .insert(key_type.to_string(), fingerprint.to_string());
         self.save(&map);
-        Ok(true)
+        // A NEW algorithm on an already-known host is accepted but worth
+        // surfacing: an unexpected algorithm can indicate a downgrade attempt.
+        if known_host {
+            Ok(KeyVerifyResult::NewAlgorithm)
+        } else {
+            Ok(KeyVerifyResult::FirstSeen)
+        }
     }
+}
+
+/// Outcome of a successful host-key verification (rejections come back as
+/// `Err(reason)` with an actionable message).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyVerifyResult {
+    /// First time this host:port was seen — the key was recorded (TOFU).
+    FirstSeen,
+    /// The presented key matched an already-trusted fingerprint.
+    Trusted,
+    /// A NEW key algorithm was recorded for an already-known host. Accepted,
+    /// but the caller should surface it to the user — an unexpected new
+    /// algorithm can indicate a downgrade attempt.
+    NewAlgorithm,
 }
 
 /// Convenience for callers that only have a path.
@@ -193,6 +215,6 @@ pub fn verify_or_record(
     host_port: &str,
     key_type: &str,
     fingerprint: &str,
-) -> Result<bool, String> {
+) -> Result<KeyVerifyResult, String> {
     KnownHosts::new(path.to_path_buf()).verify_or_record(host_port, key_type, fingerprint)
 }

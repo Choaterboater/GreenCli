@@ -34,12 +34,18 @@ function lastPrompt(output: string): string {
 }
 
 export default function DeviceMapper({ sessionId, onClose }: DeviceMapperProps) {
-  const { sessions, folders, updateSessionConfig } = useSessionStore();
-  const settings = useSettingsStore();
+  // Narrow per-field selectors instead of whole-store subscriptions.
+  const sessions = useSessionStore((s) => s.sessions);
+  const folders = useSessionStore((s) => s.folders);
+  const updateSessionConfig = useSessionStore((s) => s.updateSessionConfig);
+  const customDeviceProfiles = useSettingsStore((s) => s.customDeviceProfiles);
+  const setLastUsedDeviceType = useSettingsStore((s) => s.setLastUsedDeviceType);
+  const setLastUsedDeviceProfileId = useSettingsStore((s) => s.setLastUsedDeviceProfileId);
+  const addDeviceProfile = useSettingsStore((s) => s.addDeviceProfile);
   const session = sessions.find((s) => s.sessionId === sessionId);
   const profiles = useMemo(
-    () => allDeviceProfiles(settings.customDeviceProfiles),
-    [settings.customDeviceProfiles],
+    () => allDeviceProfiles(customDeviceProfiles),
+    [customDeviceProfiles],
   );
   const [output, setOutput] = useState('');
   const [selectedProfileId, setSelectedProfileId] = useState('builtin-generic');
@@ -100,8 +106,8 @@ export default function DeviceMapper({ sessionId, onClose }: DeviceMapperProps) 
       ...updates,
     };
     updateSessionConfig(sessionId, updates);
-    settings.setLastUsedDeviceType(profile.deviceType);
-    settings.setLastUsedDeviceProfileId(profile.id);
+    setLastUsedDeviceType(profile.deviceType);
+    setLastUsedDeviceProfileId(profile.id);
 
     if (folder) {
       await invoke('save_session', {
@@ -131,7 +137,7 @@ export default function DeviceMapper({ sessionId, onClose }: DeviceMapperProps) 
       promptPatterns: prompt ? [`^${prompt.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`] : base.promptPatterns,
       fingerprints: prompt ? [prompt] : base.fingerprints,
     };
-    settings.addDeviceProfile(profile);
+    addDeviceProfile(profile);
     setSelectedProfileId(profile.id);
     setCustomName('');
     notify.success('Custom profile created', `${profile.name} is available for mapping and Quick Connect.`);
@@ -139,7 +145,7 @@ export default function DeviceMapper({ sessionId, onClose }: DeviceMapperProps) 
 
   const exportProfiles = async () => {
     try {
-      const data = JSON.stringify(settings.customDeviceProfiles, null, 2);
+      const data = JSON.stringify(customDeviceProfiles, null, 2);
       if (isTauri) {
         const path = await saveDialog({
           title: 'Export device profiles',
@@ -148,7 +154,7 @@ export default function DeviceMapper({ sessionId, onClose }: DeviceMapperProps) 
         });
         if (path) {
           await invoke('write_file_text', { path, contents: data });
-          notify.success('Profiles exported', `${settings.customDeviceProfiles.length} profile${settings.customDeviceProfiles.length === 1 ? '' : 's'} written.`);
+          notify.success('Profiles exported', `${customDeviceProfiles.length} profile${customDeviceProfiles.length === 1 ? '' : 's'} written.`);
         }
       } else {
         const blob = new Blob([data], { type: 'application/json' });
@@ -193,7 +199,7 @@ export default function DeviceMapper({ sessionId, onClose }: DeviceMapperProps) 
       }
       if (!text) return;
       const parsed = sanitizeStandaloneImportedProfiles(JSON.parse(text));
-      parsed.forEach((profile) => settings.addDeviceProfile(profile));
+      parsed.forEach((profile) => addDeviceProfile(profile));
       notify.success('Profiles imported', `${parsed.length} profile${parsed.length === 1 ? '' : 's'} added.`);
     } catch (e) {
       notify.error('Import failed', String(e));

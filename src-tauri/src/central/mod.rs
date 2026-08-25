@@ -17,6 +17,7 @@
 
 use crate::error::AppError;
 use serde_json::Value;
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 /// HPE GreenLake SSO token endpoint — the home of client-credentials tokens
@@ -81,13 +82,28 @@ async fn token_request(
     Ok((token, expires))
 }
 
-pub struct CentralClient {
-    client: reqwest::Client,
+/// Mutable configuration + token cache. Kept behind a std Mutex so the
+/// request path never holds an OUTER async lock across a network await — the
+/// lock here is only taken for quick reads/writes around (never during) the
+/// HTTP round-trips.
+struct CentralState {
     base_url: String,
     client_id: String,
     client_secret: String,
     token: Option<String>,
     token_expiry: Option<Instant>,
+}
+
+impl CentralState {
+    fn is_configured(&self) -> bool {
+        !self.base_url.is_empty()
+            && (self.token.is_some() || (!self.client_id.is_empty() && !self.client_secret.is_empty()))
+    }
+}
+
+pub struct CentralClient {
+    client: reqwest::Client,
+    inner: Mutex<CentralState>,
 }
 
 impl CentralClient {
@@ -97,59 +113,84 @@ impl CentralClient {
                 .timeout(Duration::from_secs(30))
                 .build()
                 .map_err(AppError::from)?,
-            base_url: String::new(),
-            client_id: String::new(),
-            client_secret: String::new(),
-            token: None,
-            token_expiry: None,
+            inner: Mutex::new(CentralState {
+                base_url: String::new(),
+                client_id: String::new(),
+                client_secret: String::new(),
+                token: None,
+                token_expiry: None,
+            }),
         })
     }
 
-    pub fn configure(&mut self, base_url: String, client_id: String, client_secret: String) {
-        self.base_url = base_url.trim_end_matches('/').to_string();
-        self.client_id = client_id;
-        self.client_secret = client_secret;
-        self.token = None;
-        self.token_expiry = None;
+    /// Lock the inner state, recovering from a poisoned mutex (a panic while
+    /// holding it must not wedge every later Central call).
+    fn state(&self) -> std::sync::MutexGuard<'_, CentralState> {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub fn configure(&self, base_url: String, client_id: String, client_secret: String) {
+        let mut g = self.state();
+        g.base_url = base_url.trim_end_matches('/').to_string();
+        g.client_id = client_id;
+        g.client_secret = client_secret;
+        g.token = None;
+        g.token_expiry = None;
     }
 
     /// Configure with a pasted access token (SSO accounts that can't use the
     /// client-credentials grant). No client id/secret → the token is used as-is
     /// and never refreshed (re-paste when it expires).
-    pub fn configure_token(&mut self, base_url: String, token: String) {
-        self.base_url = base_url.trim_end_matches('/').to_string();
-        self.client_id = String::new();
-        self.client_secret = String::new();
-        self.token = Some(token);
-        self.token_expiry = None;
+    pub fn configure_token(&self, base_url: String, token: String) {
+        let mut g = self.state();
+        g.base_url = base_url.trim_end_matches('/').to_string();
+        g.client_id = String::new();
+        g.client_secret = String::new();
+        g.token = Some(token);
+        g.token_expiry = None;
     }
 
-    pub fn clear(&mut self) {
-        self.base_url.clear();
-        self.client_id.clear();
-        self.client_secret.clear();
-        self.token = None;
-        self.token_expiry = None;
+    pub fn clear(&self) {
+        let mut g = self.state();
+        g.base_url.clear();
+        g.client_id.clear();
+        g.client_secret.clear();
+        g.token = None;
+        g.token_expiry = None;
     }
 
     pub fn is_configured(&self) -> bool {
-        !self.base_url.is_empty()
-            && (self.token.is_some() || (!self.client_id.is_empty() && !self.client_secret.is_empty()))
+        self.state().is_configured()
     }
 
-    async fn ensure_token(&mut self) -> Result<String, AppError> {
+    async fn ensure_token(&self) -> Result<String, AppError> {
+        // Snapshot the config + cached token under a brief lock — the lock is
+        // released BEFORE the token-mint HTTP calls below, so a slow SSO
+        // endpoint never blocks configure()/clear()/other requests.
+        let (base_url, client_id, client_secret, token, token_expiry) = {
+            let g = self.state();
+            (
+                g.base_url.clone(),
+                g.client_id.clone(),
+                g.client_secret.clone(),
+                g.token.clone(),
+                g.token_expiry,
+            )
+        };
         // Pasted token (no client-credentials to refresh with): use as-is.
-        if self.client_id.is_empty() {
-            if let Some(token) = &self.token {
-                return Ok(token.clone());
+        if client_id.is_empty() {
+            if let Some(token) = token {
+                return Ok(token);
             }
         }
-        if let (Some(token), Some(exp)) = (&self.token, self.token_expiry) {
+        if let (Some(token), Some(exp)) = (&token, token_expiry) {
             if Instant::now() < exp {
                 return Ok(token.clone());
             }
         }
-        if !self.is_configured() {
+        let configured = !base_url.is_empty()
+            && (token.is_some() || (!client_id.is_empty() && !client_secret.is_empty()));
+        if !configured {
             return Err(AppError::ApiError(
                 "Aruba Central is not configured (set base URL + client id/secret in Settings)"
                     .into(),
@@ -163,8 +204,8 @@ impl CentralClient {
         let sso_err = match token_request(
             &self.client,
             GLP_SSO_TOKEN_URL,
-            &self.client_id,
-            &self.client_secret,
+            &client_id,
+            &client_secret,
         )
         .await
         {
@@ -172,14 +213,9 @@ impl CentralClient {
             Err(e) => e,
         };
 
-        let legacy_url = format!("{}/oauth2/token", self.base_url);
-        let legacy_err = match token_request(
-            &self.client,
-            &legacy_url,
-            &self.client_id,
-            &self.client_secret,
-        )
-        .await
+        let legacy_url = format!("{}/oauth2/token", base_url);
+        let legacy_err = match token_request(&self.client, &legacy_url, &client_id, &client_secret)
+            .await
         {
             Ok((token, expires)) => return Ok(self.cache_token(token, expires)),
             Err(e) => e,
@@ -196,9 +232,10 @@ impl CentralClient {
 
     /// Cache a freshly minted token, expiring 60s before the server-side
     /// `expires_in` so we never send a token that dies mid-request.
-    fn cache_token(&mut self, token: String, expires_in: u64) -> String {
-        self.token = Some(token.clone());
-        self.token_expiry =
+    fn cache_token(&self, token: String, expires_in: u64) -> String {
+        let mut g = self.state();
+        g.token = Some(token.clone());
+        g.token_expiry =
             Some(Instant::now() + Duration::from_secs(expires_in.saturating_sub(60)));
         token
     }
@@ -206,15 +243,19 @@ impl CentralClient {
     /// Perform a Central request (path relative to base URL, or absolute).
     /// Returns (status, body_text); does not error on 4xx/5xx.
     pub async fn request(
-        &mut self,
+        &self,
         method: &str,
         path: &str,
         body: Option<&str>,
     ) -> Result<(u16, String), AppError> {
+        let (base_url, client_id) = {
+            let g = self.state();
+            (g.base_url.clone(), g.client_id.clone())
+        };
         let url = if path.starts_with("http") {
             path.to_string()
         } else {
-            format!("{}{}", self.base_url, path)
+            format!("{}{}", base_url, path)
         };
         let mut retried = false;
         loop {
@@ -230,7 +271,7 @@ impl CentralClient {
             // Only attach the bearer token when the target shares the configured
             // Central origin — an absolute URL elsewhere goes out unauthenticated
             // rather than leaking the token.
-            if crate::api::same_origin(&self.base_url, &url) {
+            if crate::api::same_origin(&base_url, &url) {
                 rb = rb.bearer_auth(token);
             }
             if let Some(b) = body {
@@ -245,10 +286,11 @@ impl CentralClient {
             // In creds mode a 401 means the cached token died server-side (the
             // local expiry check uses Instant, which freezes during system
             // sleep, and tokens can be revoked) — re-mint once and retry.
-            if status == 401 && !retried && !self.client_id.is_empty() {
+            if status == 401 && !retried && !client_id.is_empty() {
                 retried = true;
-                self.token = None;
-                self.token_expiry = None;
+                let mut g = self.state();
+                g.token = None;
+                g.token_expiry = None;
                 continue;
             }
             let text = resp.text().await.unwrap_or_default();
