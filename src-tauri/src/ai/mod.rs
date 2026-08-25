@@ -553,6 +553,28 @@ pub async fn cli_passthrough(command: &str, prompt: &str) -> Result<String, AppE
     // provide (GUI apps get a minimal PATH and can't find brew/npm-installed
     // CLIs otherwise).
     let argv = split_command(&command)?;
+
+    // Same refusal as MCP stdio server spawning (mcp::client::validate_stdio_command):
+    // a shell interpreter named AS the CLI would re-introduce shell interpretation
+    // of its args (`sh -c …`), defeating the no-shell spawn above.
+    let file_name = Path::new(argv[0].as_str())
+        .file_name()
+        .and_then(|f| f.to_str())
+        .unwrap_or(argv[0].as_str())
+        .to_ascii_lowercase();
+    const SHELLS: [&str; 10] = [
+        "sh", "bash", "zsh", "fish", "cmd", "cmd.exe", "powershell", "powershell.exe", "pwsh",
+        "pwsh.exe",
+    ];
+    if SHELLS.contains(&file_name.as_str()) {
+        return Err(AppError::ApiError(format!(
+            "Refusing to launch shell interpreter '{}' as an AI CLI (its args would be \
+             shell-interpreted). Configure the CLI binary directly (e.g. `claude`, `kimi`, \
+             an absolute path) instead.",
+            argv[0]
+        )));
+    }
+
     let mut builder = Command::new(&argv[0]);
     builder.args(&argv[1..]);
     #[cfg(unix)]
