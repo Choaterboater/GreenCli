@@ -86,7 +86,7 @@ impl Connection for LocalConnection {
                     }
                 } else if !a.is_empty()
                     && a.chars()
-                        .all(|c| c.is_ascii_alphanumeric() || "-_./=:@%+,".contains(c))
+                        .all(|c| c.is_ascii_alphanumeric() || "-_./=:@%,".contains(c))
                 {
                     a.clone()
                 } else {
@@ -189,6 +189,7 @@ impl Connection for LocalConnection {
             session_id: self.session_id.clone(),
             success: true,
             error: None,
+            warning: None,
         })
     }
 
