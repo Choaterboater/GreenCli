@@ -83,6 +83,26 @@ export default function CommandPalette({ onConnect, onLocalShell, onConnectRecen
       { id: 'bulk-runner', label: 'Bulk Command Runner', keywords: 'run all devices batch collect csv', icon: <Radio size={14} />, run: () => useSessionStore.getState().setShowBulkRunner(true) },
       { id: 'sftp', label: 'SFTP File Transfer', keywords: 'sftp upload download file transfer scp', icon: <HardDrive size={14} />, run: () => useSessionStore.getState().setShowSftp(true) },
       {
+        id: 'mcp-servers',
+        label: 'MCP Servers',
+        keywords: 'mcp tools model context protocol ai',
+        icon: <Sparkles size={14} />,
+        run: () => {
+          useSessionStore.getState().setSettingsFocus('mcp');
+          useSessionStore.getState().setShowSettings(true);
+        },
+      },
+      {
+        id: 'config-archive',
+        label: 'Config Archive',
+        keywords: 'golden baseline history diff snapshot',
+        icon: <History size={14} />,
+        run: () => {
+          useSessionStore.getState().setShowConfigEditor(true);
+          useSessionStore.getState().setShowArchive(true);
+        },
+      },
+      {
         id: 'clear-terminal',
         label: 'Clear Active Terminal',
         keywords: 'clear screen wipe reset',

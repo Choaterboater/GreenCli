@@ -7,6 +7,9 @@ import {
   Target,
   HelpCircle,
   Radio,
+  HardDrive,
+  History,
+  Sparkles,
   type LucideIcon,
 } from 'lucide-react';
 import { useSessionStore } from '../store/sessionStore';
@@ -38,8 +41,24 @@ export default function WorkspaceMenu({
   onToggleBroadcast,
 }: WorkspaceMenuProps) {
   const [open, setOpen] = useState(false);
-  const { showTunnels, setShowTunnels, showIntent, setShowIntent, showHelp, setShowHelp } =
-    useSessionStore();
+  const {
+    showTunnels,
+    setShowTunnels,
+    showIntent,
+    setShowIntent,
+    showHelp,
+    setShowHelp,
+    showSftp,
+    setShowSftp,
+    showBulkRunner,
+    setShowBulkRunner,
+    showArchive,
+    showConfigEditor,
+    setShowConfigEditor,
+    setShowArchive,
+    setShowSettings,
+    setSettingsFocus,
+  } = useSessionStore();
 
   const items: MenuItem[] = [
     {
@@ -72,6 +91,52 @@ export default function WorkspaceMenu({
       active: showIntent,
       onClick: () => {
         setShowIntent(true);
+        setOpen(false);
+      },
+    },
+    {
+      key: 'sftp',
+      icon: HardDrive,
+      label: 'SFTP',
+      title: 'SFTP file transfer',
+      active: showSftp,
+      onClick: () => {
+        setShowSftp(true);
+        setOpen(false);
+      },
+    },
+    {
+      key: 'bulk',
+      icon: Radio,
+      label: 'Bulk runner',
+      title: 'Run a command on many sessions',
+      active: showBulkRunner,
+      onClick: () => {
+        setShowBulkRunner(true);
+        setOpen(false);
+      },
+    },
+    {
+      key: 'archive',
+      icon: History,
+      label: 'Config archive',
+      title: 'Per-device config history + golden diff',
+      active: showConfigEditor && showArchive,
+      onClick: () => {
+        setShowConfigEditor(true);
+        setShowArchive(true);
+        setOpen(false);
+      },
+    },
+    {
+      key: 'mcp',
+      icon: Sparkles,
+      label: 'MCP',
+      title: 'MCP servers (AI tools)',
+      active: false,
+      onClick: () => {
+        setSettingsFocus('mcp');
+        setShowSettings(true);
         setOpen(false);
       },
     },
