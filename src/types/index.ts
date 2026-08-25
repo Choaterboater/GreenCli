@@ -158,8 +158,8 @@ export interface TerminalSettings {
   /** Offer tools from connected MCP servers (e.g. centralmcp) to the AI. */
   aiUseMcp: boolean;
   /** Verify TLS certificates when talking to on-prem device REST APIs
-   *  (AOS-CX/AOS-8/AOS-S). Default off because field gear usually ships a
-   *  self-signed cert; turn on to enforce verification (reject untrusted certs). */
+   *  (AOS-CX/AOS-8/AOS-S). Default ON for new installs (1.4.0); disabling shows
+   *  an interception warning in Settings — turn off only for self-signed lab gear. */
   verifyDeviceTls: boolean;
   // Juniper Mist cloud — region API base + API token.
   mistBaseUrl: string;

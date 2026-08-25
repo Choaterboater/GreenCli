@@ -30,7 +30,7 @@ One cockpit for **Aruba · Juniper · Mist**. A modern, cross-platform terminal,
 | Frontend | React 18 + TypeScript + Tailwind CSS |
 | Terminal | xterm.js 5.x |
 | Shell | Tauri 1.6 (Rust + WebView) |
-| SSH | russh (Rust native SSH library) |
+| SSH | russh 0.63 (Rust native SSH library) |
 | Telnet | tokio async TCP |
 | Serial | tokio-serial |
 | Crypto | AES-256-GCM + Argon2 |
@@ -103,7 +103,7 @@ green-cli/
 ### Prerequisites
 
 - [Node.js](https://nodejs.org/) 18+ and npm
-- [Rust](https://rustup.rs/) toolchain
+- [Rust](https://rustup.rs/) stable toolchain, 1.85+ (MSRV)
 - OS-specific build tools for Tauri: [Tauri Prerequisites](https://tauri.app/v1/guides/getting-started/prerequisites)
 
 ### Install Dependencies
@@ -189,6 +189,9 @@ The syntax highlighter supports **232 commands**, **288 subcommands**, and **144
 - **AES-256-GCM encryption** for stored credentials
 - **Argon2id** password hashing for master password
 - Password-protected credential vault
+- **Device REST TLS verification on by default** (opt out only for self-signed lab gear)
+- **TOFU SSH host-key pinning**, with a warning when a known host offers an unseen host-key algorithm
+- SSH private keys held in zeroized memory (wiped on drop)
 
 ## License
 
