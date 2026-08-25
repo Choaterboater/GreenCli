@@ -86,8 +86,9 @@ function topicText(t: HelpTopic): string {
 }
 
 export default function HelpPanel() {
-  const store = useSessionStore();
-  const { showHelp, setShowHelp } = store;
+  // Narrow selectors; one-shot navigation actions read the store imperatively.
+  const showHelp = useSessionStore((s) => s.showHelp);
+  const setShowHelp = useSessionStore((s) => s.setShowHelp);
   const [query, setQuery] = useState('');
   const [activeId, setActiveId] = useState(HELP_TOPICS[0].id);
   const searchRef = useRef<HTMLInputElement>(null);
@@ -137,20 +138,20 @@ export default function HelpPanel() {
     switch (action.id) {
       case 'open-settings':
         // Deep-link: Settings scrolls to + flashes the `set-<focus>` section.
-        store.setSettingsFocus(action.focus ?? null);
-        store.setShowSettings(true);
+        useSessionStore.getState().setSettingsFocus(action.focus ?? null);
+        useSessionStore.getState().setShowSettings(true);
         break;
-      case 'open-quick-connect': store.setShowQuickConnect(true); break;
-      case 'open-ai': store.setShowAiAssistant(true); break;
-      case 'open-api': store.setShowApiExplorer(true); break;
-      case 'open-intent': store.setShowIntent(true); break;
-      case 'open-tunnels': store.setShowTunnels(true); break;
+      case 'open-quick-connect': useSessionStore.getState().setShowQuickConnect(true); break;
+      case 'open-ai': useSessionStore.getState().setShowAiAssistant(true); break;
+      case 'open-api': useSessionStore.getState().setShowApiExplorer(true); break;
+      case 'open-intent': useSessionStore.getState().setShowIntent(true); break;
+      case 'open-tunnels': useSessionStore.getState().setShowTunnels(true); break;
     }
   };
 
   const askAi = () => {
     setShowHelp(false);
-    store.setShowAiAssistant(true);
+    useSessionStore.getState().setShowAiAssistant(true);
   };
 
   return (
