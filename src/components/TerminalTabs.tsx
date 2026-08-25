@@ -17,15 +17,15 @@ interface TerminalTabsProps {
 }
 
 export default function TerminalTabs({ onPopOut, onReconnect, onDisconnect, onMapDevice }: TerminalTabsProps) {
-  const {
-    sessions,
-    activeSessionId,
-    setActiveSession,
-    removeSession,
-    setShowQuickConnect,
-    poppedSessions,
-    unseenOutput,
-  } = useSessionStore();
+  // Narrow per-field selectors — a whole-store subscription re-rendered the
+  // whole tab strip on every unrelated store change.
+  const sessions = useSessionStore((s) => s.sessions);
+  const activeSessionId = useSessionStore((s) => s.activeSessionId);
+  const setActiveSession = useSessionStore((s) => s.setActiveSession);
+  const removeSession = useSessionStore((s) => s.removeSession);
+  const setShowQuickConnect = useSessionStore((s) => s.setShowQuickConnect);
+  const poppedSessions = useSessionStore((s) => s.poppedSessions);
+  const unseenOutput = useSessionStore((s) => s.unseenOutput);
 
   const handleClose = (e: React.MouseEvent, sessionId: string) => {
     e.stopPropagation();
