@@ -24,6 +24,7 @@ import {
   AlertTriangle,
   Plus,
   RefreshCw,
+  Square,
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/tauri';
 import { useSessionStore } from '../store/sessionStore';
@@ -397,7 +398,8 @@ const DANGEROUS_COMMANDS = [
   /\breboot\b/i,
   /\bshutdown\b/i,
   /\bno\s+interface\b/i,
-  /\bcommit\b/i,
+  // NB: `commit` is deliberately NOT here — it's the REQUIRED apply step on
+  // Junos, so flagging it trained users to ignore the warning entirely.
   /\bcopy\s+.*startup/i,
 ];
 
@@ -601,9 +603,14 @@ const defineEditorThemes: BeforeMount = (monaco) => {
 // ─── Component ───
 
 export default function ConfigEditor() {
-  const { showConfigEditor, toggleConfigEditor, activeSessionId, sessions } =
-    useSessionStore();
-  const settings = useSettingsStore();
+  // Narrow per-field selectors — whole-store subscriptions re-rendered the
+  // editor (and re-created its callbacks) on every unrelated store change.
+  const showConfigEditor = useSessionStore((s) => s.showConfigEditor);
+  const toggleConfigEditor = useSessionStore((s) => s.toggleConfigEditor);
+  const activeSessionId = useSessionStore((s) => s.activeSessionId);
+  const sessions = useSessionStore((s) => s.sessions);
+  const fontSize = useSettingsStore((s) => s.fontSize);
+  const customDeviceProfiles = useSettingsStore((s) => s.customDeviceProfiles);
   const { isDark } = useTheme();
   const editorTheme = isDark ? 'aruba-dark' : 'aruba-light';
 
@@ -703,6 +710,8 @@ export default function ConfigEditor() {
   const [pulling, setPulling] = useState(false);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
   const sendingRef = useRef(false);
+  // Set by the Cancel button; the send loop checks it between lines.
+  const cancelSendRef = useRef(false);
 
   // Holds the original (uncleaned) text per buffer when an opened file had
   // terminal escapes, so the user can toggle back to the raw capture.
@@ -943,7 +952,7 @@ export default function ConfigEditor() {
     showStatus(`Pulling ${label}…`);
     setPulling(true);
     try {
-      const profile = profileForSession(activeSession.config, settings.customDeviceProfiles);
+      const profile = profileForSession(activeSession.config, customDeviceProfiles);
       const base = VENDOR_PAGING[profile.deviceType] ?? VENDOR_PAGING.generic;
       const disable = profile.pagingDisableCommand ?? base.disable;
       const restore = profile.pagingRestoreCommand ?? base.restore;
@@ -962,7 +971,7 @@ export default function ConfigEditor() {
         await invoke('send_data', { sessionId: sid, data: disable + '\r' });
         await sleep(300);
       }
-      const out = await sendAndCapture(sid, show);
+      const { output: out } = await sendAndCapture(sid, show);
       if (restore) {
         await invoke('send_data', { sessionId: sid, data: restore + '\r' });
         await sleep(150);
@@ -994,7 +1003,7 @@ export default function ConfigEditor() {
     } finally {
       setPulling(false);
     }
-  }, [activeSession, settings.customDeviceProfiles, openInNewTab]);
+  }, [activeSession, customDeviceProfiles, openInNewTab]);
 
   const pullCustom = useCallback(async () => {
     const cmd = (await askPrompt({
@@ -1157,6 +1166,10 @@ export default function ConfigEditor() {
     const preview = lines.slice(0, 12).join('\n');
     sendingRef.current = true;
     setSending(true);
+    // Tracks lines actually pushed so a failure/cancel can report "k of n" —
+    // the device is left with a PARTIAL config in that case and the user must
+    // know exactly how far it got.
+    let sent = 0;
 
     try {
       const ok = await askConfirm({
@@ -1170,16 +1183,25 @@ export default function ConfigEditor() {
       });
       if (!ok) return;
 
+      // Lines go out serially (80ms apart); the Cancel button sets a flag the
+      // loop checks between lines.
+      cancelSendRef.current = false;
       for (const line of lines) {
+        if (cancelSendRef.current) {
+          showStatus(`Send cancelled — sent ${sent} of ${lines.length} lines`);
+          return;
+        }
         await invoke('send_data', { sessionId: activeSession.sessionId, data: line + '\r' });
+        sent++;
         await new Promise((r) => setTimeout(r, 80));
       }
       showStatus(`Sent ${lines.length} lines`);
     } catch {
-      showStatus('Send failed — is a session connected?');
+      showStatus(`Send failed — sent ${sent} of ${lines.length} lines (is a session connected?)`);
     } finally {
       sendingRef.current = false;
       setSending(false);
+      cancelSendRef.current = false;
     }
   };
 
@@ -1224,10 +1246,18 @@ export default function ConfigEditor() {
   };
 
 
-  if (!showConfigEditor) return null;
+  // App keeps this panel MOUNTED across open/close (editor buffers, undo
+  // history, and Monaco view state survive); "closed" hides the root via CSS.
+  // Monaco can't measure a display:none container, so force a relayout when
+  // the panel becomes visible again (mirrors the terminal refit-on-unhide).
+  useEffect(() => {
+    if (!showConfigEditor) return;
+    const t = setTimeout(() => editorRef.current?.layout(), 50);
+    return () => clearTimeout(t);
+  }, [showConfigEditor]);
 
   const pullMenuItems = activeSession
-    ? PULL_MENU[profileForSession(activeSession.config, settings.customDeviceProfiles).deviceType] ??
+    ? PULL_MENU[profileForSession(activeSession.config, customDeviceProfiles).deviceType] ??
       PULL_MENU.generic
     : PULL_MENU.generic;
   const currentLangLabel = LANGUAGE_LIST.find((l) => l.id === language)?.label || language;
@@ -1239,13 +1269,16 @@ export default function ConfigEditor() {
   return (
     <div
       className={
+        `${showConfigEditor ? '' : 'hidden '}${
         maximized
           ? 'fixed left-0 right-0 bottom-0 top-11 z-40 flex flex-col bg-[var(--bg-primary)] overflow-hidden animate-fade-in'
           : fullWidth
           ? 'flex-1 min-w-0 flex flex-col bg-[var(--bg-primary)] overflow-hidden relative'
           : 'flex-shrink-0 flex flex-col bg-[var(--bg-primary)] border-l border-[var(--bg-tertiary)] overflow-hidden relative'
+        }`
       }
       style={maximized || fullWidth ? undefined : { width: panelWidth }}
+      aria-hidden={!showConfigEditor}
     >
       {/* Drag handle (hidden when maximized or filling the area) */}
       {!maximized && !fullWidth && <div className={dragHandleClass} onMouseDown={handleDragStart} />}
@@ -1267,7 +1300,7 @@ export default function ConfigEditor() {
           </span>
         </div>
         <div className="flex items-center gap-1 flex-shrink-0">
-          <button onClick={copyToClipboard} className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]" title="Copy all">
+          <button onClick={copyToClipboard} className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]" title="Copy all" aria-label="Copy all">
             <Copy size={13} />
           </button>
           <button
@@ -1284,6 +1317,7 @@ export default function ConfigEditor() {
             }}
             className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--accent-danger)]"
             title="Clear"
+            aria-label="Clear editor contents"
           >
             <FileX size={13} />
           </button>
@@ -1291,27 +1325,17 @@ export default function ConfigEditor() {
             onClick={() => setMaximized((m) => !m)}
             className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
             title={maximized ? 'Restore to side panel' : 'Maximize editor'}
+            aria-label={maximized ? 'Restore to side panel' : 'Maximize editor'}
           >
             {maximized ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
           </button>
           <button
-            onClick={async () => {
-              // Closing the panel drops ALL buffers — confirm if any tab is dirty.
-              const dirtyCount = buffers.filter((b) => b.dirty).length;
-              if (
-                dirtyCount > 0 &&
-                !(await askConfirm({
-                  title: 'Discard unsaved changes?',
-                  message: `${dirtyCount} editor tab${dirtyCount === 1 ? ' has' : 's have'} unsaved edits. They will be lost.`,
-                  confirmLabel: 'Discard',
-                  danger: true,
-                }))
-              )
-                return;
-              toggleConfigEditor();
-            }}
+            // Closing only HIDES the panel now (App keeps it mounted) — buffers
+            // and dirty state survive, so no discard confirm is needed here.
+            onClick={toggleConfigEditor}
             className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--accent-danger)]"
             title="Close"
+            aria-label="Close editor"
           >
             <X size={14} />
           </button>
@@ -1362,6 +1386,7 @@ export default function ConfigEditor() {
                 onClick={(e) => { e.stopPropagation(); closeTab(buf.id); }}
                 className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-[var(--border-strong)] transition-all flex-shrink-0"
                 title="Close tab"
+                aria-label="Close tab"
               >
                 <X size={11} />
               </button>
@@ -1372,6 +1397,7 @@ export default function ConfigEditor() {
           onClick={newTab}
           className="flex items-center justify-center w-6 h-6 rounded-md hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors flex-shrink-0"
           title="New tab"
+          aria-label="New tab"
         >
           <Plus size={13} />
         </button>
@@ -1386,6 +1412,7 @@ export default function ConfigEditor() {
             onClick={openFile}
             className="p-1.5 rounded text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] transition-colors"
             title="Open file (Ctrl+O)"
+            aria-label="Open file"
           >
             <FolderOpen size={13} />
           </button>
@@ -1395,6 +1422,7 @@ export default function ConfigEditor() {
               isDirty ? 'text-[var(--accent-warning)] hover:bg-[#e5c07b20]' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
             }`}
             title={currentFilePath ? 'Save (Ctrl+S)' : 'Save As… (Ctrl+S)'}
+            aria-label={currentFilePath ? 'Save' : 'Save As'}
           >
             <Download size={13} />
           </button>
@@ -1402,6 +1430,7 @@ export default function ConfigEditor() {
             onClick={cleanCurrent}
             className="p-1.5 rounded text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] transition-colors"
             title="Strip ANSI / terminal control codes"
+            aria-label="Strip ANSI / terminal control codes"
           >
             <Eraser size={13} />
           </button>
@@ -1579,6 +1608,7 @@ export default function ConfigEditor() {
             disabled={!activeSession?.connected || pulling}
             className="flex items-center px-0.5 rounded-r transition-colors disabled:opacity-40 text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]"
             title="Pull other command output"
+            aria-label="Pull other command output"
           >
             <ChevronDown size={10} />
           </button>
@@ -1647,7 +1677,21 @@ export default function ConfigEditor() {
         )}
         {statusMsg && <span className="text-[10px] text-[var(--text-secondary)] mr-1">{statusMsg}</span>}
 
-        {/* Send to terminal — confirmed before every send */}
+        {/* Send to terminal — confirmed before every send; cancellable mid-send
+            (a stopped send leaves a partial config on the device). */}
+        {activeSession && sending && (
+          <button
+            onClick={() => {
+              cancelSendRef.current = true;
+            }}
+            className="flex items-center gap-1.5 px-2.5 py-1 text-xs bg-[var(--accent-danger)] hover:brightness-110 text-white rounded transition-colors"
+            title="Stop sending lines"
+            aria-label="Cancel send"
+          >
+            <Square size={12} />
+            Cancel
+          </button>
+        )}
         {activeSession && (
           <button
             onClick={sendToTerminal}
@@ -1672,9 +1716,9 @@ export default function ConfigEditor() {
             beforeMount={defineEditorThemes}
             options={{
               readOnly: true,
-              fontSize: settings.fontSize,
+              fontSize: fontSize,
               fontFamily: 'JetBrains Mono, Consolas, "Courier New", monospace',
-              lineHeight: Math.round(settings.fontSize * 1.5),
+              lineHeight: Math.round(fontSize * 1.5),
               mouseWheelZoom: true,
               minimap: { enabled: false },
               scrollBeyondLastLine: false,
@@ -1703,9 +1747,9 @@ export default function ConfigEditor() {
             // here through the settings store — so editor zoom matches the
             // terminals and survives restarts. mouseWheelZoom gives native
             // Ctrl+wheel zoom inside the editor.
-            fontSize: settings.fontSize,
+            fontSize: fontSize,
             fontFamily: 'JetBrains Mono, Consolas, "Courier New", monospace',
-            lineHeight: Math.round(settings.fontSize * 1.5),
+            lineHeight: Math.round(fontSize * 1.5),
             mouseWheelZoom: true,
             minimap: { enabled: false },
             scrollBeyondLastLine: false,
