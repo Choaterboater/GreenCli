@@ -11,6 +11,8 @@ interface RunResult {
   command: string;
   output: string;
   status: 'pending' | 'running' | 'done' | 'error';
+  /** Capture hit the settle cap or buffer trim — output may be incomplete. */
+  truncated?: boolean;
 }
 
 // Run a single command across many connected sessions and collect each output.
@@ -78,7 +80,9 @@ export default function BulkRunner() {
         prev.map((r) => (r.sessionId === s.sessionId ? { ...r, status: 'running' } : r))
       );
       try {
-        const { output: out } = await sendAndCapture(s.sessionId, ranCommand);
+        const { output: out, truncated } = await sendAndCapture(s.sessionId, ranCommand);
+        const empty = !out.trim();
+        const body = empty ? 'No response (timed out or no output returned)' : out;
         setResults((prev) =>
           prev.map((r) =>
             r.sessionId === s.sessionId
@@ -86,8 +90,9 @@ export default function BulkRunner() {
                   ...r,
                   // An empty capture means the device never answered (timeout / hung
                   // prompt) — flag it as an error, not a green "(no output)" success.
-                  output: out.trim() ? out : 'No response (timed out or no output returned)',
-                  status: out.trim() ? 'done' : 'error',
+                  output: truncated ? `[capture may be truncated]\n${body}` : body,
+                  status: empty ? 'error' : 'done',
+                  truncated,
                 }
               : r
           )
@@ -230,6 +235,11 @@ export default function BulkRunner() {
                   <Square size={12} className="text-[var(--text-muted)]" />
                 )}
                 <span className="text-xs font-medium text-[var(--text-primary)]">{r.name}</span>
+                {r.truncated && (
+                  <span className="text-[10px] uppercase tracking-wide text-[var(--accent-warning)]">
+                    truncated
+                  </span>
+                )}
               </div>
               {r.output && (
                 <pre className="px-3 py-2 text-[11px] font-mono text-[var(--text-secondary)] whitespace-pre-wrap break-all max-h-48 overflow-y-auto bg-[var(--bg-secondary)]">
