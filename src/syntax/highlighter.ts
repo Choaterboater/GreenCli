@@ -72,7 +72,7 @@ const DEVICE_PATTERNS: DevicePattern[] = [
   {
     type: 'aruba-ap',
     patterns: [
-      /^\(?(?:iap|Aruba Instant VC)[-#\s]?\)?\s*[\(\?\w*[\)]?[#>]\s?/i,
+      /^\(?(?:iap|Aruba Instant VC)[-#\s]?\)?\s*[\(]?\w*[\)]?[#>]\s?/i,
       /^AP[A-Fa-f0-9]{6}#\s?/,
       /^[A-Za-z][A-Za-z0-9-_]*-VC\s*#\s?/,
     ],
