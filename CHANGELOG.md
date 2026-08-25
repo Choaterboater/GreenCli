@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-08-25
+
 ### Security
 
 - SSH client upgraded from `russh`/`russh-keys` **0.43.0** to `russh` **0.63.1**
@@ -82,6 +84,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Settings left nav (Appearance · Terminal · AI + MCP · Cloud · Backup), Tools
+  menu entries for SFTP / Bulk runner / Config archive / MCP, empty-state MCP
+  line, and first-run Help (#28).
 - Unit tests for the connect-payload builder, AI gating rules, terminal
   utilities, and the syntax highlighter (vitest, 43 tests).
 - Accessibility: `aria-label`s on icon-only buttons across the app, and
