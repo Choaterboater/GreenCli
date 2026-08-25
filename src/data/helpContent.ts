@@ -156,7 +156,7 @@ export const HELP_TOPICS: HelpTopic[] = [
       {
         kind: 'steps',
         items: [
-          'Settings → **MCP Servers** → Add server.',
+          'Settings → **AI + MCP → MCP Servers** (or header **Tools → MCP**) → Add server.',
           'Click **Paste config JSON instead** to auto-fill from a setup wizard snippet, or fill in by hand.',
           'Stdio: set the **command**, **args** (one per line), and any **env**. HTTP: set the **server URL**.',
           'Stdio only — for secrets, set a **credentials env var** + paste the content — it is written to a 0600 file and injected via that env var.',
@@ -174,7 +174,7 @@ export const HELP_TOPICS: HelpTopic[] = [
     summary: 'OAuth client-credentials or token auth; multi-account.',
     keywords: ['central', 'aruba', 'oauth', 'client', 'token', 'account', 'cloud', 'glp'],
     blocks: [
-      { kind: 'p', text: 'Settings → **Aruba Central**: enter a Base URL + Client ID/Secret (OAuth), or paste an access **token** (SSO).' },
+      { kind: 'p', text: 'Settings → **Cloud → Aruba Central**: enter a Base URL + Client ID/Secret (OAuth), or paste an access **token** (SSO).' },
       { kind: 'bullets', items: ['Save/load/delete named **accounts** (loading then Save updates in place, no duplicate).', 'Reach Central data via the **API Explorer** (target = Central) or via centralmcp.'] },
     ],
     action: { label: 'Open Central settings', id: 'open-settings', focus: 'central' },
@@ -186,8 +186,8 @@ export const HELP_TOPICS: HelpTopic[] = [
     summary: 'Control certificate verification for device REST.',
     keywords: ['tls', 'ssl', 'certificate', 'verify', 'self-signed', 'security', 'mitm'],
     blocks: [
-      { kind: 'p', text: 'Settings → **Device REST security → Verify device TLS certificates**. Off by default because field gear usually ships a self-signed cert.' },
-      { kind: 'note', text: 'Turn it **on** to reject untrusted certs across AOS-CX/AOS-8/AOS-S. The API Explorer’s per-login Verify-TLS checkbox defaults from this setting.' },
+      { kind: 'p', text: 'Settings → **Cloud → Device REST security → Verify device TLS certificates**. **On by default** for new installs — untrusted certs are rejected across AOS-CX/AOS-8/AOS-S.' },
+      { kind: 'note', text: 'Turn it off only for self-signed lab gear; the toggle warns that credentials can be intercepted on untrusted networks while verification is off. The API Explorer’s per-login Verify-TLS checkbox defaults from this setting.' },
     ],
     action: { label: 'Open TLS setting', id: 'open-settings', focus: 'tls' },
   },
@@ -244,7 +244,7 @@ export const HELP_TOPICS: HelpTopic[] = [
           'No secrets in browser storage; no telemetry — only the providers and devices you configure.',
         ],
       },
-      { kind: 'p', text: 'Data lives in the OS app-data dir for `com.greencli.app` (sessions.json, vault.enc, ai_keys.json, mcp_servers.json, known_hosts.json, intents.json).' },
+      { kind: 'p', text: 'Data lives in the OS app-data dir for `com.choatelabs.greencli` (sessions.json, vault.enc, ai_keys.json, mcp_servers.json, known_hosts.json, intents.json).' },
     ],
   },
   {
@@ -281,7 +281,7 @@ export const HELP_TOPICS: HelpTopic[] = [
         items: [
           'AI *“is Ollama running?”* — start it with `ollama serve` and check the URL in Settings.',
           'Local CLI not found — the app adds `~/.local/bin`, `~/.cargo/bin`, and Homebrew to PATH; install your CLI there.',
-          'Device REST cert error — self-signed gear: leave *Verify device TLS* off (default); turn it on to enforce.',
+          'Device REST cert error — verification is on by default; for self-signed lab gear turn *Verify device TLS* off in Settings → Cloud (heed the interception warning).',
           'Connected tab but no shell — a restricted account/appliance refused a PTY/shell; this now surfaces as a connect error.',
         ],
       },

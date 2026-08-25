@@ -19,7 +19,7 @@ feature overview see the top-level [`README.md`](../README.md); for the work log
 | Need | Why |
 |------|-----|
 | [Node.js](https://nodejs.org/) 18+ and npm | Build the React/TypeScript frontend |
-| [Rust](https://rustup.rs/) (stable toolchain) | Build the Tauri/Rust backend |
+| [Rust](https://rustup.rs/) stable, **1.85+** (MSRV; russh 0.63 requirement) | Build the Tauri/Rust backend |
 | Tauri OS build tools | Native webview + bundling — see [Tauri prerequisites](https://tauri.app/v1/guides/getting-started/prerequisites) |
 
 **Per-OS Tauri deps (summary — follow the link above for specifics):**
@@ -119,9 +119,15 @@ Open **Quick Connect** (`Ctrl+T`) or double-click a saved host in the sidebar.
 - **Save to sidebar** persists the session (including jump-host and local
   command/args/cwd) to `sessions.json` — never the password.
 
+> **Settings layout:** Settings (`Ctrl+,`) is organized into left-nav groups —
+> **Appearance**, **Terminal**, **AI + MCP**, **Cloud**, **Backup** — so paths below
+> read "Settings → *group* → *section*".
+
 ### Credential vault
 
-Settings → unlock the vault with a master password (Argon2id-derived key, AES-256-GCM).
+Unlock the vault from the command palette (`Ctrl+K` → "Unlock credential vault") with a
+master password (Argon2id-derived key, AES-256-GCM) — the app also prompts the first
+time you save a credential on connect.
 Saved SSH passwords are stored encrypted and offered automatically on the next connect.
 A corrupt/incompatible `vault.enc` is **never** auto-overwritten — it errors and is
 preserved so nothing is silently lost.
@@ -130,7 +136,7 @@ preserved so nothing is silently lost.
 
 ## 5. AI assistant (provider-neutral)
 
-Open the AI panel from the title bar. Settings → **AI Assistant**:
+Open the AI panel from the title bar. Settings → **AI + MCP → AI Assistant**:
 
 1. **Provider** — pick one:
    - **Anthropic** (Claude) — needs an API key.
@@ -165,7 +171,7 @@ their tools to the AI for **every** provider. Two transports:
   centralmcp's `run_http_router.sh`); one process can then serve multiple
   clients/machines instead of being spawned per launch.
 
-Settings → **MCP Servers** → *Add server*. Click **Paste config JSON instead**
+Settings → **AI + MCP → MCP Servers** (or header **Tools → MCP**) → *Add server*. Click **Paste config JSON instead**
 to auto-fill from a setup wizard / Claude-Desktop-style snippet — either a
 bare `{"command": "...", "args": [...]}` / `{"url": "..."}` object, or the
 same wrapped in `{"mcpServers": {"name": {...}}}`. Otherwise, fill in by hand:
@@ -193,7 +199,7 @@ materialised creds file.
 
 ## 7. Aruba Central
 
-Settings → **Aruba Central**:
+Settings → **Cloud → Aruba Central**:
 
 - **Base URL** + **Client ID/Secret** (OAuth client-credentials), **or**
 - **Token** auth — paste an access token for SSO accounts.
@@ -217,16 +223,17 @@ mist); pick a REST version in the Base URL and it's honoured at login.
 
 ### Device REST security (TLS)
 
-Settings → **Device REST security → Verify device TLS certificates**. Off by default
-because field gear usually ships a self-signed cert; **turn it on to enforce
-verification** (reject untrusted certs) across AOS-CX/AOS-8/AOS-S. The API
-Explorer's per-login *Verify TLS* checkbox defaults from this setting.
+Settings → **Cloud → Device REST security → Verify device TLS certificates**. **On by
+default** for new installs — untrusted certs are rejected across AOS-CX/AOS-8/AOS-S.
+Turn it off only for self-signed lab gear; the toggle warns that device admin and SSH
+credentials can be intercepted on untrusted networks while verification is disabled.
+The API Explorer's per-login *Verify TLS* checkbox defaults from this setting.
 
 ---
 
 ## 9. Network Intent (desired state / assurance)
 
-Title-bar **Target** icon → **Network Intent**. Declare what *should* be true and check
+Header **Tools** menu → **Network Intent**. Declare what *should* be true and check
 live compliance:
 
 1. **Add an intent**: a name; **kind** (config or operational); a **command** to run;
@@ -244,12 +251,12 @@ live compliance:
 
 ## 10. Other tools
 
-- **Output triggers** (Settings → Output triggers): toast + optional beep when a
+- **Output triggers** (Settings → **Backup** → Output triggers): toast + optional beep when a
   keyword/regex appears in any terminal. Regexes are validated when you add them and
   match across output chunks.
-- **SSH config & host keys** (Settings → SSH & Host Keys): import hosts from
+- **SSH config & host keys** (Settings → **Terminal** → SSH & Host Keys): import hosts from
   `~/.ssh/config`; view / forget / re-trust known-host fingerprints.
-- **Tunnels** (title bar): local (`-L`) and dynamic SOCKS5 (`-D`) forwards over any SSH
+- **Tunnels** (header **Tools** menu): local (`-L`) and dynamic SOCKS5 (`-D`) forwards over any SSH
   session. Stopping a tunnel (or disconnecting the session) tears down its connections.
 - **SFTP**: browse/upload/download/mkdir/rename/delete on an SSH session. Uploads
   confirm before overwriting an existing remote file; dropped files confirm the target.
@@ -290,7 +297,8 @@ live compliance:
 - SSH uses **TOFU** host-key pinning (`known_hosts.json`); a changed key is rejected.
 - No secrets in `localStorage`; no telemetry / outbound calls except the providers and
   devices you configure.
-- Device REST TLS verification is user-controlled (§8); the secure fallback is *verify*.
+- Device REST TLS verification defaults to **on** for new installs (§8); disabling it
+  shows an interception warning in Settings.
 
 ---
 
@@ -300,7 +308,7 @@ live compliance:
 |---------|-----|
 | AI: *"is Ollama running?"* | `ollama serve`, and check the URL in Settings. |
 | AI Local CLI not found | The app adds `~/.local/bin`, `~/.cargo/bin`, and Homebrew to PATH; ensure your CLI is installed there. |
-| Device REST fails with a cert error | Self-signed gear: leave *Verify device TLS* **off** (default). To enforce verification, turn it on. |
+| Device REST fails with a cert error | Verification is **on** by default. For self-signed lab gear, turn *Verify device TLS* off in Settings → **Cloud → Device REST security** (see the interception warning there). |
 | `tauri-dev` won't start (port in use) | Another Vite dev server is on `:1420` — stop it or close the other instance. |
 | Connected tab but no shell | Some restricted accounts/appliances refuse a PTY/shell — the app now surfaces this as a connect error rather than a frozen tab. |
 | Vault won't unlock after a crash | A corrupt `vault.enc` is preserved, not overwritten. Back it up, then remove it to start fresh (saved secrets are lost only if the file was truly corrupted). |
