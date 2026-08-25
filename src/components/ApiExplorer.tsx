@@ -219,7 +219,11 @@ const METHOD_COLORS: Record<string, string> = {
 };
 
 export default function ApiExplorer() {
-  const { showApiExplorer, toggleApiExplorer, activeSessionId, sessions } = useSessionStore();
+  // Narrow per-field selectors instead of a whole-store subscription.
+  const showApiExplorer = useSessionStore((s) => s.showApiExplorer);
+  const toggleApiExplorer = useSessionStore((s) => s.toggleApiExplorer);
+  const activeSessionId = useSessionStore((s) => s.activeSessionId);
+  const sessions = useSessionStore((s) => s.sessions);
   const verifyDeviceTls = useSettingsStore((s) => s.verifyDeviceTls);
   const [connections, setConnections] = useState<ApiConnection[]>([]);
   const [activeConnectionId, setActiveConnectionId] = useState<string | null>(null);
