@@ -1,9 +1,9 @@
 use crate::error::AppError;
-use crate::ssh::keys::SshKeyManager;
+use crate::ssh::keys::{tofu_fingerprint, tofu_key_type, SshKeyManager};
 use async_trait::async_trait;
 use russh::client::Handler;
+use russh::keys::{PrivateKeyWithHashAlg, PublicKeyOrCertificate};
 use russh::{client, Channel, ChannelId, Disconnect};
-use russh_keys::key;
 use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -131,22 +131,22 @@ pub struct ClientHandler {
     warning: Arc<std::sync::Mutex<Option<String>>>,
 }
 
-#[async_trait]
 impl Handler for ClientHandler {
     type Error = russh::Error;
 
     async fn check_server_key(
         &mut self,
-        server_public_key: &key::PublicKey,
+        server_public_key: &PublicKeyOrCertificate,
     ) -> Result<bool, Self::Error> {
+        let pk = server_public_key.public_key();
         match &self.known_hosts_path {
             Some(path) => {
-                let fingerprint = server_public_key.fingerprint();
-                let key_type = server_public_key.name();
+                let fingerprint = tofu_fingerprint(&pk);
+                let key_type = tofu_key_type(&pk);
                 match crate::ssh::known_hosts::verify_or_record(
                     path,
                     &self.host_port,
-                    key_type,
+                    &key_type,
                     &fingerprint,
                 ) {
                     Ok(outcome) => {
@@ -219,6 +219,29 @@ impl Handler for ClientHandler {
     }
 }
 
+#[cfg(unix)]
+async fn connect_ssh_agent(
+) -> Result<russh::keys::agent::client::AgentClient<tokio::net::UnixStream>, russh::keys::Error> {
+    russh::keys::agent::client::AgentClient::connect_env().await
+}
+
+// russh-keys 0.43's connect_env on non-unix always returned AgentFailure.
+// Keep that behavior rather than taking a new pageant dependency this PR.
+#[cfg(not(unix))]
+async fn connect_ssh_agent(
+) -> Result<russh::keys::agent::client::AgentClient<tokio::net::TcpStream>, russh::keys::Error> {
+    Err(russh::keys::Error::AgentFailure)
+}
+
+async fn rsa_hash_alg(handle: &client::Handle<ClientHandler>) -> Option<russh::keys::HashAlg> {
+    handle
+        .best_supported_rsa_hash()
+        .await
+        .ok()
+        .flatten()
+        .flatten()
+}
+
 impl SshConnection {
     pub fn new(session_id: String, config: ConnectionConfig) -> Self {
         Self {
@@ -262,8 +285,7 @@ impl SshConnection {
             Arc::new(std::sync::Mutex::new(None));
         // Non-fatal host-key advisories recorded by check_server_key (e.g. a
         // new algorithm on a known host); threaded back like reject_reason.
-        let warning: Arc<std::sync::Mutex<Option<String>>> =
-            Arc::new(std::sync::Mutex::new(None));
+        let warning: Arc<std::sync::Mutex<Option<String>>> = Arc::new(std::sync::Mutex::new(None));
         // Turn a host-key rejection into an actionable error: russh only says
         // "unknown key", but the handler records WHY (mismatch = possible MITM
         // or re-imaged device, and how to clear the old entry).
@@ -334,7 +356,8 @@ impl SshConnection {
                 jump_ok = jump
                     .authenticate_password(&jump_user, jump_pass)
                     .await
-                    .map_err(|e| AppError::SshError(format!("Jump host auth failed: {}", e)))?;
+                    .map_err(|e| AppError::SshError(format!("Jump host auth failed: {}", e)))?
+                    .success();
             }
             if !jump_ok {
                 if let Some(ref key_str) = self.config.private_key {
@@ -342,27 +365,43 @@ impl SshConnection {
                         key_str.as_bytes(),
                         self.config.key_passphrase.as_ref().map(|z| z.as_str()),
                     ) {
-                        Ok(kp) => match jump
-                            .authenticate_publickey(&jump_user, Arc::new(kp))
-                            .await
-                        {
-                            Ok(v) => jump_ok = v,
-                            Err(e) => jump_key_err = Some(e.to_string()),
-                        },
+                        Ok(kp) => {
+                            let hash = rsa_hash_alg(&jump).await;
+                            match jump
+                                .authenticate_publickey(
+                                    &jump_user,
+                                    PrivateKeyWithHashAlg::new(Arc::new(kp), hash),
+                                )
+                                .await
+                            {
+                                Ok(v) => jump_ok = v.success(),
+                                Err(e) => jump_key_err = Some(e.to_string()),
+                            }
+                        }
                         Err(e) => jump_key_err = Some(e.to_string()),
                     }
                 }
             }
             if !jump_ok {
-                if let Ok(mut agent) = russh_keys::agent::client::AgentClient::connect_env().await {
+                if let Ok(mut agent) = connect_ssh_agent().await {
                     if let Ok(identities) = agent.request_identities().await {
-                        for key in identities {
-                            let (back, res) =
-                                jump.authenticate_future(jump_user.clone(), key, agent).await;
-                            agent = back;
-                            if matches!(res, Ok(true)) {
-                                jump_ok = true;
-                                break;
+                        let hash = rsa_hash_alg(&jump).await;
+                        for ident in identities {
+                            let pubkey = ident.public_key().into_owned();
+                            match jump
+                                .authenticate_publickey_with(
+                                    jump_user.clone(),
+                                    pubkey,
+                                    hash,
+                                    &mut agent,
+                                )
+                                .await
+                            {
+                                Ok(v) if v.success() => {
+                                    jump_ok = true;
+                                    break;
+                                }
+                                _ => {}
                             }
                         }
                     }
@@ -421,7 +460,7 @@ impl SshConnection {
                     .await
                     .map_err(|e| AppError::SshError(format!("Auth failed: {}", e)))?;
 
-                if !auth_res {
+                if !auth_res.success() {
                     // Fall back to keyboard-interactive: lots of network gear
                     // (TACACS+/RADIUS) presents the password via a challenge
                     // prompt rather than the `password` auth method. Answer each
@@ -430,10 +469,7 @@ impl SshConnection {
                     let mut authed = false;
                     let mut first_round = true;
                     let mut res = handle
-                        .authenticate_keyboard_interactive_start(
-                            self.config.username.clone(),
-                            None,
-                        )
+                        .authenticate_keyboard_interactive_start(self.config.username.clone(), None)
                         .await
                         .map_err(|e| {
                             AppError::SshError(format!("Keyboard-interactive start: {}", e))
@@ -445,7 +481,7 @@ impl SshConnection {
                                 authed = true;
                                 break;
                             }
-                            KeyboardInteractiveAuthResponse::Failure => break,
+                            KeyboardInteractiveAuthResponse::Failure { .. } => break,
                             KeyboardInteractiveAuthResponse::InfoRequest { prompts, .. } => {
                                 // Only answer the FIRST prompt of the FIRST round with the
                                 // password — never blast it into every prompt (a second
@@ -498,12 +534,16 @@ impl SshConnection {
                     return Err(AppError::AuthError("No private key provided".into()));
                 };
 
+                let hash = rsa_hash_alg(&handle).await;
                 let auth_res = handle
-                    .authenticate_publickey(&self.config.username, Arc::new(key_pair))
+                    .authenticate_publickey(
+                        &self.config.username,
+                        PrivateKeyWithHashAlg::new(Arc::new(key_pair), hash),
+                    )
                     .await
                     .map_err(|e| AppError::SshError(format!("Key auth failed: {}", e)))?;
 
-                if !auth_res {
+                if !auth_res.success() {
                     return Err(AppError::AuthError(
                         "Public key authentication failed".into(),
                     ));
@@ -513,31 +553,39 @@ impl SshConnection {
                 // Authenticate against a running ssh-agent (SSH_AUTH_SOCK on
                 // unix; the OpenSSH/Pageant pipe on Windows). Try each loaded
                 // identity until one is accepted.
-                let mut agent = russh_keys::agent::client::AgentClient::connect_env()
-                    .await
-                    .map_err(|e| {
-                        AppError::AuthError(format!(
-                            "Could not reach ssh-agent (is it running / SSH_AUTH_SOCK set?): {}",
-                            e
-                        ))
-                    })?;
-                let identities = agent.request_identities().await.map_err(|e| {
-                    AppError::AuthError(format!("ssh-agent request failed: {}", e))
+                let mut agent = connect_ssh_agent().await.map_err(|e| {
+                    AppError::AuthError(format!(
+                        "Could not reach ssh-agent (is it running / SSH_AUTH_SOCK set?): {}",
+                        e
+                    ))
                 })?;
+                let identities = agent
+                    .request_identities()
+                    .await
+                    .map_err(|e| AppError::AuthError(format!("ssh-agent request failed: {}", e)))?;
                 if identities.is_empty() {
                     return Err(AppError::AuthError(
                         "ssh-agent has no keys loaded (run `ssh-add`)".into(),
                     ));
                 }
                 let mut authenticated = false;
-                for key in identities {
-                    let (agent_back, res) = handle
-                        .authenticate_future(self.config.username.clone(), key, agent)
-                        .await;
-                    agent = agent_back;
-                    if matches!(res, Ok(true)) {
-                        authenticated = true;
-                        break;
+                let hash = rsa_hash_alg(&handle).await;
+                for ident in identities {
+                    let pubkey = ident.public_key().into_owned();
+                    match handle
+                        .authenticate_publickey_with(
+                            self.config.username.clone(),
+                            pubkey,
+                            hash,
+                            &mut agent,
+                        )
+                        .await
+                    {
+                        Ok(v) if v.success() => {
+                            authenticated = true;
+                            break;
+                        }
+                        _ => {}
                     }
                 }
                 if !authenticated {
@@ -571,14 +619,12 @@ impl SshConnection {
                 )
             })?;
 
-        channel
-            .request_shell(true)
-            .await
-            .map_err(|_| {
-                AppError::SshError(
-                    "The server refused to start a shell (restricted account or forced-command key?)".into(),
-                )
-            })?;
+        channel.request_shell(true).await.map_err(|_| {
+            AppError::SshError(
+                "The server refused to start a shell (restricted account or forced-command key?)"
+                    .into(),
+            )
+        })?;
 
         self.handle = Some(Arc::new(Mutex::new(handle)));
         self.channel = Some(Arc::new(Mutex::new(channel)));
@@ -610,9 +656,8 @@ impl SshConnection {
     pub async fn send(&self, data: &[u8]) -> Result<(), AppError> {
         if let Some(ref channel_arc) = &self.channel {
             let channel = channel_arc.lock().await;
-            let cursor = std::io::Cursor::new(data);
             channel
-                .data(cursor)
+                .data(data)
                 .await
                 .map_err(|e| AppError::SshError(format!("Send: {}", e)))?;
             Ok(())
