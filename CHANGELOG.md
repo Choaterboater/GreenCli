@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.1] - 2026-08-25
+
+### Fixed
+
+- xterm helper-textarea focus is restored after a full-screen TUI (`omp`) so
+  typing / Esc / Ctrl+C reach the PTY again (#31).
+
 ## [1.4.0] - 2026-08-25
 
 ### Security

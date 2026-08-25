@@ -1891,7 +1891,7 @@ dependencies = [
 
 [[package]]
 name = "green-cli"
-version = "1.4.0"
+version = "1.4.1"
 dependencies = [
  "aes-gcm 0.10.3",
  "argon2 0.5.3",
