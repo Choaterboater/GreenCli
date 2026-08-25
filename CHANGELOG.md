@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- SSH client upgraded from `russh`/`russh-keys` **0.43.0** to `russh` **0.63.1**
+  (CVE-2024-43410 and ~19 subsequent releases). `russh-keys` is folded into
+  `russh::keys`. Crypto backend is `ring` (not `aws-lc-rs`) so Windows MSVC
+  and ubuntu-22.04 CI do not need NASM. MSRV is now **1.85** (russh 0.63
+  requirement). TOFU fingerprint format, `NewAlgorithm` accept+warn, and
+  `Zeroizing` private keys are unchanged.
 - Device TLS verification (`verifyDeviceTls`) now defaults to **on** for new
   installs; the Settings toggle carries a warning that credentials can be
   intercepted on untrusted networks while verification is disabled.
@@ -30,8 +36,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ai_chat_stream` events carry a `stream_id` so the frontend can ignore
   stale deltas from abandoned streams; streams can be cancelled via the new
   `ai_cancel_stream` command.
-- MSRV pinned to 1.77.2 in `Cargo.toml` (`rust-version`) so dependency
-  resolution cannot silently require a newer toolchain than CI verifies.
+- MSRV pinned to 1.85 in `Cargo.toml` (`rust-version`) so dependency
+  resolution cannot silently require a newer toolchain than CI verifies
+  (was 1.77.2; russh 0.63 requires 1.85).
 
 ### Fixed
 
