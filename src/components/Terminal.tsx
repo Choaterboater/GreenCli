@@ -550,6 +550,14 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
     };
     containerRef.current.addEventListener('mousedown', resetKbSelection);
 
+    // xterm only listens on its helper textarea. After a full-screen TUI paint
+    // (omp, etc.) WebView2 can leave focus on body/canvas; clicks on the
+    // container padding never hit bindMouse's focus(). Restore on mousedown.
+    const restoreTermFocus = () => {
+      term.focus();
+    };
+    containerRef.current.addEventListener('mousedown', restoreTermFocus);
+
     // ── Right-click ──────────────────────────────────────────────────────
     // The webview's native menu is suppressed app-wide (main.tsx), so the
     // terminal provides its own, like a real terminal app. Behavior is a
@@ -719,6 +727,7 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
       zoomEl.removeEventListener('gestureend', onGestureEnd);
       zoomEl.removeEventListener('wheel', handleWheelZoom);
       zoomEl.removeEventListener('mousedown', resetKbSelection);
+      zoomEl.removeEventListener('mousedown', restoreTermFocus);
       zoomEl.removeEventListener('contextmenu', handleContextMenu);
       zoomEl.removeEventListener('mouseup', handleCopyOnSelect);
       zoomEl.removeEventListener('mousedown', handleMiddleClickPaste);
@@ -1163,6 +1172,7 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
         // mismatched fringes around the cell grid on fixed schemes (Dracula,
         // Nord, Solarized, …).
         style={{ background: terminalTheme.background }}
+        onFocus={() => terminalRef.current?.focus()}
       />
       {ctxMenu && (
         <>
