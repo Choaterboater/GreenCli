@@ -27,6 +27,7 @@ import { notify } from './store/toastStore';
 import { useRecentStore, timeAgo, RecentConnection } from './store/recentStore';
 import { armIntentScheduler } from './utils/intentScheduler';
 import { buildConnectPayload } from './utils/connect';
+import { getTerminalActionAdapter } from './utils/terminalActions';
 import Toaster from './components/Toaster';
 import DialogHost from './components/DialogHost';
 
@@ -764,6 +765,31 @@ function App() {
     // Attached ONCE: the handler reads live sessions/UI state through
     // useSessionStore.getState() / useSettingsStore.getState(), so it never
     // needs to re-subscribe (and re-attach the window listener) on tab changes.
+  }, []);
+
+  // After a TUI (omp) WebView2 can leave focus on body/canvas. xterm only
+  // hears keys on its helper textarea, so typing/Esc/Ctrl+C die while Ctrl+F/K
+  // still open overlays (shellCtrl is false unless target is INPUT/TEXTAREA).
+  // Capture-phase restore: do not preventDefault — overlays keep their chords.
+  useEffect(() => {
+    const restoreActiveTermFocus = (e: KeyboardEvent) => {
+      const st = useSessionStore.getState();
+      if (st.showSearch || st.showCommandPalette) return;
+      const target = e.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+      const id = st.activeSessionId;
+      if (!id || st.poppedSessions.includes(id)) return;
+      getTerminalActionAdapter(id)?.focus();
+    };
+    window.addEventListener('keydown', restoreActiveTermFocus, true);
+    return () => window.removeEventListener('keydown', restoreActiveTermFocus, true);
   }, []);
 
   // Scheduled intent evaluation (NW-15): re-arm whenever the toggle or interval
