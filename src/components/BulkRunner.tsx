@@ -78,7 +78,7 @@ export default function BulkRunner() {
         prev.map((r) => (r.sessionId === s.sessionId ? { ...r, status: 'running' } : r))
       );
       try {
-        const out = await sendAndCapture(s.sessionId, ranCommand);
+        const { output: out } = await sendAndCapture(s.sessionId, ranCommand);
         setResults((prev) =>
           prev.map((r) =>
             r.sessionId === s.sessionId
