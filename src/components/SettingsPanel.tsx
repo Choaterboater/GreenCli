@@ -150,6 +150,8 @@ export default function SettingsPanel() {
     verifyDeviceTls: useSettingsStore((s) => s.verifyDeviceTls),
   };
 
+  const [activeNav, setActiveNav] = useState<SettingsNavId>('appearance');
+
   // When opened via a Help deep-link (or Tools → MCP), switch to the nav
   // group that owns the section, then scroll + flash it.
   useEffect(() => {
@@ -187,7 +189,6 @@ export default function SettingsPanel() {
   const [profileBase, setProfileBase] = useState<DeviceType>('generic');
   const [backupBusy, setBackupBusy] = useState<'export' | 'import' | null>(null);
   const [backupMode, setBackupMode] = useState<BackupImportMode>('merge');
-  const [activeNav, setActiveNav] = useState<SettingsNavId>('appearance');
 
   const aiProvider = settings.aiProvider;
   const providerMeta = AI_PROVIDERS.find((p) => p.value === aiProvider);
