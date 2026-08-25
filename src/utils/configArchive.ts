@@ -8,6 +8,7 @@
 import { invoke } from '@tauri-apps/api/tauri';
 import { Session } from '../types';
 import { useSettingsStore } from '../store/settingsStore';
+import { notify } from '../store/toastStore';
 import { profileForSession } from './deviceProfiles';
 import { sendAndCapture, sleep } from './terminal';
 
@@ -69,12 +70,21 @@ export async function captureNow(session: Session, source: 'connect' | 'manual')
       await invoke('send_data', { sessionId: sid, data: disable + '\r' });
       await sleep(300);
     }
-    const out = await sendAndCapture(sid, show);
+    const { output: out, truncated } = await sendAndCapture(sid, show);
     if (restore) {
       await invoke('send_data', { sessionId: sid, data: restore + '\r' });
       await sleep(150);
     }
-    if (!out?.trim()) return null;
+    if (!out.trim()) return null;
+    if (truncated) {
+      // The capture hit its settle cap / the backend tail-trimmed mid-pull, so
+      // the baseline we're about to store may be missing lines — say so.
+      console.warn(`[config-archive] capture for ${getDeviceId(session)} may be truncated`);
+      notify.warning(
+        'Config archive',
+        'The captured running-config may be truncated — the baseline stored for this device could be incomplete.'
+      );
+    }
     const ts = await invoke<number | null>('config_archive_capture', {
       device: getDeviceId(session),
       source,

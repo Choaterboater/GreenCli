@@ -158,7 +158,7 @@ export async function evaluateIntent(
         await invoke('send_data', { sessionId: s.sessionId, data: profile.pagingDisableCommand + '\r' });
         await sleep(300);
       }
-      const out = (await sendAndCapture(s.sessionId, cmd)) || '';
+      const { output: out } = await sendAndCapture(s.sessionId, cmd);
       if (profile.pagingRestoreCommand) {
         await invoke('send_data', { sessionId: s.sessionId, data: profile.pagingRestoreCommand + '\r' });
         await sleep(150);
