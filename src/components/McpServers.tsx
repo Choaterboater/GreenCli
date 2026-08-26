@@ -30,6 +30,7 @@ interface McpServerDef {
   cwd?: string;
   url?: string;
   credentialsEnvVar?: string;
+  headers?: Record<string, string>;
   enabled: boolean;
 }
 
@@ -50,6 +51,7 @@ const blankForm = {
   url: '',
   credsEnvVar: '',
   credsContent: '',
+  headersText: '',
   enabled: true,
 };
 
@@ -198,9 +200,13 @@ export default function McpServers() {
       cwd: s.cwd || '',
       url: s.url || '',
       credsEnvVar: s.credentialsEnvVar || '',
+      headersText: Object.entries(s.headers || {})
+        .map(([k, v]) => `${k}: ${v}`)
+        .join('\n'),
       credsContent: '',
       enabled: s.enabled !== false,
     });
+    setCredsSaved(false);
     invoke<boolean>('mcp_has_credentials', { name: s.name })
       .then(setCredsSaved)
       .catch(() => setCredsSaved(false));
@@ -223,6 +229,9 @@ export default function McpServers() {
       cwd: s.cwd || '',
       url: s.url || '',
       credsEnvVar: s.credentialsEnvVar || '',
+      headersText: Object.entries(s.headers || {})
+        .map(([k, v]) => `${k}: ${v}`)
+        .join('\n'),
       credsContent: '',
       enabled: s.enabled !== false,
     });
@@ -272,6 +281,11 @@ export default function McpServers() {
       const i = line.indexOf('=');
       if (i > 0) env[line.slice(0, i).trim()] = line.slice(i + 1).trim();
     });
+    const headers: Record<string, string> = {};
+    form.headersText.split('\n').forEach((line) => {
+      const i = line.indexOf(':');
+      if (i > 0) headers[line.slice(0, i).trim()] = line.slice(i + 1).trim();
+    });
     const def: McpServerDef = {
       name,
       transport: form.transport,
@@ -281,6 +295,7 @@ export default function McpServers() {
       cwd: form.cwd.trim() || undefined,
       url: form.url.trim() || undefined,
       credentialsEnvVar: form.credsEnvVar.trim() || undefined,
+      headers: Object.keys(headers).length ? headers : undefined,
       enabled: form.enabled,
     };
     // Saving under a name that already belongs to ANOTHER server silently
@@ -501,6 +516,21 @@ export default function McpServers() {
                 <code className="text-[var(--accent)]">run_http_router.sh</code>). One process can serve multiple
                 clients — nothing is launched or credentialed by this app for HTTP servers.
               </p>
+              <div className="mt-2">
+                <label className="block text-[10px] uppercase tracking-wide text-[var(--text-secondary)] mb-1">
+                  Headers (Key: Value per line — HTTP only)
+                </label>
+                <textarea
+                  className="input-field w-full px-2 py-1.5 text-xs font-mono resize-y"
+                  rows={3}
+                  value={form.headersText}
+                  onChange={(e) => setForm({ ...form, headersText: e.target.value })}
+                  placeholder={'Authorization: Bearer your-token-here\nCustom-Header: value'}
+                />
+                <p className="text-[10px] text-[var(--text-muted)] mt-1">
+                  Sent on every request (initialize, tools, SSE listener). Leave empty for no auth.
+                </p>
+              </div>
             </div>
           ) : (
             <>

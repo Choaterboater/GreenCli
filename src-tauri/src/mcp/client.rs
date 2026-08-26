@@ -86,6 +86,13 @@ pub struct McpServerDef {
     /// meaningless for Http, where the app doesn't launch the process.
     #[serde(default)]
     pub credentials_env_var: Option<String>,
+    /// Http transport only: extra HTTP headers sent on EVERY request to the
+    /// server, e.g. `{ "Authorization": "Bearer <token>" }` for a protected
+    /// MCP endpoint. Applied as reqwest client defaults at connect, so the
+    /// initialize POST, per-request POSTs, notifications, and the SSE listener
+    /// GET all carry them.
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
     #[serde(default = "default_true")]
     pub enabled: bool,
 }
@@ -219,6 +226,9 @@ enum ClientIo {
         /// the 2025-06-18 Streamable HTTP spec). `None` until the handshake
         /// completes, so the `initialize` POST itself omits the header.
         protocol_version: Arc<Mutex<Option<String>>>,
+        /// Extra headers from the server definition (`Authorization: Bearer …`
+        /// etc.), applied to every request.
+        headers: Arc<HashMap<String, String>>,
     },
 }
 
@@ -838,6 +848,7 @@ impl McpClient {
         let protocol_version: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
         let dead = Arc::new(AtomicBool::new(false));
         let (tools_changed_tx, tools_changed_rx) = mpsc::unbounded_channel::<()>();
+        let headers: Arc<HashMap<String, String>> = Arc::new(def.headers.clone());
 
         let caller = McpCaller {
             server: Arc::from(def.name.as_str()),
@@ -846,6 +857,7 @@ impl McpClient {
                 url: url.clone(),
                 session_id: session_id.clone(),
                 protocol_version: protocol_version.clone(),
+                headers: headers.clone(),
             },
             pending: Arc::new(Mutex::new(HashMap::new())), // unused for Http
             next_id: Arc::new(Mutex::new(0)),
@@ -893,6 +905,7 @@ impl McpClient {
             let url = url.clone();
             let session_id = session_id.clone();
             let protocol_version = protocol_version.clone();
+            let headers = headers.clone();
             let tools_changed_tx = tools_changed_tx.clone();
             tokio::spawn(async move {
                 // Unlike stdio's stdout (EOF == process gone), this is one of
@@ -905,6 +918,9 @@ impl McpClient {
                 loop {
                     let sid = session_id.lock().await.clone();
                     let mut rb = http.get(url.as_ref()).header("Accept", "text/event-stream");
+                    for (k, v) in headers.iter() {
+                        rb = rb.header(k, v);
+                    }
                     if let Some(sid) = &sid {
                         rb = rb.header("Mcp-Session-Id", sid);
                     }
@@ -1059,6 +1075,7 @@ impl McpCaller {
                 url,
                 session_id,
                 protocol_version,
+                headers,
             } => {
                 let msg = json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
                 let fut = async {
@@ -1073,6 +1090,9 @@ impl McpCaller {
                             .header("Content-Type", "application/json")
                             .header("Accept", "application/json, text/event-stream")
                             .json(&msg);
+                        for (k, v) in headers.iter() {
+                            rb = rb.header(k, v);
+                        }
                         if let Some(sid) = &sid {
                             rb = rb.header("Mcp-Session-Id", sid);
                         }
@@ -1209,6 +1229,7 @@ impl McpCaller {
                 url,
                 session_id,
                 protocol_version,
+                headers,
             } => {
                 let sid = session_id.lock().await.clone();
                 let mut rb = http
@@ -1216,6 +1237,9 @@ impl McpCaller {
                     .header("Content-Type", "application/json")
                     .header("Accept", "application/json, text/event-stream")
                     .json(&msg);
+                for (k, v) in headers.iter() {
+                    rb = rb.header(k, v);
+                }
                 if let Some(sid) = &sid {
                     rb = rb.header("Mcp-Session-Id", sid);
                 }
