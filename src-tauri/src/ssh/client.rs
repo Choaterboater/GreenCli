@@ -3,11 +3,11 @@ use crate::ssh::keys::{tofu_fingerprint, tofu_key_type, SshKeyManager};
 use async_trait::async_trait;
 use russh::client::Handler;
 use russh::keys::{PrivateKeyWithHashAlg, PublicKeyOrCertificate};
-use russh::{client, Channel, ChannelId, Disconnect};
+use russh::{client, ChannelMsg, ChannelWriteHalf, Disconnect};
 use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::mpsc::{channel, Sender};
+use tokio::sync::mpsc::channel;
 use tokio::sync::Mutex;
 
 #[derive(Clone, Debug, Serialize)]
@@ -40,7 +40,8 @@ pub struct SshConnection {
     pub session_id: String,
     pub config: ConnectionConfig,
     pub handle: Option<Arc<Mutex<client::Handle<ClientHandler>>>>,
-    pub channel: Option<Arc<Mutex<Channel<client::Msg>>>>,
+    pub channel_writer: Option<ChannelWriteHalf<client::Msg>>,
+    pub channel_reader_task: Option<tokio::task::JoinHandle<()>>,
     pub data_receiver: Option<tokio::sync::mpsc::Receiver<Vec<u8>>>,
     pub connected: bool,
     /// Held open for the session's lifetime when connecting via a jump host;
@@ -117,9 +118,7 @@ impl std::fmt::Display for AuthType {
     }
 }
 
-#[derive(Clone)]
 pub struct ClientHandler {
-    sender: Sender<Vec<u8>>,
     host_port: String,
     known_hosts_path: Option<PathBuf>,
     /// Why check_server_key rejected the host key, so connect() can surface
@@ -192,31 +191,6 @@ impl Handler for ClientHandler {
             }
         }
     }
-
-    async fn data(
-        &mut self,
-        _channel: ChannelId,
-        data: &[u8],
-        _session: &mut client::Session,
-    ) -> Result<(), Self::Error> {
-        // Await the send (rather than try_send) so bursty output — `show tech`,
-        // a full running-config — applies backpressure to the SSH read loop
-        // instead of silently dropping bytes when the buffer fills. A closed
-        // receiver just ends the send with an error we can ignore.
-        let _ = self.sender.send(data.to_vec()).await;
-        Ok(())
-    }
-
-    async fn extended_data(
-        &mut self,
-        _channel: ChannelId,
-        _ext: u32,
-        data: &[u8],
-        _session: &mut client::Session,
-    ) -> Result<(), Self::Error> {
-        let _ = self.sender.send(data.to_vec()).await;
-        Ok(())
-    }
 }
 
 #[cfg(unix)]
@@ -248,7 +222,8 @@ impl SshConnection {
             session_id,
             config,
             handle: None,
-            channel: None,
+            channel_writer: None,
+            channel_reader_task: None,
             data_receiver: None,
             connected: false,
             jump_handle: None,
@@ -276,9 +251,9 @@ impl SshConnection {
             ..Default::default()
         });
 
-        // The handler owns the only sender: when the russh session task ends
-        // (server drop, keepalive_max exceeded) the channel closes, which is
-        // what signals EOF to the supervisor. Do NOT retain a clone here.
+        // The primary channel reader task owns the only sender: when the channel
+        // ends, its sender drops and signals EOF to the supervisor. Do NOT retain
+        // a clone here.
         let (data_tx, data_rx) = channel::<Vec<u8>>(1024);
 
         let reject_reason: Arc<std::sync::Mutex<Option<String>>> =
@@ -304,7 +279,6 @@ impl SshConnection {
         };
 
         let handler = ClientHandler {
-            sender: data_tx,
             host_port: format!("{}:{}", self.config.host, self.config.port),
             known_hosts_path: self.config.known_hosts_path.clone(),
             reject_reason: reject_reason.clone(),
@@ -314,11 +288,9 @@ impl SshConnection {
         // Connect directly, or tunnel through a jump host (ProxyJump) when set.
         let mut handle = if let Some(ref jump_host) = self.config.jump_host {
             let jump_port = self.config.jump_port.unwrap_or(22);
-            // The jump session's own data is irrelevant (we only open a tunnel),
-            // so its handler discards data but still verifies the jump host key.
-            let (jdtx, _jdrx) = channel::<Vec<u8>>(16);
+            // The jump session only transports forwarded traffic. Its handler
+            // verifies the jump host key but never owns terminal output.
             let jump_handler = ClientHandler {
-                sender: jdtx,
                 host_port: format!("{}:{}", jump_host, jump_port),
                 known_hosts_path: self.config.known_hosts_path.clone(),
                 reject_reason: reject_reason.clone(),
@@ -626,8 +598,24 @@ impl SshConnection {
             )
         })?;
 
+        let (mut channel_reader, channel_writer) = channel.split();
+        let channel_reader_task = tokio::spawn(async move {
+            while let Some(message) = channel_reader.wait().await {
+                let data = match message {
+                    ChannelMsg::Data { data } | ChannelMsg::ExtendedData { data, .. } => data,
+                    ChannelMsg::Eof | ChannelMsg::Close => break,
+                    _ => continue,
+                };
+
+                if data_tx.send(data.to_vec()).await.is_err() {
+                    break;
+                }
+            }
+        });
+
         self.handle = Some(Arc::new(Mutex::new(handle)));
-        self.channel = Some(Arc::new(Mutex::new(channel)));
+        self.channel_writer = Some(channel_writer);
+        self.channel_reader_task = Some(channel_reader_task);
         self.data_receiver = Some(data_rx);
         self.connected = true;
 
@@ -640,15 +628,18 @@ impl SshConnection {
     }
 
     pub async fn disconnect(&mut self) -> Result<(), AppError> {
-        // Close the session channel BEFORE dropping the handle: russh's
+        // Close the session channel BEFORE disconnecting the handle: russh's
         // handle.disconnect() only sends SSH_MSG_DISCONNECT and never closes
         // the open channel, so the server keeps the shell (and omp/pty) alive
         // across a reconnect — leaving the old live session + new one fighting,
         // which showed up as a doubled HUD line and keystrokes going to a
         // half-dead channel. Sending CHANNEL_CLOSE lets sshd reap the shell.
-        if let Some(ref channel_arc) = self.channel {
-            let channel = channel_arc.lock().await;
-            let _ = channel.close().await;
+        if let Some(ref channel_writer) = self.channel_writer {
+            let _ = channel_writer.close().await;
+        }
+        if let Some(channel_reader_task) = self.channel_reader_task.take() {
+            channel_reader_task.abort();
+            let _ = channel_reader_task.await;
         }
         if let Some(ref handle) = self.handle {
             let handle = handle.lock().await;
@@ -656,17 +647,16 @@ impl SshConnection {
                 .disconnect(Disconnect::ByApplication, "Closing", "")
                 .await;
         }
-        self.connected = false;
+        self.channel_writer = None;
         self.handle = None;
-        self.channel = None;
         self.jump_handle = None;
+        self.connected = false;
         Ok(())
     }
 
     pub async fn send(&self, data: &[u8]) -> Result<(), AppError> {
-        if let Some(ref channel_arc) = &self.channel {
-            let channel = channel_arc.lock().await;
-            channel
+        if let Some(ref channel_writer) = self.channel_writer {
+            channel_writer
                 .data(data)
                 .await
                 .map_err(|e| AppError::SshError(format!("Send: {}", e)))?;
@@ -689,9 +679,8 @@ impl SshConnection {
     pub async fn resize(&self, cols: u16, rows: u16) -> Result<(), AppError> {
         // Remember the size so a reconnect requests the PTY at the right one.
         *self.last_size.lock().await = (cols, rows);
-        if let Some(ref channel_arc) = &self.channel {
-            let channel = channel_arc.lock().await;
-            channel
+        if let Some(ref channel_writer) = self.channel_writer {
+            channel_writer
                 .window_change(cols as u32, rows as u32, 0, 0)
                 .await
                 .map_err(|e| AppError::SshError(format!("Resize: {}", e)))?;
@@ -761,5 +750,307 @@ impl Connection for SshConnection {
 
     fn ssh_handle(&self) -> Option<Arc<Mutex<client::Handle<ClientHandler>>>> {
         self.handle.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use russh::keys::{Algorithm, PrivateKey};
+    use russh::server::{self, Session};
+    use russh::{Channel, ChannelId};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+    use tokio::net::TcpListener;
+    use tokio::sync::oneshot;
+    use tokio::task::JoinHandle;
+    use tokio::time::timeout;
+
+    const BURST_MESSAGE_COUNT: usize = 256;
+    const AWAIT_TIMEOUT: Duration = Duration::from_secs(10);
+    const SERVER_LIFETIME_TIMEOUT: Duration = Duration::from_secs(30);
+
+    fn indexed_message(index: usize) -> Vec<u8> {
+        format!("channel-data-{index:03}\n").into_bytes()
+    }
+
+    struct DrainTestServer {
+        probe_tx: Option<oneshot::Sender<Vec<u8>>>,
+    }
+
+    impl server::Handler for DrainTestServer {
+        type Error = russh::Error;
+
+        async fn auth_password(
+            &mut self,
+            _user: &str,
+            _password: &str,
+        ) -> Result<server::Auth, Self::Error> {
+            Ok(server::Auth::Accept)
+        }
+
+        async fn channel_open_session(
+            &mut self,
+            _channel: Channel<server::Msg>,
+            reply: server::ChannelOpenHandle,
+            _session: &mut Session,
+        ) -> Result<(), Self::Error> {
+            reply.accept().await;
+            Ok(())
+        }
+
+        async fn pty_request(
+            &mut self,
+            channel: ChannelId,
+            _term: &str,
+            _col_width: u32,
+            _row_height: u32,
+            _pix_width: u32,
+            _pix_height: u32,
+            _modes: &[(russh::Pty, u32)],
+            session: &mut Session,
+        ) -> Result<(), Self::Error> {
+            session.channel_success(channel)?;
+            Ok(())
+        }
+
+        async fn shell_request(
+            &mut self,
+            channel: ChannelId,
+            session: &mut Session,
+        ) -> Result<(), Self::Error> {
+            session.channel_success(channel)?;
+            let handle = session.handle();
+            tokio::spawn(async move {
+                let send_burst = async {
+                    for index in 0..BURST_MESSAGE_COUNT {
+                        handle
+                            .data(channel, indexed_message(index))
+                            .await
+                            .map_err(|_| ())?;
+                    }
+                    Ok::<(), ()>(())
+                };
+                let _ = timeout(AWAIT_TIMEOUT, send_burst).await;
+            });
+            Ok(())
+        }
+
+        async fn data(
+            &mut self,
+            channel: ChannelId,
+            data: &[u8],
+            session: &mut Session,
+        ) -> Result<(), Self::Error> {
+            if let Some(probe_tx) = self.probe_tx.take() {
+                let _ = probe_tx.send(data.to_vec());
+            }
+            if data == b"probe" {
+                session.data(channel, b"pong".to_vec())?;
+                session.eof(channel)?;
+                session.close(channel)?;
+            }
+            Ok(())
+        }
+    }
+
+    struct AbortOnDropTask(Option<JoinHandle<()>>);
+
+    impl AbortOnDropTask {
+        fn new(task: JoinHandle<()>) -> Self {
+            Self(Some(task))
+        }
+
+        async fn stop(mut self) {
+            if let Some(task) = self.0.take() {
+                task.abort();
+                let _ = timeout(AWAIT_TIMEOUT, task).await;
+            }
+        }
+    }
+
+    impl Drop for AbortOnDropTask {
+        fn drop(&mut self) {
+            if let Some(task) = self.0.take() {
+                task.abort();
+            }
+        }
+    }
+
+    struct TempTofuDir {
+        path: PathBuf,
+    }
+
+    impl TempTofuDir {
+        fn create() -> Result<Self, String> {
+            let nonce = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(|error| format!("system clock before Unix epoch: {error}"))?
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "greencli-channel-drain-{}-{nonce}",
+                std::process::id()
+            ));
+            std::fs::create_dir(&path)
+                .map_err(|error| format!("create temporary TOFU directory: {error}"))?;
+            Ok(Self { path })
+        }
+
+        fn known_hosts_path(&self) -> PathBuf {
+            self.path.join("known_hosts.json")
+        }
+    }
+
+    impl Drop for TempTofuDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+
+    async fn start_loopback_server() -> Result<
+        (
+            std::net::SocketAddr,
+            oneshot::Receiver<Vec<u8>>,
+            AbortOnDropTask,
+        ),
+        String,
+    > {
+        let host_key = PrivateKey::random(&mut rand_os::rng(), Algorithm::Ed25519)
+            .map_err(|error| format!("generate Ed25519 host key: {error}"))?;
+        let server_config = Arc::new(server::Config {
+            auth_rejection_time: Duration::ZERO,
+            auth_rejection_time_initial: Some(Duration::ZERO),
+            keys: vec![host_key],
+            ..Default::default()
+        });
+        let listener = timeout(AWAIT_TIMEOUT, TcpListener::bind(("127.0.0.1", 0)))
+            .await
+            .map_err(|_| "timed out binding loopback SSH server".to_string())?
+            .map_err(|error| format!("bind loopback SSH server: {error}"))?;
+        let address = listener
+            .local_addr()
+            .map_err(|error| format!("read loopback SSH server address: {error}"))?;
+        let (probe_tx, probe_rx) = oneshot::channel();
+
+        let task = tokio::spawn(async move {
+            let accepted = timeout(AWAIT_TIMEOUT, listener.accept()).await;
+            let Ok(Ok((socket, _))) = accepted else {
+                return;
+            };
+            let running = timeout(
+                AWAIT_TIMEOUT,
+                server::run_stream(
+                    server_config,
+                    socket,
+                    DrainTestServer {
+                        probe_tx: Some(probe_tx),
+                    },
+                ),
+            )
+            .await;
+            let Ok(Ok(running)) = running else {
+                return;
+            };
+            let _ = timeout(SERVER_LIFETIME_TIMEOUT, running).await;
+        });
+
+        Ok((address, probe_rx, AbortOnDropTask::new(task)))
+    }
+
+    async fn run_channel_drain_regression() -> Result<(), String> {
+        let tofu_dir = TempTofuDir::create()?;
+        let (address, probe_rx, server_task) = start_loopback_server().await?;
+        let mut connection = SshConnection::new(
+            "channel-drain-regression".to_string(),
+            ConnectionConfig {
+                host: address.ip().to_string(),
+                port: address.port(),
+                username: "test-user".to_string(),
+                auth_type: AuthType::Password,
+                password: Some(zeroize::Zeroizing::new("test-password".to_string())),
+                private_key: None,
+                key_passphrase: None,
+                keep_alive_interval: None,
+                known_hosts_path: Some(tofu_dir.known_hosts_path()),
+                jump_host: None,
+                jump_port: None,
+                jump_username: None,
+                jump_password: None,
+            },
+        );
+
+        let test_result = async {
+            timeout(AWAIT_TIMEOUT, connection.connect())
+                .await
+                .map_err(|_| "timed out connecting production SSH client".to_string())?
+                .map_err(|error| format!("connect production SSH client: {error}"))?;
+            let mut output = connection
+                .take_data_receiver()
+                .ok_or_else(|| "production client did not expose its output receiver".to_string())?;
+
+            for index in 0..BURST_MESSAGE_COUNT {
+                let actual = timeout(AWAIT_TIMEOUT, output.recv())
+                    .await
+                    .map_err(|_| format!("timed out waiting for indexed message {index}"))?
+                    .ok_or_else(|| format!("output closed before indexed message {index}"))?;
+                let expected = indexed_message(index);
+                if actual != expected {
+                    return Err(format!(
+                        "indexed message {index} out of order: expected {expected:?}, got {actual:?}"
+                    ));
+                }
+            }
+
+            timeout(AWAIT_TIMEOUT, connection.send(b"probe"))
+                .await
+                .map_err(|_| "timed out sending probe after output burst".to_string())?
+                .map_err(|error| format!("send probe after output burst: {error}"))?;
+
+            let observed_probe = timeout(AWAIT_TIMEOUT, probe_rx)
+                .await
+                .map_err(|_| "timed out waiting for server to observe probe".to_string())?
+                .map_err(|_| "server dropped probe observer".to_string())?;
+            if observed_probe != b"probe" {
+                return Err(format!(
+                    "server observed unexpected input: {observed_probe:?}"
+                ));
+            }
+
+            let pong = timeout(AWAIT_TIMEOUT, output.recv())
+                .await
+                .map_err(|_| "timed out waiting for pong".to_string())?
+                .ok_or_else(|| "output closed before pong".to_string())?;
+            if pong != b"pong" {
+                return Err(format!("expected pong, got {pong:?}"));
+            }
+
+            let after_close = timeout(AWAIT_TIMEOUT, output.recv())
+                .await
+                .map_err(|_| "output receiver stayed open after EOF/close".to_string())?;
+            if let Some(extra) = after_close {
+                return Err(format!("unexpected output after pong: {extra:?}"));
+            }
+
+            Ok(())
+        }
+        .await;
+
+        let disconnect_result = timeout(AWAIT_TIMEOUT, connection.disconnect())
+            .await
+            .map_err(|_| "timed out disconnecting production SSH client".to_string())
+            .and_then(|result| {
+                result.map_err(|error| format!("disconnect production SSH client: {error}"))
+            });
+        server_task.stop().await;
+        drop(tofu_dir);
+
+        test_result?;
+        disconnect_result
+    }
+
+    #[tokio::test]
+    async fn drains_more_than_russh_channel_buffer_and_keeps_input_writable() {
+        if let Err(error) = run_channel_drain_regression().await {
+            panic!("{error}");
+        }
     }
 }
