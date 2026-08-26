@@ -640,6 +640,16 @@ impl SshConnection {
     }
 
     pub async fn disconnect(&mut self) -> Result<(), AppError> {
+        // Close the session channel BEFORE dropping the handle: russh's
+        // handle.disconnect() only sends SSH_MSG_DISCONNECT and never closes
+        // the open channel, so the server keeps the shell (and omp/pty) alive
+        // across a reconnect — leaving the old live session + new one fighting,
+        // which showed up as a doubled HUD line and keystrokes going to a
+        // half-dead channel. Sending CHANNEL_CLOSE lets sshd reap the shell.
+        if let Some(ref channel_arc) = self.channel {
+            let channel = channel_arc.lock().await;
+            let _ = channel.close().await;
+        }
         if let Some(ref handle) = self.handle {
             let handle = handle.lock().await;
             let _ = handle
