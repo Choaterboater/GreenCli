@@ -6,7 +6,13 @@ import { useSessionStore } from '../store/sessionStore';
 // Master-password prompt for the credential vault.
 // First time: requires typing password twice to confirm.
 // Subsequent: just enter the password.
-export default function VaultUnlock({ onUnlocked }: { onUnlocked?: () => void }) {
+export default function VaultUnlock({
+  onUnlocked,
+  onCancel,
+}: {
+  onUnlocked?: () => void;
+  onCancel?: () => void;
+}) {
   const { showVaultUnlock, setShowVaultUnlock, setVaultUnlocked } = useSessionStore();
   const [pw, setPw] = useState('');
   const [confirm, setConfirm] = useState('');
@@ -77,7 +83,10 @@ export default function VaultUnlock({ onUnlocked }: { onUnlocked?: () => void })
             </h2>
           </div>
           <button
-            onClick={() => setShowVaultUnlock(false)}
+            onClick={() => {
+              onCancel?.();
+              setShowVaultUnlock(false);
+            }}
             className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
           >
             <X size={18} />
