@@ -88,6 +88,11 @@ struct AppState {
     /// Last-known terminal geometry per session, so an auto-reconnect can request
     /// the PTY at the size the user actually has rather than resetting to 80x24.
     terminal_sizes: Arc<AsyncMutex<HashMap<String, (u16, u16)>>>,
+    /// Last time each session received user input (keystroke), used by the SSH
+    /// supervisor's echo watchdog: input with no echoed output for a while is
+    /// how a wedged russh session loop (frozen mid-read, TCP window closed)
+    /// presents, and it never errors on its own.
+    last_input: Arc<AsyncMutex<HashMap<String, std::time::Instant>>>,
     /// Open session-log files keyed by session id (raw output streamed to disk).
     session_logs: Arc<AsyncMutex<HashMap<String, std::fs::File>>>,
     /// Active SSH port-forwards keyed by forward id (meta + listener task).
@@ -121,6 +126,7 @@ impl AppState {
             config_archive: config_archive::ConfigArchiveStore::new(app_dir.clone()),
             terminal_buffers: Arc::new(AsyncMutex::new(HashMap::new())),
             terminal_sizes: Arc::new(AsyncMutex::new(HashMap::new())),
+            last_input: Arc::new(AsyncMutex::new(HashMap::new())),
             session_logs: Arc::new(AsyncMutex::new(HashMap::new())),
             forwards: Arc::new(AsyncMutex::new(HashMap::new())),
             ai_cancels: Arc::new(AsyncMutex::new(HashMap::new())),
@@ -341,6 +347,7 @@ fn spawn_ssh_supervisor(
     session_manager: Arc<SessionManager>,
     forwards: ForwardsMap,
     terminal_sizes: Arc<AsyncMutex<HashMap<String, (u16, u16)>>>,
+    last_input: Arc<AsyncMutex<HashMap<String, std::time::Instant>>>,
     ssh_config: ConnectionConfig,
     session_id: String,
     mut generation: u64,
@@ -473,23 +480,72 @@ fn spawn_ssh_supervisor(
             }
             first = false;
 
-            // Forward until the stream closes.
+            // Forward until the stream closes — or the echo watchdog fires.
+            //
+            // russh's client loop can wedge silently mid-read under bursty TUI
+            // output: the socket stops being read (the peer's send buffer fills,
+            // our TCP receive window closes) while everything still LOOKS
+            // connected — no error, no EOF, no panic. The only reliable signal
+            // from out here is an echo: user input must produce output quickly.
+            // Input that gets nothing back for ECHO_STALE means the transport
+            // is wedged → tear down just the transport; the session stays
+            // registered so the stream-end path below reconnects it.
+            const ECHO_STALE: std::time::Duration = std::time::Duration::from_secs(20);
             let started = std::time::Instant::now();
-            while let Some(first) = rx.recv().await {
-                // Coalesce bursts (see spawn_forwarder) so heavy output doesn't flood IPC.
-                let mut data = first;
-                while data.len() < 64 * 1024 {
-                    match rx.try_recv() {
-                        Ok(more) => data.extend_from_slice(&more),
-                        Err(_) => break,
+            let mut last_rx = started;
+            let mut watchdog_hit = false;
+            let mut idle_tick = tokio::time::interval(std::time::Duration::from_secs(2));
+            idle_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tokio::select! {
+                    chunk = rx.recv() => {
+                        let Some(first) = chunk else { break };
+                        last_rx = std::time::Instant::now();
+                        // Coalesce bursts (see spawn_forwarder) so heavy output doesn't flood IPC.
+                        let mut data = first;
+                        while data.len() < 64 * 1024 {
+                            match rx.try_recv() {
+                                Ok(more) => data.extend_from_slice(&more),
+                                Err(_) => break,
+                            }
+                        }
+                        write_and_emit(&app, &buffers, &logs, &session_id, data).await;
+                    }
+                    _ = idle_tick.tick() => {
+                        let input_at = *last_input
+                            .lock()
+                            .await
+                            .get(&session_id)
+                            .unwrap_or(&started);
+                        // Only fire when input arrived AFTER the last output —
+                        // i.e. we are specifically waiting for an echo — and the
+                        // wait exceeded ECHO_STALE. Plain idleness (no recent
+                        // input) never triggers this.
+                        if input_at > last_rx && input_at.elapsed() >= ECHO_STALE {
+                            eprintln!(
+                                "[WATCHDOG] no output for {}s after input — forcing transport reconnect (session {})",
+                                input_at.elapsed().as_secs(),
+                                session_id
+                            );
+                            watchdog_hit = true;
+                            if let Some(conn) = session_manager.connection_handle(&session_id).await {
+                                let _ = conn.lock().await.disconnect().await;
+                            }
+                            break;
+                        }
                     }
                 }
-                write_and_emit(&app, &buffers, &logs, &session_id, data).await;
             }
+            if watchdog_hit {
+                eprintln!("[WATCHDOG] reconnecting session {}", session_id);
+            }
+
 
             // Stream closed — reconnect only if the registration is still ours
             // (a user disconnect removes it; a new connect bumps the generation).
-            if !auto_reconnect || !session_manager.contains_gen(&session_id, generation).await {
+            if (!auto_reconnect && !watchdog_hit)
+                || !session_manager.contains_gen(&session_id, generation).await
+            {
                 // Peer-initiated close with no auto-reconnect: if we still own
                 // the registration, drop the dead connection (mirrors
                 // spawn_forwarder) so the manager doesn't keep routing
@@ -613,6 +669,7 @@ async fn connect(
                     state.session_manager.clone(),
                     state.forwards.clone(),
                     state.terminal_sizes.clone(),
+                    state.last_input.clone(),
                     ssh_config,
                     session_id.clone(),
                     generation,
@@ -728,7 +785,6 @@ async fn connect(
             let mut connection = LocalConnection::new(session_id.clone(), local_config);
             let response = connection.connect().await.map_err(|e| e.to_string())?;
             let rx_opt = connection.take_data_receiver();
-
             // Register the session before spawning the forwarder (see telnet note) —
             // especially important for `local`, where a bad command can exit instantly.
             let generation = state
@@ -783,6 +839,7 @@ async fn disconnect(
 
     state.terminal_buffers.lock().await.remove(&session_id);
     state.terminal_sizes.lock().await.remove(&session_id);
+    state.last_input.lock().await.remove(&session_id);
     state.session_logs.lock().await.remove(&session_id);
 
     // Tear down any SSH port-forwards belonging to this session, so a disconnect
@@ -809,10 +866,21 @@ async fn send_data(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let bytes = data.into_bytes();
-    state
-        .session_manager.send_to_session(&session_id, &bytes)
-        .await
-        .map_err(|e| e.to_string())
+    let result = state
+        .session_manager
+        .send_to_session(&session_id, &bytes)
+        .await;
+    // Record input time for the supervisor's echo watchdog (see
+    // spawn_ssh_supervisor): input with no echoed output means a wedged
+    // transport that needs a forced reconnect.
+    if result.is_ok() {
+        state
+            .last_input
+            .lock()
+            .await
+            .insert(session_id.clone(), std::time::Instant::now());
+    }
+    result.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -2246,6 +2314,17 @@ fn macos_menu() -> tauri::Menu {
 
 fn main() {
     env_logger::init();
+    // DIAGNOSTIC: tokio swallows task panics (the task just dies silently).
+    // Surface every panic with thread + backtrace on stderr so a dead
+    // forwarder/supervisor is visible instead of looking like a mystery freeze.
+    std::panic::set_hook(Box::new(|info| {
+        eprintln!(
+            "[GREENCLI-PANIC] {}\nthread={:?}\n{}",
+            info,
+            std::thread::current().name().unwrap_or("<unnamed>"),
+            std::backtrace::Backtrace::force_capture()
+        );
+    }));
 
     let builder = tauri::Builder::default();
     #[cfg(target_os = "macos")]
