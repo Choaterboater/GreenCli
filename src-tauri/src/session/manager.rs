@@ -242,6 +242,14 @@ impl SessionManager {
         let c = conn.lock().await;
         c.ssh_handle()
     }
+
+    /// Clone the session's connection handle WITHOUT removing it. The echo
+    /// watchdog (spawn_ssh_supervisor) uses this to force-disconnect a wedged
+    /// transport while keeping the session registered for reconnect.
+    pub async fn connection_handle(&self, session_id: &str) -> Option<Conn> {
+        let sessions = self.sessions.lock().await;
+        sessions.get(session_id).map(|(_, conn)| conn.clone())
+    }
 }
 
 impl Default for SessionManager {

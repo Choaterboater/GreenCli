@@ -739,9 +739,15 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
       clearSilenceTimer();
       ro.disconnect();
       unregisterSearchAdapter(sessionId);
-      term.dispose();
       audioCtxRef.current?.close().catch(() => {});
       audioCtxRef.current = null;
+      term.dispose();
+      // xterm 5.3's dispose() tears down the instance but leaves the .xterm
+      // tree in the container. Under StrictMode's dev double-mount (and any
+      // remount) the orphaned first tree then stacks above the live one: the
+      // pane shows the dead empty terminal (black screen) and its textarea
+      // eats keystrokes. Remove the remains so a remount starts clean.
+      if (containerRef.current) containerRef.current.replaceChildren();
       terminalRef.current = null;
       fitAddonRef.current = null;
       searchAddonRef.current = null;
