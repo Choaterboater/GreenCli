@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.2] - 2026-08-26
+
+### Added
+
+- Per-server HTTP headers for authenticated MCP endpoints.
+
+### Fixed
+
+- Direct SSH continuously drains the primary `russh` channel, preventing the
+  session loop from freezing after more than 100 discrete terminal messages.
+- SSH disconnect closes the channel before the transport and reconnects use a
+  bounded handshake, so remote shells and `omp` processes are reaped cleanly.
+- Saved SSH passwords survive app restarts: after the vault master password is
+  entered, connection retry reads the backend's live vault state and retrieves
+  the stored device password instead of reopening the save-password dialog.
+- Terminal focus and the echo watchdog keep full-screen TUI input responsive
+  and recover genuinely silent SSH sessions.
+
 ## [1.4.1] - 2026-08-25
 
 ### Fixed
