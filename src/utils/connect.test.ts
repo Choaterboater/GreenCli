@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildConnectPayload } from './connect';
+import { buildConnectPayload, resolveSshPassword, sshCredentialKey } from './connect';
 import { ConnectionConfig } from '../types';
 
 const BEHAVIOR = { keepAliveInterval: 30, autoReconnect: true };
@@ -154,5 +154,30 @@ describe('buildConnectPayload', () => {
     expect(payload.private_key).toBe('FROM-CONFIG');
     expect(payload.key_passphrase).toBe('CFG');
     expect(payload.password).toBe('dialog-pw');
+  });
+});
+
+describe('resolveSshPassword', () => {
+  it('rechecks the backend after unlock and resumes with the saved password', async () => {
+    let unlocked = false;
+    let retrieveCalls = 0;
+    const vault = {
+      isUnlocked: async () => unlocked,
+      isInitialized: async () => true,
+      retrieve: async (key: string) => {
+        retrieveCalls += 1;
+        expect(key).toBe(sshCredentialKey(baseConfig));
+        return 'saved-password';
+      },
+    };
+
+    const locked = await resolveSshPassword({ ...baseConfig, authType: 'password' }, vault);
+    expect(locked).toEqual({ password: undefined, requiresVaultUnlock: true });
+    expect(retrieveCalls).toBe(0);
+
+    unlocked = true;
+    const resumed = await resolveSshPassword({ ...baseConfig, authType: 'password' }, vault);
+    expect(resumed).toEqual({ password: 'saved-password', requiresVaultUnlock: false });
+    expect(retrieveCalls).toBe(1);
   });
 });

@@ -26,7 +26,11 @@ import { listen } from '@tauri-apps/api/event';
 import { notify } from './store/toastStore';
 import { useRecentStore, timeAgo, RecentConnection } from './store/recentStore';
 import { armIntentScheduler } from './utils/intentScheduler';
-import { buildConnectPayload } from './utils/connect';
+import {
+  buildConnectPayload,
+  resolveSshPassword,
+  sshCredentialKey,
+} from './utils/connect';
 import { getTerminalActionAdapter } from './utils/terminalActions';
 import Toaster from './components/Toaster';
 import DialogHost from './components/DialogHost';
@@ -183,9 +187,6 @@ function App() {
   const connectingIdsRef = useRef<Set<string>>(new Set());
   const [workspaceLoaded, setWorkspaceLoaded] = useState(false);
   const [mappingSessionId, setMappingSessionId] = useState<string | null>(null);
-
-  const credKey = (c: { host?: string; port?: number; username?: string }) =>
-    `cred:${c.host ?? ''}:${c.port ?? 22}:${c.username ?? ''}`;
 
   const flushPendingCredSave = useCallback(() => {
     const pending = pendingCredSave.current;
@@ -460,15 +461,6 @@ function App() {
       .then(setVaultUnlocked)
       .catch(() => setVaultUnlocked(false));
   }, [setVaultUnlocked]);
-
-  // Does a vault exist yet? (-> whether "locked" should prompt for a master
-  // password or is just a never-initialized store.)
-  const [vaultInitialized, setVaultInitialized] = useState(false);
-  useEffect(() => {
-    invoke<boolean>('vault_is_initialized')
-      .then(setVaultInitialized)
-      .catch(() => setVaultInitialized(false));
-  }, []);
 
   // Push Aruba Central credentials to the backend whenever they change.
   const centralBaseUrl = useSettingsStore((s) => s.centralBaseUrl);
@@ -906,28 +898,18 @@ function App() {
       }
       useSessionStore.getState().updateSessionConnection(sessionId, false, 'connecting');
 
-      // For SSH with no inline password, try a saved vault credential.
-      let password = fullConfig.password;
-      if (!password && fullConfig.protocol === 'ssh' && vaultUnlocked) {
-        password =
-          (await invoke<string | null>('vault_retrieve', { key: credKey(fullConfig) }).catch(
-            () => null
-          )) ?? undefined;
-      }
+      // Resolve against the backend's live vault state. React's vaultUnlocked
+      // value can still be stale immediately after startup or vault_unlock;
+      // querying the cheap atomic status commands makes the resumed connect use
+      // the saved password instead of reopening the SSH authentication dialog.
+      const { password, requiresVaultUnlock } = await resolveSshPassword(fullConfig, {
+        isUnlocked: () => invoke<boolean>('vault_is_unlocked').catch(() => false),
+        isInitialized: () => invoke<boolean>('vault_is_initialized').catch(() => false),
+        retrieve: (key) =>
+          invoke<string | null>('vault_retrieve', { key }).catch(() => null),
+      });
 
-      // The vault exists but is locked and this SSH session might have a saved
-      // password: prompt for the MASTER password before connecting, then resume
-      // the connect (now vaultUnlocked → the branch above retrieves the saved
-      // credential). Without this, a fresh app start made every password-auth
-      // re-connect fail and pop the SSH auth dialog, so saved passwords looked
-      // "wiped" after each install/restart even though they were intact.
-      if (
-        !password &&
-        fullConfig.protocol === 'ssh' &&
-        fullConfig.authType === 'password' &&
-        vaultInitialized &&
-        !vaultUnlocked
-      ) {
+      if (requiresVaultUnlock) {
         connectingIdsRef.current.delete(sessionId);
         pendingVaultConnectRef.current = fullConfig;
         setShowVaultUnlock(true);
@@ -1008,12 +990,12 @@ function App() {
         connectingIdsRef.current.delete(sessionId);
       }
     },
-    [addSession, setPendingConnection, setShowAuthDialog, vaultUnlocked, recordRecent]
+    [addSession, setPendingConnection, setShowAuthDialog, setShowVaultUnlock, recordRecent]
   );
 
-  // Vault unlocked: flush any deferred credential SAVE, and resume a connect
-  // that was parked on the locked vault (retries it with the vault open, so the
-  // saved SSH password is actually used).
+  // Vault unlocked: flush any deferred credential SAVE, then resume the parked
+  // connect. handleConnect rechecks the backend's live status before retrieving
+  // the saved password, so this is safe before React renders vaultUnlocked=true.
   const resumeVaultConnect = useCallback(() => {
     flushPendingCredSave();
     const cfg = pendingVaultConnectRef.current;
@@ -1164,7 +1146,7 @@ function App() {
 
           // Save the password to the vault if requested (passwords only).
           if (saveCredential && creds.authType === 'password' && creds.password) {
-            const key = credKey(pending);
+            const key = sshCredentialKey(pending);
             if (vaultUnlocked) {
               invoke('vault_store', { key, value: creds.password }).catch(() => {});
             } else {
