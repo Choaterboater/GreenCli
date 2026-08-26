@@ -388,8 +388,19 @@ fn spawn_ssh_supervisor(
                 if let Some(&(cols, rows)) = terminal_sizes.lock().await.get(&session_id) {
                     conn.set_initial_size(cols, rows).await;
                 }
-                match conn.connect().await {
-                    Ok(resp) => match conn.take_data_receiver() {
+                // Bound the reconnect's own handshake: the SAME russh loop
+                // wedge that killed the original session can freeze a reconnect
+                // mid-flow (TCP lands, sshd sits at `@notty`, no shell ever
+                // comes up), leaving this supervisor parked in connect() forever
+                // and the tab permanently dark. Timeout → best-effort teardown
+                // of the half-open handshake → backoff and retry.
+                let connect_result = tokio::time::timeout(
+                    std::time::Duration::from_secs(20),
+                    conn.connect(),
+                )
+                .await;
+                match connect_result {
+                    Ok(Ok(resp)) => match conn.take_data_receiver() {
                         Some(nrx) => {
                             // Surface a non-fatal host-key advisory recorded
                             // during the handshake (a NEW key algorithm was
@@ -437,7 +448,7 @@ fn spawn_ssh_supervisor(
                         }
                         None => return,
                     },
-                    Err(e) => {
+                    Ok(Err(e)) => {
                         // Classify the failure: a host-key rejection (possible
                         // MITM / re-imaged device) or an authentication failure
                         // will fail IDENTICALLY on every retry, so retrying
@@ -476,6 +487,20 @@ fn spawn_ssh_supervisor(
                         }
                         continue; // retry (backoff sleep happens at top)
                     }
+                    Err(_) => {
+                        log::warn!(
+                            "reconnect for session {session_id} timed out (stalled handshake) — backing off"
+                        );
+                        // Best-effort teardown of the half-open handshake (seen
+                        // as an `@notty` sshd on the server); never blocks the
+                        // supervisor.
+                        let _ = tokio::time::timeout(
+                            std::time::Duration::from_secs(3),
+                            conn.disconnect(),
+                        )
+                        .await;
+                        continue;
+                    }
                 }
             }
             first = false;
@@ -491,6 +516,11 @@ fn spawn_ssh_supervisor(
             // is wedged → tear down just the transport; the session stays
             // registered so the stream-end path below reconnects it.
             const ECHO_STALE: std::time::Duration = std::time::Duration::from_secs(20);
+            // Absolute-silence backstop: nothing was even read for this long.
+            // (Echo stalls are caught by ECHO_STALE; this catches a wedge that
+            // started before any keystroke — e.g. mid-I/O during a session the
+            // user stepped away from.)
+            const IDLE_STALE: std::time::Duration = std::time::Duration::from_secs(300);
             let started = std::time::Instant::now();
             let mut last_rx = started;
             let mut watchdog_hit = false;
@@ -517,14 +547,23 @@ fn spawn_ssh_supervisor(
                             .await
                             .get(&session_id)
                             .unwrap_or(&started);
-                        // Only fire when input arrived AFTER the last output —
-                        // i.e. we are specifically waiting for an echo — and the
-                        // wait exceeded ECHO_STALE. Plain idleness (no recent
-                        // input) never triggers this.
-                        if input_at > last_rx && input_at.elapsed() >= ECHO_STALE {
+                        // Two failure modes:
+                        //  1) Echo stall: input sent AFTER the last output and
+                        //     nothing came back for ECHO_STALE — the transport
+                        //     is wedged mid-read (russh read-loop freeze).
+                        //  2) Absolute silence: no bytes at ALL for
+                        //     IDLE_STALE, even with no recent input. A healthy
+                        //     session still carries SSH-level keepalive/traffic,
+                        //     so minutes of absolute silence while "connected"
+                        //     is a wedge, not idleness.
+                        let echo_stale =
+                            input_at > last_rx && input_at.elapsed() >= ECHO_STALE;
+                        let idle_stale = last_rx.elapsed() >= IDLE_STALE;
+                        if echo_stale || idle_stale {
                             eprintln!(
-                                "[WATCHDOG] no output for {}s after input — forcing transport reconnect (session {})",
-                                input_at.elapsed().as_secs(),
+                                "[WATCHDOG] {} (last_rx {}s ago) — forcing transport reconnect (session {})",
+                                if echo_stale { "no output for input" } else { "absolute silence" },
+                                last_rx.elapsed().as_secs(),
                                 session_id
                             );
                             watchdog_hit = true;
