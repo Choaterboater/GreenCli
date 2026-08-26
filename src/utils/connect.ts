@@ -20,6 +20,50 @@ export interface ConnectBehavior {
   autoReconnect: boolean;
 }
 
+export interface VaultCredentialSource {
+  isUnlocked: () => Promise<boolean>;
+  isInitialized: () => Promise<boolean>;
+  retrieve: (key: string) => Promise<string | null>;
+}
+
+export interface SshPasswordResolution {
+  password?: string;
+  requiresVaultUnlock: boolean;
+}
+
+export function sshCredentialKey(
+  config: Pick<ConnectionConfig, 'host' | 'port' | 'username'>,
+): string {
+  return `cred:${config.host ?? ''}:${config.port ?? 22}:${config.username ?? ''}`;
+}
+
+/** Resolve password auth from the live backend vault state, not React's cached
+ *  startup state. This matters immediately after vault_unlock: the backend is
+ *  unlocked before React has rendered the updated store value. */
+export async function resolveSshPassword(
+  config: Pick<
+    ConnectionConfig,
+    'protocol' | 'authType' | 'password' | 'host' | 'port' | 'username'
+  >,
+  vault: VaultCredentialSource,
+): Promise<SshPasswordResolution> {
+  const usesPassword =
+    config.protocol === 'ssh' && (config.authType ?? 'password') === 'password';
+  if (config.password || !usesPassword) {
+    return { password: config.password, requiresVaultUnlock: false };
+  }
+
+  if (await vault.isUnlocked()) {
+    const password = (await vault.retrieve(sshCredentialKey(config))) ?? undefined;
+    return { password, requiresVaultUnlock: false };
+  }
+
+  return {
+    password: undefined,
+    requiresVaultUnlock: await vault.isInitialized(),
+  };
+}
+
 /**
  * Map a ConnectionConfig + credentials + behavior settings onto the exact
  * `config` object the `connect` Tauri command accepts. Keep this the superset
