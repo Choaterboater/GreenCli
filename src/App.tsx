@@ -194,6 +194,10 @@ function App() {
     invoke('vault_store', { key: pending.key, value: pending.value }).catch(() => {});
   }, []);
 
+  // A connect parked waiting for the vault unlock prompt: kept in a ref so the
+  // unlock completion can resume it (see handleConnect's locked-vault branch).
+  const pendingVaultConnectRef = useRef<ConnectionConfig | null>(null);
+
   // xterm only refits on window resize, so nudge a resize when the pane layout
   // changes so both terminals size correctly.
   const refitTerminals = () =>
@@ -456,6 +460,15 @@ function App() {
       .then(setVaultUnlocked)
       .catch(() => setVaultUnlocked(false));
   }, [setVaultUnlocked]);
+
+  // Does a vault exist yet? (-> whether "locked" should prompt for a master
+  // password or is just a never-initialized store.)
+  const [vaultInitialized, setVaultInitialized] = useState(false);
+  useEffect(() => {
+    invoke<boolean>('vault_is_initialized')
+      .then(setVaultInitialized)
+      .catch(() => setVaultInitialized(false));
+  }, []);
 
   // Push Aruba Central credentials to the backend whenever they change.
   const centralBaseUrl = useSettingsStore((s) => s.centralBaseUrl);
@@ -902,6 +915,25 @@ function App() {
           )) ?? undefined;
       }
 
+      // The vault exists but is locked and this SSH session might have a saved
+      // password: prompt for the MASTER password before connecting, then resume
+      // the connect (now vaultUnlocked → the branch above retrieves the saved
+      // credential). Without this, a fresh app start made every password-auth
+      // re-connect fail and pop the SSH auth dialog, so saved passwords looked
+      // "wiped" after each install/restart even though they were intact.
+      if (
+        !password &&
+        fullConfig.protocol === 'ssh' &&
+        fullConfig.authType === 'password' &&
+        vaultInitialized &&
+        !vaultUnlocked
+      ) {
+        connectingIdsRef.current.delete(sessionId);
+        pendingVaultConnectRef.current = fullConfig;
+        setShowVaultUnlock(true);
+        return;
+      }
+
       try {
         const settingsState = useSettingsStore.getState();
         const result = await invoke<ConnectInvokeResult>('connect', {
@@ -978,6 +1010,30 @@ function App() {
     },
     [addSession, setPendingConnection, setShowAuthDialog, vaultUnlocked, recordRecent]
   );
+
+  // Vault unlocked: flush any deferred credential SAVE, and resume a connect
+  // that was parked on the locked vault (retries it with the vault open, so the
+  // saved SSH password is actually used).
+  const resumeVaultConnect = useCallback(() => {
+    flushPendingCredSave();
+    const cfg = pendingVaultConnectRef.current;
+    pendingVaultConnectRef.current = null;
+    if (!cfg) return;
+    // handleConnect parked this AFTER registering the tab (status 'connecting',
+    // id in connectingIdsRef, both cleared when it parked) — restore a clean
+    // disconnected tab so the retry starts fresh.
+    useSessionStore.getState().updateSessionConnection(cfg.id, false, 'disconnected');
+    handleConnect(cfg);
+  }, [flushPendingCredSave, handleConnect]);
+
+  // Vault prompt dismissed: drop the parked connect and un-stick its tab.
+  const cancelVaultConnect = useCallback(() => {
+    const cfg = pendingVaultConnectRef.current;
+    pendingVaultConnectRef.current = null;
+    if (cfg) {
+      useSessionStore.getState().updateSessionConnection(cfg.id, false, 'disconnected');
+    }
+  }, []);
 
   const handleDisconnect = useCallback(async (sessionId: string) => {
     const session = useSessionStore.getState().sessions.find((s) => s.sessionId === sessionId);
@@ -1680,7 +1736,7 @@ function App() {
       {showSftp && activeSessionId && (
         <SftpBrowser sessionId={activeSessionId} onClose={() => setShowSftp(false)} />
       )}
-      <VaultUnlock onUnlocked={flushPendingCredSave} />
+      <VaultUnlock onUnlocked={resumeVaultConnect} onCancel={cancelVaultConnect} />
       <CommandPalette onConnect={handleConnect} onLocalShell={openLocalShell} onConnectRecent={connectRecent} />
       <TunnelsManager />
       <IntentPanel />
