@@ -30,9 +30,11 @@ export interface VaultCredentialSource {
  *  behalf (Change Jobs) and must not stop to ask for a password or a vault
  *  unlock: those come back as 'needs-login' instead of opening a dialog. */
 export type ConnectOutcome =
-  | { status: 'connected' }
+  /** `sessionId`: the tab the connect used — a saved host's tab need not
+   *  share the saved host's id, so callers must not assume it does. */
+  | { status: 'connected'; sessionId: string }
   /** Already connecting (or reconnecting): wait for the session to come up. */
-  | { status: 'in-progress' }
+  | { status: 'in-progress'; sessionId: string }
   | { status: 'needs-login'; reason: string }
   | { status: 'failed'; reason: string };
 

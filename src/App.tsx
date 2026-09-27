@@ -1028,7 +1028,7 @@ function App() {
         existingStatus === 'reconnecting'
       ) {
         useSessionStore.getState().setActiveSession(sessionId);
-        return existing?.connected ? { status: 'connected' } : { status: 'in-progress' };
+        return existing?.connected ? { status: 'connected', sessionId } : { status: 'in-progress', sessionId };
       }
       if (connectingIdsRef.current.has(sessionId)) {
         if (!existing) {
@@ -1036,7 +1036,7 @@ function App() {
           useSessionStore.getState().updateSessionConnection(sessionId, false, 'connecting');
         }
         useSessionStore.getState().setActiveSession(sessionId);
-        return { status: 'in-progress' };
+        return { status: 'in-progress', sessionId };
       }
       connectingIdsRef.current.add(sessionId);
 
@@ -1074,7 +1074,7 @@ function App() {
         }
         syncVaultWaiting();
         setShowVaultUnlock(true);
-        return { status: 'in-progress' };
+        return { status: 'in-progress', sessionId };
       }
 
       // No password anywhere (not inline, not saved in the vault): ask for it
@@ -1090,7 +1090,7 @@ function App() {
           return { status: 'needs-login', reason: 'No saved password — log in to it once (its tab), then run again.' };
         }
         promptForAuth(fullConfig);
-        return { status: 'in-progress' };
+        return { status: 'in-progress', sessionId };
       }
 
       // Shared failure path: ask for credentials again only when the device
@@ -1158,7 +1158,7 @@ function App() {
 
           // Per-host startup commands: run them once the shell is ready.
           runStartupCommands(sessionId, fullConfig.startupCommands);
-          return { status: 'connected' };
+          return { status: 'connected', sessionId };
         }
       } catch (err) {
         console.error('Connection error:', err);

@@ -14,6 +14,7 @@ import {
   evaluateCheck,
   buildDevicePlan,
   resolveTargets,
+  savedHostId,
   promptState,
   diffLines,
   diffHunks,
@@ -294,6 +295,14 @@ describe('resolveTargets', () => {
       ['c1', null],
       ['tab-9', 'tab-9'],
     ]);
+    // A saved host can have several tabs: each has its own id and points
+    // back with savedId. The connected one is used, and only once.
+    const tabA = { ...session('t-1', host('t-1', '10.0.0.1', { savedId: 'c1' })), connected: false };
+    const tabB = session('t-2', host('t-2', '10.0.0.1', { savedId: 'c1' }));
+    const multi = resolveTargets(folders, [tabA, tabB], { ...pick, hosts: ['c1'], sessions: ['t-1', 't-2'] });
+    expect(multi.map((x) => [x.key, x.sessionId])).toEqual([['t-2', 't-2']]);
+    expect(savedHostId(tabB.config)).toBe('c1');
+    expect(savedHostId(host('c2', '10.0.0.2'))).toBe('c2');
     const local = session('sh', { id: 'sh', name: 'Local', protocol: 'local', deviceType: 'generic' });
     expect(resolveTargets(folders, [local], { ...pick, sessions: ['sh'] })).toEqual([]);
   });
