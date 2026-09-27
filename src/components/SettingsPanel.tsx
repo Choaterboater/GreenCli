@@ -11,6 +11,7 @@ import { notify } from '../store/toastStore';
 import McpServers from './McpServers';
 import AiAgents from './AiAgents';
 import HostsManager from './HostsManager';
+import LoginProfiles from './LoginProfiles';
 import TriggersSettings from './TriggersSettings';
 import CentralSettings from './CentralSettings';
 import { generateId } from '../utils';
@@ -52,11 +53,12 @@ function SystemThemeNote() {
   );
 }
 
-type SettingsNavId = 'appearance' | 'terminal' | 'ai' | 'cloud' | 'backup';
+type SettingsNavId = 'appearance' | 'terminal' | 'logins' | 'ai' | 'cloud' | 'backup';
 
 const SETTINGS_NAV: { id: SettingsNavId; label: string }[] = [
   { id: 'appearance', label: 'Appearance' },
   { id: 'terminal', label: 'Terminal' },
+  { id: 'logins', label: 'Logins' },
   { id: 'ai', label: 'AI + MCP' },
   { id: 'cloud', label: 'Cloud' },
   { id: 'backup', label: 'Backup' },
@@ -67,6 +69,7 @@ const FOCUS_NAV: Record<string, SettingsNavId> = {
   terminal: 'terminal',
   'device-profiles': 'terminal',
   logging: 'terminal',
+  logins: 'logins',
   ai: 'ai',
   mcp: 'ai',
   central: 'cloud',
@@ -1159,8 +1162,8 @@ export default function SettingsPanel() {
             <p className="text-xs text-[var(--text-muted)] mb-3">
               Puts every setting back to its default: theme and terminal options,
               custom device profiles, AI agents and providers, and Central / Mist
-              accounts. Saved sessions, snippets, the vault and open tabs are not
-              touched. Export a backup first if you might want them back.
+              accounts. Saved sessions, shared logins, snippets, the vault and open
+              tabs are not touched. Export a backup first if you might want them back.
             </p>
             <button
               onClick={async () => {
@@ -1217,6 +1220,11 @@ export default function SettingsPanel() {
 
           {/* SSH config import + host-key management */}
           <HostsManager />
+          </NavGroup>
+
+          <NavGroup nav="logins" active={activeNav}>
+          {/* Shared logins (credential profiles) for folders and hosts */}
+          <LoginProfiles />
           </NavGroup>
 
           <NavGroup nav="ai" active={activeNav}>

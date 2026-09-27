@@ -24,17 +24,21 @@ import {
   Pencil,
   Download,
   Loader2,
+  KeyRound,
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/tauri';
 import { useSessionStore } from '../store/sessionStore';
 import { useSettingsStore } from '../store/settingsStore';
 import { useResizablePanel } from '../hooks/useResizablePanel';
-import { ConnectionConfig, deviceMeta, vendorColor } from '../types';
+import { ConnectionConfig, LoginProfile, deviceMeta, vendorColor } from '../types';
 import { fuzzyMatch } from '../utils';
 import { askPrompt, askConfirm } from '../store/dialogStore';
 import { notify } from '../store/toastStore';
 import { hostSummary } from '../utils/hosts';
 import { importSshHosts, importSummary, scanSshConfig } from '../utils/sshImport';
+import { effectiveLogin } from '../utils/logins';
+
+const NO_LOGINS: LoginProfile[] = [];
 
 const LUCIDE: Record<string, typeof Monitor> = {
   Network,
@@ -70,6 +74,7 @@ export default function Sidebar({ onConnect }: SidebarProps) {
   const aiAgents = useSettingsStore((s) => s.aiAgents) ?? [];
   const sessionAgents = useSettingsStore((s) => s.sessionAgents) ?? {};
   const setSessionAgent = useSettingsStore((s) => s.setSessionAgent);
+  const loginProfiles = useSettingsStore((s) => s.loginProfiles) ?? NO_LOGINS;
   const sidebarWidth = useSettingsStore((s) => s.sidebarWidth) ?? 256;
   const setSidebarWidth = useSettingsStore((s) => s.setSidebarWidth);
   const {
@@ -91,6 +96,9 @@ export default function Sidebar({ onConnect }: SidebarProps) {
   } | null>(null);
   // Agent picker popover (opened from the context menu's "Agent…" item).
   const [agentMenu, setAgentMenu] = useState<{ x: number; y: number; sessionId: string } | null>(null);
+  // Folder right-click menu, and its "Default login…" picker.
+  const [folderMenu, setFolderMenu] = useState<{ x: number; y: number; folderId: string } | null>(null);
+  const [loginMenu, setLoginMenu] = useState<{ x: number; y: number; folderId: string } | null>(null);
   // Folder currently hovered while dragging a session (for the drop highlight).
   const [dragOverFolder, setDragOverFolder] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
@@ -181,6 +189,22 @@ export default function Sidebar({ onConnect }: SidebarProps) {
     removeFolder(folderId);
     invoke('delete_folder', { id: folderId }).catch(() => {});
     notify.success('Folder deleted', name);
+  };
+
+  // The shared login every host in the folder uses unless it picks its own.
+  const setFolderLogin = (folderId: string, loginProfileId: string | undefined) => {
+    setLoginMenu(null);
+    updateFolder(folderId, { loginProfileId });
+    invoke('update_folder', { id: folderId, loginProfileId: loginProfileId ?? '' }).catch((e) =>
+      notify.warning('Could not save the folder\u2019s default login', String(e))
+    );
+  };
+
+  const openManageLogins = () => {
+    setLoginMenu(null);
+    const s = useSessionStore.getState();
+    s.setSettingsFocus('logins');
+    s.setShowSettings(true);
   };
 
   // ── Session actions ──
@@ -376,6 +400,10 @@ export default function Sidebar({ onConnect }: SidebarProps) {
                 // toggling then would invisibly persist a collapse with zero
                 // visual feedback, so make the header inert until the query clears.
                 onClick={() => { if (!q) toggleExpand(folder.id, !expanded); }}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  setFolderMenu({ x: e.clientX, y: e.clientY, folderId: folder.id });
+                }}
               >
                 {expanded ? (
                   <ChevronDown size={14} className="text-[var(--text-muted)] flex-shrink-0" />
@@ -390,6 +418,14 @@ export default function Sidebar({ onConnect }: SidebarProps) {
                 <span className="flex-1 text-[13px] font-medium text-[var(--text-primary)] truncate">
                   {folder.name}
                 </span>
+                {(() => {
+                  const folderLogin = loginProfiles.find((p) => p.id === folder.loginProfileId);
+                  return folderLogin ? (
+                    <span title={`Default login: ${folderLogin.name}`} className="flex-shrink-0">
+                      <KeyRound size={11} className="text-[var(--text-muted)]" />
+                    </span>
+                  ) : null;
+                })()}
                 <span className="text-[11px] text-[var(--text-muted)] tabular-nums group-hover/folder:hidden">
                   {folder.items.length}
                 </span>
@@ -427,7 +463,13 @@ export default function Sidebar({ onConnect }: SidebarProps) {
                   )}
                   {visibleItems.map((session) => {
                     const isConnected = connectedIds.has(session.id);
-                    const summary = hostSummary(session);
+                    const login = effectiveLogin(session, folder.loginProfileId, loginProfiles);
+                    // A blank username is filled in by the shared login at connect.
+                    const summary = hostSummary({
+                      ...session,
+                      username: session.username?.trim() || login?.profile.username,
+                    });
+                    const showSummary = !!summary && summary !== session.name;
                     return (
                       <div
                         key={session.id}
@@ -452,10 +494,22 @@ export default function Sidebar({ onConnect }: SidebarProps) {
                           <span className="block text-[13px] text-[var(--text-secondary)] group-hover:text-[var(--text-primary)] truncate">
                             {session.name}
                           </span>
-                          {/* Where it points, so same-named or renamed hosts can be told apart. */}
-                          {summary && summary !== session.name && (
-                            <span className="block text-[11px] leading-tight text-[var(--text-muted)] truncate">
-                              {summary}
+                          {/* Where it points, so same-named or renamed hosts can be told apart,
+                              and which shared login it signs in with. */}
+                          {(showSummary || login) && (
+                            <span className="flex items-center gap-1.5 min-w-0 text-[11px] leading-tight text-[var(--text-muted)]">
+                              {showSummary && <span className="truncate">{summary}</span>}
+                              {login && (
+                                <span
+                                  className="flex items-center gap-0.5 min-w-0 flex-shrink-[2]"
+                                  title={`Logs in with the "${login.profile.name}" login${
+                                    login.fromFolder ? ' (folder default)' : ''
+                                  }`}
+                                >
+                                  <KeyRound size={9} className="flex-shrink-0" />
+                                  <span className="truncate">{login.profile.name}</span>
+                                </span>
+                              )}
                             </span>
                           )}
                           {(session.tags?.length ?? 0) > 0 && (
@@ -625,6 +679,122 @@ export default function Sidebar({ onConnect }: SidebarProps) {
           </div>
         </>
       )}
+
+      {/* Folder context menu */}
+      {folderMenu && (() => {
+        const folder = folders.find((f) => f.id === folderMenu.folderId);
+        if (!folder) return null;
+        const close = () => setFolderMenu(null);
+        return (
+          <>
+            <div className="fixed inset-0 z-40" onClick={close} onContextMenu={(e) => { e.preventDefault(); close(); }} />
+            <div
+              className="surface-elevated fixed z-50 min-w-[170px] py-1 animate-scale-in"
+              style={{
+                top: Math.max(4, Math.min(folderMenu.y, window.innerHeight - 140)),
+                left: Math.max(4, Math.min(folderMenu.x, window.innerWidth - 190)),
+              }}
+            >
+              <button
+                onClick={() => {
+                  close();
+                  setLoginMenu({ x: folderMenu.x, y: folderMenu.y, folderId: folder.id });
+                }}
+                className="flex items-center gap-2.5 w-full px-3 py-1.5 text-[13px] text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]"
+              >
+                <KeyRound size={14} className="text-[var(--accent)]" />
+                Default login…
+              </button>
+              <button
+                onClick={() => {
+                  close();
+                  void renameFolder(folder.id, folder.name);
+                }}
+                className="flex items-center gap-2.5 w-full px-3 py-1.5 text-[13px] text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]"
+              >
+                <Edit3 size={14} />
+                Rename
+              </button>
+              {folder.id !== 'default' && (
+                <>
+                  <div className="my-1 h-px bg-[var(--border)]" />
+                  <button
+                    onClick={() => {
+                      close();
+                      void deleteFolder(folder.id, folder.name, folder.items.length);
+                    }}
+                    className="flex items-center gap-2.5 w-full px-3 py-1.5 text-[13px] text-[var(--accent-danger)] hover:bg-[var(--bg-tertiary)]"
+                  >
+                    <Trash2 size={14} />
+                    Delete
+                  </button>
+                </>
+              )}
+            </div>
+          </>
+        );
+      })()}
+
+      {/* Default-login picker for a folder */}
+      {loginMenu && (() => {
+        const folder = folders.find((f) => f.id === loginMenu.folderId);
+        if (!folder) return null;
+        const current = folder.loginProfileId;
+        const option = (id: string | undefined, label: string, hint?: string) => (
+          <button
+            key={id ?? 'none'}
+            onClick={() => setFolderLogin(folder.id, id)}
+            className="flex items-center gap-2 w-full px-3 py-1.5 text-[13px] text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] text-left"
+          >
+            <span className="w-3.5 flex-shrink-0 flex justify-center">
+              {current === id && <Check size={13} className="text-[var(--accent)]" />}
+            </span>
+            <span className="min-w-0">
+              <span className="block truncate">{label}</span>
+              {hint && <span className="block text-[10px] text-[var(--text-muted)] truncate">{hint}</span>}
+            </span>
+          </button>
+        );
+        return (
+          <>
+            <div
+              className="fixed inset-0 z-40"
+              onClick={() => setLoginMenu(null)}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                setLoginMenu(null);
+              }}
+            />
+            <div
+              className="surface-elevated fixed z-50 min-w-[200px] max-w-[260px] py-1 animate-scale-in overflow-y-auto max-h-[60vh]"
+              style={{
+                top: Math.max(4, Math.min(loginMenu.y, window.innerHeight - 300)),
+                left: Math.max(4, Math.min(loginMenu.x, window.innerWidth - 270)),
+              }}
+            >
+              <div className="px-3 py-1 text-[10px] uppercase tracking-wider text-[var(--text-muted)] truncate">
+                Default login for {folder.name}
+              </div>
+              {option(undefined, 'None', 'Each host uses its own password')}
+              {loginProfiles.length > 0 && <div className="my-1 h-px bg-[var(--border)]" />}
+              <div className="max-h-[240px] overflow-y-auto">
+                {loginProfiles.map((p) => option(p.id, p.name, p.username))}
+              </div>
+              <div className="my-1 h-px bg-[var(--border)]" />
+              <p className="px-3 py-1 text-[10px] text-[var(--text-muted)]">
+                Hosts can pick another login in Edit…
+              </p>
+              <button
+                onClick={openManageLogins}
+                className="flex items-center gap-2.5 w-full px-3 py-1.5 text-[12px] text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]"
+              >
+                <Settings2 size={13} />
+                {loginProfiles.length > 0 ? 'Manage logins…' : 'Create a login…'}
+              </button>
+            </div>
+          </>
+        );
+      })()}
 
       {/* Agent picker */}
       {agentMenu && (

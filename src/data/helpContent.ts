@@ -14,6 +14,7 @@ import {
   Keyboard,
   LifeBuoy,
   TerminalSquare,
+  KeyRound,
   type LucideIcon,
 } from 'lucide-react';
 import { isMac, platform, shortcutLabel, type ShortcutId } from '../utils/shortcuts';
@@ -96,7 +97,7 @@ export const HELP_TOPICS: HelpTopic[] = [
         items: [
           '**SSH auth**: password, private key (Browse… to load a key file), or **ssh-agent**.',
           'If `password` auth is refused it falls back to **keyboard-interactive** (TACACS+/RADIUS); only the first prompt gets the password, so an OTP prompt is left for you.',
-          '**Jump host / ProxyJump**: set a bastion; it tries the jump password, then your key, then the agent.',
+          '**Jump host / ProxyJump**: set a bastion and how to log in to it — a password (kept in the vault for saved hosts), a shared login, or your key / agent. Bastions that ask for a one-time code (MFA) are not supported yet.',
           '**Startup commands**: per-host commands run automatically once the shell is ready (e.g. `terminal length 0`).',
         ],
       },
@@ -114,6 +115,26 @@ export const HELP_TOPICS: HelpTopic[] = [
       { kind: 'p', text: 'Aruba Central / Mist **secrets** are also stored in the vault (encrypted) once it is unlocked, so they survive a restart. While the vault is locked they live in memory for the session only.' },
       { kind: 'note', text: 'A corrupt/incompatible `vault.enc` is never auto-overwritten — it errors and is preserved so nothing is silently lost.' },
     ],
+  },
+  {
+    id: 'logins',
+    title: 'Shared logins',
+    icon: KeyRound,
+    summary: 'One TACACS/RADIUS password for many devices — change it once.',
+    keywords: ['login', 'tacacs', 'radius', 'credential', 'profile', 'password', 'rotation', 'folder', 'shared'],
+    blocks: [
+      { kind: 'p', text: 'Create a **shared login** (name, username, password) in **Settings → Logins**. Make it a folder\'s default (right-click the folder → **Default login…**) or pick it for one host in **Edit…**.' },
+      {
+        kind: 'bullets',
+        items: [
+          'A host uses its own login if it has one, else its folder\'s. **Per-host password** keeps a host on its own saved password.',
+          'The login\'s username is used when the host has none of its own.',
+          'When the password rotates, change it once in Settings — or, when a device rejects it, choose **Update this login\'s password** in the password dialog.',
+        ],
+      },
+      { kind: 'note', text: 'Only the name and username are stored in settings; the password is kept in the encrypted vault.' },
+    ],
+    action: { label: 'Manage logins', id: 'open-settings', focus: 'logins' },
   },
   {
     id: 'ai',

@@ -17,6 +17,7 @@ import { open as openDialog } from '@tauri-apps/api/dialog';
 import { useSessionStore } from '../store/sessionStore';
 import {
   ConnectionConfig,
+  LoginProfile,
   Protocol,
   DeviceType,
   PROTOCOLS,
@@ -31,6 +32,9 @@ import { notify } from '../store/toastStore';
 import { useSettingsStore } from '../store/settingsStore';
 import { allDeviceProfiles, profileForDeviceType, saveSessionPayload } from '../utils/deviceProfiles';
 import { defaultBaudRate, parseHostSpec, rankSerialPorts } from '../utils/hosts';
+import { effectiveLogin, PER_HOST_PASSWORD } from '../utils/logins';
+import { jumpCredentialKey } from '../utils/connect';
+import { saveToVault } from '../utils/vaultAccess';
 
 const LUCIDE: Record<string, typeof Monitor> = { Network, Wifi, RadioTower, Server, Cloud, Monitor };
 
@@ -43,6 +47,7 @@ const SERIAL_PLACEHOLDER = PLATFORM.includes('WIN')
     ? '/dev/cu.usbserial-…'
     : '/dev/ttyUSB0';
 const CUSTOM_SERIAL = '__custom__';
+const NO_LOGINS: LoginProfile[] = [];
 
 function DeviceGlyph({ deviceType, size = 16 }: { deviceType: string; size?: number }) {
   const Ico = LUCIDE[deviceMeta(deviceType).icon] ?? Monitor;
@@ -66,6 +71,8 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
   const setLastUsedDeviceProfileId = useSettingsStore((s) => s.setLastUsedDeviceProfileId);
   const lastUsedSshUsername = useSettingsStore((s) => s.lastUsedSshUsername);
   const setLastUsedSshUsername = useSettingsStore((s) => s.setLastUsedSshUsername);
+  const loginProfiles = useSettingsStore((s) => s.loginProfiles) ?? NO_LOGINS;
+  const folders = useSessionStore((s) => s.folders);
   const profiles = useMemo(
     () => allDeviceProfiles(customDeviceProfiles),
     [customDeviceProfiles],
@@ -97,6 +104,11 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
   const [jumpPort, setJumpPort] = useState(22);
   const [jumpUsername, setJumpUsername] = useState('');
   const [jumpPassword, setJumpPassword] = useState('');
+  // Shared logins: '' = the folder's default (host) / key or agent (jump),
+  // PER_HOST_PASSWORD = its own saved password, else a LoginProfile id. A new
+  // jump host starts on "Password", like the old always-there password box.
+  const [loginChoice, setLoginChoice] = useState('');
+  const [jumpLogin, setJumpLogin] = useState(PER_HOST_PASSWORD);
   const [saveSession, setSaveSession] = useState(false);
   const [connecting, setConnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -169,6 +181,8 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
     setJumpPort(22);
     setJumpUsername('');
     setJumpPassword('');
+    setLoginChoice('');
+    setJumpLogin(PER_HOST_PASSWORD);
     setSaveSession(false);
     setError(null);
   };
@@ -207,6 +221,10 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
     setJumpPort(cfg.jumpPort ?? 22);
     setJumpUsername(cfg.jumpUsername ?? '');
     setJumpPassword('');
+    setLoginChoice(cfg.loginProfileId ?? '');
+    // A saved jump host with no login choice predates them: it only ever used
+    // its key / agent. Adding a new jump host starts on "Password".
+    setJumpLogin(cfg.jumpLoginProfileId ?? (cfg.jumpHost ? '' : PER_HOST_PASSWORD));
     setError(null);
     // Once per opening — re-running on a profile change would undo the user's edits.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -229,6 +247,8 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
       setJumpHost('');
       setJumpUsername('');
       setJumpPassword('');
+      setLoginChoice('');
+      setJumpLogin(PER_HOST_PASSWORD);
       setError(null);
     }
     wasOpenRef.current = showQuickConnect;
@@ -241,7 +261,20 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
   const isHostBased = protocol === 'ssh' || protocol === 'telnet';
   // What Connect would use right now, counting a "user@" still in the Host box.
   const hostSpec = parseHostSpec(host);
-  const missingSshUser = protocol === 'ssh' && !username.trim() && !hostSpec.user;
+  // The shared login this host would use: its own pick, else the default of
+  // the folder it's saved in (an unsaved connect has no folder).
+  const targetFolder = folders.find(
+    (f) => f.id === (editing ? editing.folderId : saveSession ? 'default' : undefined)
+  );
+  const folderLogin = loginProfiles.find((p) => p.id === targetFolder?.loginProfileId);
+  const passwordAuth = (editing?.config.authType ?? 'password') === 'password';
+  const login = effectiveLogin(
+    { protocol, authType: editing?.config.authType, loginProfileId: loginChoice || undefined },
+    targetFolder?.loginProfileId,
+    loginProfiles
+  )?.profile;
+  const missingSshUser =
+    protocol === 'ssh' && !username.trim() && !hostSpec.user && !login?.username;
   const serialChoices = serialPorts ?? [];
   const typingSerial =
     customSerial || serialChoices.length === 0 || (!!serialPort && !serialChoices.includes(serialPort));
@@ -292,7 +325,25 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
         jumpHost: protocol === 'ssh' && showJump && jumpHost ? jumpHost : undefined,
         jumpPort: protocol === 'ssh' && showJump && jumpHost ? jumpPort : undefined,
         jumpUsername: protocol === 'ssh' && showJump && jumpHost ? jumpUsername : undefined,
-        jumpPassword: protocol === 'ssh' && showJump && jumpHost ? jumpPassword : undefined,
+        // Only the "Password" choice takes a typed one; a shared login reads its own.
+        jumpPassword:
+          protocol === 'ssh' && showJump && jumpHost && jumpLogin === PER_HOST_PASSWORD
+            ? jumpPassword
+            : undefined,
+        loginProfileId: protocol === 'ssh' && loginChoice ? loginChoice : undefined,
+        jumpLoginProfileId: protocol === 'ssh' && showJump && jumpHost && jumpLogin ? jumpLogin : undefined,
+      };
+
+      // A saved host's jump password goes to the vault, never sessions.json —
+      // before, it was dropped on save, so saved hosts behind a password-only
+      // bastion could never log in again.
+      const saveJumpPassword = async () => {
+        if (!(editing || saveSession) || config.jumpLoginProfileId !== PER_HOST_PASSWORD) return;
+        if (!jumpPassword) return; // Blank on an edit = keep the saved one.
+        if ((await saveToVault(jumpCredentialKey(config), jumpPassword)) === 'deferred') {
+          notify.info('Unlock the vault to save the jump password', 'It is kept until you unlock.');
+          useSessionStore.getState().setShowVaultUnlock(true);
+        }
       };
 
       if (editing) {
@@ -316,6 +367,7 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
           .then(() => true)
           .catch(() => false);
         if (!stored) throw new Error('Could not save the changes. The saved host was not updated.');
+        await saveJumpPassword();
         const { password, jumpPassword, privateKey, keyPassphrase, ...safe } = updated;
         void password;
         void jumpPassword;
@@ -351,6 +403,7 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
           void privateKey;
           void keyPassphrase;
           useSessionStore.getState().addSessionToFolder('default', safe as ConnectionConfig);
+          await saveJumpPassword();
         } else {
           notify.error('Could not save session', 'It was not added to the sidebar.');
         }
@@ -679,7 +732,8 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
             <div>
               <label className="block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-secondary)] mb-1.5">
                 Username
-                {protocol === 'ssh' && <span className="text-[var(--accent-danger)]"> *</span>}
+                {/* Optional when a shared login supplies one. */}
+                {protocol === 'ssh' && !login && <span className="text-[var(--accent-danger)]"> *</span>}
               </label>
               <input
                 type="text"
@@ -687,10 +741,58 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
                 onChange={(e) => setUsername(e.target.value)}
                 // No sample name: a grey "admin" looked filled in, and SSH then
                 // logged in with an empty username.
-                placeholder={protocol === 'ssh' ? 'Required' : 'Optional (the device asks when you connect)'}
+                placeholder={
+                  protocol === 'ssh'
+                    ? login
+                      ? `${login.username} (from the ${login.name} login)`
+                      : 'Required'
+                    : 'Optional (the device asks when you connect)'
+                }
                 autoComplete="username"
                 className={inputCls}
               />
+              {/* A username here overrides the shared login's — easy to miss
+                  when it was prefilled from the last connect. */}
+              {protocol === 'ssh' && login && username.trim() && username.trim() !== login.username && (
+                <p className="text-[10px] text-[var(--text-muted)] mt-1">
+                  Logs in as {username.trim()}, not the {login.name} login&apos;s {login.username}.{' '}
+                  <button
+                    type="button"
+                    onClick={() => setUsername('')}
+                    className="text-[var(--accent)] hover:underline"
+                  >
+                    Use {login.username}
+                  </button>
+                </p>
+              )}
+            </div>
+          )}
+
+          {/* Shared login (Settings → Logins): change its password once for
+              every host that uses it. */}
+          {protocol === 'ssh' && passwordAuth && loginProfiles.length > 0 && (
+            <div>
+              <label className="block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-secondary)] mb-1.5">
+                Login
+              </label>
+              <select value={loginChoice} onChange={(e) => setLoginChoice(e.target.value)} className={inputCls}>
+                <option value="">
+                  {targetFolder
+                    ? `Folder default (${folderLogin ? folderLogin.name : 'none set'})`
+                    : 'No shared login'}
+                </option>
+                {loginProfiles.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name} — {p.username}
+                  </option>
+                ))}
+                <option value={PER_HOST_PASSWORD}>Per-host password</option>
+              </select>
+              <p className="text-[10px] text-[var(--text-muted)] mt-1">
+                {login
+                  ? `Uses the password saved for the ${login.name} login.`
+                  : 'Uses a password saved for this host, or asks when you connect.'}
+              </p>
             </div>
           )}
 
@@ -725,19 +827,45 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
                     <input
                       value={jumpUsername}
                       onChange={(e) => setJumpUsername(e.target.value)}
-                      placeholder="Jump username"
+                      placeholder={
+                        loginProfiles.find((p) => p.id === jumpLogin)?.username ?? 'Jump username'
+                      }
                       className="input-field h-8 px-2 text-xs"
                     />
+                    <select
+                      value={jumpLogin}
+                      onChange={(e) => setJumpLogin(e.target.value)}
+                      className="input-field h-8 px-2 text-xs"
+                      title="How to log in to the jump host"
+                    >
+                      <option value={PER_HOST_PASSWORD}>Password</option>
+                      <option value="">Key / SSH agent</option>
+                      {loginProfiles.map((p) => (
+                        <option key={p.id} value={p.id}>
+                          Login: {p.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  {jumpLogin === PER_HOST_PASSWORD && (
                     <input
                       type="password"
                       value={jumpPassword}
                       onChange={(e) => setJumpPassword(e.target.value)}
-                      placeholder="Jump password"
-                      className="input-field h-8 px-2 text-xs"
+                      placeholder={
+                        editing ? 'Jump password (leave blank to keep the saved one)' : 'Jump password'
+                      }
+                      className="input-field w-full h-8 px-2 text-xs"
                     />
-                  </div>
+                  )}
                   <p className="text-[10px] text-[var(--text-muted)]">
-                    Connect to the target through this bastion (ProxyJump). Password auth.
+                    Connect to the target through this bastion (ProxyJump).{' '}
+                    {jumpLogin === PER_HOST_PASSWORD
+                      ? 'Saved hosts keep the password in the encrypted vault.'
+                      : jumpLogin
+                        ? 'Uses the shared login\u2019s saved password.'
+                        : 'Logs in with your key or SSH agent.'}{' '}
+                    Bastions that ask for a one-time code (MFA) aren&apos;t supported yet.
                   </p>
                 </div>
               )}
