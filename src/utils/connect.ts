@@ -37,6 +37,27 @@ export function sshCredentialKey(
   return `cred:${config.host ?? ''}:${config.port ?? 22}:${config.username ?? ''}`;
 }
 
+/** True when a failed `connect` was rejected on CREDENTIALS (so asking for a
+ *  password / key again can help), as opposed to the host being unreachable,
+ *  a host-key mismatch, a timeout, a refused PTY, … where the password dialog
+ *  only hides the real error. Matches the backend's AppError strings. */
+export function isAuthFailure(error: string): boolean {
+  return /Auth Error:|Auth failed|Keyboard-interactive|Key decode|Key UTF-8|private key|passphrase/i.test(
+    error
+  );
+}
+
+/** True when an SSH connect would log in with a password that nobody has
+ *  supplied (not inline, not in the vault). Sending that login anyway is a
+ *  guaranteed failed attempt on the device — it counts toward TACACS/RADIUS
+ *  lockout — so the caller should ask for the password first instead. */
+export function needsPasswordPrompt(
+  config: Pick<ConnectionConfig, 'protocol' | 'authType'>,
+  password: string | undefined,
+): boolean {
+  return config.protocol === 'ssh' && (config.authType ?? 'password') === 'password' && !password;
+}
+
 /** Resolve password auth from the live backend vault state, not React's cached
  *  startup state. This matters immediately after vault_unlock: the backend is
  *  unlocked before React has rendered the updated store value. */

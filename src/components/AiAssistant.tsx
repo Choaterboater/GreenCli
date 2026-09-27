@@ -1114,8 +1114,14 @@ export default function AiAssistant() {
   // might be a local PTY like kimi/claude). Falls back to active if no SSH.
   const activeSession = (() => {
     const active = sessions.find((s) => s.sessionId === activeSessionId);
-    if (active && active.config.protocol !== 'local' && active.connected) return active;
-    // Find any connected SSH session
+    if (active && active.config.protocol !== 'local') {
+      // The active tab is a DEVICE: always target it, even while it is
+      // connecting/reconnecting/down. Falling back to "any connected session"
+      // here ran the AI's commands on a different device than the one on
+      // screen whenever the active tab blipped.
+      return active;
+    }
+    // Active tab is a local shell (kimi/claude PTY) — use a connected device.
     const sshSession = sessions.find(
       (s) => s.config.protocol !== 'local' && s.connected
     );

@@ -176,6 +176,7 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
         // along with the removed session's.
         unseenOutput: state.unseenOutput.filter((id) => id !== sessionId && id !== nextActive),
         activeSessionId: nextActive,
+        showSftp: nextActive != null ? state.showSftp : false,
         // Don't leave a split pane pointing at a destroyed session.
         splitPanes,
         splitView: splitPanes.length > 0 ? state.splitView : false,
@@ -236,6 +237,7 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
       splitView: false,
       poppedSessions: [],
       unseenOutput: [],
+      showSftp: false,
     }),
 
   toggleSidebar: () => set((state) => ({ sidebarVisible: !state.sidebarVisible })),
@@ -252,7 +254,10 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
   setShowVaultUnlock: (show) => set({ showVaultUnlock: show }),
   setVaultUnlocked: (unlocked) => set({ vaultUnlocked: unlocked }),
   setShowBulkRunner: (show) => set({ showBulkRunner: show }),
-  setShowSftp: (show) => set({ showSftp: show }),
+  // SFTP browses the ACTIVE session; "open" with no session rendered nothing
+  // but left the flag set, so the modal popped over the next tab and Ctrl+W /
+  // file drops stayed disabled until then.
+  setShowSftp: (show) => set((state) => ({ showSftp: show && state.activeSessionId != null })),
   setShowTunnels: (show) => set({ showTunnels: show }),
   setShowIntent: (show) => set({ showIntent: show }),
   setShowHelp: (show) => set({ showHelp: show }),

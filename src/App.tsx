@@ -28,6 +28,8 @@ import { useRecentStore, timeAgo, RecentConnection } from './store/recentStore';
 import { armIntentScheduler } from './utils/intentScheduler';
 import {
   buildConnectPayload,
+  isAuthFailure,
+  needsPasswordPrompt,
   resolveSshPassword,
   sshCredentialKey,
 } from './utils/connect';
@@ -195,9 +197,50 @@ function App() {
     invoke('vault_store', { key: pending.key, value: pending.value }).catch(() => {});
   }, []);
 
-  // A connect parked waiting for the vault unlock prompt: kept in a ref so the
-  // unlock completion can resume it (see handleConnect's locked-vault branch).
-  const pendingVaultConnectRef = useRef<ConnectionConfig | null>(null);
+  // Connects parked waiting for the vault unlock prompt: kept in a ref so the
+  // unlock completion can resume them (see handleConnect's locked-vault
+  // branch). A LIST, not one slot: opening a second session before unlocking
+  // used to overwrite the first, stranding its tab on 'connecting' forever
+  // (and handleConnect refuses to restart a 'connecting' tab).
+  const pendingVaultConnectsRef = useRef<ConnectionConfig[]>([]);
+
+  // Sessions waiting for the password dialog while it is already showing for
+  // another session. The dialog is one slot too: a second failed connect used
+  // to swap it to the new host mid-typing (the password typed for A went to
+  // B) and made A's in-flight login look "superseded", tearing it down.
+  const authQueueRef = useRef<ConnectionConfig[]>([]);
+  const showAuthDialog = useSessionStore((s) => s.showAuthDialog);
+
+  const promptForAuth = useCallback(
+    (config: ConnectionConfig) => {
+      const st = useSessionStore.getState();
+      if (st.showAuthDialog && st.pendingConnection && st.pendingConnection.id !== config.id) {
+        if (!authQueueRef.current.some((c) => c.id === config.id)) {
+          authQueueRef.current.push(config);
+        }
+        return;
+      }
+      setPendingConnection(config);
+      setShowAuthDialog(true);
+    },
+    [setPendingConnection, setShowAuthDialog]
+  );
+
+  // When the dialog closes (submitted or dismissed), prompt for the next
+  // queued session that still needs credentials.
+  useEffect(() => {
+    if (showAuthDialog) return;
+    while (authQueueRef.current.length > 0) {
+      const next = authQueueRef.current.shift()!;
+      const s = useSessionStore.getState().sessions.find((x) => x.sessionId === next.id);
+      if (!s || s.connected || s.connectionStatus === 'connecting' || s.connectionStatus === 'reconnecting') {
+        continue;
+      }
+      setPendingConnection(next);
+      setShowAuthDialog(true);
+      break;
+    }
+  }, [showAuthDialog, setPendingConnection, setShowAuthDialog]);
 
   // xterm only refits on window resize, so nudge a resize when the pane layout
   // changes so both terminals size correctly.
@@ -789,6 +832,21 @@ function App() {
       ) {
         return;
       }
+      // Text selected in a panel (AI chat, API responses, Bulk Runner output,
+      // help) lives in a non-focusable element, so focus is on body. Pulling
+      // focus into xterm's textarea on the Ctrl/Cmd keydown dropped that
+      // selection — the Ctrl+C that followed reached xterm with nothing
+      // selected, copied nothing, and sent ^C to the device instead. Leave
+      // modifier keys / chords alone while such a selection exists; plain
+      // typing still returns focus to the terminal.
+      const domSel = window.getSelection();
+      const panelSelection =
+        !!domSel &&
+        !domSel.isCollapsed &&
+        !domSel.anchorNode?.parentElement?.closest('.xterm');
+      const modifierUse =
+        e.ctrlKey || e.metaKey || e.altKey || ['Control', 'Meta', 'Shift', 'Alt'].includes(e.key);
+      if (panelSelection && modifierUse) return;
       const id = st.activeSessionId;
       if (!id || st.poppedSessions.includes(id)) return;
       getTerminalActionAdapter(id)?.focus();
@@ -871,9 +929,15 @@ function App() {
       const existing = useSessionStore.getState().sessions.find((s) => s.sessionId === sessionId);
       const existingStatus =
         existing?.connectionStatus ?? (existing?.connected ? 'connected' : 'disconnected');
+      // A 'connecting' tab with nothing actually in flight (no connect running,
+      // not parked on the vault prompt) is stale — let this click retry it
+      // instead of leaving the user no way out but closing the tab.
+      const inFlight =
+        connectingIdsRef.current.has(sessionId) ||
+        pendingVaultConnectsRef.current.some((c) => c.id === sessionId);
       if (
         existing?.connected ||
-        existingStatus === 'connecting' ||
+        (existingStatus === 'connecting' && inFlight) ||
         existingStatus === 'reconnecting'
       ) {
         useSessionStore.getState().setActiveSession(sessionId);
@@ -911,10 +975,43 @@ function App() {
 
       if (requiresVaultUnlock) {
         connectingIdsRef.current.delete(sessionId);
-        pendingVaultConnectRef.current = fullConfig;
+        if (!pendingVaultConnectsRef.current.some((c) => c.id === sessionId)) {
+          pendingVaultConnectsRef.current.push(fullConfig);
+        }
         setShowVaultUnlock(true);
         return;
       }
+
+      // No password anywhere (not inline, not saved in the vault): ask for it
+      // BEFORE touching the device. Connecting anyway just sent an empty
+      // password (plus a keyboard-interactive round) that was certain to fail
+      // — a failed login per tab opened, which counts toward TACACS/RADIUS
+      // lockout. The dialog still accepts an empty password for gear that has
+      // none.
+      if (needsPasswordPrompt(fullConfig, password)) {
+        connectingIdsRef.current.delete(sessionId);
+        useSessionStore.getState().updateSessionConnection(sessionId, false, 'disconnected');
+        promptForAuth(fullConfig);
+        return;
+      }
+
+      // Shared failure path: ask for credentials again only when the device
+      // actually rejected them. Unreachable hosts, host-key mismatches,
+      // timeouts and telnet (whose login happens in the terminal itself —
+      // the dialog's password was never even sent) get a real error instead
+      // of a password prompt that hides what went wrong.
+      const reportFailure = (error: string) => {
+        const stillOpen = useSessionStore
+          .getState()
+          .sessions.some((s) => s.sessionId === sessionId);
+        if (!stillOpen) return;
+        useSessionStore.getState().updateSessionConnection(sessionId, false, 'disconnected');
+        if (fullConfig.protocol === 'ssh' && isAuthFailure(error)) {
+          promptForAuth(fullConfig);
+        } else {
+          notify.error(`Could not connect to ${fullConfig.name || fullConfig.host || fullConfig.protocol}`, error);
+        }
+      };
 
       try {
         const settingsState = useSettingsStore.getState();
@@ -929,24 +1026,8 @@ function App() {
           ),
         });
 
-        // The SSH auth dialog only makes sense for credential-based protocols.
-        const authBased = fullConfig.protocol === 'ssh' || fullConfig.protocol === 'telnet';
         if (!result.success) {
-          const stillOpen = useSessionStore
-            .getState()
-            .sessions.some((s) => s.sessionId === sessionId);
-          if (!stillOpen) return;
-          useSessionStore.getState().updateSessionConnection(sessionId, false);
-          if (authBased) {
-            setPendingConnection(fullConfig);
-            setShowAuthDialog(true);
-          } else {
-            // local/serial: no auth to retry — surface the failure.
-            notify.error(
-              `Could not start ${fullConfig.name || fullConfig.protocol}`,
-              result.error || 'The connection failed to start.'
-            );
-          }
+          reportFailure(result.error || 'The connection failed to start.');
         } else {
           // The user may have closed the tab while connect was awaiting — if the
           // session is gone, tear the orphaned backend connection down.
@@ -971,26 +1052,12 @@ function App() {
         }
       } catch (err) {
         console.error('Connection error:', err);
-        // For local/serial there's no auth to retry — surface the failure.
-        const stillOpen = useSessionStore
-          .getState()
-          .sessions.some((s) => s.sessionId === sessionId);
-        if (!stillOpen) return;
-        useSessionStore.getState().updateSessionConnection(sessionId, false);
-        if (fullConfig.protocol === 'ssh' || fullConfig.protocol === 'telnet') {
-          setPendingConnection(fullConfig);
-          setShowAuthDialog(true);
-        } else {
-          notify.error(
-            `Could not start ${fullConfig.name || fullConfig.protocol}`,
-            String(err)
-          );
-        }
+        reportFailure(String(err));
       } finally {
         connectingIdsRef.current.delete(sessionId);
       }
     },
-    [addSession, setPendingConnection, setShowAuthDialog, setShowVaultUnlock, recordRecent]
+    [addSession, promptForAuth, setShowVaultUnlock, recordRecent]
   );
 
   // Vault unlocked: flush any deferred credential SAVE, then resume the parked
@@ -998,21 +1065,22 @@ function App() {
   // the saved password, so this is safe before React renders vaultUnlocked=true.
   const resumeVaultConnect = useCallback(() => {
     flushPendingCredSave();
-    const cfg = pendingVaultConnectRef.current;
-    pendingVaultConnectRef.current = null;
-    if (!cfg) return;
-    // handleConnect parked this AFTER registering the tab (status 'connecting',
-    // id in connectingIdsRef, both cleared when it parked) — restore a clean
-    // disconnected tab so the retry starts fresh.
-    useSessionStore.getState().updateSessionConnection(cfg.id, false, 'disconnected');
-    handleConnect(cfg);
+    const parked = pendingVaultConnectsRef.current;
+    pendingVaultConnectsRef.current = [];
+    for (const cfg of parked) {
+      // handleConnect parked this AFTER registering the tab (status
+      // 'connecting', id in connectingIdsRef, cleared when it parked) —
+      // restore a clean disconnected tab so the retry starts fresh.
+      useSessionStore.getState().updateSessionConnection(cfg.id, false, 'disconnected');
+      void handleConnect(cfg);
+    }
   }, [flushPendingCredSave, handleConnect]);
 
-  // Vault prompt dismissed: drop the parked connect and un-stick its tab.
+  // Vault prompt dismissed: drop the parked connects and un-stick their tabs.
   const cancelVaultConnect = useCallback(() => {
-    const cfg = pendingVaultConnectRef.current;
-    pendingVaultConnectRef.current = null;
-    if (cfg) {
+    const parked = pendingVaultConnectsRef.current;
+    pendingVaultConnectsRef.current = [];
+    for (const cfg of parked) {
       useSessionStore.getState().updateSessionConnection(cfg.id, false, 'disconnected');
     }
   }, []);
@@ -1118,17 +1186,15 @@ function App() {
             }
           ),
         });
-        const currentState = useSessionStore.getState();
-        const stillOpen = currentState.sessions.some((s) => s.sessionId === pending.id);
-        const stillCurrentAuth = currentState.pendingConnection?.id === pending.id;
-        if (!stillOpen || !stillCurrentAuth) {
+        // Only a CLOSED tab abandons the attempt. This used to also bail when
+        // the dialog had since moved on to another session — so another
+        // tab's failed connect tore down this tab's successful login.
+        const stillOpen = useSessionStore
+          .getState()
+          .sessions.some((s) => s.sessionId === pending.id);
+        if (!stillOpen) {
           if (result.success) {
             invoke('disconnect', { sessionId: pending.id }).catch(() => {});
-          }
-          // A still-open tab must not stay stuck on 'connecting' after we
-          // abandoned (and disconnected) this superseded attempt.
-          if (stillOpen) {
-            useSessionStore.getState().updateSessionConnection(pending.id, false, 'disconnected');
           }
           return;
         }
@@ -1136,7 +1202,8 @@ function App() {
         if (result.success) {
           useSessionStore.getState().updateSessionConnection(pending.id, true);
           recordRecent(pending);
-          setShowAuthDialog(false);
+          // (The dialog already closed on submit; closing it here would dismiss
+          // a prompt that has since opened for the NEXT queued session.)
           toastHostKeyWarning(result.warning);
 
           // Run per-host startup commands here too — this is the common SSH path
@@ -1156,29 +1223,34 @@ function App() {
             }
           }
         } else {
-          useSessionStore.getState().updateSessionConnection(pending.id, false);
-          setPendingConnection(pending);
-          setShowAuthDialog(true);
+          useSessionStore.getState().updateSessionConnection(pending.id, false, 'disconnected');
           notify.error(
             'Authentication failed',
             result.error || 'The device rejected the supplied credentials.'
           );
+          promptForAuth(pending);
         }
       } catch (err) {
         console.error('Auth connection error:', err);
-        useSessionStore.getState().updateSessionConnection(pending.id, false);
-        const currentState = useSessionStore.getState();
-        const stillOpen = currentState.sessions.some((s) => s.sessionId === pending.id);
-        const stillCurrentAuth = currentState.pendingConnection?.id === pending.id;
-        if (!stillOpen || !stillCurrentAuth) return;
-        setPendingConnection(pending);
-        setShowAuthDialog(true);
-        notify.error('Authentication failed', String(err));
+        const error = String(err);
+        const stillOpen = useSessionStore
+          .getState()
+          .sessions.some((s) => s.sessionId === pending.id);
+        if (!stillOpen) return;
+        useSessionStore.getState().updateSessionConnection(pending.id, false, 'disconnected');
+        if (isAuthFailure(error)) {
+          notify.error('Authentication failed', error);
+          promptForAuth(pending);
+        } else {
+          // Unreachable / timed out / host key: re-asking for the password
+          // can't help — show why, and leave the tab's Reconnect button.
+          notify.error(`Could not connect to ${pending.name || pending.host || 'session'}`, error);
+        }
       } finally {
         connectingIdsRef.current.delete(pending.id);
       }
     },
-    [setPendingConnection, setShowAuthDialog, vaultUnlocked, setShowVaultUnlock, recordRecent]
+    [promptForAuth, vaultUnlocked, setShowVaultUnlock, recordRecent]
   );
 
   return (
@@ -1716,7 +1788,9 @@ function App() {
       {/* Modals & Overlays */}
       <BulkRunner />
       {showSftp && activeSessionId && (
-        <SftpBrowser sessionId={activeSessionId} onClose={() => setShowSftp(false)} />
+        // Keyed by session: switching tabs while it is open must not leave the
+        // old session's listing/cwd on screen while actions hit the new one.
+        <SftpBrowser key={activeSessionId} sessionId={activeSessionId} onClose={() => setShowSftp(false)} />
       )}
       <VaultUnlock onUnlocked={resumeVaultConnect} onCancel={cancelVaultConnect} />
       <CommandPalette onConnect={handleConnect} onLocalShell={openLocalShell} onConnectRecent={connectRecent} />

@@ -103,7 +103,15 @@ function semanticLinksForLine(term: XTerm, bufferLineNumber: number): ILink[] | 
           end: { x: endIndex, y: bufferLineNumber },
         },
         decorations: { pointerCursor: true, underline: true },
-        activate: () => {
+        activate: (event) => {
+          // xterm activates a link on ANY mouseup over it — a plain click to
+          // focus the pane or clear a selection, or a right-click — and IPs /
+          // interfaces / paths are everywhere in device output, so a plain
+          // click silently replaced whatever the user had just copied (and a
+          // right-click "paste" on Windows could paste the IP instead).
+          // Require Ctrl+click (Cmd+click on macOS), like VS Code / iTerm2.
+          const modifier = isMac ? event.metaKey : event.ctrlKey;
+          if (event.button !== 0 || !modifier) return;
           copyText(text).then((ok) =>
             ok ? notify.info(`Copied ${kind}`, text) : notify.warning('Copy failed', text)
           );
@@ -586,12 +594,19 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
 
     // Copy-on-select (PuTTY-style), gated on the live setting: copy when a
     // mouse selection gesture ends with text selected. Silent on failure —
-    // toasting every drag would be noise.
+    // toasting every drag would be noise. The mouseup is caught on the
+    // DOCUMENT: a drag that starts in the terminal but is released outside it
+    // (past the edge, over a panel) never fires mouseup on the container, so
+    // those selections were silently never copied.
     const handleCopyOnSelect = () => {
       if (!useSettingsStore.getState().copyOnSelect) return;
       if (term.hasSelection()) void copyText(term.getSelection());
     };
-    containerRef.current.addEventListener('mouseup', handleCopyOnSelect);
+    const armCopyOnSelect = (e: MouseEvent) => {
+      if (e.button !== 0) return;
+      document.addEventListener('mouseup', handleCopyOnSelect, { once: true });
+    };
+    containerRef.current.addEventListener('mousedown', armCopyOnSelect);
 
     // Middle-click paste (X11 / SecureCRT muscle memory, W2-12): opt-in
     // setting, off by default. Goes through pasteFromClipboard → guardedPaste,
@@ -729,7 +744,8 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
       zoomEl.removeEventListener('mousedown', resetKbSelection);
       zoomEl.removeEventListener('mousedown', restoreTermFocus);
       zoomEl.removeEventListener('contextmenu', handleContextMenu);
-      zoomEl.removeEventListener('mouseup', handleCopyOnSelect);
+      zoomEl.removeEventListener('mousedown', armCopyOnSelect);
+      document.removeEventListener('mouseup', handleCopyOnSelect);
       zoomEl.removeEventListener('mousedown', handleMiddleClickPaste);
       ctxActionsRef.current = null;
       setCtxMenu(null);

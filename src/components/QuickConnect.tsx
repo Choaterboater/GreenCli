@@ -189,7 +189,14 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
         }
       }
 
-      await onConnect(config);
+      // Don't wait for the connect itself: handleConnect opens the tab (with
+      // its own connecting spinner) synchronously and reports failures via
+      // toast / the auth prompt. Awaiting it kept this dialog on a disabled
+      // "Connecting…" button for as long as a slow or unreachable host took —
+      // and since this component stays mounted, reopening Quick Connect for
+      // the NEXT session showed "Connecting…" too, then wiped the new form
+      // when the old connect finally finished.
+      void onConnect(config);
       setShowQuickConnect(false);
       resetForm();
     } catch (err) {

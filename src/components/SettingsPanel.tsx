@@ -656,7 +656,7 @@ export default function SettingsPanel() {
                   onChange: (value: boolean) => settings.updateSettings({ copyOnSelect: value }),
                 },
                 {
-                  label: 'Smart Click-to-Copy Links',
+                  label: `Smart Links (${navigator.platform.toUpperCase().includes('MAC') ? 'Cmd' : 'Ctrl'}+Click to Copy)`,
                   value: settings.smartTerminalLinks,
                   onChange: (value: boolean) => settings.updateSettings({ smartTerminalLinks: value }),
                 },

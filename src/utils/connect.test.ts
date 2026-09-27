@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { buildConnectPayload, resolveSshPassword, sshCredentialKey } from './connect';
+import {
+  buildConnectPayload,
+  isAuthFailure,
+  needsPasswordPrompt,
+  resolveSshPassword,
+  sshCredentialKey,
+} from './connect';
 import { ConnectionConfig } from '../types';
 
 const BEHAVIOR = { keepAliveInterval: 30, autoReconnect: true };
@@ -179,5 +185,50 @@ describe('resolveSshPassword', () => {
     const resumed = await resolveSshPassword({ ...baseConfig, authType: 'password' }, vault);
     expect(resumed).toEqual({ password: 'saved-password', requiresVaultUnlock: false });
     expect(retrieveCalls).toBe(1);
+  });
+});
+
+describe('isAuthFailure', () => {
+  // Real backend error strings (AppError Display + ssh/client.rs messages).
+  it('treats rejected credentials as auth failures (re-prompt helps)', () => {
+    for (const err of [
+      'Auth Error: Password / keyboard-interactive authentication failed',
+      'Auth Error: Public key authentication failed',
+      'Auth Error: ssh-agent has no keys loaded (run `ssh-add`)',
+      'SSH Error: Auth failed: Disconnected',
+      'SSH Error: Key auth failed: Wrong key',
+      'SSH Error: Keyboard-interactive respond: SendError',
+      'SSH Error: Key decode: Crypto',
+      "Could not read SSH private key file '/tmp/id': No such file or directory",
+    ]) {
+      expect(isAuthFailure(err), err).toBe(true);
+    }
+  });
+
+  it('does not re-prompt for reachability, host-key, timeout or shell errors', () => {
+    for (const err of [
+      'SSH Error: Connection failed: Connection refused (os error 111)',
+      'SSH Error: Connection failed: Unknown server key — Host key MISMATCH (manage saved host keys in Settings → Known Hosts)',
+      'SSH Error: Timed out after 60s connecting to 10.0.0.1:22 (no answer, or the SSH login never finished)',
+      'SSH Error: The server refused a PTY (the account or device may not allow an interactive shell)',
+      'Telnet Error: Connect: timed out connecting to 10.0.0.1:23',
+    ]) {
+      expect(isAuthFailure(err), err).toBe(false);
+    }
+  });
+});
+
+describe('needsPasswordPrompt', () => {
+  it('asks first when SSH password auth has no password (no doomed empty login)', () => {
+    expect(needsPasswordPrompt({ protocol: 'ssh', authType: 'password' }, undefined)).toBe(true);
+    expect(needsPasswordPrompt({ protocol: 'ssh', authType: undefined }, '')).toBe(true);
+  });
+
+  it('connects straight away when a password, key, agent, or non-SSH protocol is in play', () => {
+    expect(needsPasswordPrompt({ protocol: 'ssh', authType: 'password' }, 'secret')).toBe(false);
+    expect(needsPasswordPrompt({ protocol: 'ssh', authType: 'key' }, undefined)).toBe(false);
+    expect(needsPasswordPrompt({ protocol: 'ssh', authType: 'agent' }, undefined)).toBe(false);
+    expect(needsPasswordPrompt({ protocol: 'telnet', authType: undefined }, undefined)).toBe(false);
+    expect(needsPasswordPrompt({ protocol: 'local', authType: undefined }, undefined)).toBe(false);
   });
 });

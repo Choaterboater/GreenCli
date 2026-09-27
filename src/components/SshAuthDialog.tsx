@@ -46,6 +46,14 @@ export default function SshAuthDialog({ onAuthenticate }: SshAuthDialogProps) {
     setShowAuthDialog(false);
   };
 
+  // A different host's prompt must never inherit what was typed for the last
+  // one (a password typed for A must not be sent to — or saved for — B).
+  const pendingId = pendingConnection?.id;
+  useEffect(() => {
+    resetForm();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingId]);
+
   // Close on Escape, matching every other modal in the app.
   useEffect(() => {
     if (!showAuthDialog) return;

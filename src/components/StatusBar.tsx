@@ -53,9 +53,19 @@ export default function StatusBar({ onReconnect, onDisconnect, onMapDevice }: St
       setLogging(false);
       return;
     }
+    // Ignore a late reply for the tab we already switched away from — it
+    // would show the wrong REC state (and the toggle would act on it).
+    let cancelled = false;
     invoke<boolean>('is_session_logging', { sessionId: activeSessionId })
-      .then(setLogging)
-      .catch(() => setLogging(false));
+      .then((on) => {
+        if (!cancelled) setLogging(on);
+      })
+      .catch(() => {
+        if (!cancelled) setLogging(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [activeSessionId]);
 
   const toggleLog = async () => {
