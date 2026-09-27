@@ -254,8 +254,11 @@ live compliance:
 - **Output triggers** (Settings → **Backup** → Output triggers): toast + optional beep when a
   keyword/regex appears in any terminal. Regexes are validated when you add them and
   match across output chunks.
-- **SSH config & host keys** (Settings → **Terminal** → SSH & Host Keys): import hosts from
-  `~/.ssh/config`; view / forget / re-trust known-host fingerprints.
+- **Import hosts** (sidebar download icon, command palette, or Settings → **Terminal** → Host
+  Import & SSH Host Keys): bring saved hosts in from a CSV file, SecureCRT (its `Sessions` folder
+  or an XML export), Aruba Central, Juniper Mist or `~/.ssh/config`. Every source shows a preview;
+  hosts already saved (same host, port and user) are skipped and passwords are never imported.
+- **Host keys** (same Settings section): view / forget / re-trust known-host fingerprints.
 - **Tunnels** (header **Tools** menu): local (`-L`) and dynamic SOCKS5 (`-D`) forwards over any SSH
   session. Stopping a tunnel (or disconnecting the session) tears down its connections.
 - **SFTP**: browse/upload/download/mkdir/rename/delete on an SSH session. Uploads

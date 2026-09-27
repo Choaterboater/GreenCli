@@ -9,6 +9,7 @@ mod error;
 mod intent;
 mod local;
 mod mcp;
+mod securecrt;
 mod serial;
 mod session;
 mod session_log;
@@ -1180,22 +1181,12 @@ async fn delete_folder(id: String, state: State<'_, AppState>) -> Result<(), Str
 
 #[tauri::command]
 async fn create_folder(name: String, state: State<'_, AppState>) -> Result<String, String> {
-    let folder_id = format!(
-        "folder-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|e| e.to_string())?
-            .as_millis()
-    );
-    let folder = SessionFolder {
-        id: folder_id.clone(),
-        name,
-        items: vec![],
-        expanded: true,
-    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_millis();
     let mut store = state.session_store.lock().await;
-    store.add_folder(folder).map_err(|e| e.to_string())?;
-    Ok(folder_id)
+    store.create_folder(name, now).map_err(|e| e.to_string())
 }
 
 // ─── Vault Commands ───
@@ -1719,6 +1710,25 @@ fn import_ssh_config(
     let content =
         std::fs::read_to_string(&p).map_err(|e| format!("Read {}: {}", p.display(), e))?;
     Ok(crate::ssh::ssh_config::parse(&content))
+}
+
+/// Read the session .ini files under a SecureCRT Sessions folder (the
+/// frontend parses them). Async + blocking pool: a few thousand files must
+/// not freeze the window.
+#[tauri::command]
+async fn read_securecrt_sessions(path: String) -> Result<securecrt::SessionScan, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        securecrt::read_sessions_dir(std::path::Path::new(&path))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// SecureCRT's default Sessions folder on this machine, if it exists — the
+/// folder picker starts there.
+#[tauri::command]
+fn securecrt_default_dir() -> Option<String> {
+    securecrt::default_sessions_dir().map(|p| p.to_string_lossy().into_owned())
 }
 
 // ─── Network intent / desired-state ───
@@ -2683,6 +2693,8 @@ fn main() {
             list_known_hosts,
             remove_known_host,
             import_ssh_config,
+            read_securecrt_sessions,
+            securecrt_default_dir,
             ssh_start_forward,
             ssh_stop_forward,
             ssh_list_forwards,

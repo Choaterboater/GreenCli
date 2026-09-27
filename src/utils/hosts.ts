@@ -1,5 +1,5 @@
 // Pure helpers for typing, showing and de-duplicating saved hosts — shared by
-// Quick Connect, the sidebar and the ~/.ssh/config import.
+// Quick Connect, the sidebar and host import.
 
 import { ConnectionConfig, DeviceType } from '../types';
 

@@ -146,6 +146,7 @@ export default function HelpPanel() {
       case 'open-api': useSessionStore.getState().setShowApiExplorer(true); break;
       case 'open-intent': useSessionStore.getState().setShowIntent(true); break;
       case 'open-tunnels': useSessionStore.getState().setShowTunnels(true); break;
+      case 'open-import': useSessionStore.getState().openImportHosts(); break;
     }
   };
 

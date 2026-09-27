@@ -14,6 +14,7 @@ import {
   Keyboard,
   LifeBuoy,
   TerminalSquare,
+  Download,
   type LucideIcon,
 } from 'lucide-react';
 import { isMac, platform, shortcutLabel, type ShortcutId } from '../utils/shortcuts';
@@ -37,7 +38,8 @@ export type HelpActionId =
   | 'open-ai'
   | 'open-api'
   | 'open-intent'
-  | 'open-tunnels';
+  | 'open-tunnels'
+  | 'open-import';
 
 export interface HelpBlock {
   kind: 'p' | 'steps' | 'bullets' | 'code' | 'note';
@@ -102,6 +104,27 @@ export const HELP_TOPICS: HelpTopic[] = [
       },
     ],
     action: { label: 'Open Quick Connect', id: 'open-quick-connect' },
+  },
+  {
+    id: 'import',
+    title: 'Importing hosts',
+    icon: Download,
+    summary: 'Bring saved hosts in from a CSV file, SecureCRT, Aruba Central, Juniper Mist or ~/.ssh/config.',
+    keywords: ['import', 'csv', 'securecrt', 'migrate', 'central', 'mist', 'inventory', 'ssh config', 'bulk', 'sessions', 'folders'],
+    blocks: [
+      { kind: 'p', text: 'Open **Import hosts** from the sidebar (download icon), the command palette, or Settings → Terminal. Every source shows a preview first: hosts you already have (same host, port and user) are greyed out, and nothing is saved until you press **Import**.' },
+      {
+        kind: 'bullets',
+        items: [
+          '**CSV**: columns `name, host, port, user, type, folder, tags, jump` (only `host` is required; tags separated by `;`). **Download template CSV** gives you a starting file.',
+          '**SecureCRT**: choose the **Sessions** folder — macOS `~/Library/Application Support/VanDyke/SecureCRT/Config/Sessions`, Windows `%APPDATA%\\VanDyke\\Config\\Sessions`. SSH, Telnet and Serial sessions come across with their folders. An XML export (File ▸ Export Settings) works too.',
+          '**Aruba Central** / **Juniper Mist**: loads devices with an IP address from the account set up in Settings → Cloud; the site becomes the folder.',
+          '**Folders**: keep the source folders, or put everything in one folder. Existing folders with the same name are reused.',
+        ],
+      },
+      { kind: 'note', text: 'Passwords are never imported. SecureCRT firewall / jump settings aren\'t either — add a jump host with **Edit…** after importing.' },
+    ],
+    action: { label: 'Import hosts', id: 'open-import' },
   },
   {
     id: 'vault',
