@@ -1,6 +1,15 @@
 import { create } from 'zustand';
 import { ConnectionConfig, Session, SessionFolder } from '../types';
 
+/** Quick Connect opened with something already filled in. */
+export interface QuickConnectDraft {
+  /** A saved host being edited: Save writes it back under the same id instead
+   *  of connecting. */
+  editing?: { config: ConnectionConfig; folderId: string };
+  /** Start with "Save to Sidebar" ticked (the sidebar's "Add a host"). */
+  save?: boolean;
+}
+
 interface SessionState {
   // Active sessions (tabs)
   sessions: Session[];
@@ -16,6 +25,7 @@ interface SessionState {
   showSettings: boolean;
   showSearch: boolean;
   showQuickConnect: boolean;
+  quickConnectDraft: QuickConnectDraft | null;
   showApiExplorer: boolean;
   showAiAssistant: boolean;
   broadcastMode: boolean;
@@ -61,6 +71,7 @@ interface SessionState {
   setShowSettings: (show: boolean) => void;
   setShowSearch: (show: boolean) => void;
   setShowQuickConnect: (show: boolean) => void;
+  openQuickConnect: (draft?: QuickConnectDraft) => void;
   setShowApiExplorer: (show: boolean) => void;
   setShowAiAssistant: (show: boolean) => void;
   setShowCommandPalette: (show: boolean) => void;
@@ -113,6 +124,7 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
   showSettings: false,
   showSearch: false,
   showQuickConnect: false,
+  quickConnectDraft: null,
   showApiExplorer: false,
   showAiAssistant: false,
   showConfigEditor: false,
@@ -245,7 +257,10 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
   setPendingConnection: (config) => set({ pendingConnection: config }),
   setShowSettings: (show) => set({ showSettings: show }),
   setShowSearch: (show) => set({ showSearch: show }),
-  setShowQuickConnect: (show) => set({ showQuickConnect: show }),
+  // Plain open/close carries no prefill — a draft left over from an earlier
+  // "Edit…" must not turn the next Quick Connect into an edit.
+  setShowQuickConnect: (show) => set({ showQuickConnect: show, quickConnectDraft: null }),
+  openQuickConnect: (draft) => set({ showQuickConnect: true, quickConnectDraft: draft ?? null }),
   setShowApiExplorer: (show) => set({ showApiExplorer: show }),
   setShowAiAssistant: (show) => set({ showAiAssistant: show }),
   setShowCommandPalette: (show) => set({ showCommandPalette: show }),

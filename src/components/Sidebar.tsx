@@ -21,6 +21,9 @@ import {
   Bot,
   Check,
   Settings2,
+  Pencil,
+  Download,
+  Loader2,
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/tauri';
 import { useSessionStore } from '../store/sessionStore';
@@ -30,6 +33,8 @@ import { ConnectionConfig, deviceMeta, vendorColor } from '../types';
 import { fuzzyMatch } from '../utils';
 import { askPrompt, askConfirm } from '../store/dialogStore';
 import { notify } from '../store/toastStore';
+import { hostSummary } from '../utils/hosts';
+import { importSshHosts, importSummary, scanSshConfig } from '../utils/sshImport';
 
 const LUCIDE: Record<string, typeof Monitor> = {
   Network,
@@ -61,6 +66,7 @@ export default function Sidebar({ onConnect }: SidebarProps) {
   const removeFolder = useSessionStore((s) => s.removeFolder);
   const removeSessionFromFolder = useSessionStore((s) => s.removeSessionFromFolder);
   const moveSessionToFolder = useSessionStore((s) => s.moveSessionToFolder);
+  const openQuickConnect = useSessionStore((s) => s.openQuickConnect);
   const aiAgents = useSettingsStore((s) => s.aiAgents) ?? [];
   const sessionAgents = useSettingsStore((s) => s.sessionAgents) ?? {};
   const setSessionAgent = useSettingsStore((s) => s.setSessionAgent);
@@ -87,6 +93,7 @@ export default function Sidebar({ onConnect }: SidebarProps) {
   const [agentMenu, setAgentMenu] = useState<{ x: number; y: number; sessionId: string } | null>(null);
   // Folder currently hovered while dragging a session (for the drop highlight).
   const [dragOverFolder, setDragOverFolder] = useState<string | null>(null);
+  const [importing, setImporting] = useState(false);
 
   // Move a saved session into another folder (drag-and-drop) + persist.
   const handleMoveSession = (sessionId: string, fromFolderId: string, toFolderId: string) => {
@@ -104,7 +111,41 @@ export default function Sidebar({ onConnect }: SidebarProps) {
   const q = query.trim();
   // Fuzzy match across name / host / user / tags (cencli-style, ignores -_ and case).
   const matches = (s: ConnectionConfig) =>
-    !q || fuzzyMatch(q, `${s.name} ${s.host ?? ''} ${s.username ?? ''} ${(s.tags ?? []).join(' ')}`);
+    !q ||
+    fuzzyMatch(q, `${s.name} ${s.host ?? ''} ${s.username ?? ''} ${s.serialPort ?? ''} ${(s.tags ?? []).join(' ')}`);
+  const savedCount = folders.reduce((n, f) => n + f.items.length, 0);
+  // What Enter in the search box connects to: the first host shown.
+  const topMatch = q ? folders.flatMap((f) => f.items).find(matches) : undefined;
+
+  const handleSearchKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter' && topMatch) {
+      e.preventDefault();
+      onConnect(topMatch);
+    } else if (e.key === 'Escape' && query) {
+      // Clear the filter first; a second Esc goes on to the app as usual.
+      e.preventDefault();
+      e.stopPropagation();
+      setQuery('');
+    }
+  };
+
+  // One-click import for an empty sidebar (Settings keeps the pick-and-choose
+  // version). Already-saved hosts are skipped inside importSshHosts.
+  const importFromSshConfig = async () => {
+    setImporting(true);
+    try {
+      const hosts = await scanSshConfig();
+      if (hosts.length === 0) {
+        notify.info('No hosts found in ~/.ssh/config');
+        return;
+      }
+      notify.success('Imported from SSH config', importSummary(await importSshHosts(hosts)));
+    } catch (e) {
+      notify.error('Could not read ~/.ssh/config', String(e));
+    } finally {
+      setImporting(false);
+    }
+  };
 
   // ── Folder actions (persisted to backend) ──
   const handleAddFolder = async () => {
@@ -156,7 +197,17 @@ export default function Sidebar({ onConnect }: SidebarProps) {
     if (item) onConnect(item);
   };
 
-  const handleCtxEdit = async () => {
+  // Change address / user / port / jump host etc. in place — Quick Connect
+  // saves it back under the same id instead of connecting.
+  const handleCtxEditHost = () => {
+    const item = ctxItem();
+    const ctx = contextMenu;
+    setContextMenu(null);
+    if (!item || !ctx) return;
+    openQuickConnect({ editing: { config: item, folderId: ctx.folderId } });
+  };
+
+  const handleCtxRename = async () => {
     const item = ctxItem();
     const ctx = contextMenu;
     setContextMenu(null);
@@ -278,7 +329,9 @@ export default function Sidebar({ onConnect }: SidebarProps) {
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={handleSearchKey}
             placeholder="Search hosts…"
+            title="Enter connects to the top match · Esc clears"
             className="input-field w-full h-8 pl-8 pr-2 text-[12px]"
           />
         </div>
@@ -369,11 +422,12 @@ export default function Sidebar({ onConnect }: SidebarProps) {
               {/* Items */}
               {expanded && (
                 <div className="ml-3.5 border-l border-[var(--border)] pl-1.5">
-                  {visibleItems.length === 0 && (
+                  {visibleItems.length === 0 && savedCount > 0 && (
                     <div className="px-2 py-1.5 text-[11px] text-[var(--text-muted)]">No sessions</div>
                   )}
                   {visibleItems.map((session) => {
                     const isConnected = connectedIds.has(session.id);
+                    const summary = hostSummary(session);
                     return (
                       <div
                         key={session.id}
@@ -388,7 +442,9 @@ export default function Sidebar({ onConnect }: SidebarProps) {
                         onDragEnd={() => setDragOverFolder(null)}
                         onContextMenu={(e) => handleContextMenu(e, session.id, folder.id)}
                         onDoubleClick={() => onConnect(session)}
-                        className="group flex items-center gap-2 px-2 py-1.5 rounded-md cursor-pointer hover:bg-[var(--bg-tertiary)] transition-colors"
+                        className={`group flex items-center gap-2 px-2 py-1.5 rounded-md cursor-pointer hover:bg-[var(--bg-tertiary)] transition-colors ${
+                          topMatch?.id === session.id ? 'bg-[var(--bg-tertiary)]' : ''
+                        }`}
                         title={`${deviceMeta(session.deviceType).label} · drag to a folder · double-click to connect`}
                       >
                         <DeviceIcon deviceType={session.deviceType} />
@@ -396,6 +452,12 @@ export default function Sidebar({ onConnect }: SidebarProps) {
                           <span className="block text-[13px] text-[var(--text-secondary)] group-hover:text-[var(--text-primary)] truncate">
                             {session.name}
                           </span>
+                          {/* Where it points, so same-named or renamed hosts can be told apart. */}
+                          {summary && summary !== session.name && (
+                            <span className="block text-[11px] leading-tight text-[var(--text-muted)] truncate">
+                              {summary}
+                            </span>
+                          )}
                           {(session.tags?.length ?? 0) > 0 && (
                             <span className="flex flex-wrap gap-1 mt-0.5">
                               {session.tags!.slice(0, 4).map((t) => (
@@ -461,6 +523,37 @@ export default function Sidebar({ onConnect }: SidebarProps) {
             </div>
           );
         })}
+
+        {q && !topMatch && (
+          <div className="px-3 py-2 text-[11px] text-[var(--text-muted)]">No hosts match “{q}”.</div>
+        )}
+
+        {/* Empty state: the two ways to get hosts in here */}
+        {savedCount === 0 && !q && (
+          <div className="mx-2.5 mt-2 p-3 rounded-[var(--radius)] border border-dashed border-[var(--border)] bg-[var(--bg-inset)]">
+            <p className="text-[12px] font-medium text-[var(--text-primary)]">No saved hosts yet</p>
+            <p className="mt-0.5 text-[11px] text-[var(--text-muted)]">
+              Save the devices you log in to often, then double-click to connect.
+            </p>
+            <div className="mt-2.5 flex flex-col gap-1.5">
+              <button
+                onClick={() => openQuickConnect({ save: true })}
+                className="flex items-center justify-center gap-1.5 h-8 text-[12px] rounded-md bg-[var(--bg-tertiary)] hover:bg-[var(--border-strong)] text-[var(--text-primary)] transition-colors"
+              >
+                <Plus size={13} />
+                Add a host
+              </button>
+              <button
+                onClick={() => void importFromSshConfig()}
+                disabled={importing}
+                className="flex items-center justify-center gap-1.5 h-8 text-[12px] rounded-md bg-[var(--bg-tertiary)] hover:bg-[var(--border-strong)] text-[var(--text-primary)] transition-colors disabled:opacity-50"
+              >
+                {importing ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
+                Import ~/.ssh/config
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Quick Connect */}
@@ -482,7 +575,7 @@ export default function Sidebar({ onConnect }: SidebarProps) {
             className="surface-elevated fixed z-50 min-w-[150px] py-1 animate-scale-in"
             // Clamp so a right/bottom-edge click doesn't render the menu off-screen.
             style={{
-              top: Math.max(4, Math.min(contextMenu.y, window.innerHeight - 220)),
+              top: Math.max(4, Math.min(contextMenu.y, window.innerHeight - 260)),
               left: Math.max(4, Math.min(contextMenu.x, window.innerWidth - 170)),
             }}
           >
@@ -494,7 +587,14 @@ export default function Sidebar({ onConnect }: SidebarProps) {
               Connect
             </button>
             <button
-              onClick={handleCtxEdit}
+              onClick={handleCtxEditHost}
+              className="flex items-center gap-2.5 w-full px-3 py-1.5 text-[13px] text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]"
+            >
+              <Pencil size={14} />
+              Edit…
+            </button>
+            <button
+              onClick={handleCtxRename}
               className="flex items-center gap-2.5 w-full px-3 py-1.5 text-[13px] text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]"
             >
               <Edit3 size={14} />

@@ -139,6 +139,8 @@ export interface TerminalSettings {
   lastUsedDeviceType: DeviceType;
   /** Last selected built-in/custom profile used by Quick Connect. */
   lastUsedDeviceProfileId?: string;
+  /** Last SSH username typed into Quick Connect (prefilled next time). */
+  lastUsedSshUsername?: string;
   /** User-authored device profiles for custom mapping/highlighting workflows. */
   customDeviceProfiles: DeviceProfile[];
   aiModel: string;
@@ -311,6 +313,7 @@ export const DEFAULT_SETTINGS: TerminalSettings = {
   captureOnConnect: false,
   lastUsedDeviceType: 'generic',
   lastUsedDeviceProfileId: 'builtin-generic',
+  lastUsedSshUsername: '',
   customDeviceProfiles: [],
   aiModel: 'claude-sonnet-4-6',
   aiProvider: 'ollama',
