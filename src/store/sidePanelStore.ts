@@ -4,141 +4,144 @@ import { fitSidePanels, TERMINAL_MIN_WIDTH } from '../utils/panelFit';
 
 export type SidePanelKey = 'editor' | 'api' | 'ai';
 
-/** Default width and drag limits for each docked side panel. */
-export const SIDE_PANELS: Record<SidePanelKey, { label: string; width: number; min: number; max: number }> = {
-  editor: { label: 'Config Editor', width: 520, min: 300, max: 900 },
-  api: { label: 'API Explorer', width: 420, min: 200, max: 800 },
-  ai: { label: 'AI Assistant', width: 420, min: 300, max: 800 },
-};
+/** The tabs of the one right-side panel, in tab-strip order. */
+export const SIDE_PANEL_TABS: { key: SidePanelKey; label: string; title: string }[] = [
+  { key: 'editor', label: 'Editor', title: 'Config Editor' },
+  { key: 'api', label: 'API', title: 'API Explorer' },
+  { key: 'ai', label: 'AI', title: 'AI Assistant' },
+];
 
-const KEYS = Object.keys(SIDE_PANELS) as SidePanelKey[];
-const storageKey = (key: SidePanelKey) => `atp-panel-width-${key}`;
+/** Default width and drag limits of the side panel (shared by every tab, so
+ *  switching tabs never makes the terminal jump). */
+export const SIDE_PANEL = { width: 480, min: 300, max: 1000 };
 
-const clampWidth = (key: SidePanelKey, w: number) =>
-  Math.round(Math.max(SIDE_PANELS[key].min, Math.min(SIDE_PANELS[key].max, w)));
+const WIDTH_KEY = 'greencli-side-panel-width';
+const TAB_KEY = 'greencli-side-panel-tab';
+// Widths saved per panel before the panels became tabs of one panel. The
+// first one found seeds the shared width, so an upgrade keeps a dragged size.
+const LEGACY_WIDTH_KEYS = ['atp-panel-width-ai', 'atp-panel-width-editor', 'atp-panel-width-api'];
 
-function loadPreferred(): Record<SidePanelKey, number> {
-  const out = {} as Record<SidePanelKey, number>;
-  for (const key of KEYS) {
-    let w = SIDE_PANELS[key].width;
-    try {
-      const saved = Number(localStorage.getItem(storageKey(key)));
-      if (Number.isFinite(saved) && saved > 0) w = saved;
-    } catch {
-      /* storage unavailable — use the default */
-    }
-    out[key] = clampWidth(key, w);
+const clampWidth = (w: number) => Math.round(Math.max(SIDE_PANEL.min, Math.min(SIDE_PANEL.max, w)));
+
+function readNumber(key: string): number | null {
+  try {
+    const n = Number(localStorage.getItem(key));
+    return Number.isFinite(n) && n > 0 ? n : null;
+  } catch {
+    return null; // storage unavailable
   }
-  return out;
 }
+
+function loadPreferred(): number {
+  for (const key of [WIDTH_KEY, ...LEGACY_WIDTH_KEYS]) {
+    const saved = readNumber(key);
+    if (saved != null) return clampWidth(saved);
+  }
+  return SIDE_PANEL.width;
+}
+
+function loadTab(): SidePanelKey {
+  try {
+    const saved = localStorage.getItem(TAB_KEY);
+    if (SIDE_PANEL_TABS.some((t) => t.key === saved)) return saved as SidePanelKey;
+  } catch {
+    /* storage unavailable — use the default */
+  }
+  return 'ai';
+}
+
+/** Tab status shown on the panel's tab and the activity bar. */
+export type SidePanelStatus = 'busy' | 'dirty';
 
 interface SidePanelState {
-  /** Width the user last dragged each panel to (persisted per panel). */
-  preferred: Record<SidePanelKey, number>;
-  /** Width each panel renders at: its preferred width, shrunk to fit. */
-  fitted: Record<SidePanelKey, number>;
-  /** Showing panels, least recently opened first. */
-  open: SidePanelKey[];
-  /** The subset of `open` docked beside the terminal (same order). */
-  docked: SidePanelKey[];
-  /** Room for docked panels once the terminal has its minimum (Infinity until measured). */
+  /** Width the user last dragged the panel to (persisted). */
+  preferred: number;
+  /** Width the panel renders at: the preferred width, shrunk so the terminal
+   *  keeps TERMINAL_MIN_WIDTH. */
+  fitted: number;
+  /** Room for the panel once the terminal has its minimum (Infinity until measured). */
   space: number;
-  /** Last syncOpen input, so a repeated call (StrictMode, re-render) is a no-op. */
-  lastSync: string;
+  /** The tab shown last (persisted) — reopening the panel comes back to it. */
+  tab: SidePanelKey;
+  /** The panel takes over the window (sidebar and terminal hidden, still mounted). */
+  maximized: boolean;
+  /** Per-tab status reported by the panel bodies (AI thinking, unsaved editor…). */
+  status: Partial<Record<SidePanelKey, SidePanelStatus>>;
   setRowWidth: (width: number) => void;
-  syncOpen: (visible: SidePanelKey[], dockable: SidePanelKey[]) => SidePanelKey[];
-  commitWidth: (key: SidePanelKey, width: number) => void;
+  commitWidth: (width: number) => void;
+  setTab: (tab: SidePanelKey) => void;
+  setMaximized: (maximized: boolean) => void;
+  setStatus: (tab: SidePanelKey, status: SidePanelStatus | null) => void;
 }
 
-/** Recompute fitted widths; panels not docked keep their preferred width for when they reopen. */
-function refit(
-  preferred: Record<SidePanelKey, number>,
-  docked: SidePanelKey[],
-  space: number,
-  allowClose: boolean,
-) {
-  const fitted = { ...preferred };
-  if (!Number.isFinite(space)) return { fitted, closed: [] as SidePanelKey[] };
-  const { widths, closed } = fitSidePanels(
-    docked.map((key) => ({ key, preferred: preferred[key] })),
-    space,
-    allowClose,
-  );
-  return { fitted: { ...fitted, ...widths }, closed };
+/** The panel's width for the available space: never closes it (it is the
+ *  only one), only shrinks it towards PANEL_FIT_MIN_WIDTH. */
+function fit(preferred: number, space: number): number {
+  if (!Number.isFinite(space)) return preferred;
+  return fitSidePanels([{ key: 'panel', preferred }], space, false).widths.panel ?? preferred;
 }
 
 export const useSidePanelStore = create<SidePanelState>()((set, get) => {
   const preferred = loadPreferred();
   return {
     preferred,
-    fitted: { ...preferred },
-    open: [],
-    docked: [],
+    fitted: preferred,
     space: Infinity,
-    lastSync: '',
+    tab: loadTab(),
+    maximized: false,
+    status: {},
 
-    // The terminal + panels row resized (window, sidebar): shrink or grow the
-    // docked panels, but never close one for it.
+    // The terminal + panel row resized (window, sidebar): shrink or grow the panel.
     setRowWidth: (width) => {
       const s = get();
       const space = width > 0 ? width - TERMINAL_MIN_WIDTH : Infinity;
       if (space === s.space) return;
-      set({ space, fitted: refit(s.preferred, s.docked, space, false).fitted });
+      set({ space, fitted: fit(s.preferred, space) });
     },
 
-    /**
-     * Panels opened or closed. `visible` = every showing panel; `dockable` =
-     * those that would sit beside the terminal (the editor fills the whole
-     * area instead when no session is open). Returns panels that had to close
-     * to make room — the caller hides them and tells the user.
-     */
-    syncOpen: (visible, dockable) => {
-      const s = get();
-      const signature = `${visible.join(',')}|${dockable.join(',')}`;
-      if (signature === s.lastSync) return [];
-      const kept = s.open.filter((k) => visible.includes(k));
-      const opened = visible.filter((k) => !s.open.includes(k));
-      const order = [...kept, ...opened];
-      const docked = order.filter((k) => dockable.includes(k));
-      // Only the user opening a docked panel may close another one.
-      const allowClose = opened.some((k) => dockable.includes(k));
-      const { fitted, closed } = refit(s.preferred, docked, s.space, allowClose);
-      set({
-        open: order.filter((k) => !closed.includes(k)),
-        docked: docked.filter((k) => !closed.includes(k)),
-        fitted,
-        lastSync: signature,
-      });
-      return closed;
-    },
-
-    commitWidth: (key, width) => {
-      const s = get();
-      const w = clampWidth(key, width);
+    commitWidth: (width) => {
+      const w = clampWidth(width);
       try {
-        localStorage.setItem(storageKey(key), String(w));
+        localStorage.setItem(WIDTH_KEY, String(w));
       } catch {
         /* not persisted this time; the width still applies */
       }
-      const preferred = { ...s.preferred, [key]: w };
-      set({ preferred, fitted: refit(preferred, s.docked, s.space, false).fitted });
+      set({ preferred: w, fitted: fit(w, get().space) });
+    },
+
+    setTab: (tab) => {
+      if (get().tab === tab) return;
+      try {
+        localStorage.setItem(TAB_KEY, tab);
+      } catch {
+        /* remembered for this run only */
+      }
+      set({ tab });
+    },
+
+    setMaximized: (maximized) => set({ maximized }),
+
+    setStatus: (tab, status) => {
+      if ((get().status[tab] ?? null) === status) return;
+      const next = { ...get().status };
+      if (status) next[tab] = status;
+      else delete next[tab];
+      set({ status: next });
     },
   };
 });
 
 /**
- * What a side panel needs to render and resize itself: its fitted width,
+ * What the side panel needs to render and resize itself: its fitted width,
  * drag limits (the max leaves the terminal its minimum), and the commit
  * callback that saves a dragged width.
  */
-export function useSidePanelWidth(key: SidePanelKey) {
-  const width = useSidePanelStore((s) => s.fitted[key]);
-  const max = useSidePanelStore((s) => {
-    const others = s.docked.filter((k) => k !== key).reduce((n, k) => n + s.fitted[k], 0);
-    const room = Number.isFinite(s.space) ? s.space - others : SIDE_PANELS[key].max;
-    return Math.max(s.fitted[key], Math.min(SIDE_PANELS[key].max, room));
-  });
+export function useSidePanelWidth() {
+  const width = useSidePanelStore((s) => s.fitted);
+  const max = useSidePanelStore((s) =>
+    Math.max(s.fitted, Math.min(SIDE_PANEL.max, Number.isFinite(s.space) ? s.space : SIDE_PANEL.max)),
+  );
   const commitWidth = useSidePanelStore((s) => s.commitWidth);
-  const commit = useCallback((w: number) => commitWidth(key, w), [commitWidth, key]);
-  return { width, min: SIDE_PANELS[key].min, max, commit };
+  const commit = useCallback((w: number) => commitWidth(w), [commitWidth]);
+  return { width, min: SIDE_PANEL.min, max, commit };
 }

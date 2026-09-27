@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { X, Plus, PictureInPicture2, RefreshCw, Unplug, Wand2, CopyPlus, Pencil, XCircle } from 'lucide-react';
+import { X, Plus, PictureInPicture2, RefreshCw, Unplug, Wand2, CopyPlus, Pencil, XCircle, Columns2, Radio } from 'lucide-react';
 import { WebviewWindow } from '@tauri-apps/api/window';
 import { useSessionStore } from '../store/sessionStore';
 import { askPrompt } from '../store/dialogStore';
@@ -8,6 +8,7 @@ import { closeSessions } from '../utils/closeSessions';
 import { formatChord, isMac, shortcutLabel, withShortcut } from '../utils/shortcuts';
 import { tabLabel, tabTooltipName } from '../utils/tabs';
 import { vendorColor, type Session } from '../types';
+import SnippetsMenu from './SnippetsMenu';
 
 // "⌘3" / "Alt+3" — the jump-to-tab chord for the first nine tabs.
 const jumpLabel = (index: number) =>
@@ -45,6 +46,63 @@ async function renameTab(session: Session) {
   useSessionStore
     .getState()
     .updateSessionConfig(session.sessionId, { tabName: name && name !== automatic ? name : undefined });
+}
+
+/**
+ * Actions on the terminals themselves, at the right end of the tab strip:
+ * Snippets, Split view and Multi-send. They lived in the title bar's Tools
+ * menu; next to the tabs they sit beside what they act on.
+ */
+function SessionActions() {
+  const splitView = useSessionStore((s) => s.splitView);
+  const broadcastMode = useSessionStore((s) => s.broadcastMode);
+  const openCount = useSessionStore(
+    (s) => s.sessions.filter((x) => !s.poppedSessions.includes(x.sessionId)).length,
+  );
+  const canSplit = splitView || openCount >= 2;
+  const btn = (active: boolean) =>
+    `flex items-center justify-center w-7 h-7 rounded-md transition-colors disabled:opacity-40 disabled:cursor-default ${
+      active
+        ? 'text-[var(--accent)] bg-[var(--accent-soft)]'
+        : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] disabled:hover:bg-transparent'
+    }`;
+  return (
+    <div className="flex items-center gap-0.5 px-1.5 flex-shrink-0 border-l border-[var(--border)]">
+      <SnippetsMenu />
+      <button
+        type="button"
+        onClick={() => {
+          useSessionStore.getState().toggleSplitView();
+          // xterm refits on window resize; nudge one once the panes render.
+          setTimeout(() => window.dispatchEvent(new Event('resize')), 60);
+        }}
+        disabled={!canSplit}
+        aria-pressed={splitView}
+        aria-label="Split view"
+        title={
+          splitView
+            ? 'Split view is on — click to show one session'
+            : canSplit
+              ? 'Split view: show sessions side by side'
+              : 'Split view: open two sessions first'
+        }
+        className={btn(splitView)}
+      >
+        <Columns2 size={15} />
+      </button>
+      <button
+        type="button"
+        onClick={() => useSessionStore.getState().toggleBroadcast()}
+        disabled={openCount === 0 && !broadcastMode}
+        aria-pressed={broadcastMode}
+        aria-label="Multi-send"
+        title={broadcastMode ? 'Multi-send is on — click to turn it off' : 'Multi-send: type once into several sessions'}
+        className={btn(broadcastMode)}
+      >
+        <Radio size={15} />
+      </button>
+    </div>
+  );
 }
 
 export default function TerminalTabs({ onDuplicate, onPopOut, onReconnect, onDisconnect, onMapDevice }: TerminalTabsProps) {
@@ -93,7 +151,7 @@ export default function TerminalTabs({ onDuplicate, onPopOut, onReconnect, onDis
 
   if (sessions.length === 0) {
     return (
-      <div className="flex items-center h-10 px-2 border-b border-[var(--border)] bg-[var(--bg-secondary)]">
+      <div className="flex items-center h-10 pl-2 border-b border-[var(--border)] bg-[var(--bg-secondary)]">
         <button
           onClick={() => setShowQuickConnect(true)}
           className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] rounded-md transition-colors"
@@ -101,6 +159,8 @@ export default function TerminalTabs({ onDuplicate, onPopOut, onReconnect, onDis
           <Plus size={14} />
           <span>New Session</span>
         </button>
+        <span className="flex-1" />
+        <SessionActions />
       </div>
     );
   }
@@ -108,7 +168,15 @@ export default function TerminalTabs({ onDuplicate, onPopOut, onReconnect, onDis
   const menuSession = menu ? sessions.find((s) => s.sessionId === menu.sessionId) : undefined;
 
   return (
-    <div className="flex items-stretch h-10 overflow-x-auto border-b border-[var(--border)] bg-[var(--bg-secondary)] scrollbar-none">
+    <div className="flex items-stretch h-10 border-b border-[var(--border)] bg-[var(--bg-secondary)]">
+      <div
+        className="flex-1 min-w-0 flex items-stretch overflow-x-auto scrollbar-none"
+        onWheel={(e) => {
+          // The scrollbar is hidden and a vertical wheel doesn't scroll a
+          // horizontal strip — translate it so overflowed tabs stay reachable.
+          if (e.deltaY !== 0) e.currentTarget.scrollLeft += e.deltaY;
+        }}
+      >
       <div className="flex items-stretch px-1.5 gap-1">
         {sessions.map((session, index) => {
           const isPopped = poppedSessions.includes(session.sessionId);
@@ -225,7 +293,7 @@ export default function TerminalTabs({ onDuplicate, onPopOut, onReconnect, onDis
                     e.stopPropagation();
                     onDisconnect?.(session.sessionId);
                   }}
-                  className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-[var(--border-strong)] transition-all flex-shrink-0"
+                  className="hidden group-hover:block p-0.5 rounded hover:bg-[var(--border-strong)] transition-colors flex-shrink-0"
                   title="Disconnect"
                 >
                   <Unplug size={12} />
@@ -237,7 +305,7 @@ export default function TerminalTabs({ onDuplicate, onPopOut, onReconnect, onDis
                     e.stopPropagation();
                     onMapDevice?.(session.sessionId);
                   }}
-                  className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-[var(--border-strong)] transition-all flex-shrink-0"
+                  className="hidden group-hover:block p-0.5 rounded hover:bg-[var(--border-strong)] transition-colors flex-shrink-0"
                   title="Map device/profile"
                 >
                   <Wand2 size={12} />
@@ -268,7 +336,7 @@ export default function TerminalTabs({ onDuplicate, onPopOut, onReconnect, onDis
               {!isPopped && (
                 <button
                   onClick={(e) => handlePopOut(e, session.sessionId)}
-                  className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-[var(--border-strong)] transition-all flex-shrink-0"
+                  className="hidden group-hover:block p-0.5 rounded hover:bg-[var(--border-strong)] transition-colors flex-shrink-0"
                   title="Pop out into its own window"
                 >
                   <PictureInPicture2 size={12} />
@@ -276,7 +344,9 @@ export default function TerminalTabs({ onDuplicate, onPopOut, onReconnect, onDis
               )}
               <button
                 onClick={(e) => handleClose(e, session.sessionId)}
-                className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-[var(--border-strong)] transition-all flex-shrink-0"
+                // Always shown on the active tab (like browser tabs); others on hover.
+                className={`${isActive ? 'block' : 'hidden group-hover:block'} p-0.5 rounded hover:bg-[var(--border-strong)] transition-colors flex-shrink-0`}
+                aria-label={`Close ${tabLabel(session)}`}
                 title={
                   // The keyboard chord closes the ACTIVE tab only.
                   isActive ? withShortcut('Close tab', 'closeTab') : 'Close tab'
@@ -296,6 +366,9 @@ export default function TerminalTabs({ onDuplicate, onPopOut, onReconnect, onDis
           <Plus size={14} />
         </button>
       </div>
+      </div>
+
+      <SessionActions />
 
       {menu && menuSession && (
         <TabMenu

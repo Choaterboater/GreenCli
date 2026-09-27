@@ -117,7 +117,7 @@ export const HELP_TOPICS: HelpTopic[] = [
     summary: 'Bring saved hosts in from a CSV file, SecureCRT, Aruba Central, Juniper Mist or ~/.ssh/config.',
     keywords: ['import', 'csv', 'securecrt', 'migrate', 'central', 'mist', 'inventory', 'ssh config', 'bulk', 'sessions', 'folders'],
     blocks: [
-      { kind: 'p', text: 'Open **Import hosts** from the sidebar (download icon), the command palette, or Settings → Terminal. Every source shows a preview first: hosts you already have (same host, port and user) are greyed out, and nothing is saved until you press **Import**.' },
+      { kind: 'p', text: 'Open **Import hosts** from the activity bar on the left, the sidebar (download icon), the command palette, or Settings → Terminal. Every source shows a preview first: hosts you already have (same host, port and user) are greyed out, and nothing is saved until you press **Import**.' },
       {
         kind: 'bullets',
         items: [
@@ -196,7 +196,7 @@ export const HELP_TOPICS: HelpTopic[] = [
         items: [
           'Settings → **AI Agents** → **New agent**: name it, write instructions, and (optionally) pick a provider + model.',
           'In the **sidebar**, right-click a host → **AI Agent…** and choose the agent (or pick the chip under the host).',
-          'Open the AI assistant on that session — its header shows the active agent, and the instructions/model are applied.',
+          'Open the AI assistant on that session — the bar above the chat shows the active agent, and the instructions/model are applied.',
         ],
       },
       { kind: 'bullets', items: [
@@ -218,7 +218,7 @@ export const HELP_TOPICS: HelpTopic[] = [
       {
         kind: 'steps',
         items: [
-          'Settings → **AI + MCP → MCP Servers** (or header **Tools → MCP**) → Add server.',
+          'Settings → **AI + MCP → MCP Servers** (or **MCP Servers** in the command palette) → Add server.',
           'Click **Paste config JSON instead** to auto-fill from a setup wizard snippet, or fill in by hand.',
           'Stdio: set the **command**, **args** (one per line), and any **env**. HTTP: set the **server URL**.',
           'Stdio only — for secrets, set a **credentials env var** + paste the content — it is written to a 0600 file and injected via that env var.',
@@ -260,7 +260,7 @@ export const HELP_TOPICS: HelpTopic[] = [
     summary: 'Declare desired state and check live compliance.',
     keywords: ['intent', 'desired state', 'assurance', 'compliance', 'drift', 'matcher', 'operational', 'config'],
     blocks: [
-      { kind: 'p', text: 'Header **Tools** menu → Network Intent. Declare what should be true and check live compliance.' },
+      { kind: 'p', text: '**Network Intent** in the activity bar on the left (the target icon — a red badge counts intents that failed their last check). Declare what should be true and check live compliance.' },
       {
         kind: 'steps',
         items: [
@@ -282,7 +282,7 @@ export const HELP_TOPICS: HelpTopic[] = [
       {
         kind: 'bullets',
         items: [
-          '**Tunnels** (header **Tools** menu): local (`-L`) and dynamic SOCKS5 (`-D`) forwards over any SSH session.',
+          '**SSH Tunnels** (activity bar on the left): local (`-L`) and dynamic SOCKS5 (`-D`) forwards over any SSH session.',
           '**SFTP**: browse/upload/download; uploads confirm before overwriting a remote file.',
           '**Output triggers** (Settings): toast/beep on a keyword/regex in any terminal.',
           '**Bulk Runner**: run one command across many sessions; export CSV.',
@@ -326,7 +326,7 @@ export const HELP_TOPICS: HelpTopic[] = [
           `${k('nextTab')} / ${k('prevTab')} — Next / previous tab${isMac ? ' (also `⌘⇧]` / `⌘⇧[`)' : ' (also `Ctrl+PgDn` / `Ctrl+PgUp`)'}`,
           `${k('jumpTab')} — Jump to tab 1–9`,
           `${k('settings')} — Settings · ${k('help')} — Help`,
-          `${k('editor')} / ${k('api')} / ${k('ai')} — Editor / API / AI`,
+          `${k('editor')} / ${k('api')} / ${k('ai')} — Editor / API / AI tab of the side panel (again closes it)`,
           `${k('sidebar')} — Toggle sidebar`,
           `${k('zoomIn')} / ${k('zoomOut')} / ${k('zoomReset')} — Zoom terminal + config-editor font (${MOD}+wheel inside the editor)`,
         ],
@@ -373,7 +373,7 @@ export const HELP_TOPICS: HelpTopic[] = [
           `**Tabs**: ${k('nextTab')} / ${k('prevTab')} move between tabs, ${k('jumpTab')} jumps to tab 1–9 — also while typing in a session.${isMac ? '' : ' (`Ctrl`+digit is left for the device.)'}`,
           '**Right-click a tab** for Duplicate tab, Reconnect, Disconnect, **Rename tab** (double-clicking the tab works too — only the tab is renamed, not the saved host), Pop out, Close other tabs and Close disconnected tabs.',
           '**Config mode**: GreenCLI reads the device prompt. While a device is in configuration mode — `switch(config)#`, `(host) [mynode] (config) #`, Junos `user@host#` — its tab turns amber with a **CONFIG** badge and the status bar says **Config mode**. A tab named only by its IP address shows the hostname from the prompt.',
-          '**Split view** (**Tools → Split view**): up to four sessions side by side. Click a pane to work in it — its header gets the accent bar, and Close, Find, snippets, logging and file drops all act on that pane. Each pane header has a session picker, an add-pane `+` and a close `×` (the session stays open as a tab).',
+          '**Split view** (the split button at the right end of the tab strip, next to Snippets and Multi-send): up to four sessions side by side. Click a pane to work in it — its header gets the accent bar, and Close, Find, snippets, logging and file drops all act on that pane. Each pane header has a session picker, an add-pane `+` and a close `×` (the session stays open as a tab).',
           '**Pop-out**: the tab’s pop-out button moves a session into its own window. Its header shows the live status, **Find**, **Reconnect** when the session drops, and **Dock** to put it back in its tab.',
           '**Dropped session**: press `Enter` in the terminal (or click **Reconnect**) to connect again.',
           `**Closing** a still-connected tab (× or ${k('closeTab')}) asks first. Turn that off in Settings → Terminal → **Confirm Before Closing a Connected Tab**.`,

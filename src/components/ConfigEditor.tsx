@@ -5,7 +5,6 @@ import { copyText } from '../utils/clipboard';
 import type { editor as MonacoEditor } from 'monaco-editor';
 import {
   X,
-  FileCode,
   Copy,
   Send,
   ChevronDown,
@@ -18,8 +17,6 @@ import {
   DownloadCloud,
   GitCompare,
   History,
-  Maximize2,
-  Minimize2,
   ListTree,
   AlertTriangle,
   Plus,
@@ -30,8 +27,7 @@ import { invoke } from '@tauri-apps/api/tauri';
 import { useSessionStore } from '../store/sessionStore';
 import { useSettingsStore } from '../store/settingsStore';
 import { sleep, stripAnsi as stripAnsiUtil, hasAnsi, sendAndCapture } from '../utils/terminal';
-import { useResizablePanel } from '../hooks/useResizablePanel';
-import { useSidePanelWidth } from '../store/sidePanelStore';
+import { useSidePanelStore } from '../store/sidePanelStore';
 import { askConfirm, askPrompt } from '../store/dialogStore';
 import { generateId } from '../utils';
 import { profileForSession } from '../utils/deviceProfiles';
@@ -636,21 +632,12 @@ export default function ConfigEditor() {
   // Narrow per-field selectors — whole-store subscriptions re-rendered the
   // editor (and re-created its callbacks) on every unrelated store change.
   const showConfigEditor = useSessionStore((s) => s.showConfigEditor);
-  const toggleConfigEditor = useSessionStore((s) => s.toggleConfigEditor);
   const activeSessionId = useSessionStore((s) => s.activeSessionId);
   const sessions = useSessionStore((s) => s.sessions);
   const fontSize = useSettingsStore((s) => s.fontSize);
   const customDeviceProfiles = useSettingsStore((s) => s.customDeviceProfiles);
   const { isDark } = useTheme();
   const editorTheme = isDark ? 'aruba-dark' : 'aruba-light';
-
-  // Saved width, shrunk to fit beside the terminal (sidePanelStore).
-  const panelSize = useSidePanelWidth('editor');
-  const { width: panelWidth, onDragStart: handleDragStart, handleClass: dragHandleClass } =
-    useResizablePanel(panelSize.width, panelSize.min, panelSize.max, { onCommit: panelSize.commit });
-  const [maximized, setMaximized] = useState(false);
-  // With no sessions open, fill the whole area so it works as a plain text editor.
-  const fullWidth = sessions.length === 0;
 
   // Editor buffers (tabs). Each starts blank in Plain Text — no vendor assumed
   // until the user picks a language/template (or opens a file, which infers it
@@ -675,6 +662,12 @@ export default function ConfigEditor() {
   useEffect(() => {
     if (!buffers.some((b) => b.id === activeId)) setActiveId(buffers[0].id);
   }, [buffers, activeId]);
+  // Unsaved edits get a dot on the side panel's Editor tab and the activity
+  // bar, so they stay visible while another tab (or no panel) is showing.
+  const anyDirty = buffers.some((b) => b.dirty);
+  useEffect(() => {
+    useSidePanelStore.getState().setStatus('editor', anyDirty ? 'dirty' : null);
+  }, [anyDirty]);
 
   const contentRef = useRef(content);
 
@@ -1376,81 +1369,15 @@ export default function ConfigEditor() {
   );
 
   return (
+    // A tab of the side panel (SidePanel owns the frame: width, drag handle,
+    // maximize and close). The file name lives on the buffer tabs below.
     <div
-      className={
-        `${showConfigEditor ? '' : 'hidden '}${
-        maximized
-          ? 'fixed left-0 right-0 bottom-0 top-11 z-40 flex flex-col bg-[var(--bg-primary)] overflow-hidden animate-fade-in'
-          : fullWidth
-          ? 'flex-1 min-w-0 flex flex-col bg-[var(--bg-primary)] overflow-hidden relative'
-          : 'flex-shrink-0 flex flex-col bg-[var(--bg-primary)] border-l border-[var(--bg-tertiary)] overflow-hidden relative'
-        }`
-      }
-      style={maximized || fullWidth ? undefined : { width: panelWidth }}
+      id="side-panel-editor"
+      role="tabpanel"
+      aria-labelledby="side-tab-editor"
+      className={`${showConfigEditor ? '' : 'hidden '}absolute inset-0 flex flex-col bg-[var(--bg-primary)] overflow-hidden`}
       aria-hidden={!showConfigEditor}
     >
-      {/* Drag handle (hidden when maximized or filling the area) */}
-      {!maximized && !fullWidth && <div className={dragHandleClass} onMouseDown={handleDragStart} />}
-
-      {/* Header */}
-      <div className="flex items-center justify-between h-10 px-3 pl-4 border-b border-[var(--bg-tertiary)] bg-[var(--bg-secondary)]">
-        <div className="flex items-center gap-2 min-w-0">
-          <FileCode size={14} className="text-[var(--accent-warning)] flex-shrink-0" />
-          <span className="text-xs font-semibold text-[var(--text-primary)] uppercase tracking-wider flex-shrink-0">
-            Editor
-          </span>
-          <span
-            className={`text-[10px] truncate max-w-[160px] ${
-              currentFilePath ? 'text-[var(--text-secondary)]' : 'text-[var(--text-muted)]'
-            }`}
-            title={currentFilePath ?? active.name}
-          >
-            {isDirty && <span className="text-[var(--accent-warning)]">● </span>}{active.name}
-          </span>
-        </div>
-        <div className="flex items-center gap-1 flex-shrink-0">
-          <button onClick={copyToClipboard} className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]" title="Copy all" aria-label="Copy all">
-            <Copy size={13} />
-          </button>
-          <button
-            onClick={async () => {
-              if (!(await confirmDiscard())) return;
-              rawCapturesRef.current.delete(active.id);
-              setViewingRawIds((prev) => (prev[active.id] ? { ...prev, [active.id]: false } : prev));
-              patchActive({
-                content: '',
-                filePath: null,
-                dirty: false,
-                name: untitledName(buffersRef.current.filter((b) => b.id !== active.id)),
-              });
-            }}
-            className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--accent-danger)]"
-            title="Clear"
-            aria-label="Clear editor contents"
-          >
-            <FileX size={13} />
-          </button>
-          <button
-            onClick={() => setMaximized((m) => !m)}
-            className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
-            title={maximized ? 'Restore to side panel' : 'Maximize editor'}
-            aria-label={maximized ? 'Restore to side panel' : 'Maximize editor'}
-          >
-            {maximized ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
-          </button>
-          <button
-            // Closing only HIDES the panel now (App keeps it mounted) — buffers
-            // and dirty state survive, so no discard confirm is needed here.
-            onClick={toggleConfigEditor}
-            className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--accent-danger)]"
-            title="Close"
-            aria-label="Close editor"
-          >
-            <X size={14} />
-          </button>
-        </div>
-      </div>
-
       {/* Buffer tabs */}
       <div
         className="flex items-center h-8 px-1.5 gap-1 border-b border-[var(--bg-tertiary)] bg-[var(--bg-secondary)] overflow-x-auto scrollbar-none flex-shrink-0"
@@ -1512,8 +1439,9 @@ export default function ConfigEditor() {
         </button>
       </div>
 
-      {/* Toolbar */}
-      <div className="flex items-center gap-1 px-2 py-1 border-b border-[var(--bg-tertiary)] bg-[var(--bg-secondary)]">
+      {/* Toolbar — wraps rather than clipping: at side-panel widths the
+          Pull / Diff / Archive / Send buttons used to fall off the end. */}
+      <div className="flex flex-wrap items-center gap-x-1 gap-y-0.5 px-2 py-1 border-b border-[var(--bg-tertiary)] bg-[var(--bg-secondary)]">
 
         {/* File actions — icon-only group with tooltips */}
         <div className="flex items-center gap-0.5">
@@ -1542,6 +1470,32 @@ export default function ConfigEditor() {
             aria-label="Strip ANSI / terminal control codes"
           >
             <Eraser size={13} />
+          </button>
+          <button
+            onClick={copyToClipboard}
+            className="p-1.5 rounded text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] transition-colors"
+            title="Copy all"
+            aria-label="Copy all"
+          >
+            <Copy size={13} />
+          </button>
+          <button
+            onClick={async () => {
+              if (!(await confirmDiscard())) return;
+              rawCapturesRef.current.delete(active.id);
+              setViewingRawIds((prev) => (prev[active.id] ? { ...prev, [active.id]: false } : prev));
+              patchActive({
+                content: '',
+                filePath: null,
+                dirty: false,
+                name: untitledName(buffersRef.current.filter((b) => b.id !== active.id)),
+              });
+            }}
+            className="p-1.5 rounded text-[var(--text-secondary)] hover:text-[var(--accent-danger)] hover:bg-[var(--bg-tertiary)] transition-colors"
+            title="Clear this tab"
+            aria-label="Clear editor contents"
+          >
+            <FileX size={13} />
           </button>
           {rawCapturesRef.current.has(active.id) && (
             <button
