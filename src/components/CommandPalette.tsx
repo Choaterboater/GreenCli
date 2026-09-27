@@ -141,7 +141,7 @@ export default function CommandPalette({ onConnect, onDuplicateTab, onLocalShell
         id: 'close-all-tabs',
         label: 'Close All Sessions',
         keywords: 'close all tabs disconnect everything',
-        icon: <X size={14} className="text-[#ff7b72]" />,
+        icon: <X size={14} className="text-[var(--accent-danger)]" />,
         run: () => {
           // Popped-out sessions keep running in their own windows. One
           // question covers every still-connected session (confirmCloseConnected).
@@ -233,7 +233,7 @@ export default function CommandPalette({ onConnect, onDuplicateTab, onLocalShell
           label: `Connect: ${item.name || item.host || 'session'}`,
           hint: item.protocol.toUpperCase(),
           keywords: `${item.host ?? ''} ${item.protocol} ${folder.name}`,
-          icon: <Plug size={14} className="text-[#3fb950]" />,
+          icon: <Plug size={14} className="text-[var(--accent-success)]" />,
           run: () => onConnect(item),
         });
       }
@@ -249,7 +249,7 @@ export default function CommandPalette({ onConnect, onDuplicateTab, onLocalShell
         id: `goto-${s.sessionId}`,
         label: `${isPopped ? 'Focus window' : 'Go to tab'}: ${tabLabel(s)}`,
         keywords: `tab switch ${s.config.host ?? ''} ${s.promptHost ?? ''}`,
-        icon: <TerminalSquare size={14} className="text-[#58a6ff]" />,
+        icon: <TerminalSquare size={14} className="text-[var(--accent-info)]" />,
         run: () => {
           if (isPopped) {
             WebviewWindow.getByLabel(`popout-${s.sessionId}`)?.setFocus();
@@ -277,7 +277,7 @@ export default function CommandPalette({ onConnect, onDuplicateTab, onLocalShell
         id: 'close-tab',
         label: 'Close Current Tab',
         hint: shortcutLabel('closeTab'),
-        icon: <X size={14} className="text-[#ff7b72]" />,
+        icon: <X size={14} className="text-[var(--accent-danger)]" />,
         run: () => {
           void closeSessions([activeSessionId]);
         },
@@ -338,7 +338,7 @@ export default function CommandPalette({ onConnect, onDuplicateTab, onLocalShell
   };
 
   return (
-    <div className="fixed inset-0 z-[60] flex items-start justify-center pt-[12vh] bg-black/50 backdrop-blur-sm" onClick={close}>
+    <div className="fixed inset-0 z-[60] flex items-start justify-center pt-[12vh] bg-[var(--scrim)] backdrop-blur-sm" onClick={close}>
       <div
         className="w-[560px] max-w-[90vw] bg-[var(--bg-secondary)] border border-[var(--border)] rounded-xl shadow-2xl overflow-hidden"
         onClick={(e) => e.stopPropagation()}
@@ -369,7 +369,7 @@ export default function CommandPalette({ onConnect, onDuplicateTab, onLocalShell
               onMouseEnter={() => setSelected(i)}
               onClick={() => runAt(i)}
               className={`flex items-center gap-3 w-full px-4 py-2 text-left transition-colors ${
-                i === selected ? 'bg-[#1f6feb33]' : 'hover:bg-[var(--bg-tertiary)]'
+                i === selected ? 'bg-[var(--accent-soft)]' : 'hover:bg-[var(--bg-tertiary)]'
               }`}
             >
               <span className="text-[var(--text-secondary)] flex-shrink-0">{a.icon}</span>

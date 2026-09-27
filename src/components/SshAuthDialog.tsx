@@ -233,7 +233,7 @@ export default function SshAuthDialog({ onAuthenticate }: SshAuthDialogProps) {
             <div
               role="alert"
               className="flex items-start gap-2 px-3 py-2 rounded-[var(--radius)] text-[12px] leading-relaxed"
-              style={{ background: 'rgba(240,83,63,0.12)', color: 'var(--accent-danger)', border: '1px solid rgba(240,83,63,0.3)' }}
+              style={{ background: 'var(--accent-danger-soft)', color: 'var(--accent-danger)', border: '1px solid var(--accent-danger-border)' }}
             >
               <AlertTriangle size={14} className="flex-shrink-0 mt-0.5" />
               <div className="min-w-0">

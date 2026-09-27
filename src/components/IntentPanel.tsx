@@ -218,7 +218,7 @@ export default function IntentPanel() {
           </div>
           <h2 className="text-[16px] font-semibold text-[var(--text-primary)]">Network Intent</h2>
           {violations > 0 && (
-            <span className="text-[11px] px-2 py-0.5 rounded-full" style={{ background: 'rgba(240,83,63,0.14)', color: 'var(--accent-danger)' }}>
+            <span className="text-[11px] px-2 py-0.5 rounded-full" style={{ background: 'var(--accent-danger-soft)', color: 'var(--accent-danger)' }}>
               {violations} violation{violations > 1 ? 's' : ''}
             </span>
           )}
@@ -260,7 +260,7 @@ export default function IntentPanel() {
             <div className="space-y-2">
               {INTENT_PACKS.map((pack) => (
                 <div key={pack.id} className="flex items-center gap-2.5 px-3 py-2 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)]">
-                  <span className="vendor-dot flex-shrink-0" style={{ background: pack.vendor === 'juniper' ? 'var(--vendor-juniper, #84B135)' : 'var(--accent-2, #FF8300)' }} />
+                  <span className="vendor-dot flex-shrink-0" style={{ background: pack.vendor === 'juniper' ? 'var(--vendor-juniper)' : 'var(--vendor-aruba)' }} />
                   <div className="min-w-0 flex-1">
                     <div className="text-[13px] font-medium text-[var(--text-primary)] truncate">{pack.name}</div>
                     <div className="text-[10px] text-[var(--text-muted)] truncate">{pack.description} · {pack.templates.length} checks</div>

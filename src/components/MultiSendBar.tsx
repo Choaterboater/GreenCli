@@ -138,7 +138,7 @@ export default function MultiSendBar() {
             title={m === 'all' ? 'Every connected session, including ones connected later' : 'Only the sessions ticked here'}
             className={`px-2 py-0.5 text-[10px] capitalize transition-colors ${
               targetsState.mode === m
-                ? 'bg-[var(--accent-2)] text-white'
+                ? 'bg-[var(--accent-2)] text-[var(--accent-2-fg)]'
                 : 'text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]'
             }`}
           >
@@ -220,7 +220,7 @@ export default function MultiSendBar() {
         title="Send the text without pressing Enter — for y/n answers, ?, or a space to page"
         className={`px-2 py-0.5 text-[10px] rounded border transition-colors flex-shrink-0 ${
           noEnter
-            ? 'bg-[var(--accent-2)] border-[var(--accent-2)] text-white'
+            ? 'bg-[var(--accent-2)] border-[var(--accent-2)] text-[var(--accent-2-fg)]'
             : 'border-[var(--border)] text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]'
         }`}
       >
@@ -237,7 +237,7 @@ export default function MultiSendBar() {
       <button
         onClick={() => void send()}
         disabled={n === 0}
-        className="px-2.5 py-1 text-xs bg-[var(--accent-2)] hover:brightness-110 disabled:opacity-40 text-white rounded transition-colors flex-shrink-0"
+        className="px-2.5 py-1 text-xs bg-[var(--accent-2)] hover:brightness-110 disabled:opacity-40 text-[var(--accent-2-fg)] rounded transition-colors flex-shrink-0"
       >
         Send to {n}
       </button>

@@ -220,7 +220,7 @@ export default function DeviceMapper({ sessionId, onClose }: DeviceMapperProps) 
       // sending Enter (after clicking Save) to the device behind it.
       role="dialog"
       aria-modal="true"
-      className="fixed inset-0 z-[70] flex items-center justify-center bg-black/55 backdrop-blur-sm"
+      className="fixed inset-0 z-[70] flex items-center justify-center bg-[var(--scrim)] backdrop-blur-sm"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}

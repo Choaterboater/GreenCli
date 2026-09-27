@@ -60,4 +60,29 @@ describe.each(['dark', 'light'] as const)('%s theme text tokens', (theme) => {
       expect(contrastRatio(t['config-mode'], t[bg]), `config-mode on ${bg}`).toBeGreaterThanOrEqual(4.5);
     }
   });
+
+  it('keeps the violet accent readable as text on every surface', () => {
+    // AI assistant + API Explorer group labels; the old #d2a8ff was 1.9:1 on white.
+    for (const bg of surfaces) {
+      expect(contrastRatio(t['accent-violet'], t[bg]), `accent-violet on ${bg}`).toBeGreaterThanOrEqual(4.5);
+    }
+  });
+
+  it('keeps text on accent-2 (orange) fills readable', () => {
+    expect(contrastRatio(t['accent-2-fg'], t['accent-2'])).toBeGreaterThanOrEqual(4.5);
+  });
+});
+
+describe('theme token parity', () => {
+  /** Every `--name:` declared in one `:root[data-theme='…']` block. */
+  function declared(theme: 'dark' | 'light'): string[] {
+    const start = themeCss.indexOf(`:root[data-theme='${theme}']`);
+    const block = themeCss.slice(start, themeCss.indexOf('\n}', start));
+    return [...block.matchAll(/--([\w-]+):/g)].map((m) => m[1]).sort();
+  }
+
+  it('declares the same tokens in the dark and light blocks', () => {
+    // A token only one theme defines resolves to nothing in the other.
+    expect(declared('light')).toEqual(declared('dark'));
+  });
 });
