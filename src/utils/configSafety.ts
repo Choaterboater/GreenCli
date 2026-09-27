@@ -131,7 +131,8 @@ function withoutPrompt(text: string): string {
 
 // `configure` / `configure terminal` / `conf t` fail harmlessly when the
 // session is already in config mode — don't stop the whole send for that.
-const ENTER_CONFIG = /^conf(?:igure)?(?:\s+t(?:erminal)?)?(?:\s+(?:private|exclusive))?$/i;
+// (Change Jobs also uses it to spot a block that enters config mode itself.)
+export const ENTER_CONFIG = /^conf(?:igure)?(?:\s+t(?:erminal)?)?(?:\s+(?:private|exclusive))?$/i;
 
 // Lines that can legitimately take a while (Junos commit, saving config).
 const SLOW_LINE = /^(?:commit|write|wr|copy|save)\b/i;
