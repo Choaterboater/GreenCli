@@ -135,6 +135,12 @@ export interface TerminalSettings {
   /** Auto-capture the device running-config once on ssh/telnet connect (NW-16).
    *  Off by default (W2-6) — the manual "Capture now" button always works. */
   captureOnConnect: boolean;
+  /** Start a session log automatically whenever a session connects. Off by default. */
+  autoLogSessions: boolean;
+  /** Folder session logs are written to; empty = the app data `logs` folder. */
+  sessionLogDir: string;
+  /** Prefix each logged line with the local time as [HH:MM:SS]. */
+  sessionLogTimestamps: boolean;
   /** Last selected device type/profile base used by Quick Connect. */
   lastUsedDeviceType: DeviceType;
   /** Last selected built-in/custom profile used by Quick Connect. */
@@ -309,6 +315,9 @@ export const DEFAULT_SETTINGS: TerminalSettings = {
   intentScheduleMinutes: 30,
   intentWebhookUrl: '',
   captureOnConnect: false,
+  autoLogSessions: false,
+  sessionLogDir: '',
+  sessionLogTimestamps: false,
   lastUsedDeviceType: 'generic',
   lastUsedDeviceProfileId: 'builtin-generic',
   customDeviceProfiles: [],

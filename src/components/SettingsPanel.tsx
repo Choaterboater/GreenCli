@@ -49,6 +49,7 @@ const FOCUS_NAV: Record<string, SettingsNavId> = {
   appearance: 'appearance',
   terminal: 'terminal',
   'device-profiles': 'terminal',
+  logging: 'terminal',
   ai: 'ai',
   mcp: 'ai',
   central: 'cloud',
@@ -69,6 +70,132 @@ function NavGroup({
   children: ReactNode;
 }) {
   return <div hidden={active !== nav}>{children}</div>;
+}
+
+function Toggle({ on, onChange, label }: { on: boolean; onChange: (v: boolean) => void; label: string }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={on}
+      aria-label={label}
+      onClick={() => onChange(!on)}
+      className="w-9 h-5 rounded-full transition-colors cursor-pointer relative flex-shrink-0"
+      style={{ background: on ? 'var(--accent)' : 'var(--border-strong)' }}
+    >
+      <span
+        className="absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow-sm transition-transform"
+        style={{ transform: on ? 'translateX(16px)' : 'translateX(0)' }}
+      />
+    </button>
+  );
+}
+
+/** Session logging: auto-log, log folder, per-line timestamps. */
+function SessionLogSettings() {
+  const autoLogSessions = useSettingsStore((s) => s.autoLogSessions);
+  const sessionLogDir = useSettingsStore((s) => s.sessionLogDir);
+  const sessionLogTimestamps = useSettingsStore((s) => s.sessionLogTimestamps);
+  const updateSettings = useSettingsStore((s) => s.updateSettings);
+
+  const chooseFolder = async () => {
+    try {
+      const picked = await openDialog({
+        title: 'Choose the session log folder',
+        directory: true,
+        multiple: false,
+        defaultPath: sessionLogDir || undefined,
+      });
+      if (typeof picked === 'string') updateSettings({ sessionLogDir: picked });
+    } catch (e) {
+      notify.warning('Could not choose a folder', String(e));
+    }
+  };
+
+  const openFolder = () => {
+    invoke('reveal_log_folder', { dir: sessionLogDir || null }).catch((e) =>
+      notify.warning('Could not open the log folder', String(e))
+    );
+  };
+
+  const rows = [
+    {
+      label: 'Log every session automatically',
+      hint: 'Starts a log as soon as a session connects. Stop one any time with REC in the status bar.',
+      value: autoLogSessions,
+      onChange: (v: boolean) => updateSettings({ autoLogSessions: v }),
+    },
+    {
+      label: 'Timestamp each line',
+      hint: 'Adds the time, like [14:02:11], to the start of every line. Applies to logs started after you change it.',
+      value: sessionLogTimestamps,
+      onChange: (v: boolean) => updateSettings({ sessionLogTimestamps: v }),
+    },
+  ];
+
+  return (
+    <section id="set-logging">
+      <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-1.5">Session Logging</h3>
+      <p className="text-xs text-[var(--text-muted)] mb-3">
+        Logs are plain text with colors and screen codes removed, named like
+        {' '}<span className="font-mono">core-sw1_2026-09-27_140211.log</span>. Logs can
+        contain passwords you type or paste, so keep the folder private.
+      </p>
+      <div className="space-y-2 mb-3">
+        {rows.map(({ label, hint, value, onChange }) => (
+          <div key={label} className="flex items-center justify-between gap-3 py-1">
+            <div className="min-w-0">
+              <div className="text-sm text-[var(--text-primary)]">{label}</div>
+              <div className="text-[11px] text-[var(--text-muted)]">{hint}</div>
+            </div>
+            <Toggle on={value} onChange={onChange} label={label} />
+          </div>
+        ))}
+      </div>
+      <label className="block text-xs text-[var(--text-secondary)] mb-1.5">Log folder</label>
+      <div className="flex items-center gap-2">
+        <div
+          className="flex-1 min-w-0 h-8 px-2.5 flex items-center rounded border border-[var(--border)] bg-[var(--bg-primary)] text-xs font-mono truncate"
+          title={sessionLogDir || 'Default: the app data folder'}
+        >
+          {sessionLogDir ? (
+            <span className="truncate text-[var(--text-primary)]">{sessionLogDir}</span>
+          ) : (
+            <span className="text-[var(--text-muted)]">Default (app data folder)</span>
+          )}
+        </div>
+        {isTauri && (
+          <button
+            onClick={chooseFolder}
+            className="px-3 h-8 rounded bg-[var(--bg-tertiary)] hover:bg-[var(--border-strong)] text-xs text-[var(--text-primary)] flex-shrink-0"
+          >
+            Choose…
+          </button>
+        )}
+        {sessionLogDir && (
+          <button
+            onClick={() => updateSettings({ sessionLogDir: '' })}
+            className="px-2 h-8 rounded text-xs text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] flex-shrink-0"
+            title="Go back to the default folder"
+          >
+            Use default
+          </button>
+        )}
+        {isTauri && (
+          <button
+            onClick={openFolder}
+            className="px-2 h-8 rounded text-xs text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] flex-shrink-0"
+            title="Open the log folder in Finder / Explorer"
+          >
+            Open folder
+          </button>
+        )}
+      </div>
+      <p className="text-[11px] text-[var(--text-muted)] mt-1">
+        A new folder applies to logs started after you change it.
+      </p>
+    </section>
+  );
 }
 
 export default function SettingsPanel() {
@@ -1038,6 +1165,10 @@ export default function SettingsPanel() {
               </div>
             </div>
           </section>
+
+          <div className="border-t border-[var(--bg-tertiary)]" />
+
+          <SessionLogSettings />
 
           <div className="border-t border-[var(--bg-tertiary)]" />
 
