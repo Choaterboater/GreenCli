@@ -99,6 +99,19 @@ function toastHostKeyWarning(message: string | undefined) {
   notify.warning('Host key warning', text);
 }
 
+// Is this session's terminal on screen — the active tab, a split pane, or its
+// own pop-out window? Connect/disconnect toasts are only for background tabs:
+// a visible terminal already shows the change, and opening ten devices used to
+// stack ten "Connected" toasts.
+function isSessionOnScreen(sessionId: string): boolean {
+  const st = useSessionStore.getState();
+  return (
+    st.activeSessionId === sessionId ||
+    st.poppedSessions.includes(sessionId) ||
+    (st.splitView && st.splitPanes.includes(sessionId))
+  );
+}
+
 function runStartupCommands(sessionId: string, startupCommands?: string) {
   const startup = startupCommands?.trim();
   if (!startup) return;
@@ -963,7 +976,10 @@ function App() {
             fullConfig.protocol === 'local'
               ? fullConfig.command || 'local shell'
               : `${fullConfig.username ? fullConfig.username + '@' : ''}${fullConfig.host || fullConfig.serialPort || ''}`;
-          notify.success('Connected', `${fullConfig.name || where} is online.`);
+          // Background tabs only; several landing together share one card.
+          if (!isSessionOnScreen(sessionId)) {
+            notify.success('Connected', fullConfig.name || where, { group: 'connected' });
+          }
           toastHostKeyWarning(result.warning);
 
           // Per-host startup commands: run them once the shell is ready.
@@ -1022,7 +1038,11 @@ function App() {
     try {
       await invoke('disconnect', { sessionId });
       useSessionStore.getState().updateSessionConnection(sessionId, false);
-      notify.info('Disconnected', `${session?.config.name || session?.config.host || 'Session'} is offline.`);
+      if (!isSessionOnScreen(sessionId)) {
+        notify.info('Disconnected', session?.config.name || session?.config.host || 'Session', {
+          group: 'disconnected',
+        });
+      }
     } catch (err) {
       notify.warning('Disconnect failed', String(err));
     }

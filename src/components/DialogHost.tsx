@@ -7,16 +7,20 @@ export default function DialogHost() {
   const [value, setValue] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
   const confirmRef = useRef<HTMLButtonElement>(null);
+  const cancelRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     if (current) {
       setValue(current.defaultValue ?? '');
-      // Focus + select after mount. Confirm dialogs focus the confirm button so
-      // Enter/Escape act on the dialog instead of the terminal behind it.
+      // Focus + select after mount, so Enter/Escape act on the dialog instead
+      // of the terminal behind it. Danger confirms (reset, delete, disconnect)
+      // focus Cancel: a stray Enter meant for the terminal must not confirm.
       setTimeout(() => {
         if (current.type === 'prompt') {
           inputRef.current?.focus();
           inputRef.current?.select();
+        } else if (current.danger) {
+          cancelRef.current?.focus();
         } else {
           confirmRef.current?.focus();
         }
@@ -54,12 +58,20 @@ export default function DialogHost() {
         aria-modal="true"
         aria-label={current.title}
         onKeyDown={(e) => {
+          // App's capture-phase key handler pulls focus into the terminal on
+          // any key that isn't typed into a text field. Put it back, or the
+          // next key (Enter after a Shift, say) goes to the device instead.
+          if (e.target instanceof HTMLElement && document.activeElement !== e.target) {
+            e.target.focus();
+          }
           if (e.key === 'Enter') {
-            // Let a focused button other than confirm (e.g. Cancel) handle Enter natively.
-            if (e.target instanceof HTMLButtonElement && e.target !== confirmRef.current) return;
             e.preventDefault();
             e.stopPropagation();
-            onConfirm();
+            // Enter activates the focused button (Cancel cancels, confirm
+            // confirms) — done here, not natively, because the native click
+            // follows the (possibly moved) focus. Enter in the prompt submits.
+            if (e.target instanceof HTMLButtonElement) e.target.click();
+            else onConfirm();
           } else if (e.key === 'Escape') {
             e.preventDefault();
             e.stopPropagation();
@@ -86,6 +98,7 @@ export default function DialogHost() {
 
         <div className="mt-5 flex items-center justify-end gap-2">
           <button
+            ref={cancelRef}
             onClick={() => finish(null)}
             className="px-3.5 h-9 text-[13px] rounded-[var(--radius)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] transition-colors"
           >
@@ -94,10 +107,10 @@ export default function DialogHost() {
           <button
             ref={confirmRef}
             onClick={onConfirm}
-            className="px-4 h-9 text-[13px] font-semibold rounded-[var(--radius)] text-white transition-colors"
+            className="px-4 h-9 text-[13px] font-semibold rounded-[var(--radius)] transition-colors"
             style={{
-              background: current.danger ? 'var(--accent-danger)' : 'var(--accent)',
-              color: current.danger ? '#fff' : 'var(--accent-fg)',
+              background: current.danger ? 'var(--danger-solid)' : 'var(--accent)',
+              color: current.danger ? 'var(--danger-solid-fg)' : 'var(--accent-fg)',
             }}
           >
             {current.confirmLabel ?? (current.danger ? 'Delete' : 'OK')}
