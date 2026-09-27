@@ -24,6 +24,7 @@ import {
   Pencil,
   Download,
   Loader2,
+  CopyPlus,
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/tauri';
 import { useSessionStore } from '../store/sessionStore';
@@ -35,6 +36,11 @@ import { askPrompt, askConfirm } from '../store/dialogStore';
 import { notify } from '../store/toastStore';
 import { hostSummary } from '../utils/hosts';
 import { importSshHosts, importSummary, scanSshConfig } from '../utils/sshImport';
+import { savedHostId } from '../utils/tabs';
+import { isMac } from '../utils/shortcuts';
+
+// "⇧-double-click" on macOS, "Shift+double-click" elsewhere.
+const shiftDoubleClick = isMac ? '⇧-double-click' : 'Shift+double-click';
 
 const LUCIDE: Record<string, typeof Monitor> = {
   Network,
@@ -51,7 +57,8 @@ function DeviceIcon({ deviceType, size = 15 }: { deviceType: string; size?: numb
 }
 
 interface SidebarProps {
-  onConnect: (config: ConnectionConfig) => void;
+  /** Open a saved host: focuses its tab if it has one, unless `newTab`. */
+  onConnect: (config: ConnectionConfig, opts?: { newTab?: boolean }) => void;
 }
 
 export default function Sidebar({ onConnect }: SidebarProps) {
@@ -66,6 +73,7 @@ export default function Sidebar({ onConnect }: SidebarProps) {
   const removeFolder = useSessionStore((s) => s.removeFolder);
   const removeSessionFromFolder = useSessionStore((s) => s.removeSessionFromFolder);
   const moveSessionToFolder = useSessionStore((s) => s.moveSessionToFolder);
+  const updateSavedHost = useSessionStore((s) => s.updateSavedHost);
   const openQuickConnect = useSessionStore((s) => s.openQuickConnect);
   const aiAgents = useSettingsStore((s) => s.aiAgents) ?? [];
   const sessionAgents = useSettingsStore((s) => s.sessionAgents) ?? {};
@@ -102,11 +110,17 @@ export default function Sidebar({ onConnect }: SidebarProps) {
     invoke('move_session', { id: sessionId, folderId: toFolderId }).catch(() => {});
   };
 
-  // Live connection state: a saved session whose id matches a connected tab.
-  const connectedIds = useMemo(
-    () => new Set(sessions.filter((s) => s.connected).map((s) => s.sessionId)),
-    [sessions]
-  );
+  // Live connection state per saved host: how many of its tabs are connected
+  // (a host can have several sessions open; tabs point back via savedId).
+  const connectedCount = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const s of sessions) {
+      if (!s.connected) continue;
+      const id = savedHostId(s.config);
+      counts.set(id, (counts.get(id) ?? 0) + 1);
+    }
+    return counts;
+  }, [sessions]);
 
   const q = query.trim();
   // Fuzzy match across name / host / user / tags (cencli-style, ignores -_ and case).
@@ -120,7 +134,7 @@ export default function Sidebar({ onConnect }: SidebarProps) {
   const handleSearchKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter' && topMatch) {
       e.preventDefault();
-      onConnect(topMatch);
+      onConnect(topMatch, { newTab: e.shiftKey });
     } else if (e.key === 'Escape' && query) {
       // Clear the filter first; a second Esc goes on to the app as usual.
       e.preventDefault();
@@ -197,6 +211,13 @@ export default function Sidebar({ onConnect }: SidebarProps) {
     if (item) onConnect(item);
   };
 
+  // A second (third…) shell to the same device, in its own tab.
+  const handleCtxOpenNew = () => {
+    const item = ctxItem();
+    setContextMenu(null);
+    if (item) onConnect(item, { newTab: true });
+  };
+
   // Change address / user / port / jump host etc. in place — Quick Connect
   // saves it back under the same id instead of connecting.
   const handleCtxEditHost = () => {
@@ -214,12 +235,8 @@ export default function Sidebar({ onConnect }: SidebarProps) {
     if (!item || !ctx) return;
     const name = await askPrompt({ title: 'Rename session', defaultValue: item.name });
     if (!name) return;
-    const folder = folders.find((f) => f.id === ctx.folderId);
-    if (folder) {
-      updateFolder(folder.id, {
-        items: folder.items.map((s) => (s.id === item.id ? { ...s, name } : s)),
-      });
-    }
+    // The sidebar item and its open tabs (a tab's own Rename still wins).
+    updateSavedHost(item.id, { name });
     invoke('rename_session', { id: item.id, name }).catch(() => {});
   };
 
@@ -331,7 +348,7 @@ export default function Sidebar({ onConnect }: SidebarProps) {
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={handleSearchKey}
             placeholder="Search hosts…"
-            title="Enter connects to the top match · Esc clears"
+            title={`Enter connects to the top match · ${isMac ? '⇧↩' : 'Shift+Enter'} opens another session · Esc clears`}
             className="input-field w-full h-8 pl-8 pr-2 text-[12px]"
           />
         </div>
@@ -426,7 +443,7 @@ export default function Sidebar({ onConnect }: SidebarProps) {
                     <div className="px-2 py-1.5 text-[11px] text-[var(--text-muted)]">No sessions</div>
                   )}
                   {visibleItems.map((session) => {
-                    const isConnected = connectedIds.has(session.id);
+                    const liveTabs = connectedCount.get(session.id) ?? 0;
                     const summary = hostSummary(session);
                     return (
                       <div
@@ -441,11 +458,11 @@ export default function Sidebar({ onConnect }: SidebarProps) {
                         }}
                         onDragEnd={() => setDragOverFolder(null)}
                         onContextMenu={(e) => handleContextMenu(e, session.id, folder.id)}
-                        onDoubleClick={() => onConnect(session)}
-                        className={`group flex items-center gap-2 px-2 py-1.5 rounded-md cursor-pointer hover:bg-[var(--bg-tertiary)] transition-colors ${
+                        onDoubleClick={(e) => onConnect(session, { newTab: e.shiftKey })}
+                        className={`group flex items-center gap-2 px-2 py-1.5 rounded-md cursor-pointer select-none hover:bg-[var(--bg-tertiary)] transition-colors ${
                           topMatch?.id === session.id ? 'bg-[var(--bg-tertiary)]' : ''
                         }`}
-                        title={`${deviceMeta(session.deviceType).label} · drag to a folder · double-click to connect`}
+                        title={`${deviceMeta(session.deviceType).label} · drag to a folder · double-click to connect · ${shiftDoubleClick} opens another session`}
                       >
                         <DeviceIcon deviceType={session.deviceType} />
                         <div className="flex-1 min-w-0">
@@ -498,20 +515,22 @@ export default function Sidebar({ onConnect }: SidebarProps) {
                             );
                           })()}
                         </div>
-                        {isConnected && (
+                        {liveTabs > 0 && (
                           <span
-                            className="w-1.5 h-1.5 rounded-full flex-shrink-0"
-                            style={{ background: 'var(--accent-success)' }}
-                            title="Connected"
-                          />
+                            className="flex items-center gap-0.5 flex-shrink-0 text-[10px] tabular-nums text-[var(--accent-success)]"
+                            title={liveTabs === 1 ? 'Connected' : `${liveTabs} sessions connected`}
+                          >
+                            <span className="w-1.5 h-1.5 rounded-full" style={{ background: 'var(--accent-success)' }} />
+                            {liveTabs > 1 && liveTabs}
+                          </span>
                         )}
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
-                            onConnect(session);
+                            onConnect(session, { newTab: e.shiftKey });
                           }}
                           className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-[var(--border-strong)] text-[var(--accent-success)] flex-shrink-0"
-                          title="Connect"
+                          title={`Connect (${isMac ? '⇧-click' : 'Shift+click'} opens another session)`}
                         >
                           <Play size={12} />
                         </button>
@@ -585,6 +604,14 @@ export default function Sidebar({ onConnect }: SidebarProps) {
             >
               <Play size={14} className="text-[var(--accent-success)]" />
               Connect
+            </button>
+            <button
+              onClick={handleCtxOpenNew}
+              className="flex items-center gap-2.5 w-full px-3 py-1.5 text-[13px] text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]"
+              title="Another session to this host in its own tab, even if one is open"
+            >
+              <CopyPlus size={14} />
+              Open new session
             </button>
             <button
               onClick={handleCtxEditHost}

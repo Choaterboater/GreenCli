@@ -1,6 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import { Session } from '../types';
-import { isMultiSendTarget, multiSendTargetSessions, pushHistory, stepHistory } from './multiSend';
+import {
+  configModeSummary,
+  isMultiSendTarget,
+  multiSendTargetSessions,
+  pushHistory,
+  stepHistory,
+} from './multiSend';
 
 const session = (sessionId: string, connected = true): Session => ({
   sessionId,
@@ -52,5 +58,24 @@ describe('stepHistory', () => {
 
   it('does nothing with an empty history', () => {
     expect(stepHistory([], null, 'up')).toBeNull();
+  });
+});
+
+describe('configModeSummary', () => {
+  const inConfig = (id: string): Session => ({ ...session(id), configMode: true });
+
+  it('says nothing when no target is in config mode', () => {
+    expect(configModeSummary([])).toBeNull();
+    expect(configModeSummary([session('a'), session('b')])).toBeNull();
+  });
+
+  it('counts the targets in config mode', () => {
+    const targets = [inConfig('a'), inConfig('b'), session('c'), session('d'), session('e')];
+    expect(configModeSummary(targets)).toBe('2 of 5 targets in config mode');
+  });
+
+  it('reads naturally for one target or all of them', () => {
+    expect(configModeSummary([inConfig('a')])).toBe('Target is in config mode');
+    expect(configModeSummary([inConfig('a'), inConfig('b')])).toBe('All 2 targets in config mode');
   });
 });

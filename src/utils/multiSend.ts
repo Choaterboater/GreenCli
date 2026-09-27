@@ -19,6 +19,17 @@ export function multiSendTargetSessions(sessions: Session[], t: MultiSendTargets
   return sessions.filter((s) => isMultiSendTarget(s, t));
 }
 
+/** "2 of 5 targets in config mode" — a heads-up before one command lands on
+ *  devices in different modes. Null when none of the targets is. */
+export function configModeSummary(targets: Session[]): string | null {
+  const inConfig = targets.filter((s) => s.configMode).length;
+  const total = targets.length;
+  if (inConfig === 0) return null;
+  if (total === 1) return 'Target is in config mode';
+  if (inConfig === total) return `All ${total} targets in config mode`;
+  return `${inConfig} of ${total} targets in config mode`;
+}
+
 export const SEND_HISTORY_MAX = 50;
 
 /** Append a sent command, skipping blanks and an immediate repeat; keeps the newest `max`. */

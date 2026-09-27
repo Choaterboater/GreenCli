@@ -4,10 +4,11 @@ import { useSessionStore } from '../store/sessionStore';
 import { useSettingsStore } from '../store/settingsStore';
 import { askConfirm } from '../store/dialogStore';
 import type { Session } from '../types';
+import { tabLabel } from './tabs';
 
-function nameOf(s: Session): string {
-  return s.config.name || s.config.host || s.config.serialPort || 'this session';
-}
+// The tab's own label — "core-sw-01 (2)" — so closing one of two sessions to
+// a host says which.
+const nameOf = (s: Session): string => tabLabel(s);
 
 /** Confirm wording for closing `total` tabs, `live` of which are still connected. */
 export function closeConfirmText(live: Session[], total: number): { title: string; message: string } {

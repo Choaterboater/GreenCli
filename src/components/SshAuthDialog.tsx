@@ -5,6 +5,7 @@ import { open as openDialog } from '@tauri-apps/api/dialog';
 import { useSessionStore } from '../store/sessionStore';
 import { notify } from '../store/toastStore';
 import { hostSummary } from '../utils/hosts';
+import { tabLabel } from '../utils/tabs';
 
 export interface AuthCredentials {
   authType: 'password' | 'key' | 'agent';
@@ -158,7 +159,9 @@ export default function SshAuthDialog({ onAuthenticate }: SshAuthDialogProps) {
             {/* Name the device — with several prompts queued, "Authentication"
                 alone didn't say which session this password was for. */}
             <h2 className="text-[16px] font-semibold text-[var(--text-primary)] truncate">
-              {pendingConnection.name || pendingConnection.host || 'Authentication'}
+              {/* The tab's label, so two sessions to one host ("core-sw-01 (2)")
+                  asking for a password at once can be told apart. */}
+              {tabLabel({ config: pendingConnection })}
             </h2>
           </div>
           <button

@@ -26,6 +26,8 @@ import { registerTerminalActionAdapter, unregisterTerminalActionAdapter } from '
 import { countPasteLines, useTerminalToolsStore } from '../store/terminalToolsStore';
 import { isAppChord, shortcutLabel } from '../utils/shortcuts';
 import { bufferToText, scrollbackFileName } from '../utils/scrollback';
+import { detectDevicePrompt } from '../utils/devicePrompt';
+import { tabLabel } from '../utils/tabs';
 import { isTauri, browserSave, tauriWriteText } from '../utils/fileSystem';
 import { save as saveDialog } from '@tauri-apps/api/dialog';
 import { appWindow } from '@tauri-apps/api/window';
@@ -89,7 +91,7 @@ const SEMANTIC_LINK_PATTERNS: Array<{ kind: string; regex: RegExp; capture?: num
 
 function sessionLabel(sessionId: string): string {
   const session = useSessionStore.getState().sessions.find((s) => s.sessionId === sessionId);
-  if (session) return session.config.name || session.config.host || session.config.serialPort || 'Session';
+  if (session) return tabLabel(session);
   // Pop-out windows have no session list; the main window hands the name
   // over in localStorage (see popOutSession in App.tsx).
   try {
@@ -917,6 +919,16 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
           bufferRef.current += text;
           if (bufferRef.current.length > 5000) {
             bufferRef.current = bufferRef.current.slice(-3000);
+          }
+
+          // The device prompt the output ends at → tab hostname + CONFIG
+          // badge. Cheap (only the trailing line is parsed; mid-output and
+          // command echo match nothing), and the store ignores an unchanged
+          // prompt, so this ~8ms path doesn't churn the tab strip. Pop-out
+          // windows skip it: the main window's terminal sees the same output.
+          if (!isPopOutWindow) {
+            const prompt = detectDevicePrompt(bufferRef.current);
+            if (prompt) useSessionStore.getState().setPromptState(sessionId, prompt);
           }
 
           // Output triggers: toast (+ optional beep) when a keyword/regex appears.

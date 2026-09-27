@@ -321,8 +321,8 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
         void jumpPassword;
         void privateKey;
         void keyPassphrase;
-        // Updates the sidebar item and an open tab of it, so Reconnect uses the new details.
-        useSessionStore.getState().updateSessionConfig(updated.id, safe);
+        // Updates the sidebar item and every open tab of it, so Reconnect uses the new details.
+        useSessionStore.getState().updateSavedHost(updated.id, safe);
         notify.success('Host updated', updated.name);
         setShowQuickConnect(false);
         return;

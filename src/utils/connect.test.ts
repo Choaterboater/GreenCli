@@ -58,6 +58,24 @@ describe('buildConnectPayload', () => {
     expect(Object.keys(payload).sort()).toEqual([...ALL_KEYS].sort());
   });
 
+  it("sends the TAB's id as the session id, never the saved host's", () => {
+    const tab: ConnectionConfig = {
+      id: 'tab-2',
+      savedId: 'saved-core',
+      copyNumber: 2,
+      tabName: 'uplink work',
+      name: 'core-sw-01',
+      protocol: 'ssh',
+      host: '10.1.1.1',
+      deviceType: 'aruba-cx',
+    };
+    const payload = buildConnectPayload(tab, {}, BEHAVIOR);
+    expect(payload.id).toBe('tab-2');
+    expect(payload.name).toBe('core-sw-01');
+    // Tab-only fields (savedId, copyNumber, tabName) don't reach the backend.
+    expect(Object.keys(payload).sort()).toEqual([...ALL_KEYS].sort());
+  });
+
   it('maps camelCase config fields onto the wire names', () => {
     const payload = buildConnectPayload(
       {

@@ -54,4 +54,10 @@ describe.each(['dark', 'light'] as const)('%s theme text tokens', (theme) => {
   it('keeps solid danger buttons readable', () => {
     expect(contrastRatio(t['danger-solid-fg'], t['danger-solid'])).toBeGreaterThanOrEqual(4.5);
   });
+
+  it('keeps the CONFIG badge text readable on every surface', () => {
+    for (const bg of surfaces) {
+      expect(contrastRatio(t['config-mode'], t[bg]), `config-mode on ${bg}`).toBeGreaterThanOrEqual(4.5);
+    }
+  });
 });

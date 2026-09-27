@@ -96,6 +96,8 @@ export function buildConnectPayload(
   behavior: ConnectBehavior,
 ) {
   return {
+    // The backend keys the session by this: it is the TAB's id, so two tabs
+    // of one saved host are two sessions (config.savedId stays front-end).
     id: config.id,
     name: config.name,
     protocol: config.protocol,

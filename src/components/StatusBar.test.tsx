@@ -85,6 +85,25 @@ describe('StatusBar Component', () => {
     expect(screen.getByText('Connected')).toBeInTheDocument();
   });
 
+  it('shows config mode and the prompt hostname read from the device', () => {
+    const session = {
+      sessionId: 's1',
+      connected: true,
+      connectionStatus: 'connected',
+      promptHost: 'core-sw-01',
+      configMode: true,
+      config: { name: '10.0.0.1', protocol: 'ssh', host: '10.0.0.1', deviceType: 'aruba-cx' },
+    };
+    mockSessions([session], 's1');
+    const { rerender } = render(<StatusBar />);
+    expect(screen.getByText('Config mode')).toBeInTheDocument();
+    expect(screen.getByText(/10\.0\.0\.1 \(core-sw-01\)/)).toBeInTheDocument();
+
+    mockSessions([{ ...session, configMode: false }], 's1');
+    rerender(<StatusBar />);
+    expect(screen.queryByText('Config mode')).not.toBeInTheDocument();
+  });
+
   it('calls onDisconnect when clicking the connected status', () => {
     const mockSession = {
       sessionId: 'session-123',

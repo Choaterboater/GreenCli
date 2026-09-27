@@ -250,6 +250,11 @@ export default function StatusBar({ onReconnect, onDisconnect, onMapDevice }: St
                   {activeSession.config.port && activeSession.config.port !== 22
                     ? `:${activeSession.config.port}`
                     : ''}
+                  {/* The hostname the device's prompt reports, when the
+                      address alone doesn't say which box this is. */}
+                  {activeSession.promptHost &&
+                    activeSession.promptHost !== activeSession.config.host &&
+                    ` (${activeSession.promptHost})`}
                 </>
               )}
             </span>
@@ -298,6 +303,23 @@ export default function StatusBar({ onReconnect, onDisconnect, onMapDevice }: St
               {statusLabel}
             </span>
           </div>
+
+          {/* Config mode, read from the device prompt — the same amber as the
+              tab's CONFIG badge. */}
+          {activeSession.configMode && (
+            <div
+              className="flex items-center gap-1.5 mr-4 px-1.5 py-0.5 rounded font-medium"
+              style={{
+                color: 'var(--config-mode)',
+                background: 'var(--config-mode-soft)',
+                boxShadow: 'inset 0 0 0 1px var(--config-mode-ring)',
+              }}
+              title={`${activeSession.promptHost || 'The device'} is in configuration mode — what you type changes its configuration.`}
+            >
+              <span className="w-1.5 h-1.5 rounded-full" style={{ background: 'var(--config-mode)' }} />
+              Config mode
+            </div>
+          )}
 
           {/* Serial BREAK — the only way to interrupt a boot into the bootloader
               from a console, and there's no key for it in a terminal. */}

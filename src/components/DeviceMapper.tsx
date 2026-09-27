@@ -16,6 +16,7 @@ import {
   saveSessionPayload,
 } from '../utils/deviceProfiles';
 import { notify } from '../store/toastStore';
+import { savedHostId, tabLabel } from '../utils/tabs';
 
 interface DeviceMapperProps {
   sessionId: string | null;
@@ -38,6 +39,7 @@ export default function DeviceMapper({ sessionId, onClose }: DeviceMapperProps) 
   const sessions = useSessionStore((s) => s.sessions);
   const folders = useSessionStore((s) => s.folders);
   const updateSessionConfig = useSessionStore((s) => s.updateSessionConfig);
+  const updateSavedHost = useSessionStore((s) => s.updateSavedHost);
   const customDeviceProfiles = useSettingsStore((s) => s.customDeviceProfiles);
   const setLastUsedDeviceType = useSettingsStore((s) => s.setLastUsedDeviceType);
   const setLastUsedDeviceProfileId = useSettingsStore((s) => s.setLastUsedDeviceProfileId);
@@ -97,15 +99,21 @@ export default function DeviceMapper({ sessionId, onClose }: DeviceMapperProps) 
       deviceProfileId: profile.id,
       startupCommands: session.config.startupCommands || profile.startupCommands,
     };
-    const folder = folders.find((f) => f.items.some((item) => item.id === session.config.id));
-    const savedItem = folder?.items.find((item) => item.id === session.config.id);
+    // The tab's config.id is its session id; the saved host is savedHostId.
+    // Saving under the tab id would add a copy of the host to the sidebar.
+    const hostId = savedHostId(session.config);
+    const folder = folders.find((f) => f.items.some((item) => item.id === hostId));
+    const savedItem = folder?.items.find((item) => item.id === hostId);
     const nextConfig = {
       ...(savedItem ?? {}),
       ...session.config,
+      id: hostId,
       tags: savedItem?.tags ?? session.config.tags,
       ...updates,
     };
-    updateSessionConfig(sessionId, updates);
+    // A saved host's mapping applies to every open tab of it.
+    if (folder) updateSavedHost(hostId, updates);
+    else updateSessionConfig(sessionId, updates);
     setLastUsedDeviceType(profile.deviceType);
     setLastUsedDeviceProfileId(profile.id);
 
@@ -115,7 +123,7 @@ export default function DeviceMapper({ sessionId, onClose }: DeviceMapperProps) 
         folderId: folder.id,
       }).catch((e) => notify.warning('Mapping saved only for this open tab', String(e)));
     }
-    notify.success('Device mapped', `${session.config.name || session.config.host || 'Session'} now uses ${profile.name}.`);
+    notify.success('Device mapped', `${tabLabel(session)} now uses ${profile.name}.`);
     onClose();
   };
 
@@ -220,7 +228,7 @@ export default function DeviceMapper({ sessionId, onClose }: DeviceMapperProps) 
             <div>
               <h2 className="text-[16px] font-semibold text-[var(--text-primary)]">Map Device</h2>
               <p className="text-[11px] text-[var(--text-muted)]">
-                {session.config.name || session.config.host || 'Current session'}
+                {tabLabel(session)}
               </p>
             </div>
           </div>

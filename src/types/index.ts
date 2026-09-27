@@ -61,6 +61,21 @@ export interface ConnectionConfig {
   jumpPort?: number;
   jumpUsername?: string;
   jumpPassword?: string;
+  // ── Open-tab fields (never written to the saved host) ──
+  // On a tab's config, `id` is that TAB's own session id (the backend keys the
+  // connection by it), so one saved host can have several tabs open.
+  /** The saved sidebar host this tab was opened from — or, for an ad-hoc
+   *  connection, the connection it was opened or duplicated from. Tabs sharing
+   *  it are sessions to one host: they share its AI agent, sidebar dot,
+   *  recents entry and "(2)" numbering. Absent on tabs from older workspaces,
+   *  where the tab id WAS the saved id (see savedHostId in utils/tabs). */
+  savedId?: string;
+  /** Which open copy of the host this tab is (2, 3…), shown as
+   *  "core-sw-01 (2)". Unset for the first one. */
+  copyNumber?: number;
+  /** Name the user gave just this tab (Rename tab). Wins over every
+   *  automatic label; the saved host keeps its own name. */
+  tabName?: string;
 }
 
 export interface Session {
@@ -69,6 +84,10 @@ export interface Session {
   connectionStatus?: 'connected' | 'disconnected' | 'connecting' | 'reconnecting';
   sessionId: string;
   lastActivity?: number;
+  /** Hostname read from the device's prompt (utils/devicePrompt). */
+  promptHost?: string;
+  /** The device's prompt shows configuration mode. */
+  configMode?: boolean;
 }
 
 export interface SessionFolder {
