@@ -1,10 +1,10 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import { TerminalSettings, TerminalColorScheme, DEFAULT_SETTINGS, AiProvider, CentralAccount, AiAgent, DeviceProfile, DeviceType } from '../types';
+import { TerminalSettings, TerminalColorScheme, DEFAULT_SETTINGS, AiProvider, CentralAccount, AiAgent, DeviceProfile, DeviceType, LoginProfile, ThemePreference } from '../types';
 
 interface SettingsState extends TerminalSettings {
   // Actions
-  setTheme: (theme: 'dark' | 'light') => void;
+  setTheme: (theme: ThemePreference) => void;
   setColorScheme: (scheme: TerminalColorScheme) => void;
   setFontSize: (size: number) => void;
   setFontFamily: (family: string) => void;
@@ -23,6 +23,7 @@ interface SettingsState extends TerminalSettings {
   setMiddleClickPaste: (enabled: boolean) => void;
   setLastUsedDeviceType: (deviceType: DeviceType) => void;
   setLastUsedDeviceProfileId: (profileId: string) => void;
+  setLastUsedSshUsername: (username: string) => void;
   addDeviceProfile: (profile: DeviceProfile) => void;
   updateDeviceProfile: (id: string, patch: Partial<DeviceProfile>) => void;
   removeDeviceProfile: (id: string) => void;
@@ -39,6 +40,10 @@ interface SettingsState extends TerminalSettings {
   updateAiAgent: (id: string, patch: Partial<AiAgent>) => void;
   removeAiAgent: (id: string) => void;
   setSessionAgent: (sessionId: string, agentId: string | null) => void;
+  // Shared logins (metadata only — passwords are in the vault)
+  addLoginProfile: (profile: LoginProfile) => void;
+  updateLoginProfile: (id: string, patch: Partial<Omit<LoginProfile, 'id'>>) => void;
+  removeLoginProfile: (id: string) => void;
   resetToDefaults: () => void;
   updateSettings: (partial: Partial<TerminalSettings>) => void;
 }
@@ -70,6 +75,7 @@ export const useSettingsStore = create<SettingsState>()(
       setMiddleClickPaste: (middleClickPaste) => set({ middleClickPaste }),
       setLastUsedDeviceType: (lastUsedDeviceType) => set({ lastUsedDeviceType }),
       setLastUsedDeviceProfileId: (lastUsedDeviceProfileId) => set({ lastUsedDeviceProfileId }),
+      setLastUsedSshUsername: (lastUsedSshUsername) => set({ lastUsedSshUsername }),
       setAiModel: (aiModel) => set({ aiModel }),
       setAiProvider: (aiProvider) => set({ aiProvider }),
       setOllamaUrl: (ollamaUrl) => set({ ollamaUrl }),
@@ -123,7 +129,18 @@ export const useSettingsStore = create<SettingsState>()(
             s.lastUsedDeviceProfileId === id ? 'generic' : s.lastUsedDeviceType,
         })),
 
-      resetToDefaults: () => set({ ...DEFAULT_SETTINGS }),
+      addLoginProfile: (profile) =>
+        set((s) => ({ loginProfiles: [...(s.loginProfiles ?? []), profile] })),
+      updateLoginProfile: (id, patch) =>
+        set((s) => ({
+          loginProfiles: (s.loginProfiles ?? []).map((p) => (p.id === id ? { ...p, ...patch } : p)),
+        })),
+      removeLoginProfile: (id) =>
+        set((s) => ({ loginProfiles: (s.loginProfiles ?? []).filter((p) => p.id !== id) })),
+
+      // Logins survive a settings reset: folders and saved hosts point at them
+      // and their passwords sit in the vault, which the reset promises to keep.
+      resetToDefaults: () => set((s) => ({ ...DEFAULT_SETTINGS, loginProfiles: s.loginProfiles })),
 
       updateSettings: (partial) => set((state) => ({ ...state, ...partial })),
     }),

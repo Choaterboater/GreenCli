@@ -7,6 +7,10 @@ This file tracks the redesign + hardening effort. It's seeded from a 14-agent
 audit that read every subsystem and produced **74 confirmed bugs**, **73 UX
 issues**, and **105 missing features**. Items are grouped Done / Next / Backlog.
 
+> **Since removed:** Juniper **Apstra** support was cut in `b813389` (Aug 2026 —
+> client, AI tool, settings, API Explorer target and configlet templates). The
+> Apstra entries in Passes 6, 8 and 11 stay below as history, marked _removed_.
+
 ---
 
 ## ✅ Done — Pass 1 (HPE rebrand + premium redesign + correctness)
@@ -84,20 +88,20 @@ high-severity + most medium/low ones are fixed:
 - **cencli ideas applied/queued** (from Pack3tL0ss/central-api-cli): **fuzzy matching** (case-insensitive, ignores `-`/`_`) now powers the command palette (fixes the substring-only bug) and the sidebar host search. Queued cencli-inspired items below.
 
 ### cencli-inspired (Aruba Central) — queued
-- **Output formats in API Explorer**: render array-of-objects responses as a sortable table + copy-as-CSV / YAML / JSON (cencli's `--out`).
-- **Multi-account / workspace** for Central (cencli `--account`): store several Central credential sets, switch quickly.
-- **Token paste + refresh** auth option for Central (in addition to client-credentials).
+- ~~**Output formats in API Explorer**~~ ✅ Pass 8 — sortable table, copy as CSV / JSON, CSV export. YAML output not done.
+- ~~**Multi-account / workspace** for Central~~ ✅ Pass 9 (cencli `--account`).
+- ~~**Token paste + refresh** auth option for Central~~ ✅ Pass 9 — paste only; a pasted token isn't refreshed.
 - **Expanded Central catalog** + **device "do" actions** (reboot / blink LED / bounce PoE / move) — overlaps with the user's centralmcp `aruba-ops` tools (prefer routing through MCP).
 - **Batch ops** (bulk rename/move) building on the Bulk Runner.
 
 ## ✅ Done — Pass 6 (roadmap features 5–8)
 
 - **#5 AOS-8 + AOS-S REST tools** — `api/onprem.rs`: ArubaOS-8 controller/conductor (login→UIDARUBA, `showcommand` JSON) + AOS-S (`/rest/v7`). New AI tools `aruba_aos8_show` / `aruba_aoss_rest` (auto-login with SSH creds), gated by the "Aruba device REST APIs" toggle by device type. (no Central needed)
-- **#6 Juniper Apstra** — `ApstraClient` (AOS REST, token auth + auto-refresh). Settings → Juniper Apstra config + `juniper_apstra` AI tool (opt-in toggle). `apstra_configure`/`apstra_request`.
+- ~~**#6 Juniper Apstra**~~ — _removed in `b813389`._ `ApstraClient` (AOS REST, token auth + auto-refresh). Settings → Juniper Apstra config + `juniper_apstra` AI tool (opt-in toggle). `apstra_configure`/`apstra_request`.
 - **#7 SFTP ops + drag-drop** — backend mkdir/delete/rename; rewrote the browser on the design system with New Folder / Rename / Delete + native Tauri **file-drop upload**.
 - **#8 SSH agent auth** — implemented `AuthType::Agent` via russh-keys AgentClient (tries each loaded identity); new **SSH Agent** tab in the auth dialog.
 
-_All roadmap items 1–8 done. `cargo check` + `tsc` + `vite build` all green. Untested-against-hardware: the AOS-8/AOS-S/Apstra REST + SSH-agent paths (no devices here) — flagged for validation._
+_All roadmap items 1–8 done. `cargo check` + `tsc` + `vite build` all green. Untested-against-hardware: the AOS-8/AOS-S/Apstra (since removed) REST + SSH-agent paths (no devices here) — flagged for validation._
 
 ## ✅ Done — Pass 7 (network-engineer essentials)
 
@@ -111,8 +115,8 @@ _Known follow-up: serial-settings + startup-commands aren't persisted on SAVED s
 ## ✅ Done — Pass 8 (cencli output + Apstra depth)
 
 - **API Explorer output formats** (cencli `--out`): array-of-objects / map responses render as a **sortable table** with a Table↔JSON toggle and **copy-as-CSV**; handles CX depth=2 maps too.
-- **Apstra endpoint catalog + target** in the API Explorer (parallel to Aruba Central): blueprints / anomalies / nodes / security-zones / virtual-networks / racks / configlets / systems / design (templates, rack-types, logical-devices, interface-maps) / resources (ASN/IP/VNI pools). Modeled on terraform-provider-apstra / apstra-go-sdk. The `juniper_apstra` AI tool now documents these paths.
-- **Apstra configlet templates** in the editor (Junos NTP / SNMPv3 / syslog), from Juniper-SE/Apstra-configlets.
+- ~~**Apstra endpoint catalog + target**~~ _(removed in `b813389`)_ in the API Explorer (parallel to Aruba Central): blueprints / anomalies / nodes / security-zones / virtual-networks / racks / configlets / systems / design (templates, rack-types, logical-devices, interface-maps) / resources (ASN/IP/VNI pools). Modeled on terraform-provider-apstra / apstra-go-sdk. The `juniper_apstra` AI tool now documents these paths.
+- ~~**Apstra configlet templates**~~ _(removed in `b813389`)_ in the editor (Junos NTP / SNMPv3 / syslog), from Juniper-SE/Apstra-configlets.
 
 ## ✅ Done — Pass 9 (cencli backlog + persistence)
 
@@ -137,7 +141,7 @@ The headline assurance feature — declare desired state, evaluate live complian
 - **Critical**: corrupt/wrong-version `vault.enc` was silently re-initialized to EMPTY on next unlock, wiping every saved secret → load() now errors + refuses to overwrite, atomic temp+rename writes, corrupt file preserved.
 - **Security**: plaintext secrets removed from localStorage (Central token/secret, Apstra password, API key, per-account secrets via `partialize`); `ai_keys.json` + vault + MCP creds now 0600 (atomic create); vault plaintext zeroized.
 - **Backend correctness**: SSH port-forward channel leak (JoinSet); `want_reply=true` PTY/shell; jump-host key/agent auth; known_hosts locked+atomic; keyboard-interactive no longer blasts the password into OTP prompts; MCP reader busy-spin + server-request id collision + collision-free creds filenames; telnet `IAC IAC`; SFTP streaming + overwrite guard; AI SSE byte-buffered UTF-8 + idle timeout + real cancel + no-content error; buffer-leak / ghost-session / double-disconnect.
-- **Frontend correctness**: destructive-action confirms (Reset, MCP delete, SFTP drop/overwrite, ConfigEditor discard); dialog FIFO queue; toast cap; BulkRunner command-snapshot + empty=error; ApiExplorer version + render caps; Terminal decoder-reset-on-reconnect + trigger cross-chunk + add-time regex validation; AI Stop kills the bubble + backend stream; **Apstra now actually works** (camelCase arg + `/api/api` path); startup-commands on auth-dialog retry; re-open-connected-host focuses tab.
+- **Frontend correctness**: destructive-action confirms (Reset, MCP delete, SFTP drop/overwrite, ConfigEditor discard); dialog FIFO queue; toast cap; BulkRunner command-snapshot + empty=error; ApiExplorer version + render caps; Terminal decoder-reset-on-reconnect + trigger cross-chunk + add-time regex validation; AI Stop kills the bubble + backend stream; **Apstra now actually works** (camelCase arg + `/api/api` path; _Apstra since removed in `b813389`_); startup-commands on auth-dialog retry; re-open-connected-host focuses tab.
 
 **Deferred (deliberate, with rationale):**
 - **onprem-1** — TLS verify default: kept permissive for on-prem device REST (self-signed field gear is the norm; flipping to verify-on would break logins by default). ApiExplorer has a per-login toggle and the Apstra failure is no longer swallowed. Proper follow-up: a global "verify device TLS" setting (product decision).
@@ -145,7 +149,7 @@ The headline assurance feature — declare desired state, evaluate live complian
 - **term-5** — redundant global resize dispatch: cosmetic RPC churn; removing risks a missed refit.
 - **aw-4** — unreachable `!result.success` branch: dead-code cleanup only, no behavior change.
 
-_Still not exercised against real hardware (no gear/keys here): AOS-8/AOS-S/Apstra REST, ssh-agent, keyboard-interactive, MCP, CX REST, and the new concurrency/capture paths — reasoned, not runtime-proven._
+_Still not exercised against real hardware (no gear/keys here): AOS-8/AOS-S/Apstra (since removed) REST, ssh-agent, keyboard-interactive, MCP, CX REST, and the new concurrency/capture paths — reasoned, not runtime-proven._
 
 ## ✅ Done — Pass 12 (terminal UX: iTerm2-class ergonomics, 2026-06-03)
 
@@ -160,13 +164,13 @@ _Still not exercised against real hardware (no gear/keys here): AOS-8/AOS-S/Apst
 Already had: search overlay, multi-send/broadcast, vault (≈password manager), profiles/tags, fast xterm.js renderer, URL clicking, scrollback/cursor settings, **session logging** (`start_session_log`), **output triggers** (`triggersStore`).
 - ~~**Paste history** (Cmd+Shift+H) — ring buffer of recent pastes/sends.~~ ✅ Paste-history popover ships (StatusBar); only the Cmd+Shift+H binding is still missing.
 - **Semantic history** — Cmd-click a file path in output to open it in the editor panel.
-- **Regex toggle in search overlay** (SearchAddon supports it).
-- **Smart selection** — tune `wordSeparator` so double-click grabs IPs/paths cleanly.
-- **Restore window arrangement** — reopen last session set + pane layout on launch.
-- **3+ split panes / grid** — replace the 2-pane model with a flat pane list (research notes in Pass-12 planning); resizable dividers.
+- ~~**Regex toggle in search overlay**~~ ✅ `.*` toggle in the Find bar (the error/warning chips are regexes too).
+- ~~**Smart selection**~~ ✅ `wordSeparator` (Terminal.tsx) splits only on spaces, brackets and quotes, so double-click grabs IPs, MACs, `1/1/1` ports and paths whole.
+- **Restore window arrangement** — _partly:_ open tabs come back after a restart as disconnected, reconnectable tabs (workspace snapshot in App.tsx); the split-pane layout isn't restored.
+- ~~**3+ split panes / grid**~~ ✅ up to 4 side-by-side panes (`MAX_PANES`) with resizable dividers and a session picker per pane. A grid beyond 4 is still open.
 - **Drag a tab out → pop-out window** (today it's a button; iTerm2 does both).
-- **Paste-guard setting** — per-user toggle + line-count threshold.
-- **Silence/activity notifications** — notify when a long command finishes on a background tab.
+- ~~**Paste-guard setting**~~ ✅ Settings → Terminal: on/off + line-count threshold (`pasteGuardEnabled` / `pasteGuardLineThreshold`).
+- ~~**Silence/activity notifications**~~ ✅ optional "Silence alerts after input" toast when a session stays quiet N seconds after you type (Settings → Terminal, off by default); background tabs already had activity dots.
 
 ## ✅ Done — Pass 13 (adversarial bug scrub #2 + features, 2026-06-11)
 
@@ -221,7 +225,7 @@ All green: `tsc` + `vite build` + `cargo check` (0 warnings) + vault unit tests.
 ### Security / vault
 - **KDF params persisted per-vault** — the Argon2id m/t/p cost is now stored in the envelope (serde-defaulted to the 0.5.x values), so a future `argon2` default change can never lock users out. Backward-compat covered by a new regression test (a vault whose JSON lacks the fields still unlocks).
 - **Durable vault writes** — `save()` now creates the temp 0600-from-birth, `fsync`s it, renames, then `fsync`s the parent dir; a present-but-empty `vault.enc` is refused (not silently re-initialized), closing a power-loss credential-loss window. chmod failures now propagate.
-- **Master-password floor 4 → 12** (frontend + backend, create/rotate paths only), plus `vault_change_password` finally exposed as a command.
+- **Master-password floor 4 → 12** (frontend + backend, create/rotate paths only), plus `vault_change_password` finally exposed as a backend command. _No UI calls it yet — there is no change-master-password screen (see Next)._
 - **AI write-confirmation gate** — the AI tool loop (prompt-injection-reachable) now confirms config-changing / destructive `send_terminal_command`, non-GET REST, and write-looking MCP calls, matching the manual paths.
 - **Bulk-runner CSV formula-injection** neutralized; known_hosts now namespaced per key-algorithm (no spurious MITM lockout).
 
@@ -238,7 +242,7 @@ All green: `tsc` + `vite build` + `cargo check` (0 warnings) + vault unit tests.
 - WCAG contrast fixes (muted text, accent-on-fill buttons), visible selection highlight and light-mode toggle knob, StatusBar truncation, `prefers-reduced-motion`.
 
 ### Features
-- **Serial BREAK** wired end-to-end (`serial_send_break`) for boot-interrupt / ROMMON.
+- **Serial BREAK** (`serial_send_break`) for boot-interrupt / ROMMON. _At Pass 14 only the backend command existed; the status-bar **Send BREAK** button (with a confirm, connected serial sessions only) came in `8cdff3d`, so it is end-to-end now._
 - **RSA key generation** available behind the opt-in `rsa-keys` cargo feature (Ed25519 remains default).
 
 ### Deferred (see backlog)
@@ -246,14 +250,49 @@ Vault idle auto-lock; SFTP progress/queue (needs event plumbing + UI); per-vendo
 API-client de-serialization off the lock (medium perf); local-PTY orphaned-job
 reap (needs `libc`, historically avoided). Feature ideas captured in the PR.
 
+## ✅ Done — backlog items already shipped (verified in code, 2026-09-27)
+
+These sat in Next but are in the app:
+- **Mist Cloud API** in the API Explorer — `mist` target beside Device and Central, `MIST_ENDPOINTS` catalog, token auth from Settings → Cloud → Juniper Mist (`mist_configure` / `mist_request`).
+- **Parallel bulk runs** — Bulk Runner runs devices through a pool of 6 workers; it is no longer sequential.
+- **iTerm2 parity** — regex toggle in Find, smart selection (`wordSeparator`), paste-guard setting, silence alerts, up to 4 split panes. Details in the Pass 12 list.
+- **cencli items** — API Explorer output formats (table, CSV copy + export) and Central multi-account (Passes 8 and 9).
+
+## ✅ Done — Pass 15 (SSH watchdog, multi-session connect, UX rounds 1–2, 2026-09-27)
+
+### SSH + connect fixes
+- **Watchdog** no longer resets idle or busy sessions: a silent prompt or a device that doesn't echo typeahead (Junos commit, `write memory`) only raises suspicion, and an SSH-level ping decides. Idle tabs used to drop to "Reconnecting" after 5 minutes. First connect is bounded at 60s; new sessions open at the terminal's real size.
+- **Multi-session connect flow**: vault-parked connects and password prompts queue instead of sharing one slot; one tab's failed login no longer tears down another; no empty-password login before asking (each one counted toward TACACS/RADIUS lockout); only real credential failures open the password dialog.
+- **Copy**: Ctrl/Cmd+C with a panel selection copies instead of sending ^C; smart links copy only on Ctrl/Cmd+click; copy-on-select works when the drag ends outside the terminal; macOS Option+drag selects inside mouse-reporting TUIs.
+
+### Round 1 — UX fixes
+- **Keyboard**: OS-correct shortcuts and hints; tab switching from inside a session (Ctrl+Tab, Ctrl+PgUp/PgDn, ⌘⇧[ ], ⌘1-9 / Alt+1-9); macOS Option-as-Meta setting.
+- **Split view**: clicking a pane makes it the active session, so Close / Find / snippets / logging act on it; each pane has a picker and close button.
+- **Close confirm** for connected tabs (setting); pop-out windows get a header (status, Reconnect, Find, Dock); a dropped session shows a Disconnected bar and Enter reconnects.
+- **Logging**: plain-text session logs (escape codes stripped), dated file names, optional per-line timestamps, auto-log; **Send BREAK** for serial.
+- **Config editor safety**: sends stop at the first device error and show the failing line; the dangerous-line check no longer flags `no shutdown`; per-device diff baseline.
+- Bulk Runner confirms its targets and handles paging; snippets insert without Enter (Shift+click runs) and ask for `{{placeholders}}`; the multi-send bar targets the active session by default and confirms risky commands sent to several sessions.
+- **Toasts** top-right with actions, dedupe and grouping; danger dialogs focus Cancel.
+- **Contrast** (muted text 5.7:1 dark / 5.0:1 light, per-theme scrim, contrast unit test) and a **System** theme that follows the OS live.
+- **Side panels** keep the terminal at ≥480px (shrink, or close the oldest panel) and remember their widths.
+- **Connect dialogs**: editable username and the last rejection inline in the password dialog; the vault prompt names who is waiting and has Skip.
+- **Saved hosts**: Edit… opens Quick Connect prefilled; Quick Connect takes `user@host:port` and lists serial ports.
+- **Theme tokens**: hardcoded GitHub-dark colours replaced by theme tokens (new status `-soft`/`-border`, violet and `accent-2-fg` tokens), so every panel follows the light theme.
+
+### Round 2 — features
+- **Change Jobs**: one config change to many devices — `${var}` table (CSV), pre/post checks, dry run, canary then pause (confirm / stop / roll back), rollback timers (AOS-CX `checkpoint auto`, Junos `commit confirmed`), results grid with before/after diff and CSV export.
+- **Shared logins**: one username + vault password used by many hosts (the TACACS account); folder default + per-host override; jump-host logins with keyboard-interactive; update a login from the password dialog.
+- **Host imports**: one dialog for CSV, SecureCRT (Sessions folder or XML), Aruba Central, Juniper Mist and `~/.ssh/config`, with preview, dedupe and folder mapping. Passwords are never imported.
+- **Tabs per saved host + prompt-aware tabs**: several sessions to one host ("core-sw-01 (2)") and a tab menu (Duplicate, Rename, Reconnect, …); tabs read the device prompt (AOS-CX / AOS-S / AOS-8 / Instant / Junos) for the hostname and turn amber with a CONFIG badge in config mode.
+
 ## ⏭️ Next — remaining backlog
 
 - **Vault auto-lock on idle** — MEDIUM, S.
+- **Change master password screen** — `vault_change_password` exists in the backend (Pass 14) but nothing in the app calls it. — MEDIUM, S.
 - **SFTP transfer progress/queue + cancel; chmod** — MEDIUM, M (rename/delete/mkdir/drag-drop ✅ done).
-- **Mist Cloud API catalog** in the API Explorer (token auth) + Junos NETCONF. _(Mist reachable via MCP today.)_
+- **Junos NETCONF** in the API Explorer. (Mist Cloud API ✅ — see above.)
 - **Classic Central 3-leg OAuth** (username/password/customer_id → auth code → refresh) if creds-mode-on-classic is wanted; today: paste-token mode for classic, client-credentials for new Central/GLP.
-- **Parallel bulk execution** (Bulk Runner is deliberately sequential today).
-- iTerm2 parity leftovers: regex toggle in search, smart selection (`wordSeparator`), restore window arrangement, drag-tab-out, per-pane grid beyond 4.
-- cencli-inspired Central items (output formats/CSV, multi-account, device "do" actions via MCP, batch ops).
+- iTerm2 parity leftovers: restore the split-pane layout on launch (tabs already come back), drag-tab-out, a Cmd+Shift+H binding for paste history, semantic history (open a path from output in the editor), a pane grid beyond 4.
+- cencli-inspired Central items: device "do" actions (via MCP `aruba-ops`), batch ops (bulk rename/move), YAML output.
 
 _Full per-finding detail lives in the audit outputs; ping to regenerate._

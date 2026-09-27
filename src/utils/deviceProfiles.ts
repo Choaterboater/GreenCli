@@ -238,6 +238,9 @@ export function saveSessionPayload(config: ConnectionConfig) {
     jump_host: config.jumpHost,
     jump_port: config.jumpPort,
     jump_username: config.jumpUsername,
+    // Shared login assignments — ids only, the passwords stay in the vault.
+    login_profile_id: config.loginProfileId,
+    jump_login_profile_id: config.jumpLoginProfileId,
   };
 }
 

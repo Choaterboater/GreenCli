@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/tauri';
 import { WebviewWindow } from '@tauri-apps/api/window';
 import { fuzzyScore } from '../utils';
 import { notify } from '../store/toastStore';
+import { useTheme } from '../hooks/useTheme';
 import {
   Search,
   Plug,
@@ -25,12 +26,25 @@ import {
   ZoomIn,
   ZoomOut,
   RotateCcw,
+  Download,
+  CopyPlus,
+  GitPullRequestArrow,
+  Waypoints,
+  Target,
+  PanelRight,
+  Maximize2,
 } from 'lucide-react';
 import { useSessionStore } from '../store/sessionStore';
 import { getTerminalActionAdapter } from '../utils/terminalActions';
+import { openTerminalSearch } from '../utils/terminalSearch';
+import { closeSessions } from '../utils/closeSessions';
+import { shortcutLabel } from '../utils/shortcuts';
 import { useSettingsStore } from '../store/settingsStore';
 import { useRecentStore, timeAgo, RecentConnection } from '../store/recentStore';
 import { ConnectionConfig } from '../types';
+import { tabLabel } from '../utils/tabs';
+import { useSidePanelStore } from '../store/sidePanelStore';
+import { closeSidePanel, showSidePanel, toggleSessionsSidebar } from './sidePanelActions';
 
 interface PaletteAction {
   id: string;
@@ -43,11 +57,13 @@ interface PaletteAction {
 
 interface CommandPaletteProps {
   onConnect: (config: ConnectionConfig) => void;
+  /** Open another session to the same host as this tab. */
+  onDuplicateTab: (sessionId: string) => void;
   onLocalShell: () => void;
   onConnectRecent: (recent: RecentConnection) => void;
 }
 
-export default function CommandPalette({ onConnect, onLocalShell, onConnectRecent }: CommandPaletteProps) {
+export default function CommandPalette({ onConnect, onDuplicateTab, onLocalShell, onConnectRecent }: CommandPaletteProps) {
   // Narrow selectors — a whole-store subscription re-rendered the palette on
   // every session/UI change. Action callbacks read the store imperatively
   // (getState) so the memoized action list stays stable.
@@ -58,7 +74,7 @@ export default function CommandPalette({ onConnect, onLocalShell, onConnectRecen
   const activeSessionId = useSessionStore((s) => s.activeSessionId);
   const poppedSessions = useSessionStore((s) => s.poppedSessions);
   const vaultUnlocked = useSessionStore((s) => s.vaultUnlocked);
-  const theme = useSettingsStore((s) => s.theme);
+  const { theme } = useTheme(); // resolved dark/light, also when following the OS
   const setTheme = useSettingsStore((s) => s.setTheme);
   const recents = useRecentStore((s) => s.recents);
 
@@ -74,13 +90,51 @@ export default function CommandPalette({ onConnect, onLocalShell, onConnectRecen
 
   const actions: PaletteAction[] = useMemo(() => {
     const a: PaletteAction[] = [
-      { id: 'quick-connect', label: 'Quick Connect', hint: 'Ctrl+T', icon: <Plug size={14} />, run: () => useSessionStore.getState().setShowQuickConnect(true) },
+      { id: 'quick-connect', label: 'Quick Connect', hint: shortcutLabel('quickConnect'), icon: <Plug size={14} />, run: () => useSessionStore.getState().setShowQuickConnect(true) },
       { id: 'local-shell', label: 'New Local Shell', keywords: 'terminal cli claude kimi', icon: <TerminalSquare size={14} />, run: onLocalShell },
-      { id: 'toggle-editor', label: 'Toggle Config Editor', hint: 'Ctrl+Shift+E', icon: <FileCode size={14} />, run: () => useSessionStore.getState().toggleConfigEditor() },
-      { id: 'toggle-api', label: 'Toggle API Explorer', hint: 'Ctrl+Shift+A', icon: <Globe size={14} />, run: () => useSessionStore.getState().toggleApiExplorer() },
-      { id: 'toggle-ai', label: 'Toggle AI Assistant', hint: 'Ctrl+Shift+I', icon: <Sparkles size={14} />, run: () => useSessionStore.getState().toggleAiAssistant() },
+      { id: 'toggle-editor', label: 'Toggle Config Editor', hint: shortcutLabel('editor'), icon: <FileCode size={14} />, run: () => useSessionStore.getState().toggleConfigEditor() },
+      { id: 'toggle-api', label: 'Toggle API Explorer', hint: shortcutLabel('api'), icon: <Globe size={14} />, run: () => useSessionStore.getState().toggleApiExplorer() },
+      { id: 'toggle-ai', label: 'Toggle AI Assistant', hint: shortcutLabel('ai'), icon: <Sparkles size={14} />, run: () => useSessionStore.getState().toggleAiAssistant() },
+      {
+        id: 'toggle-side-panel',
+        label: 'Toggle Side Panel',
+        keywords: 'right panel editor api ai show hide last tab',
+        icon: <PanelRight size={14} />,
+        run: () => {
+          const s = useSessionStore.getState();
+          // Reopens on the tab used last (remembered across restarts).
+          if (s.showConfigEditor || s.showApiExplorer || s.showAiAssistant) closeSidePanel();
+          else showSidePanel(useSidePanelStore.getState().tab);
+        },
+      },
+      {
+        id: 'maximize-side-panel',
+        label: 'Maximize / Restore Side Panel',
+        keywords: 'full screen fill window editor api ai zen',
+        icon: <Maximize2 size={14} />,
+        run: () => {
+          const sp = useSidePanelStore.getState();
+          const s = useSessionStore.getState();
+          if (!(s.showConfigEditor || s.showApiExplorer || s.showAiAssistant)) {
+            showSidePanel(sp.tab);
+            sp.setMaximized(true);
+          } else {
+            sp.setMaximized(!sp.maximized);
+          }
+        },
+      },
       { id: 'toggle-broadcast', label: 'Toggle Multi-send', keywords: 'send all multiple sessions broadcast subset', icon: <Radio size={14} />, run: () => useSessionStore.getState().toggleBroadcast() },
       { id: 'bulk-runner', label: 'Bulk Command Runner', keywords: 'run all devices batch collect csv', icon: <Radio size={14} />, run: () => useSessionStore.getState().setShowBulkRunner(true) },
+      {
+        id: 'import-hosts',
+        label: 'Import Hosts…',
+        keywords: 'import csv securecrt central mist ssh config migrate sessions inventory bulk add',
+        icon: <Download size={14} />,
+        run: () => useSessionStore.getState().openImportHosts(),
+      },
+      { id: 'change-jobs', label: 'Change Jobs', keywords: 'push config change many devices canary rollback commit confirmed checkpoint bulk deploy variables csv', icon: <GitPullRequestArrow size={14} />, run: () => useSessionStore.getState().setShowChangeJobs(true) },
+      { id: 'tunnels', label: 'SSH Tunnels', keywords: 'port forwarding forward local remote socks', icon: <Waypoints size={14} />, run: () => useSessionStore.getState().setShowTunnels(true) },
+      { id: 'intent', label: 'Network Intent', keywords: 'desired state assurance compliance drift check', icon: <Target size={14} />, run: () => useSessionStore.getState().setShowIntent(true) },
       { id: 'sftp', label: 'SFTP File Transfer', keywords: 'sftp upload download file transfer scp', icon: <HardDrive size={14} />, run: () => useSessionStore.getState().setShowSftp(true) },
       {
         id: 'mcp-servers',
@@ -123,14 +177,13 @@ export default function CommandPalette({ onConnect, onLocalShell, onConnectRecen
         id: 'close-all-tabs',
         label: 'Close All Sessions',
         keywords: 'close all tabs disconnect everything',
-        icon: <X size={14} className="text-[#ff7b72]" />,
+        icon: <X size={14} className="text-[var(--accent-danger)]" />,
         run: () => {
-          sessions.forEach((s) => {
-            if (!poppedSessions.includes(s.sessionId)) {
-              invoke('disconnect', { sessionId: s.sessionId }).catch(() => {});
-              useSessionStore.getState().removeSession(s.sessionId);
-            }
-          });
+          // Popped-out sessions keep running in their own windows. One
+          // question covers every still-connected session (confirmCloseConnected).
+          void closeSessions(
+            sessions.filter((s) => !poppedSessions.includes(s.sessionId)).map((s) => s.sessionId),
+          );
         },
       },
       {
@@ -143,13 +196,13 @@ export default function CommandPalette({ onConnect, onLocalShell, onConnectRecen
           setTimeout(() => window.dispatchEvent(new Event('resize')), 60);
         },
       },
-      { id: 'toggle-sidebar', label: 'Toggle Sidebar', hint: 'Ctrl+B', icon: <PanelLeft size={14} />, run: () => useSessionStore.getState().toggleSidebar() },
+      { id: 'toggle-sidebar', label: 'Toggle Sidebar', hint: shortcutLabel('sidebar'), icon: <PanelLeft size={14} />, run: toggleSessionsSidebar },
       // Zoom the terminal + config-editor font — same persisted setting as the
       // Ctrl+= / Ctrl+- / Ctrl+0 bindings (W2-11).
       {
         id: 'zoom-in',
         label: 'Increase font size (terminal + editor)',
-        hint: 'Ctrl+=',
+        hint: shortcutLabel('zoomIn'),
         keywords: 'zoom bigger larger font size',
         icon: <ZoomIn size={14} />,
         run: () =>
@@ -158,7 +211,7 @@ export default function CommandPalette({ onConnect, onLocalShell, onConnectRecen
       {
         id: 'zoom-out',
         label: 'Decrease font size (terminal + editor)',
-        hint: 'Ctrl+-',
+        hint: shortcutLabel('zoomOut'),
         keywords: 'zoom smaller font size',
         icon: <ZoomOut size={14} />,
         run: () => useSettingsStore.getState().setFontSize(Math.max(8, useSettingsStore.getState().fontSize - 1)),
@@ -166,14 +219,14 @@ export default function CommandPalette({ onConnect, onLocalShell, onConnectRecen
       {
         id: 'zoom-reset',
         label: 'Reset font size (terminal + editor)',
-        hint: 'Ctrl+0',
+        hint: shortcutLabel('zoomReset'),
         keywords: 'zoom reset default font size',
         icon: <RotateCcw size={14} />,
         run: () => useSettingsStore.getState().setFontSize(14),
       },
-      { id: 'search', label: 'Search in Terminal', hint: 'Ctrl+F', icon: <Search size={14} />, run: () => useSessionStore.getState().setShowSearch(true) },
-      { id: 'settings', label: 'Open Settings', hint: 'Ctrl+,', icon: <SettingsIcon size={14} />, run: () => useSessionStore.getState().setShowSettings(true) },
-      { id: 'help', label: 'Help & Documentation', hint: 'F1', keywords: 'help docs guide setup how to configure', icon: <HelpCircle size={14} />, run: () => useSessionStore.getState().setShowHelp(true) },
+      { id: 'search', label: 'Find in Terminal', hint: shortcutLabel('find'), keywords: 'search', icon: <Search size={14} />, run: () => openTerminalSearch() },
+      { id: 'settings', label: 'Open Settings', hint: shortcutLabel('settings'), icon: <SettingsIcon size={14} />, run: () => useSessionStore.getState().setShowSettings(true) },
+      { id: 'help', label: 'Help & Documentation', hint: shortcutLabel('help'), keywords: 'help docs guide setup how to configure', icon: <HelpCircle size={14} />, run: () => useSessionStore.getState().setShowHelp(true) },
       {
         id: 'vault',
         label: vaultUnlocked ? 'Lock credential vault' : 'Unlock credential vault',
@@ -216,7 +269,7 @@ export default function CommandPalette({ onConnect, onLocalShell, onConnectRecen
           label: `Connect: ${item.name || item.host || 'session'}`,
           hint: item.protocol.toUpperCase(),
           keywords: `${item.host ?? ''} ${item.protocol} ${folder.name}`,
-          icon: <Plug size={14} className="text-[#3fb950]" />,
+          icon: <Plug size={14} className="text-[var(--accent-success)]" />,
           run: () => onConnect(item),
         });
       }
@@ -230,9 +283,9 @@ export default function CommandPalette({ onConnect, onLocalShell, onConnectRecen
       const isPopped = poppedSessions.includes(s.sessionId);
       a.push({
         id: `goto-${s.sessionId}`,
-        label: `${isPopped ? 'Focus window' : 'Go to tab'}: ${s.config.name || s.config.host || 'Session'}`,
-        keywords: `tab switch ${s.config.host ?? ''}`,
-        icon: <TerminalSquare size={14} className="text-[#58a6ff]" />,
+        label: `${isPopped ? 'Focus window' : 'Go to tab'}: ${tabLabel(s)}`,
+        keywords: `tab switch ${s.config.host ?? ''} ${s.promptHost ?? ''}`,
+        icon: <TerminalSquare size={14} className="text-[var(--accent-info)]" />,
         run: () => {
           if (isPopped) {
             WebviewWindow.getByLabel(`popout-${s.sessionId}`)?.setFocus();
@@ -243,24 +296,33 @@ export default function CommandPalette({ onConnect, onLocalShell, onConnectRecen
       });
     }
 
+    if (activeSessionId) {
+      a.push({
+        id: 'duplicate-tab',
+        label: 'Duplicate Current Tab',
+        keywords: 'new session same host another shell clone copy',
+        icon: <CopyPlus size={14} className="text-[var(--accent)]" />,
+        run: () => onDuplicateTab(activeSessionId),
+      });
+    }
+
     // Close current tab (not for popped-out sessions — closing from here would
     // disconnect the backend while their pop-out window stays open)
     if (activeSessionId && !poppedSessions.includes(activeSessionId)) {
       a.push({
         id: 'close-tab',
         label: 'Close Current Tab',
-        hint: 'Ctrl+W',
-        icon: <X size={14} className="text-[#ff7b72]" />,
+        hint: shortcutLabel('closeTab'),
+        icon: <X size={14} className="text-[var(--accent-danger)]" />,
         run: () => {
-          invoke('disconnect', { sessionId: activeSessionId }).catch(() => {});
-          useSessionStore.getState().removeSession(activeSessionId);
+          void closeSessions([activeSessionId]);
         },
       });
     }
 
     return a;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [folders, sessions, activeSessionId, poppedSessions, theme, vaultUnlocked, recents, onConnect, onLocalShell, onConnectRecent]);
+  }, [folders, sessions, activeSessionId, poppedSessions, theme, vaultUnlocked, recents, onConnect, onDuplicateTab, onLocalShell, onConnectRecent]);
 
   const filtered = useMemo(() => {
     const q = query.trim();
@@ -312,9 +374,14 @@ export default function CommandPalette({ onConnect, onLocalShell, onConnectRecen
   };
 
   return (
-    <div className="fixed inset-0 z-[60] flex items-start justify-center pt-[12vh] bg-black/50 backdrop-blur-sm" onClick={close}>
+    // Drops from just under the title bar's "Search or run a command…" field
+    // that opens it, at about its width.
+    <div className="fixed inset-0 z-[60] flex items-start justify-center pt-[52px] modal-backdrop animate-fade-in" onClick={close}>
       <div
-        className="w-[560px] max-w-[90vw] bg-[var(--bg-secondary)] border border-[var(--border)] rounded-xl shadow-2xl overflow-hidden"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Command palette"
+        className="surface-elevated w-[600px] max-w-[90vw] overflow-hidden animate-scale-in"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center gap-2 px-3 py-2.5 border-b border-[var(--bg-tertiary)]">
@@ -324,7 +391,8 @@ export default function CommandPalette({ onConnect, onLocalShell, onConnectRecen
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={onKeyDown}
-            placeholder="Type a command or search sessions…"
+            placeholder="Search hosts and tabs, or type a command…"
+            aria-label="Search or run a command"
             className="flex-1 bg-transparent text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none"
           />
           <kbd className="text-[10px] text-[var(--text-muted)] border border-[var(--border)] rounded px-1">esc</kbd>
@@ -343,7 +411,7 @@ export default function CommandPalette({ onConnect, onLocalShell, onConnectRecen
               onMouseEnter={() => setSelected(i)}
               onClick={() => runAt(i)}
               className={`flex items-center gap-3 w-full px-4 py-2 text-left transition-colors ${
-                i === selected ? 'bg-[#1f6feb33]' : 'hover:bg-[var(--bg-tertiary)]'
+                i === selected ? 'bg-[var(--accent-soft)]' : 'hover:bg-[var(--bg-tertiary)]'
               }`}
             >
               <span className="text-[var(--text-secondary)] flex-shrink-0">{a.icon}</span>

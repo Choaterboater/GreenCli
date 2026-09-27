@@ -210,40 +210,40 @@ export default function IntentPanel() {
         if (e.target === e.currentTarget) setShowIntent(false);
       }}
     >
-      <div className="surface-elevated w-[680px] max-w-[95vw] h-[80vh] flex flex-col animate-scale-in">
+      <div className="surface-elevated w-[760px] max-w-[95vw] h-[80vh] flex flex-col animate-scale-in">
         {/* Header */}
         <div className="flex items-center gap-2.5 px-5 py-4 border-b border-[var(--border)]">
           <div className="flex items-center justify-center w-7 h-7 rounded-md" style={{ background: 'var(--accent-soft)' }}>
             <Target size={15} style={{ color: 'var(--accent)' }} />
           </div>
-          <h2 className="text-[16px] font-semibold text-[var(--text-primary)]">Network Intent</h2>
+          <h2 className="text-[16px] font-semibold text-[var(--text-primary)] whitespace-nowrap">Network Intent</h2>
           {violations > 0 && (
-            <span className="text-[11px] px-2 py-0.5 rounded-full" style={{ background: 'rgba(240,83,63,0.14)', color: 'var(--accent-danger)' }}>
+            <span className="text-[11px] px-2 py-0.5 rounded-full" style={{ background: 'var(--accent-danger-soft)', color: 'var(--accent-danger)' }}>
               {violations} violation{violations > 1 ? 's' : ''}
             </span>
           )}
           <span className="flex-1" />
-          <span className="text-[11px] text-[var(--text-muted)]">{connectedCount} connected</span>
+          <span className="text-[11px] text-[var(--text-muted)] shrink-0 whitespace-nowrap">{connectedCount} connected</span>
           <span
             className="flex items-center gap-1 text-[11px] shrink-0 whitespace-nowrap"
             style={{ color: intentScheduling ? 'var(--accent-success)' : 'var(--text-muted)' }}
             title={
               intentScheduling
-                ? `Sweep every ${intentScheduleMinutes} min; drift alerts fire on ok/unknown → violation transitions. Change in Settings → Scheduled intent evaluation.`
-                : 'Scheduled sweeps are off — run Evaluate all (or per-intent Evaluate) on demand. Enable in Settings → Scheduled intent evaluation.'
+                ? `Sweep every ${intentScheduleMinutes} min; drift alerts fire on ok/unknown → violation transitions. Change in Settings → Automation.`
+                : 'Scheduled sweeps are off — run Evaluate all (or per-intent Evaluate) on demand. Enable in Settings → Automation.'
             }
           >
             {intentScheduling ? <RefreshCw size={11} /> : <Clock size={11} />}
             {intentScheduling ? `Auto-evaluate every ${intentScheduleMinutes} min` : 'Manual only'}
           </span>
-          <button onClick={runAll} disabled={running !== null} className="btn-accent flex items-center gap-1.5 h-8 px-3 text-[12px] disabled:opacity-50">
+          <button onClick={runAll} disabled={running !== null} className="btn-accent flex shrink-0 items-center gap-1.5 h-8 px-3 text-[12px] whitespace-nowrap disabled:opacity-50">
             {running === '*' ? <Loader2 size={13} className="animate-spin" /> : <Play size={13} />}
             Evaluate all
           </button>
-          <button onClick={() => setShowPacks((v) => !v)} className="flex items-center gap-1.5 h-8 px-2.5 text-[12px] rounded-md bg-[var(--bg-tertiary)] hover:bg-[var(--border-strong)] text-[var(--text-primary)]" title="Add a validated-design assurance pack">
+          <button onClick={() => setShowPacks((v) => !v)} className="flex shrink-0 items-center gap-1.5 h-8 px-2.5 text-[12px] whitespace-nowrap rounded-md bg-[var(--bg-tertiary)] hover:bg-[var(--border-strong)] text-[var(--text-primary)]" title="Add a validated-design assurance pack">
             <LayoutTemplate size={13} /> Templates
           </button>
-          <button onClick={startAdd} className="flex items-center gap-1.5 h-8 px-2.5 text-[12px] rounded-md bg-[var(--bg-tertiary)] hover:bg-[var(--border-strong)] text-[var(--text-primary)]">
+          <button onClick={startAdd} className="flex shrink-0 items-center gap-1.5 h-8 px-2.5 text-[12px] whitespace-nowrap rounded-md bg-[var(--bg-tertiary)] hover:bg-[var(--border-strong)] text-[var(--text-primary)]">
             <Plus size={13} /> Add
           </button>
           <button onClick={() => setShowIntent(false)} className="p-1.5 rounded-md text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]">
@@ -260,7 +260,7 @@ export default function IntentPanel() {
             <div className="space-y-2">
               {INTENT_PACKS.map((pack) => (
                 <div key={pack.id} className="flex items-center gap-2.5 px-3 py-2 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)]">
-                  <span className="vendor-dot flex-shrink-0" style={{ background: pack.vendor === 'juniper' ? 'var(--vendor-juniper, #84B135)' : 'var(--accent-2, #FF8300)' }} />
+                  <span className="vendor-dot flex-shrink-0" style={{ background: pack.vendor === 'juniper' ? 'var(--vendor-juniper)' : 'var(--vendor-aruba)' }} />
                   <div className="min-w-0 flex-1">
                     <div className="text-[13px] font-medium text-[var(--text-primary)] truncate">{pack.name}</div>
                     <div className="text-[10px] text-[var(--text-muted)] truncate">{pack.description} · {pack.templates.length} checks</div>
@@ -325,7 +325,7 @@ export default function IntentPanel() {
               <p className="text-[11px] mt-1 max-w-[420px]">
                 Intents define the <span className="text-[var(--text-secondary)]">desired state</span> of your network — config that must be present,
                 or operational expectations (links up, BGP established, reachability). They're enforced, not just run:
-                evaluate on demand, or schedule a recurring sweep (Settings → Scheduled intent evaluation) and get a
+                evaluate on demand, or schedule a recurring sweep (Settings → Automation) and get a
                 drift alert the moment the network stops matching this state.
               </p>
             </div>

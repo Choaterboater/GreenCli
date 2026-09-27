@@ -28,6 +28,7 @@ export const VENDOR_META: Record<Vendor, VendorMeta> = {
 
 export interface ConnectionConfig {
   id: string;
+  /** On a tab: the saved host it was opened from (the tab's own id is its session id). */
   name: string;
   protocol: Protocol;
   host?: string;
@@ -61,6 +62,38 @@ export interface ConnectionConfig {
   jumpPort?: number;
   jumpUsername?: string;
   jumpPassword?: string;
+  /** Shared login for this host: a LoginProfile id, PER_HOST_PASSWORD ('none')
+   *  to keep its own password, or unset to use the folder's default login. */
+  loginProfileId?: string;
+  /** Shared login for the jump host: a LoginProfile id, PER_HOST_PASSWORD for
+   *  a password saved in the vault for this jump host, or unset = key / agent. */
+  jumpLoginProfileId?: string;
+  // ── Open-tab fields (never written to the saved host) ──
+  // On a tab's config, `id` is that TAB's own session id (the backend keys the
+  // connection by it), so one saved host can have several tabs open.
+  /** The saved sidebar host this tab was opened from — or, for an ad-hoc
+   *  connection, the connection it was opened or duplicated from. Tabs sharing
+   *  it are sessions to one host: they share its AI agent, sidebar dot,
+   *  recents entry and "(2)" numbering. Absent on tabs from older workspaces,
+   *  where the tab id WAS the saved id (see savedHostId in utils/tabs). */
+  savedId?: string;
+  /** Which open copy of the host this tab is (2, 3…), shown as
+   *  "core-sw-01 (2)". Unset for the first one. */
+  copyNumber?: number;
+  /** Name the user gave just this tab (Rename tab). Wins over every
+   *  automatic label; the saved host keeps its own name. */
+  tabName?: string;
+}
+
+/**
+ * A login shared by many devices (e.g. the TACACS account), set as a folder's
+ * default or on a host. Only this metadata is kept in settings — the password
+ * is in the vault (see loginSecretKey), so a 90-day rotation is one change.
+ */
+export interface LoginProfile {
+  id: string;
+  name: string;
+  username: string;
 }
 
 export interface Session {
@@ -69,6 +102,10 @@ export interface Session {
   connectionStatus?: 'connected' | 'disconnected' | 'connecting' | 'reconnecting';
   sessionId: string;
   lastActivity?: number;
+  /** Hostname read from the device's prompt (utils/devicePrompt). */
+  promptHost?: string;
+  /** The device's prompt shows configuration mode. */
+  configMode?: boolean;
 }
 
 export interface SessionFolder {
@@ -76,6 +113,8 @@ export interface SessionFolder {
   name: string;
   items: ConnectionConfig[];
   expanded: boolean;
+  /** Default shared login for hosts in this folder that don't pick their own. */
+  loginProfileId?: string;
 }
 
 /**
@@ -97,8 +136,11 @@ export interface AiAgent {
   color: string;
 }
 
+/** App theme choice; 'system' follows the OS light/dark appearance live. */
+export type ThemePreference = 'dark' | 'light' | 'system';
+
 export interface TerminalSettings {
-  theme: 'dark' | 'light';
+  theme: ThemePreference;
   /** Terminal color scheme; 'greencli' follows the app theme (dark/light). */
   colorScheme: TerminalColorScheme;
   fontSize: number;
@@ -119,6 +161,11 @@ export interface TerminalSettings {
   middleClickPaste: boolean;
   /** Right-click in the terminal: show a context menu, paste directly (PuTTY), or copy-selection-else-paste (Windows Terminal). */
   rightClickBehavior: 'menu' | 'paste' | 'copyPaste';
+  /** Ask before closing a tab whose session is still connected (tab X, Cmd+W / Ctrl+Shift+W, Close All). */
+  confirmCloseConnected: boolean;
+  /** macOS only: Option acts as Meta (Esc prefix — readline Option+B/F word jumps). Turn off
+   *  so Option types the layout's characters instead (| [ ] { } @ \ ~ on many non-US keyboards). */
+  macOptionIsMeta: boolean;
   smartTerminalLinks: boolean;
   terminalActivityNotifications: boolean;
   terminalSilenceNotifications: boolean;
@@ -135,10 +182,18 @@ export interface TerminalSettings {
   /** Auto-capture the device running-config once on ssh/telnet connect (NW-16).
    *  Off by default (W2-6) — the manual "Capture now" button always works. */
   captureOnConnect: boolean;
+  /** Start a session log automatically whenever a session connects. Off by default. */
+  autoLogSessions: boolean;
+  /** Folder session logs are written to; empty = the app data `logs` folder. */
+  sessionLogDir: string;
+  /** Prefix each logged line with the local time as [HH:MM:SS]. */
+  sessionLogTimestamps: boolean;
   /** Last selected device type/profile base used by Quick Connect. */
   lastUsedDeviceType: DeviceType;
   /** Last selected built-in/custom profile used by Quick Connect. */
   lastUsedDeviceProfileId?: string;
+  /** Last SSH username typed into Quick Connect (prefilled next time). */
+  lastUsedSshUsername?: string;
   /** User-authored device profiles for custom mapping/highlighting workflows. */
   customDeviceProfiles: DeviceProfile[];
   aiModel: string;
@@ -177,6 +232,8 @@ export interface TerminalSettings {
   aiAgents: AiAgent[];
   /** Map of saved-session id → attached agent id. */
   sessionAgents: Record<string, string>;
+  /** Shared logins (names + usernames only; passwords live in the vault). */
+  loginProfiles: LoginProfile[];
 }
 
 export interface CentralAccount {
@@ -283,7 +340,9 @@ export const BUILTIN_AGENTS: AiAgent[] = [
 ];
 
 export const DEFAULT_SETTINGS: TerminalSettings = {
-  theme: 'dark',
+  // New installs follow the OS. Existing installs keep the theme they had:
+  // `theme` is persisted with the rest of the settings and overrides this.
+  theme: 'system',
   colorScheme: 'greencli',
   fontSize: 14,
   fontFamily: 'JetBrains Mono, Consolas, monospace',
@@ -300,6 +359,8 @@ export const DEFAULT_SETTINGS: TerminalSettings = {
   copyOnSelect: false,
   middleClickPaste: false,
   rightClickBehavior: 'menu',
+  confirmCloseConnected: true,
+  macOptionIsMeta: true,
   smartTerminalLinks: true,
   terminalActivityNotifications: true,
   terminalSilenceNotifications: false,
@@ -309,8 +370,12 @@ export const DEFAULT_SETTINGS: TerminalSettings = {
   intentScheduleMinutes: 30,
   intentWebhookUrl: '',
   captureOnConnect: false,
+  autoLogSessions: false,
+  sessionLogDir: '',
+  sessionLogTimestamps: false,
   lastUsedDeviceType: 'generic',
   lastUsedDeviceProfileId: 'builtin-generic',
+  lastUsedSshUsername: '',
   customDeviceProfiles: [],
   aiModel: 'claude-sonnet-4-6',
   aiProvider: 'ollama',
@@ -346,6 +411,7 @@ export const DEFAULT_SETTINGS: TerminalSettings = {
   centralAccounts: [],
   aiAgents: BUILTIN_AGENTS,
   sessionAgents: {},
+  loginProfiles: [],
 };
 
 export interface Token {

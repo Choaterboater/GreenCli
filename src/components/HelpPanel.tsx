@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { X, Search, HelpCircle, Bot, ChevronRight } from 'lucide-react';
+import { HelpCircle, Bot, ChevronRight } from 'lucide-react';
 import { useSessionStore } from '../store/sessionStore';
 import { HELP_TOPICS, type HelpActionId, type HelpBlock, type HelpTopic } from '../data/helpContent';
+import LargeModal, { ModalRail, RailItem } from './LargeModal';
 
 /** Render inline `code` and **bold** in a help string. */
 function renderInline(text: string, keyBase: string): ReactNode[] {
@@ -146,6 +147,7 @@ export default function HelpPanel() {
       case 'open-api': useSessionStore.getState().setShowApiExplorer(true); break;
       case 'open-intent': useSessionStore.getState().setShowIntent(true); break;
       case 'open-tunnels': useSessionStore.getState().setShowTunnels(true); break;
+      case 'open-import': useSessionStore.getState().openImportHosts(); break;
     }
   };
 
@@ -155,104 +157,69 @@ export default function HelpPanel() {
   };
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center modal-backdrop animate-fade-in"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) setShowHelp(false);
-      }}
+    <LargeModal
+      title="Help & Documentation"
+      icon={HelpCircle}
+      onClose={() => setShowHelp(false)}
+      actions={
+        <button
+          onClick={askAi}
+          className="flex items-center gap-1.5 h-8 px-3 text-[12px] rounded-md bg-[var(--bg-tertiary)] hover:bg-[var(--border-strong)] text-[var(--text-primary)]"
+          title="Open the AI assistant"
+        >
+          <Bot size={13} /> Ask the AI
+        </button>
+      }
     >
-      <div className="surface-elevated w-[840px] max-w-[95vw] h-[82vh] flex flex-col animate-scale-in">
-        {/* Header */}
-        <div className="flex items-center gap-2.5 px-5 py-4 border-b border-[var(--border)]">
-          <div className="flex items-center justify-center w-7 h-7 rounded-md" style={{ background: 'var(--accent-soft)' }}>
-            <HelpCircle size={15} style={{ color: 'var(--accent)' }} />
-          </div>
-          <h2 className="text-[16px] font-semibold text-[var(--text-primary)]">Help &amp; Documentation</h2>
-          <span className="flex-1" />
+      {/* Topic rail */}
+      <ModalRail
+        query={query}
+        onQueryChange={setQuery}
+        placeholder="Search help…"
+        inputRef={searchRef}
+        listLabel="Help topics"
+      >
+        {filtered.length === 0 ? (
+          <p className="text-[12px] text-[var(--text-muted)] px-2.5 py-2">No topics match “{query}”.</p>
+        ) : (
+          filtered.map((t) => (
+            <RailItem
+              key={t.id}
+              icon={t.icon}
+              label={t.title}
+              active={t.id === active.id}
+              onClick={() => setActiveId(t.id)}
+            />
+          ))
+        )}
+      </ModalRail>
+
+      {/* Content */}
+      <div className="flex-1 overflow-y-auto px-6 py-5">
+        <div className="flex items-center gap-2.5 mb-1">
+          <active.icon size={18} style={{ color: 'var(--accent)' }} />
+          <h3 className="text-[17px] font-semibold text-[var(--text-primary)]">{active.title}</h3>
+        </div>
+        <p className="text-[12px] text-[var(--text-muted)] mb-4">{active.summary}</p>
+        <div className="space-y-3.5">
+          {active.blocks.map((b, i) => (
+            <Block key={i} block={b} idx={i} />
+          ))}
+        </div>
+        {active.action && (
           <button
-            onClick={askAi}
-            className="flex items-center gap-1.5 h-8 px-3 text-[12px] rounded-md bg-[var(--bg-tertiary)] hover:bg-[var(--border-strong)] text-[var(--text-primary)]"
-            title="Open the AI assistant"
+            onClick={() => runAction(active.action!)}
+            className="btn-accent mt-5 flex items-center gap-1.5 h-8 px-3.5 text-[12px]"
           >
-            <Bot size={13} /> Ask the AI
+            {active.action.label}
+            <ChevronRight size={14} />
           </button>
-          <button onClick={() => setShowHelp(false)} className="p-1.5 rounded-md text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]">
-            <X size={18} />
-          </button>
-        </div>
-
-        <div className="flex flex-1 min-h-0">
-          {/* Topic rail */}
-          <div className="w-[260px] flex-shrink-0 border-r border-[var(--border)] flex flex-col">
-            <div className="p-2.5">
-              <div className="relative">
-                <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--text-muted)]" />
-                <input
-                  ref={searchRef}
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                  placeholder="Search help…"
-                  className="input-field w-full h-8 pl-8 pr-2.5 text-sm"
-                />
-              </div>
-            </div>
-            <div className="flex-1 overflow-y-auto px-1.5 pb-2">
-              {filtered.length === 0 ? (
-                <p className="text-[12px] text-[var(--text-muted)] px-2.5 py-2">No topics match “{query}”.</p>
-              ) : (
-                filtered.map((t) => {
-                  const Icon = t.icon;
-                  const on = t.id === active.id;
-                  return (
-                    <button
-                      key={t.id}
-                      onClick={() => setActiveId(t.id)}
-                      className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-md text-left transition-colors ${
-                        on ? 'bg-[var(--accent-soft)]' : 'hover:bg-[var(--bg-tertiary)]'
-                      }`}
-                    >
-                      <Icon size={15} style={{ color: on ? 'var(--accent)' : 'var(--text-muted)' }} className="flex-shrink-0" />
-                      <span className="min-w-0">
-                        <span className={`block text-[13px] truncate ${on ? 'text-[var(--text-primary)] font-medium' : 'text-[var(--text-secondary)]'}`}>
-                          {t.title}
-                        </span>
-                      </span>
-                      {on && <ChevronRight size={13} className="ml-auto text-[var(--accent)]" />}
-                    </button>
-                  );
-                })
-              )}
-            </div>
-          </div>
-
-          {/* Content */}
-          <div className="flex-1 overflow-y-auto px-6 py-5">
-            <div className="flex items-center gap-2.5 mb-1">
-              <active.icon size={18} style={{ color: 'var(--accent)' }} />
-              <h3 className="text-[17px] font-semibold text-[var(--text-primary)]">{active.title}</h3>
-            </div>
-            <p className="text-[12px] text-[var(--text-muted)] mb-4">{active.summary}</p>
-            <div className="space-y-3.5">
-              {active.blocks.map((b, i) => (
-                <Block key={i} block={b} idx={i} />
-              ))}
-            </div>
-            {active.action && (
-              <button
-                onClick={() => runAction(active.action!)}
-                className="btn-accent mt-5 flex items-center gap-1.5 h-8 px-3.5 text-[12px]"
-              >
-                {active.action.label}
-                <ChevronRight size={14} />
-              </button>
-            )}
-            <p className="mt-6 pt-4 border-t border-[var(--border)] text-[11px] text-[var(--text-muted)]">
-              Full guide: <code className="text-[var(--accent)]">docs/SETUP.md</code> in the repo. Press
-              <code className="mx-1 px-1 rounded bg-[var(--bg-tertiary)]">F1</code> any time to reopen Help.
-            </p>
-          </div>
-        </div>
+        )}
+        <p className="mt-6 pt-4 border-t border-[var(--border)] text-[11px] text-[var(--text-muted)]">
+          Full guide: <code className="text-[var(--accent)]">docs/SETUP.md</code> in the repo. Press
+          <code className="mx-1 px-1 rounded bg-[var(--bg-tertiary)]">F1</code> any time to reopen Help.
+        </p>
       </div>
-    </div>
+    </LargeModal>
   );
 }

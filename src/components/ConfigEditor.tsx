@@ -1,11 +1,11 @@
 import { useState, useRef, useEffect, useCallback, useMemo, useDeferredValue } from 'react';
-import Editor, { BeforeMount, DiffEditor, OnMount } from '@monaco-editor/react';
+import Editor, { DiffEditor, OnMount } from '@monaco-editor/react';
+import { defineEditorThemes } from './editorThemes';
 import ConfigArchive from './ConfigArchive';
 import { copyText } from '../utils/clipboard';
 import type { editor as MonacoEditor } from 'monaco-editor';
 import {
   X,
-  FileCode,
   Copy,
   Send,
   ChevronDown,
@@ -18,8 +18,6 @@ import {
   DownloadCloud,
   GitCompare,
   History,
-  Maximize2,
-  Minimize2,
   ListTree,
   AlertTriangle,
   Plus,
@@ -30,13 +28,22 @@ import { invoke } from '@tauri-apps/api/tauri';
 import { useSessionStore } from '../store/sessionStore';
 import { useSettingsStore } from '../store/settingsStore';
 import { sleep, stripAnsi as stripAnsiUtil, hasAnsi, sendAndCapture } from '../utils/terminal';
-import { useResizablePanel } from '../hooks/useResizablePanel';
+import { useSidePanelStore } from '../store/sidePanelStore';
 import { askConfirm, askPrompt } from '../store/dialogStore';
 import { generateId } from '../utils';
 import { profileForSession } from '../utils/deviceProfiles';
 import { ArubaHighlighter } from '../syntax';
 import { useTheme } from '../hooks/useTheme';
 import { isTauri, tauriOpen, tauriSave, tauriReadText, tauriWriteText, browserOpen, browserSave } from '../utils/fileSystem';
+import {
+  isDangerousLine,
+  prepareSendLines,
+  runConfigSend,
+  watchSessionOutput,
+  describeSendBaseline,
+  deviceKey,
+  type Baseline,
+} from '../utils/configSafety';
 
 // Strip terminal/ANSI control sequences so captured logs (PuTTY/`show tech`,
 // shared utils
@@ -198,6 +205,7 @@ const LANGUAGE_LIST = [
 
 const TEMPLATES: Record<string, string> = {
   'Aruba: VLANs': `! VLAN Configuration
+configure terminal
 vlan 10
   name MGMT
 vlan 20
@@ -206,44 +214,62 @@ vlan 30
   name GUEST
 vlan 100
   name VOICE
+end
+! Save once it looks right: write memory
 `,
   'Aruba: Trunk port': `! Uplink trunk port
+configure terminal
 interface 1/1/1
   no shutdown
   description Uplink-Core
   vlan trunk native 10
   vlan trunk allowed 10,20,30,100
+end
+! Save once it looks right: write memory
 `,
   'Aruba: Access port': `! Access port (users)
+configure terminal
 interface 1/1/3-1/1/48
   no shutdown
   vlan access 20
+end
+! Save once it looks right: write memory
 `,
   'Aruba: BGP peer': `! BGP configuration
+configure terminal
 router bgp 65001
   bgp router-id 10.0.0.1
   neighbor 10.0.0.2 remote-as 65002
   neighbor 10.0.0.2 description Core-Peer
   address-family ipv4 unicast
     neighbor 10.0.0.2 activate
+end
+! Save once it looks right: write memory
 `,
   'Aruba: OSPF': `! OSPF configuration
+configure terminal
 router ospf 1
   router-id 10.0.0.1
   area 0.0.0.0
 interface vlan 10
   ip ospf 1 area 0.0.0.0
   ip ospf network point-to-point
+end
+! Save once it looks right: write memory
 `,
   'Aruba: AAA / RADIUS': `! RADIUS / AAA
+configure terminal
 radius-server host 10.0.0.100
   key plaintext MySecret123
   authentication port 1812
   accounting port 1813
 aaa authentication login default group radius local
 aaa authorization commands default group radius local
+end
+! Save once it looks right: write memory
 `,
   'AOS-S: VLAN + tagged uplink': `! Aruba AOS-S / ProVision
+configure terminal
 vlan 10
    name "MGMT"
    tagged 1
@@ -257,6 +283,7 @@ vlan 20
 write memory
 `,
   'Aruba AP: WLAN basics': `! Aruba Instant AP / VC
+configure terminal
 wlan ssid-profile Example-SSID
   enable
   essid Example-SSID
@@ -277,32 +304,43 @@ exit
 write memory
 `,
   'Junos: VLANs': `/* Juniper Junos — VLANs (set-style) */
+configure
 set vlans MGMT vlan-id 10
 set vlans USERS vlan-id 20
 set vlans GUEST vlan-id 30
 set vlans VOICE vlan-id 100
+/* Review with: show | compare — then apply with: commit confirmed 5 */
 `,
   'Junos: Trunk port': `/* Junos — trunk uplink */
+configure
 set interfaces ge-0/0/0 description Uplink-Core
 set interfaces ge-0/0/0 unit 0 family ethernet-switching interface-mode trunk
 set interfaces ge-0/0/0 unit 0 family ethernet-switching vlan members [ MGMT USERS GUEST VOICE ]
 set interfaces ge-0/0/0 native-vlan-id 10
+/* Review with: show | compare — then apply with: commit confirmed 5 */
 `,
   'Junos: Access port': `/* Junos — access port */
+configure
 set interfaces ge-0/0/3 unit 0 family ethernet-switching interface-mode access
 set interfaces ge-0/0/3 unit 0 family ethernet-switching vlan members USERS
+/* Review with: show | compare — then apply with: commit confirmed 5 */
 `,
   'Junos: BGP peer': `/* Junos — BGP */
+configure
 set routing-options autonomous-system 65001
 set protocols bgp group EBGP type external
 set protocols bgp group EBGP neighbor 10.0.0.2 peer-as 65002
 set protocols bgp group EBGP neighbor 10.0.0.2 description Core-Peer
+/* Review with: show | compare — then apply with: commit confirmed 5 */
 `,
   'Junos: OSPF': `/* Junos — OSPF */
+configure
 set protocols ospf area 0.0.0.0 interface ge-0/0/0.0 interface-type p2p
 set protocols ospf area 0.0.0.0 interface irb.10
+/* Review with: show | compare — then apply with: commit confirmed 5 */
 `,
   'Mist/Junos: access switch baseline': `/* Mist-managed Junos switch baseline */
+configure
 set system host-name <switch-name>
 set system services ssh
 set vlans USERS vlan-id 20
@@ -313,6 +351,7 @@ commit confirmed 5 comment "GreenCLI staged access baseline"
 
   // ─── Juniper Validated Design starters (Junos) — edit ids/addresses ───
   'JVD: EVPN-VXLAN leaf (ERB)': `/* JVD EVPN-VXLAN — leaf (edge-routed bridging). Replace ASNs/IPs/VNIs. */
+configure
 set chassis aggregated-devices ethernet device-count 2
 set interfaces lo0 unit 0 family inet address 10.1.1.1/32
 /* Underlay: eBGP to spines */
@@ -335,9 +374,11 @@ set switch-options route-distinguisher 10.1.1.1:1
 set switch-options vrf-target target:65000:1
 set vlans V100 vlan-id 100
 set vlans V100 vxlan vni 10100
+/* Review with: show | compare — then apply with: commit confirmed 5 */
 `,
 
   'JVD: EVPN-VXLAN spine (route-reflector)': `/* JVD EVPN-VXLAN — spine (underlay + EVPN route-reflector). */
+configure
 set interfaces lo0 unit 0 family inet address 10.2.2.2/32
 set protocols bgp group UNDERLAY type external
 set protocols bgp group UNDERLAY local-as 65000
@@ -349,9 +390,11 @@ set protocols bgp group OVERLAY local-address 10.2.2.2
 set protocols bgp group OVERLAY family evpn signaling
 set protocols bgp group OVERLAY cluster 10.2.2.2
 set protocols bgp group OVERLAY neighbor 10.1.1.1 peer-as 65001
+/* Review with: show | compare — then apply with: commit confirmed 5 */
 `,
 
   'JVD: AI fabric RoCE QoS (PFC+ECN)': `/* JVD AI/GPU fabric — lossless RoCEv2: PFC on priority 3, ECN marking. */
+configure
 set class-of-service classifiers dscp ROCE forwarding-class NO-LOSS loss-priority low code-points 011010
 set class-of-service forwarding-classes class NO-LOSS queue-num 3 no-loss
 set class-of-service congestion-notification-profile ECN input ieee-802.1 code-point 011 pfc
@@ -360,9 +403,11 @@ set class-of-service interfaces et-0/0/0 unit 0 classifiers dscp ROCE
 set class-of-service drop-profiles ECN-DP interpolate fill-level 30 drop-probability 0
 set class-of-service drop-profiles ECN-DP interpolate fill-level 100 drop-probability 100
 set class-of-service forwarding-classes class NO-LOSS explicit-congestion-notification
+/* Review with: show | compare — then apply with: commit confirmed 5 */
 `,
 
   'JVD: EVPN campus access (EX)': `/* JVD EVPN campus — access switch VLAN/VNI + uplink. */
+configure
 set interfaces ge-0/0/0 unit 0 family ethernet-switching interface-mode access vlan members V100
 set interfaces ae0 unit 0 family ethernet-switching interface-mode trunk vlan members all
 set vlans V100 vlan-id 100
@@ -370,6 +415,7 @@ set vlans V100 vxlan vni 10100
 set switch-options vtep-source-interface lo0.0
 set protocols evpn encapsulation vxlan
 set protocols evpn extended-vni-list all
+/* Review with: show | compare — then apply with: commit confirmed 5 */
 `,
 };
 
@@ -387,20 +433,6 @@ const ARUBA_KEYWORDS = [
   'interface-mode', 'members', 'vlan-id', 'vlans', 'protocols',
   'routing-options', 'autonomous-system', 'group', 'peer-as', 'unit',
   'inet', 'native-vlan-id', 'irb', 'p2p',
-];
-
-const DANGEROUS_COMMANDS = [
-  /\berase\b/i,
-  /\bdelete\s+configuration\b/i,
-  /\bdelete\s+system\b/i,
-  /\bwrite\s+erase\b/i,
-  /\breload\b/i,
-  /\breboot\b/i,
-  /\bshutdown\b/i,
-  /\bno\s+interface\b/i,
-  // NB: `commit` is deliberately NOT here — it's the REQUIRED apply step on
-  // Junos, so flagging it trained users to ignore the warning entirely.
-  /\bcopy\s+.*startup/i,
 ];
 
 const EDITOR_SNIPPETS: Record<string, string> = {
@@ -489,6 +521,16 @@ interface OutlineItem {
   label: string;
 }
 
+/** Why a send stopped early — shown over the buffer it came from. */
+interface SendReport {
+  bufferId: string;
+  lineNumber: number;
+  title: string;
+  line: string;
+  detail: string;
+  deviceText: string;
+}
+
 function buildOutline(text: string): OutlineItem[] {
   const patterns = [
     /^\s*(interface\s+\S+)/i,
@@ -515,7 +557,7 @@ function buildDiagnostics(text: string, language: string): string[] {
   const diagnostics: string[] = [];
   if (hasAnsi(text)) diagnostics.push('Terminal escape/control codes found.');
   const lines = text.split('\n').map((line) => line.trim()).filter(Boolean);
-  const risky = lines.filter((line) => DANGEROUS_COMMANDS.some((pattern) => pattern.test(line)));
+  const risky = lines.filter(isDangerousLine);
   if (risky.length) diagnostics.push(`${risky.length} risky command${risky.length === 1 ? '' : 's'} detected.`);
   if (/juniper|mist/.test(language) && lines.some((line) => /^(set|delete|replace)\b/i.test(line)) && !lines.some((line) => /^commit\b/i.test(line))) {
     diagnostics.push('Junos-style edits do not include a commit line.');
@@ -526,99 +568,18 @@ function buildDiagnostics(text: string, language: string): string[] {
   return diagnostics;
 }
 
-function summarizeLineDiff(original: string, next: string): string {
-  if (!original.trim()) return 'No baseline loaded; review the command preview before sending.';
-  const oldLines = original.split('\n').map((line) => line.trim()).filter(Boolean);
-  const newLines = next.split('\n').map((line) => line.trim()).filter(Boolean);
-  const oldSet = new Set(oldLines);
-  const newSet = new Set(newLines);
-  const added = newLines.filter((line) => !oldSet.has(line));
-  const removed = oldLines.filter((line) => !newSet.has(line));
-  const examples = [
-    ...added.slice(0, 3).map((line) => `+ ${line}`),
-    ...removed.slice(0, 3).map((line) => `- ${line}`),
-  ];
-  return `Diff vs baseline: +${added.length} / -${removed.length}${examples.length ? `\n${examples.join('\n')}` : ''}`;
-}
-
-// ─── Editor themes ───
-// Defined via beforeMount on both <Editor> and <DiffEditor> so the prop-driven
-// theme (which follows the app's light/dark setting) always resolves.
-
-const defineEditorThemes: BeforeMount = (monaco) => {
-  monaco.editor.defineTheme('aruba-dark', {
-    base: 'vs-dark',
-    inherit: true,
-    rules: [
-      { token: 'comment', foreground: '6a737d', fontStyle: 'italic' },
-      { token: 'keyword', foreground: 'e06c75' },
-      { token: 'number', foreground: '56b6c2' },
-      { token: 'number.float', foreground: '98c379' },
-      { token: 'type', foreground: 'e5c07b' },
-      { token: 'string', foreground: 'abb2bf' },
-    ],
-    colors: {
-      'editor.background': '#0d1117',
-      'editor.foreground': '#c9d1d9',
-      'editor.lineHighlightBackground': '#161b2240',
-      'editor.selectionBackground': '#264f7880',
-      'editorLineNumber.foreground': '#484f58',
-      'editorLineNumber.activeForeground': '#8b949e',
-      'editorCursor.foreground': '#58a6ff',
-      'editorWhitespace.foreground': '#30363d',
-      'editorIndentGuide.background': '#21262d',
-      'editorIndentGuide.activeBackground': '#30363d',
-      'scrollbarSlider.background': '#21262d80',
-      'scrollbarSlider.hoverBackground': '#30363d',
-    },
-  });
-  monaco.editor.defineTheme('aruba-light', {
-    base: 'vs',
-    inherit: true,
-    rules: [
-      { token: 'comment', foreground: '6e7781', fontStyle: 'italic' },
-      { token: 'keyword', foreground: 'cf222e' },
-      { token: 'number', foreground: '0e7490' },
-      { token: 'number.float', foreground: '1a7f37' },
-      { token: 'type', foreground: '9a6700' },
-      { token: 'string', foreground: '57606a' },
-    ],
-    colors: {
-      'editor.background': '#ffffff',
-      'editor.foreground': '#1f2328',
-      'editor.lineHighlightBackground': '#f4f7f980',
-      'editor.selectionBackground': '#add6ff80',
-      'editorLineNumber.foreground': '#8c959f',
-      'editorLineNumber.activeForeground': '#57606a',
-      'editorCursor.foreground': '#0969da',
-      'editorWhitespace.foreground': '#d0d7de',
-      'editorIndentGuide.background': '#eaeef2',
-      'editorIndentGuide.activeBackground': '#d0d7de',
-      'scrollbarSlider.background': '#d0d7de80',
-      'scrollbarSlider.hoverBackground': '#afb8c1',
-    },
-  });
-};
-
 // ─── Component ───
 
 export default function ConfigEditor() {
   // Narrow per-field selectors — whole-store subscriptions re-rendered the
   // editor (and re-created its callbacks) on every unrelated store change.
   const showConfigEditor = useSessionStore((s) => s.showConfigEditor);
-  const toggleConfigEditor = useSessionStore((s) => s.toggleConfigEditor);
   const activeSessionId = useSessionStore((s) => s.activeSessionId);
   const sessions = useSessionStore((s) => s.sessions);
   const fontSize = useSettingsStore((s) => s.fontSize);
   const customDeviceProfiles = useSettingsStore((s) => s.customDeviceProfiles);
   const { isDark } = useTheme();
   const editorTheme = isDark ? 'aruba-dark' : 'aruba-light';
-
-  const { width: panelWidth, onDragStart: handleDragStart, handleClass: dragHandleClass } =
-    useResizablePanel(520, 300, 900);
-  const [maximized, setMaximized] = useState(false);
-  // With no sessions open, fill the whole area so it works as a plain text editor.
-  const fullWidth = sessions.length === 0;
 
   // Editor buffers (tabs). Each starts blank in Plain Text — no vendor assumed
   // until the user picks a language/template (or opens a file, which infers it
@@ -643,6 +604,12 @@ export default function ConfigEditor() {
   useEffect(() => {
     if (!buffers.some((b) => b.id === activeId)) setActiveId(buffers[0].id);
   }, [buffers, activeId]);
+  // Unsaved edits get a dot on the side panel's Editor tab and the activity
+  // bar, so they stay visible while another tab (or no panel) is showing.
+  const anyDirty = buffers.some((b) => b.dirty);
+  useEffect(() => {
+    useSidePanelStore.getState().setStatus('editor', anyDirty ? 'dirty' : null);
+  }, [anyDirty]);
 
   const contentRef = useRef(content);
 
@@ -722,6 +689,15 @@ export default function ConfigEditor() {
   // Diff mode: compare current editor content against a loaded baseline.
   const [diffMode, setDiffMode] = useState(false);
   const [diffOriginal, setDiffOriginal] = useState('');
+  // What the diff's left side is, and the device it came from (null = a file).
+  const [diffSource, setDiffSource] = useState<{ label: string; device: string | null } | null>(null);
+  // Running-configs pulled per device (deviceKey). The send preview only ever
+  // diffs against the device it is sending to — one global baseline from
+  // whichever switch was pulled last compared against the wrong box.
+  const baselinesRef = useRef(new Map<string, Baseline>());
+  const lastBaselineRef = useRef<Baseline | undefined>(undefined);
+  const [sendReport, setSendReport] = useState<SendReport | null>(null);
+  const [sendProgress, setSendProgress] = useState<{ sent: number; total: number } | null>(null);
   // Config archive panel (NW-16): store-lifted so Tools / palette can open it.
   const showArchive = useSessionStore((s) => s.showArchive);
   const setShowArchive = useSessionStore((s) => s.setShowArchive);
@@ -997,7 +973,17 @@ export default function ConfigEditor() {
         langExplicit: false,
       });
       if (command == null) {
+        const baseline: Baseline = {
+          text: out,
+          label: activeSession.config.name || activeSession.config.host || 'device',
+          pulledAt: Date.now(),
+          truncated,
+        };
+        const device = deviceKey(activeSession.config);
+        baselinesRef.current.set(device, baseline);
+        lastBaselineRef.current = baseline;
         setDiffOriginal(out);
+        setDiffSource({ label: `running-config from ${baseline.label}`, device });
         showStatus(
           truncated
             ? 'Running-config pulled; baseline may be truncated'
@@ -1028,17 +1014,21 @@ export default function ConfigEditor() {
   const openDiffAgainst = useCallback(async () => {
     try {
       let text: string | null = null;
+      let name = '';
       if (isTauri) {
         const p = await tauriOpen();
         if (!p) return;
         text = await tauriReadText(p);
+        name = basename(p);
       } else {
         const r = await browserOpen();
         if (!r) return;
         text = r.content;
+        name = r.name;
       }
       if (text == null) return;
       setDiffOriginal(looksLikeTerminalCapture(text) ? stripTerminalSequences(text) : text);
+      setDiffSource({ label: `file ${name}`, device: null });
       setDiffMode(true);
       showStatus('Diff: left = baseline file, right = editor');
     } catch (e) {
@@ -1153,64 +1143,110 @@ export default function ConfigEditor() {
       showStatus('Not connected — connect the session first');
       return;
     }
-    const lines = content
-      // Strip /* ... */ block comments across the WHOLE buffer first (dotall via
-      // [\s\S]), so multi-line Junos annotations can't leak inner/closing lines —
-      // this also subsumes the inline "/* uplink */ set interfaces ..." case.
-      .replace(/\/\*[\s\S]*?\*\//g, '')
-      .split('\n')
-      .map((l) => l.trim())
-      // Drop pure comment lines for every supported vendor: Aruba/Cisco '!' '#',
-      // now-empty comment-only lines, and any stray delimiter left behind by an
-      // UNTERMINATED /* (which the regex above won't match — it has no closing */).
-      .filter((l) => l && !l.startsWith('!') && !l.startsWith('#') && !l.startsWith('/*') && !l.startsWith('*/'));
+    const prepared = prepareSendLines(content);
+    const lines = prepared.map((l) => l.text);
     if (lines.length === 0) {
       showStatus('Nothing to send');
       return;
     }
 
-    const risky = lines.filter((line) => DANGEROUS_COMMANDS.some((pattern) => pattern.test(line)));
-    const diffSummary = summarizeLineDiff(diffOriginal, content);
+    const target = activeSession.config.name || activeSession.config.host || 'device';
+    const risky = lines.filter(isDangerousLine);
+    const diffSummary = describeSendBaseline(
+      content,
+      target,
+      baselinesRef.current.get(deviceKey(activeSession.config)),
+      lastBaselineRef.current
+    );
     const preview = lines.slice(0, 12).join('\n');
+    const sid = activeSession.sessionId;
+    const bufferId = active.id;
     sendingRef.current = true;
     setSending(true);
-    // Tracks lines actually pushed so a failure/cancel can report "k of n" —
-    // the device is left with a PARTIAL config in that case and the user must
-    // know exactly how far it got.
-    let sent = 0;
+    let watcher: Awaited<ReturnType<typeof watchSessionOutput>> | null = null;
 
     try {
       const ok = await askConfirm({
-        title: `Send ${lines.length} line${lines.length === 1 ? '' : 's'} to ${activeSession.config.name || activeSession.config.host || 'device'}?`,
+        title: `Send ${lines.length} line${lines.length === 1 ? '' : 's'} to ${target}?`,
         message:
           `${risky.length ? `Potentially dangerous lines detected: ${risky.slice(0, 5).join(' | ')}\n\n` : ''}` +
           `${diffSummary}\n\n` +
+          `Sending stops at the first error the device reports.\n\n` +
           `Preview:\n${preview}${lines.length > 12 ? '\n…' : ''}`,
         confirmLabel: 'Send',
         danger: risky.length > 0,
       });
       if (!ok) return;
 
-      // Lines go out serially (80ms apart); the Cancel button sets a flag the
-      // loop checks between lines.
+      // One line at a time, each waiting for the device's answer; the Cancel
+      // button sets a flag the loop checks while it waits. A stop part-way
+      // leaves a PARTIAL config on the device, so every outcome says exactly
+      // how far it got.
+      setSendReport(null);
       cancelSendRef.current = false;
-      for (const line of lines) {
-        if (cancelSendRef.current) {
-          showStatus(`Send cancelled — sent ${sent} of ${lines.length} lines`);
-          return;
-        }
-        await invoke('send_data', { sessionId: activeSession.sessionId, data: line + '\r' });
-        sent++;
-        await new Promise((r) => setTimeout(r, 80));
+      watcher = await watchSessionOutput(sid);
+      setSendProgress({ sent: 0, total: lines.length });
+      const result = await runConfigSend(prepared, {
+        send: (data) => invoke('send_data', { sessionId: sid, data }),
+        output: watcher.output,
+        sleep,
+        cancelled: () => cancelSendRef.current,
+        now: () => Date.now(),
+        onProgress: (sent) => setSendProgress({ sent, total: lines.length }),
+      });
+      const plural = (n: number) => `${n} line${n === 1 ? '' : 's'}`;
+      if (result.kind === 'done') {
+        showStatus(`Sent ${plural(lines.length)}`);
+      } else if (result.kind === 'cancelled') {
+        showStatus(`Send cancelled — sent ${result.sent} of ${lines.length} lines`);
+      } else if (result.kind === 'send-failed') {
+        showStatus(`Send failed — sent ${result.sent} of ${lines.length} lines (is the session still connected?)`);
+      } else {
+        const failed = prepared[result.failedIndex];
+        const alreadyOut = result.sent - (result.failedIndex + 1);
+        const notSent = lines.length - result.sent;
+        setSendReport({
+          bufferId,
+          lineNumber: failed.lineNumber,
+          title:
+            result.kind === 'question'
+              ? `Stopped at line ${failed.lineNumber} — the device is asking a question. Answer it in the terminal.`
+              : `Stopped at line ${failed.lineNumber} — the device rejected it.`,
+          line: failed.text,
+          detail: [
+            `${plural(result.failedIndex)} before it went through.`,
+            alreadyOut > 0 ? `${plural(alreadyOut)} after it had already gone out before the error came back.` : '',
+            notSent > 0 ? `The remaining ${plural(notSent)} were not sent.` : '',
+          ]
+            .filter(Boolean)
+            .join(' '),
+          deviceText: result.deviceText,
+        });
       }
-      showStatus(`Sent ${lines.length} lines`);
-    } catch {
-      showStatus(`Send failed — sent ${sent} of ${lines.length} lines (is a session connected?)`);
+    } catch (e) {
+      showStatus(`Send failed: ${e}`);
     } finally {
+      watcher?.dispose();
       sendingRef.current = false;
       setSending(false);
+      setSendProgress(null);
       cancelSendRef.current = false;
     }
+  };
+
+  // Select a line in the editor (from the send-error banner).
+  const jumpToLine = (lineNumber: number) => {
+    const editor = editorRef.current;
+    const model = editor?.getModel();
+    if (!editor || !model || lineNumber > model.getLineCount()) return;
+    editor.revealLineInCenter(lineNumber);
+    editor.setSelection({
+      startLineNumber: lineNumber,
+      startColumn: 1,
+      endLineNumber: lineNumber,
+      endColumn: model.getLineMaxColumn(lineNumber),
+    });
+    editor.focus();
   };
 
   const copyToClipboard = () => {
@@ -1275,81 +1311,15 @@ export default function ConfigEditor() {
   );
 
   return (
+    // A tab of the side panel (SidePanel owns the frame: width, drag handle,
+    // maximize and close). The file name lives on the buffer tabs below.
     <div
-      className={
-        `${showConfigEditor ? '' : 'hidden '}${
-        maximized
-          ? 'fixed left-0 right-0 bottom-0 top-11 z-40 flex flex-col bg-[var(--bg-primary)] overflow-hidden animate-fade-in'
-          : fullWidth
-          ? 'flex-1 min-w-0 flex flex-col bg-[var(--bg-primary)] overflow-hidden relative'
-          : 'flex-shrink-0 flex flex-col bg-[var(--bg-primary)] border-l border-[var(--bg-tertiary)] overflow-hidden relative'
-        }`
-      }
-      style={maximized || fullWidth ? undefined : { width: panelWidth }}
+      id="side-panel-editor"
+      role="tabpanel"
+      aria-labelledby="side-tab-editor"
+      className={`${showConfigEditor ? '' : 'hidden '}absolute inset-0 flex flex-col bg-[var(--bg-primary)] overflow-hidden`}
       aria-hidden={!showConfigEditor}
     >
-      {/* Drag handle (hidden when maximized or filling the area) */}
-      {!maximized && !fullWidth && <div className={dragHandleClass} onMouseDown={handleDragStart} />}
-
-      {/* Header */}
-      <div className="flex items-center justify-between h-10 px-3 pl-4 border-b border-[var(--bg-tertiary)] bg-[var(--bg-secondary)]">
-        <div className="flex items-center gap-2 min-w-0">
-          <FileCode size={14} className="text-[var(--accent-warning)] flex-shrink-0" />
-          <span className="text-xs font-semibold text-[var(--text-primary)] uppercase tracking-wider flex-shrink-0">
-            Editor
-          </span>
-          <span
-            className={`text-[10px] truncate max-w-[160px] ${
-              currentFilePath ? 'text-[var(--text-secondary)]' : 'text-[var(--text-muted)]'
-            }`}
-            title={currentFilePath ?? active.name}
-          >
-            {isDirty && <span className="text-[var(--accent-warning)]">● </span>}{active.name}
-          </span>
-        </div>
-        <div className="flex items-center gap-1 flex-shrink-0">
-          <button onClick={copyToClipboard} className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]" title="Copy all" aria-label="Copy all">
-            <Copy size={13} />
-          </button>
-          <button
-            onClick={async () => {
-              if (!(await confirmDiscard())) return;
-              rawCapturesRef.current.delete(active.id);
-              setViewingRawIds((prev) => (prev[active.id] ? { ...prev, [active.id]: false } : prev));
-              patchActive({
-                content: '',
-                filePath: null,
-                dirty: false,
-                name: untitledName(buffersRef.current.filter((b) => b.id !== active.id)),
-              });
-            }}
-            className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--accent-danger)]"
-            title="Clear"
-            aria-label="Clear editor contents"
-          >
-            <FileX size={13} />
-          </button>
-          <button
-            onClick={() => setMaximized((m) => !m)}
-            className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
-            title={maximized ? 'Restore to side panel' : 'Maximize editor'}
-            aria-label={maximized ? 'Restore to side panel' : 'Maximize editor'}
-          >
-            {maximized ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
-          </button>
-          <button
-            // Closing only HIDES the panel now (App keeps it mounted) — buffers
-            // and dirty state survive, so no discard confirm is needed here.
-            onClick={toggleConfigEditor}
-            className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--accent-danger)]"
-            title="Close"
-            aria-label="Close editor"
-          >
-            <X size={14} />
-          </button>
-        </div>
-      </div>
-
       {/* Buffer tabs */}
       <div
         className="flex items-center h-8 px-1.5 gap-1 border-b border-[var(--bg-tertiary)] bg-[var(--bg-secondary)] overflow-x-auto scrollbar-none flex-shrink-0"
@@ -1411,8 +1381,9 @@ export default function ConfigEditor() {
         </button>
       </div>
 
-      {/* Toolbar */}
-      <div className="flex items-center gap-1 px-2 py-1 border-b border-[var(--bg-tertiary)] bg-[var(--bg-secondary)]">
+      {/* Toolbar — wraps rather than clipping: at side-panel widths the
+          Pull / Diff / Archive / Send buttons used to fall off the end. */}
+      <div className="flex flex-wrap items-center gap-x-1 gap-y-0.5 px-2 py-1 border-b border-[var(--bg-tertiary)] bg-[var(--bg-secondary)]">
 
         {/* File actions — icon-only group with tooltips */}
         <div className="flex items-center gap-0.5">
@@ -1427,7 +1398,7 @@ export default function ConfigEditor() {
           <button
             onClick={() => saveFile(false)}
             className={`p-1.5 rounded transition-colors ${
-              isDirty ? 'text-[var(--accent-warning)] hover:bg-[#e5c07b20]' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
+              isDirty ? 'text-[var(--accent-warning)] hover:bg-[var(--accent-warning-soft)]' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
             }`}
             title={currentFilePath ? 'Save (Ctrl+S)' : 'Save As… (Ctrl+S)'}
             aria-label={currentFilePath ? 'Save' : 'Save As'}
@@ -1442,11 +1413,37 @@ export default function ConfigEditor() {
           >
             <Eraser size={13} />
           </button>
+          <button
+            onClick={copyToClipboard}
+            className="p-1.5 rounded text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] transition-colors"
+            title="Copy all"
+            aria-label="Copy all"
+          >
+            <Copy size={13} />
+          </button>
+          <button
+            onClick={async () => {
+              if (!(await confirmDiscard())) return;
+              rawCapturesRef.current.delete(active.id);
+              setViewingRawIds((prev) => (prev[active.id] ? { ...prev, [active.id]: false } : prev));
+              patchActive({
+                content: '',
+                filePath: null,
+                dirty: false,
+                name: untitledName(buffersRef.current.filter((b) => b.id !== active.id)),
+              });
+            }}
+            className="p-1.5 rounded text-[var(--text-secondary)] hover:text-[var(--accent-danger)] hover:bg-[var(--bg-tertiary)] transition-colors"
+            title="Clear this tab"
+            aria-label="Clear editor contents"
+          >
+            <FileX size={13} />
+          </button>
           {rawCapturesRef.current.has(active.id) && (
             <button
               onClick={toggleRaw}
               className={`px-1.5 py-1 text-[10px] rounded transition-colors ${
-                viewingRaw ? 'text-[var(--accent-warning)] bg-[#e5c07b20]' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
+                viewingRaw ? 'text-[var(--accent-warning)] bg-[var(--accent-warning-soft)]' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
               }`}
               title="Toggle cleaned / raw capture"
             >
@@ -1488,7 +1485,7 @@ export default function ConfigEditor() {
                       onClick={() => { patchActive({ language: l.id, langExplicit: true }); setShowLangPicker(false); }}
                       className={`flex items-center w-full px-3 py-1.5 text-xs text-left transition-colors ${
                         language === l.id
-                          ? 'text-[var(--accent)] bg-[#58a6ff15]'
+                          ? 'text-[var(--accent)] bg-[var(--accent-soft)]'
                           : 'text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
                       }`}
                     >
@@ -1652,7 +1649,7 @@ export default function ConfigEditor() {
         <button
           onClick={() => (diffMode ? setDiffMode(false) : openDiffAgainst())}
           className={`flex items-center gap-1.5 px-2 py-1 text-xs rounded transition-colors ${
-            diffMode ? 'text-[var(--accent)] bg-[#58a6ff20]' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
+            diffMode ? 'text-[var(--accent)] bg-[var(--accent-soft)]' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
           }`}
           title="Compare the editor against a file"
         >
@@ -1664,7 +1661,7 @@ export default function ConfigEditor() {
         <button
           onClick={() => setShowArchive(!showArchive)}
           className={`flex items-center gap-1.5 px-2 py-1 text-xs rounded transition-colors ${
-            showArchive ? 'text-[var(--accent)] bg-[#58a6ff20]' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
+            showArchive ? 'text-[var(--accent)] bg-[var(--accent-soft)]' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
           }`}
           title="Per-device config history + golden-config diff"
         >
@@ -1692,7 +1689,7 @@ export default function ConfigEditor() {
             onClick={() => {
               cancelSendRef.current = true;
             }}
-            className="flex items-center gap-1.5 px-2.5 py-1 text-xs bg-[var(--accent-danger)] hover:brightness-110 text-white rounded transition-colors"
+            className="flex items-center gap-1.5 px-2.5 py-1 text-xs bg-[var(--danger-solid)] hover:brightness-110 text-[var(--danger-solid-fg)] rounded transition-colors"
             title="Stop sending lines"
             aria-label="Cancel send"
           >
@@ -1704,14 +1701,70 @@ export default function ConfigEditor() {
           <button
             onClick={sendToTerminal}
             disabled={sending || pulling || !activeSession?.connected}
-            className="flex items-center gap-1.5 px-2.5 py-1 text-xs bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-40 text-white rounded transition-colors"
+            className="flex items-center gap-1.5 px-2.5 py-1 text-xs bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-40 text-[var(--accent-fg)] rounded transition-colors"
             title={activeSession ? 'Send lines to terminal' : 'No active session'}
           >
             <Send size={12} />
-            {sending ? 'Sending…' : 'Send'}
+            {sending
+              ? sendProgress
+                ? `Sending ${sendProgress.sent}/${sendProgress.total}…`
+                : 'Sending…'
+              : 'Send'}
           </button>
         )}
       </div>
+
+      {/* Why the last send stopped early (tied to the buffer it came from). */}
+      {sendReport && sendReport.bufferId === active.id && (
+        <div
+          role="alert"
+          className="flex items-start gap-2 px-3 py-2 border-b border-[var(--bg-tertiary)] bg-[var(--accent-danger-soft)] text-xs flex-shrink-0"
+        >
+          <AlertTriangle size={13} className="text-[var(--accent-danger)] mt-0.5 flex-shrink-0" />
+          <div className="flex-1 min-w-0">
+            <div className="text-[var(--text-primary)] font-medium">{sendReport.title}</div>
+            <div className="font-mono text-[11px] text-[var(--text-secondary)] truncate" title={sendReport.line}>
+              {sendReport.line}
+            </div>
+            {sendReport.deviceText && (
+              <pre className="mt-1 max-h-24 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] text-[var(--accent-danger)]">
+                {sendReport.deviceText}
+              </pre>
+            )}
+            <div className="mt-1 text-[var(--text-muted)]">{sendReport.detail}</div>
+          </div>
+          {!diffMode && (
+            <button
+              onClick={() => jumpToLine(sendReport.lineNumber)}
+              className="px-2 py-0.5 rounded text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] flex-shrink-0"
+            >
+              Go to line
+            </button>
+          )}
+          <button
+            onClick={() => setSendReport(null)}
+            className="p-1 rounded text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] flex-shrink-0"
+            title="Dismiss"
+            aria-label="Dismiss send report"
+          >
+            <X size={12} />
+          </button>
+        </div>
+      )}
+
+      {/* What the diff compares against — and a warning when a pulled
+          baseline is from a different device than the active session. */}
+      {diffMode && diffSource && (
+        <div className="flex items-center gap-3 px-3 py-1 border-b border-[var(--bg-tertiary)] bg-[var(--bg-secondary)] text-[10px] text-[var(--text-muted)] flex-shrink-0">
+          <span className="truncate">Left: {diffSource.label} · Right: editor</span>
+          {diffSource.device && activeSession && diffSource.device !== deviceKey(activeSession.config) && (
+            <span className="flex items-center gap-1 text-[var(--accent-warning)] flex-shrink-0">
+              <AlertTriangle size={10} />
+              Not from the active session ({activeSession.config.name || activeSession.config.host})
+            </span>
+          )}
+        </div>
+      )}
 
       {/* Monaco Editor */}
       <div className="flex-1 overflow-hidden">

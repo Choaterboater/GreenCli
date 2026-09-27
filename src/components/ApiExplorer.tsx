@@ -1,8 +1,7 @@
 import { useState, useRef, useCallback, useMemo, useEffect } from 'react';
-import { useResizablePanel } from '../hooks/useResizablePanel';
+import { useSidePanelStore } from '../store/sidePanelStore';
 import { copyText } from '../utils/clipboard';
 import {
-  X,
   Send,
   Globe,
   Link2,
@@ -31,6 +30,7 @@ import {
   Signal,
   ScrollText,
   Users,
+  type LucideIcon,
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/tauri';
 import { useSessionStore } from '../store/sessionStore';
@@ -181,47 +181,47 @@ function capJson(text: string): string {
     : text;
 }
 
-const CATEGORY_ICONS: Record<string, React.ReactNode> = {
+/** Endpoint groups: icon plus the colour shared by the icon and its label.
+ *  Theme tokens only — the old GitHub-dark hexes (cyan, pastels) were
+ *  unreadable on the light theme. */
+const CATEGORY_STYLE: Record<string, { icon: LucideIcon; color: string }> = {
   // On-box (CX REST)
-  System: <Server size={14} className="text-[var(--accent)]" />,
-  Interfaces: <Network size={14} className="text-[var(--accent-success)]" />,
-  VLANs: <Tag size={14} className="text-[var(--accent-warning)]" />,
-  LLDP: <Radio size={14} className="text-[#d2a8ff]" />,
-  Configuration: <FileCode size={14} className="text-[#e3b341]" />,
-  CLI: <TerminalSquare size={14} className="text-[var(--accent-info)]" />,
+  System: { icon: Server, color: 'var(--accent)' },
+  Interfaces: { icon: Network, color: 'var(--accent-success)' },
+  VLANs: { icon: Tag, color: 'var(--accent-warning)' },
+  LLDP: { icon: Radio, color: 'var(--accent-violet)' },
+  Configuration: { icon: FileCode, color: 'var(--accent-2)' },
+  CLI: { icon: TerminalSquare, color: 'var(--accent-info)' },
   // Aruba Central
-  Monitoring: <Globe size={14} className="text-[var(--accent)]" />,
-  Clients: <Network size={14} className="text-[var(--accent-success)]" />,
-  Sites: <Tag size={14} className="text-[var(--accent-warning)]" />,
-  'Config Groups': <FileCode size={14} className="text-[#e3b341]" />,
-  Firmware: <Server size={14} className="text-[#d2a8ff]" />,
-  Alerts: <Radio size={14} className="text-[var(--accent-danger)]" />,
+  Monitoring: { icon: Globe, color: 'var(--accent)' },
+  Clients: { icon: Network, color: 'var(--accent-success)' },
+  Sites: { icon: Tag, color: 'var(--accent-warning)' },
+  'Config Groups': { icon: FileCode, color: 'var(--accent-2)' },
+  Firmware: { icon: Server, color: 'var(--accent-violet)' },
+  Alerts: { icon: Radio, color: 'var(--accent-danger)' },
   // Juniper Mist
-  WLAN: <Wifi size={14} className="text-[#93c5fd]" />,
-  RF: <Signal size={14} className="text-[#c4b5fd]" />,
-  Audits: <ScrollText size={14} className="text-[#fcd28f]" />,
-  Subscribers: <Users size={14} className="text-[#7ee2a8]" />,
+  WLAN: { icon: Wifi, color: 'var(--accent-info)' },
+  RF: { icon: Signal, color: 'var(--accent-violet)' },
+  Audits: { icon: ScrollText, color: 'var(--accent-warning)' },
+  Subscribers: { icon: Users, color: 'var(--accent-success)' },
 };
 
-const CATEGORY_COLORS: Record<string, string> = {
-  System: '#58a6ff', Interfaces: '#3fb950', VLANs: '#d29922',
-  LLDP: '#d2a8ff', Configuration: '#e3b341', CLI: '#56d4dd',
-  Monitoring: '#58a6ff', Clients: '#3fb950', Sites: '#d29922',
-  'Config Groups': '#e3b341', Firmware: '#d2a8ff', Alerts: '#ff7b72',
-  WLAN: '#93c5fd', RF: '#c4b5fd', Audits: '#fcd28f', Subscribers: '#7ee2a8',
-};
+function CategoryIcon({ category }: { category: string }) {
+  const Icon = CATEGORY_STYLE[category]?.icon;
+  return Icon ? <Icon size={14} /> : null;
+}
 
-const METHOD_COLORS: Record<string, string> = {
-  GET: '#3fb950',
-  POST: '#58a6ff',
-  PUT: '#d29922',
-  DELETE: '#ff7b72',
+/** HTTP method badge: solid token for the text, its -soft token behind it. */
+const METHOD_STYLE: Record<string, { color: string; background: string }> = {
+  GET: { color: 'var(--accent-success)', background: 'var(--accent-success-soft)' },
+  POST: { color: 'var(--accent-info)', background: 'var(--accent-info-soft)' },
+  PUT: { color: 'var(--accent-warning)', background: 'var(--accent-warning-soft)' },
+  DELETE: { color: 'var(--accent-danger)', background: 'var(--accent-danger-soft)' },
 };
 
 export default function ApiExplorer() {
   // Narrow per-field selectors instead of a whole-store subscription.
   const showApiExplorer = useSessionStore((s) => s.showApiExplorer);
-  const toggleApiExplorer = useSessionStore((s) => s.toggleApiExplorer);
   const activeSessionId = useSessionStore((s) => s.activeSessionId);
   const sessions = useSessionStore((s) => s.sessions);
   const verifyDeviceTls = useSettingsStore((s) => s.verifyDeviceTls);
@@ -257,10 +257,11 @@ export default function ApiExplorer() {
   const requestInFlightRef = useRef(false);
   const bodyRef = useRef<HTMLTextAreaElement>(null);
 
-  // Collapsible / Resizable panel state
-  const [collapsed, setCollapsed] = useState(false);
-  const { width: panelWidth, onDragStart: handleDragStart, handleClass: dragHandleClass } =
-    useResizablePanel(420, 200, 800);
+  // A request in flight spins on the side panel's API tab (the panel frame
+  // replaced this panel's own header, which used to carry the spinner).
+  useEffect(() => {
+    useSidePanelStore.getState().setStatus('api', loading ? 'busy' : null);
+  }, [loading]);
 
   const activeConnection = connections.find((c) => c.id === activeConnectionId);
   const activeSession = sessions.find((s) => s.sessionId === activeSessionId);
@@ -588,45 +589,15 @@ export default function ApiExplorer() {
 
   if (!showApiExplorer) return null;
 
-  // Collapsed mode
-  if (collapsed) {
-    return (
-      <div className="w-10 flex-shrink-0 flex flex-col items-center py-3 bg-[var(--bg-primary)] border-l border-[var(--bg-tertiary)] gap-3">
-        <button onClick={() => setCollapsed(false)} className="p-2 rounded-lg hover:bg-[var(--bg-tertiary)] text-[var(--accent)] transition-colors" title="Expand API Explorer">
-          <Globe size={18} />
-        </button>
-        <button onClick={toggleApiExplorer} className="p-2 rounded-lg hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--accent-danger)] transition-colors" title="Close">
-          <X size={16} />
-        </button>
-      </div>
-    );
-  }
-
   return (
-    <div className="flex-shrink-0 flex flex-col bg-[var(--bg-primary)] border-l border-[var(--bg-tertiary)] overflow-hidden relative" style={{ width: panelWidth }}>
-      {/* Drag Handle */}
-      <div className={dragHandleClass} onMouseDown={handleDragStart} />
-      {/* Header */}
-      <div className="flex items-center justify-between h-10 px-3 pl-4 border-b border-[var(--bg-tertiary)] bg-[var(--bg-secondary)]">
-        <div className="flex items-center gap-2">
-          <Globe size={14} className="text-[var(--accent)]" />
-          <span className="text-xs font-semibold text-[var(--text-primary)] uppercase tracking-wider">
-            API Explorer
-          </span>
-          {loading && (
-            <Loader2 size={14} className="animate-spin text-[var(--accent)]" />
-          )}
-        </div>
-        <div className="flex items-center gap-1">
-          <button onClick={() => setCollapsed(true)} className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]" title="Collapse">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M15 3v18"/></svg>
-          </button>
-          <button onClick={toggleApiExplorer} className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--accent-danger)]" title="Close">
-            <X size={14} />
-          </button>
-        </div>
-      </div>
-
+    // A tab of the side panel (SidePanel owns the frame: width, drag handle,
+    // maximize and close).
+    <div
+      id="side-panel-api"
+      role="tabpanel"
+      aria-labelledby="side-tab-api"
+      className="absolute inset-0 flex flex-col bg-[var(--bg-primary)] overflow-hidden"
+    >
       {/* Target toggle: on-box REST · Aruba Central · Juniper Mist */}
       <div className="flex gap-1 px-3 py-2 border-b border-[var(--bg-tertiary)] bg-[var(--bg-secondary)]">
         {(['device', 'central', 'mist'] as const).map((t) => (
@@ -686,7 +657,7 @@ export default function ApiExplorer() {
       {/* Mist hint */}
       {target === 'mist' && (
         <div className="px-3 py-2 border-b border-[var(--bg-tertiary)] bg-[var(--bg-secondary)] text-[10px] text-[var(--text-muted)]">
-          Uses the API token from <span className="text-[var(--text-secondary)]">Settings → Juniper Mist</span>. Replace
+          Uses the API token from <span className="text-[var(--text-secondary)]">Settings → Integrations → Juniper Mist</span>. Replace
           <code className="text-[var(--accent)] mx-1">{'{org_id}'}</code>/
           <code className="text-[var(--accent)] mx-1">{'{site_id}'}</code>in paths (run "Whoami" first to find them).
         </div>
@@ -702,7 +673,7 @@ export default function ApiExplorer() {
               handleAutofillSession();
               setShowNewConnection(true);
             }}
-            className="w-full mb-2 px-2 py-1 text-xs bg-[#1f6feb22] border border-[var(--accent)] text-[var(--accent)] rounded hover:bg-[#1f6feb44] transition-colors"
+            className="w-full mb-2 px-2 py-1 text-xs bg-[var(--accent-soft)] border border-[var(--accent)] text-[var(--accent)] rounded hover:bg-[var(--accent)] hover:text-[var(--accent-fg)] transition-colors"
           >
             ⚡ Use active session — {activeSession.config.host}
           </button>
@@ -795,7 +766,7 @@ export default function ApiExplorer() {
               </span>
             </label>
             {error && (
-              <div className="px-2 py-1.5 text-[11px] rounded text-[var(--accent-danger)] bg-[rgba(240,83,63,0.08)] border border-[rgba(240,83,63,0.3)]">
+              <div className="px-2 py-1.5 text-[11px] rounded text-[var(--accent-danger)] bg-[var(--accent-danger-soft)] border border-[var(--accent-danger-border)]">
                 {error}
               </div>
             )}
@@ -873,19 +844,16 @@ export default function ApiExplorer() {
             <button
               onClick={() => toggleCategory(category)}
               className="flex items-center gap-1.5 w-full px-3 py-1.5 text-left hover:bg-[var(--bg-secondary)] transition-colors"
+              style={{ color: CATEGORY_STYLE[category]?.color ?? 'var(--text-secondary)' }}
             >
               {expandedCategories.has(category) ? (
                 <ChevronDown size={12} className="text-[var(--text-secondary)]" />
               ) : (
                 <ChevronRight size={12} className="text-[var(--text-secondary)]" />
               )}
-              {CATEGORY_ICONS[category]}
-              <span
-                className="text-xs font-medium"
-                style={{ color: CATEGORY_COLORS[category] || 'var(--text-secondary)' }}
-              >
-                {category}
-              </span>
+              {/* Icon and label take the group colour from the button. */}
+              <CategoryIcon category={category} />
+              <span className="text-xs font-medium">{category}</span>
               <span className="ml-auto text-[10px] text-[var(--text-muted)]">
                 {endpoints.length}
               </span>
@@ -900,10 +868,7 @@ export default function ApiExplorer() {
                 >
                   <span
                     className="text-[10px] font-bold px-1 rounded flex-shrink-0 mt-0.5"
-                    style={{
-                      background: `${METHOD_COLORS[ep.method]}20`,
-                      color: METHOD_COLORS[ep.method],
-                    }}
+                    style={METHOD_STYLE[ep.method]}
                   >
                     {ep.method}
                   </span>
@@ -1007,10 +972,10 @@ export default function ApiExplorer() {
                   style={{
                     color:
                       response.status >= 200 && response.status < 300
-                        ? '#3fb950'
+                        ? 'var(--accent-success)'
                         : response.status >= 400
-                        ? '#ff7b72'
-                        : '#d29922',
+                        ? 'var(--accent-danger)'
+                        : 'var(--accent-warning)',
                   }}
                 >
                   {response.status || 'Error'}

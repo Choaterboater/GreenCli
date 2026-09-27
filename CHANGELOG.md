@@ -7,6 +7,139 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-09-27
+
+### Added
+
+- **Change Jobs** (activity bar / command palette): push one config block to many
+  devices picked by folder, tag, host or open tab, with `${var}` values per
+  device from a CSV. A dry run shows exactly what each device gets; the job
+  runs on one canary device and waits for your OK before the rest; it stops
+  at the first device error, takes before/after config snapshots with a diff,
+  and wraps changes in Junos `commit confirmed` / AOS-CX `checkpoint auto` so
+  an unconfirmed change rolls itself back. Results grid with CSV export.
+- **Shared logins** (Settings → Connections & Security): one saved login (e.g. your TACACS
+  account) used by many hosts — set it as a folder's default, override per
+  host. Changing its password once updates every device that uses it. Jump
+  hosts can use a login or a vaulted password; jump auth gains
+  keyboard-interactive.
+- **Import hosts**: from CSV (with a template), a SecureCRT sessions folder or
+  XML export, Aruba Central, Juniper Mist, or `~/.ssh/config` — all through
+  one preview that skips hosts you already have.
+- **Several sessions to one saved host**: "Open new session",
+  Shift+double-click, or Duplicate tab ("core-sw-01 (2)"); a tab right-click
+  menu (Duplicate, Reconnect, Disconnect, Rename, Pop out, Close others /
+  disconnected).
+- **Tabs read the device prompt**: tabs named by the device's hostname and
+  tinted amber with a CONFIG badge while the device is in config mode
+  (AOS-CX, AOS-S, AOS-8, Instant, Junos); the status bar and multi-send bar
+  show it too.
+- **Session logging**: plain-text logs (control codes stripped) named
+  `host_YYYY-MM-DD_HHMMSS.log`, an option to log every session
+  automatically, a chosen log folder, optional per-line timestamps and
+  "Reveal log folder".
+- Keyboard: tab switching from inside a session (Ctrl+Tab, Ctrl+PgUp/PgDn,
+  ⌘1–9 / Alt+1–9), Ctrl+Shift+F/T/P on Windows/Linux, F3 / ⌘G find next, and
+  shortcut hints that show ⌘ on macOS.
+- Serial: port dropdown (lone USB console preselected), baud default by
+  device type (AOS-CX 115200), and a "Send BREAK" button.
+- Quick Connect parses `user@host:port`; saved hosts get **Edit…**, show
+  user@host, and Enter in the sidebar search connects to the top match.
+- "System" theme that follows macOS / Windows; Option-as-Meta setting on Mac;
+  right-click Copy & Paste / Find selection / Save scrollback; pop-out
+  windows get a header with status, Reconnect, Find and Dock.
+
+### Changed
+
+- **New layout.** An activity bar down the left side replaces the Tools menu:
+  one click opens Sessions, Editor, API, AI, Bulk Runner, Change Jobs, Config
+  Archive, Network Intent, SSH Tunnels, SFTP or Import Hosts, with Help and
+  Settings at the bottom. Hover shows the name and shortcut; small badges show
+  dropped sessions, failed intents, busy AI/API and unsaved editor changes.
+- **One side panel** holds Editor, API and AI as tabs. Switching tabs or
+  closing the panel keeps your work (unsaved editor text, a half-built API
+  request, the chat). It can be maximized; Ctrl/⌘+Shift+E/A/I switch to a
+  tab or close it. Editor, API and AI can no longer be open side by side.
+- **Simpler title bar**: the brand, a "Search or run a command…" field that
+  opens the command palette, and Connect. Split view, Multi-send and Snippets
+  moved to the right end of the tab strip.
+- **Settings** are grouped by task (Appearance · Terminal · Connections &
+  Security · Automation · AI & MCP · Integrations · Backup & Reset) and have a
+  search box; Help and Settings share one window style.
+- Network Intent's header no longer wraps its buttons onto two lines.
+- Documentation screenshots show the new layout and name.
+
+### Fixed
+
+- Idle SSH tabs no longer drop to "Reconnecting…" every 5 minutes. The wedge
+  watchdog treated a silent prompt as a dead link (keepalive replies never
+  reach the terminal); it now sends an SSH-level ping first and only
+  reconnects when the ping goes unanswered, so busy devices (a long Junos
+  `commit`, `write memory`) are no longer cut off either. Its forced
+  disconnect is also time-bounded.
+- A first SSH connect is bounded (60s), so a device that never finishes the
+  login can't leave a tab stuck on "connecting" with no way to retry.
+- New sessions open at the terminal's real size instead of 80x24 (devices
+  paged every 24 lines and wrapped at 80 columns until the window was
+  resized) — SSH, telnet and local shells.
+- Several sessions at once: parked "waiting for vault unlock" connects are
+  queued instead of overwriting each other (which stranded tabs on
+  "connecting"); password prompts queue instead of swapping hosts mid-typing;
+  one tab's failed login no longer tears down another tab's successful one;
+  Quick Connect no longer shows "Connecting…" for the next session while a
+  slow one is still connecting.
+- SSH no longer sends a guaranteed-to-fail empty-password login before asking
+  for the password (each counted toward TACACS/RADIUS lockout).
+- Unreachable hosts, host-key mismatches, timeouts and telnet errors now show
+  the real error instead of opening the password dialog.
+- Copy: selecting text in a panel (AI chat, API responses) and pressing
+  Ctrl/Cmd+C copies it again instead of sending ^C to the device; clicking an
+  IP / MAC / interface no longer silently replaces the clipboard (smart links
+  now copy on Ctrl/Cmd+click); copy-on-select also works when the drag ends
+  outside the terminal.
+- macOS terminal copy: Option+drag now selects text even when a full-screen
+  app (vim, tmux, htop, omp, claude) has mouse mode on — before, Mac had no
+  way to select there (Windows could Shift+drag). Cmd/Ctrl+C no longer lets
+  the webview's own copy race ours and sometimes paste the word from the last
+  right-click.
+- Reconnect is easy to find: a dropped session shows a "Disconnected — press
+  Enter or Reconnect" bar, pressing Enter in it reconnects, and the tab's
+  reconnect button is always visible instead of hover-only.
+- "Reset all settings" moved out of the Settings header (next to the close X,
+  easy to hit by mistake) to the bottom of Settings → Backup, with a clear
+  description of what it clears.
+- Split view acts on the pane you're in: clicking a pane makes it the active
+  one, so close / find / snippets / logging no longer hit the first pane.
+- Bulk Runner and multi-send are safe by default: they target only the
+  devices you pick (not every connected session, local shells or consoles),
+  confirm risky commands naming the devices, turn paging off so output isn't
+  cut at `--More--`, and outline every terminal a multi-send will type into.
+  Snippets insert without pressing Enter (Shift+click runs), support
+  `{{name}}` prompts, and ask before deleting.
+- Closing a connected session asks first (setting); red "danger" dialogs
+  focus Cancel; a key pressed in a dialog no longer reaches the device
+  behind it.
+- The password dialog has a Username field and shows "Access denied
+  (attempt N)" inline; the vault prompt names the waiting hosts and offers
+  "Skip — type the device password".
+- Config Editor: `no shutdown` no longer flagged as dangerous, the send
+  preview compares against the right device, sending stops at the first
+  device error, and templates include `configure terminal` / `configure`.
+- Editing a saved host while its tab is connected no longer relabels the
+  live tab as the new address.
+- Toasts moved top-right (off the AI send box), fold repeats, and only
+  report connects/disconnects for tabs you can't see; dim hint text meets
+  4.5:1 contrast in both themes; light mode gets a light backdrop.
+- Opening several side panels can no longer squeeze the terminal to
+  nothing (panels shrink or the oldest closes); panel widths are remembered.
+- Pop-out windows no longer freeze the app on Windows.
+- Serial writes no longer block a runtime worker until every byte has left the
+  port (pastes at 9600 baud stalled echo and other sessions).
+- The "error" / "warning" search chips work (they used an invalid regex); the
+  SFTP browser follows the active session; the AI assistant targets the active
+  device instead of silently falling back to another one; the REC indicator
+  can't show the previous tab's state.
+
 ## [1.4.2] - 2026-08-26
 
 ### Added

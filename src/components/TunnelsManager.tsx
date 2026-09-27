@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/tauri';
 import { X, Waypoints, Plus, Trash2, ArrowRight, Globe } from 'lucide-react';
 import { useSessionStore } from '../store/sessionStore';
 import { notify } from '../store/toastStore';
+import { tabLabel } from '../utils/tabs';
 
 interface ForwardMeta {
   id: string;
@@ -96,7 +97,7 @@ export default function TunnelsManager() {
   const inputCls = 'input-field h-9 px-2.5 text-sm';
   const sessName = (id: string) => {
     const s = sessions.find((x) => x.sessionId === id);
-    return s?.config.name || s?.config.host || 'session';
+    return s ? tabLabel(s) : 'session';
   };
 
   return (
@@ -132,7 +133,7 @@ export default function TunnelsManager() {
                 {sshSessions.length === 0 && <option value="">No connected SSH session</option>}
                 {sshSessions.map((s) => (
                   <option key={s.sessionId} value={s.sessionId}>
-                    via {s.config.name || s.config.host}
+                    via {tabLabel(s)}
                   </option>
                 ))}
               </select>

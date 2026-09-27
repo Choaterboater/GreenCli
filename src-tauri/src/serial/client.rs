@@ -168,12 +168,16 @@ impl Connection for SerialConnection {
     async fn send(&self, data: &[u8]) -> Result<(), AppError> {
         if let Some(ref stream) = self.stream {
             let mut w = stream.lock().await;
+            // No flush(): on macOS/Linux it is tcdrain(), a BLOCKING syscall
+            // that waits until every byte has physically left the port at the
+            // baud rate — on a shared async worker, while holding the stream
+            // lock the reader also needs. A pasted config at 9600 baud stalled
+            // the runtime for seconds and held back the device's echo. The
+            // bytes are already in the kernel's tty buffer once write_all
+            // returns; nothing more is needed to send them.
             w.write_all(data)
                 .await
                 .map_err(|e| AppError::SerialError(format!("Write error: {}", e)))?;
-            w.flush()
-                .await
-                .map_err(|e| AppError::SerialError(format!("Flush error: {}", e)))?;
             Ok(())
         } else {
             Err(AppError::SerialError("Serial port not connected".into()))

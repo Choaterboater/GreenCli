@@ -24,12 +24,10 @@ SyntaxHighlighter.registerLanguage('js', javascript);
 SyntaxHighlighter.registerLanguage('typescript', typescript);
 SyntaxHighlighter.registerLanguage('ts', typescript);
 import {
-  X,
   Send,
   Bot,
   User,
   TerminalSquare,
-  Sparkles,
   Loader2,
   ChevronDown,
   ChevronRight,
@@ -38,8 +36,6 @@ import {
   Terminal,
   AlertCircle,
   CheckCircle2,
-  Maximize2,
-  Minimize2,
   Square,
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/tauri';
@@ -51,7 +47,11 @@ import { ChatMessage, Session, AiProvider, AI_PROVIDERS } from '../types';
 import { sleep, stripAnsi, sendAndCapture } from '../utils/terminal';
 import { aiIsWriteCommand, aiMcpLooksWrite, AI_DANGER_CMD } from '../utils/aiGating';
 import { Intent, evaluateAll, summarize } from '../utils/intent';
-import { useResizablePanel } from '../hooks/useResizablePanel';
+import { savedHostId } from '../utils/tabs';
+import { useSidePanelStore } from '../store/sidePanelStore';
+import { resolveSshLogin } from '../utils/connect';
+import { loginChoiceFor } from '../utils/logins';
+import { backendVault } from '../utils/vaultAccess';
 
 // ─── Anthropic API types (local) ───
 
@@ -273,19 +273,30 @@ interface BuiltinTool {
 }
 
 // Best-effort login to a device REST API using the SSH session's credentials
-// (inline password, else a saved vault credential). `loginCmd` is the platform
-// login command (api_login / aos8_login / aoss_login). Returns true on success.
+// (inline password, the host's shared login, else its saved vault password —
+// the same resolver the SSH connect uses). `loginCmd` is the platform login
+// command (api_login / aos8_login / aoss_login). Returns true on success.
 async function tryDeviceLogin(session: Session, loginCmd: string): Promise<boolean> {
   const host = session.config.host;
   if (!host) return false;
-  const username = session.config.username || 'admin';
-  let password = session.config.password;
-  if (!password) {
-    const key = `cred:${host}:${session.config.port ?? 22}:${username}`;
-    password = await invoke<string | null>('vault_retrieve', { key })
-      .then((v) => v ?? undefined)
-      .catch(() => undefined);
-  }
+  const { loginProfileId, folderLoginProfileId } = loginChoiceFor(
+    useSessionStore.getState().folders,
+    session.config
+  );
+  const resolved = await resolveSshLogin(
+    // REST logins are always username + password, even for a key-auth SSH session.
+    {
+      ...session.config,
+      protocol: 'ssh',
+      authType: 'password',
+      username: session.config.username || undefined,
+      loginProfileId,
+    },
+    { profiles: useSettingsStore.getState().loginProfiles ?? [], folderLoginProfileId },
+    backendVault
+  );
+  const username = resolved.username || 'admin';
+  const password = resolved.password;
   if (!password) return false;
   try {
     await invoke(loginCmd, {
@@ -948,10 +959,10 @@ const MessageItem = memo(function MessageItem({ msg }: { msg: DisplayMessage }) 
   if (msg.role === 'user') {
     return (
       <div className="flex items-start gap-2 flex-row-reverse">
-        <div className="flex-shrink-0 w-6 h-6 rounded-full bg-[#58a6ff20] flex items-center justify-center">
-          <User size={12} className="text-[#58a6ff]" />
+        <div className="flex-shrink-0 w-6 h-6 rounded-full bg-[var(--accent-soft)] flex items-center justify-center">
+          <User size={12} className="text-[var(--accent)]" />
         </div>
-        <div className="max-w-[88%] px-3 py-2 rounded-lg bg-[#58a6ff15] border border-[#58a6ff25] text-[var(--text-primary)]">
+        <div className="max-w-[88%] px-3 py-2 rounded-lg bg-[var(--accent-soft)] border border-[var(--accent-soft)] text-[var(--text-primary)]">
           <p className="text-[11px] leading-relaxed whitespace-pre-wrap">{msg.content}</p>
           <div className="text-[9px] text-[var(--text-muted)] mt-1 flex items-center gap-1 justify-end">
             <Clock size={7} />
@@ -970,11 +981,11 @@ const MessageItem = memo(function MessageItem({ msg }: { msg: DisplayMessage }) 
 
   return (
     <div className="flex items-start gap-2">
-      <div className={`flex-shrink-0 w-6 h-6 rounded-full flex items-center justify-center ${msg.isError ? 'bg-[#ff7b7220]' : 'bg-[#d2a8ff20]'}`}>
+      <div className={`flex-shrink-0 w-6 h-6 rounded-full flex items-center justify-center ${msg.isError ? 'bg-[var(--accent-danger-soft)]' : 'bg-[var(--accent-violet-soft)]'}`}>
         {msg.isError ? (
-          <AlertCircle size={12} className="text-[#ff7b72]" />
+          <AlertCircle size={12} className="text-[var(--accent-danger)]" />
         ) : (
-          <Bot size={12} className="text-[#d2a8ff]" />
+          <Bot size={12} className="text-[var(--accent-violet)]" />
         )}
       </div>
       <div className="flex-1 min-w-0">
@@ -996,14 +1007,14 @@ const MessageItem = memo(function MessageItem({ msg }: { msg: DisplayMessage }) 
                     }
                     className="w-full flex items-center gap-2 px-2.5 py-1.5 bg-[var(--bg-secondary)] hover:bg-[var(--bg-tertiary)] text-left transition-colors"
                   >
-                    <Terminal size={10} className="text-[#58a6ff]" />
-                    <code className="text-[10px] text-[#58a6ff] font-mono flex-1 truncate">
+                    <Terminal size={10} className="text-[var(--accent-info)]" />
+                    <code className="text-[10px] text-[var(--accent-info)] font-mono flex-1 truncate">
                       {(te.args.command as string) || te.name}
                     </code>
                     {te.isError ? (
-                      <AlertCircle size={9} className="text-[#ff7b72] flex-shrink-0" />
+                      <AlertCircle size={9} className="text-[var(--accent-danger)] flex-shrink-0" />
                     ) : (
-                      <CheckCircle2 size={9} className="text-[#3fb950] flex-shrink-0" />
+                      <CheckCircle2 size={9} className="text-[var(--accent-success)] flex-shrink-0" />
                     )}
                     {open ? (
                       <ChevronDown size={9} className="text-[var(--text-muted)]" />
@@ -1023,7 +1034,7 @@ const MessageItem = memo(function MessageItem({ msg }: { msg: DisplayMessage }) 
         )}
 
         {/* Message content */}
-        <div className={`px-3 py-2 rounded-lg ${msg.isError ? 'bg-[#ff7b7210] border border-[#ff7b7225] text-[#ff7b72]' : 'bg-[var(--bg-secondary)] border border-[var(--border)] text-[var(--text-primary)]'}`}>
+        <div className={`px-3 py-2 rounded-lg ${msg.isError ? 'bg-[var(--accent-danger-soft)] border border-[var(--accent-danger-border)] text-[var(--accent-danger)]' : 'bg-[var(--bg-secondary)] border border-[var(--border)] text-[var(--text-primary)]'}`}>
           <div className="space-y-0.5 text-[11px] leading-relaxed markdown-body">
             <ReactMarkdown
               remarkPlugins={[remarkGfm]}
@@ -1041,7 +1052,7 @@ const MessageItem = memo(function MessageItem({ msg }: { msg: DisplayMessage }) 
                       customStyle={{ margin: '8px 0', borderRadius: '8px', fontSize: '11px', padding: '12px' }}
                     />
                   ) : (
-                    <code {...rest} className="px-1 py-0.5 bg-[var(--bg-primary)] border border-[var(--border)] rounded text-[#d29922] text-[10px] font-mono">
+                    <code {...rest} className="px-1 py-0.5 bg-[var(--bg-primary)] border border-[var(--border)] rounded text-[var(--accent-warning)] text-[10px] font-mono">
                       {children}
                     </code>
                   );
@@ -1067,7 +1078,6 @@ export default function AiAssistant() {
   // Narrow per-field selectors — whole-store subscriptions re-rendered the
   // panel on every unrelated session/settings change.
   const showAiAssistant = useSessionStore((s) => s.showAiAssistant);
-  const toggleAiAssistant = useSessionStore((s) => s.toggleAiAssistant);
   const activeSessionId = useSessionStore((s) => s.activeSessionId);
   const sessions = useSessionStore((s) => s.sessions);
   const settings = {
@@ -1086,15 +1096,16 @@ export default function AiAssistant() {
     moonshotModel: useSettingsStore((s) => s.moonshotModel),
   };
 
-  const { width: panelWidth, onDragStart: handleDragStart, handleClass: dragHandleClass } =
-    useResizablePanel(420, 300, 800);
-
   const [messages, setMessages] = useState<DisplayMessage[]>([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  // "Thinking" shows on the side panel's AI tab and the activity bar, so a
+  // long answer can run while you work in another tab.
+  useEffect(() => {
+    useSidePanelStore.getState().setStatus('ai', isLoading ? 'busy' : null);
+  }, [isLoading]);
   const [hasKey, setHasKey] = useState(false);
   const [mcpToolCount, setMcpToolCount] = useState(0);
-  const [maximized, setMaximized] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   // Lets us abandon an in-flight request (the underlying invoke still resolves
@@ -1114,8 +1125,14 @@ export default function AiAssistant() {
   // might be a local PTY like kimi/claude). Falls back to active if no SSH.
   const activeSession = (() => {
     const active = sessions.find((s) => s.sessionId === activeSessionId);
-    if (active && active.config.protocol !== 'local' && active.connected) return active;
-    // Find any connected SSH session
+    if (active && active.config.protocol !== 'local') {
+      // The active tab is a DEVICE: always target it, even while it is
+      // connecting/reconnecting/down. Falling back to "any connected session"
+      // here ran the AI's commands on a different device than the one on
+      // screen whenever the active tab blipped.
+      return active;
+    }
+    // Active tab is a local shell (kimi/claude PTY) — use a connected device.
     const sshSession = sessions.find(
       (s) => s.config.protocol !== 'local' && s.connected
     );
@@ -1125,8 +1142,9 @@ export default function AiAssistant() {
   // Per-session AI agent: the persona attached to this session in the sidebar.
   // Its instructions extend the system prompt; its provider/model override the
   // global AI settings for this session only.
+  // Agents are attached to the saved HOST, so every tab of it shares one.
   const activeAgent = (settings.aiAgents ?? []).find(
-    (a) => a.id === (activeSession ? settings.sessionAgents?.[activeSession.config.id] : undefined)
+    (a) => a.id === (activeSession ? settings.sessionAgents?.[savedHostId(activeSession.config)] : undefined)
   );
 
   // Autoscroll only while the user is pinned to the bottom — yanking the view
@@ -1483,76 +1501,44 @@ export default function AiAssistant() {
             ? settings.openrouterModel || providerMeta?.label || provider
             : settings.moonshotModel || providerMeta?.label || provider);
 
+  const openAiSettings = () => {
+    const s = useSessionStore.getState();
+    s.setSettingsFocus('ai');
+    s.setShowSettings(true);
+  };
+
   return (
+    // A tab of the side panel (SidePanel owns the frame: width, drag handle,
+    // maximize and close). App keeps it mounted, so the chat survives closing.
     <div
-      className={
-        `${showAiAssistant ? '' : 'hidden '}${
-        maximized
-          ? 'fixed left-0 right-0 bottom-0 top-11 z-40 flex flex-col bg-[var(--bg-primary)] overflow-hidden animate-fade-in'
-          : 'flex-shrink-0 flex flex-col bg-[var(--bg-primary)] border-l border-[var(--border)] overflow-hidden relative'
-        }`
-      }
-      style={maximized ? undefined : { width: panelWidth }}
+      id="side-panel-ai"
+      role="tabpanel"
+      aria-labelledby="side-tab-ai"
+      className={`${showAiAssistant ? '' : 'hidden '}absolute inset-0 flex flex-col bg-[var(--bg-primary)] overflow-hidden`}
       aria-hidden={!showAiAssistant}
     >
-      {/* Drag handle (hidden when maximized) */}
-      {!maximized && <div className={dragHandleClass} onMouseDown={handleDragStart} />}
-
-      {/* Header */}
-      <div className="flex items-center justify-between h-10 px-3 pl-4 border-b border-[var(--bg-tertiary)] bg-[var(--bg-secondary)]">
-        <div className="flex items-center gap-2">
-          <Sparkles size={14} className="text-[#d2a8ff]" />
-          <span className="text-xs font-semibold text-[var(--text-primary)] uppercase tracking-wider">
-            AI Assistant
-          </span>
-          <span className={`text-[10px] px-1.5 py-0.5 rounded ${
-            isLocalProvider
-              ? 'text-[#56d4dd] bg-[#56d4dd15]'
-              : 'text-[#3fb950] bg-[#3fb95015]'
-          }`}>
-            {isLocalProvider ? '⬡ ' : '✦ '}{providerLabel}
-          </span>
-        </div>
-        <div className="flex items-center gap-1">
-          <button
-            onClick={() => useSessionStore.getState().setShowSettings(true)}
-            className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
-            title="Settings"
-          >
-            <Settings size={13} />
-          </button>
-          <button
-            onClick={() => setMaximized((m) => !m)}
-            className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
-            title={maximized ? 'Restore to side panel' : 'Maximize'}
-          >
-            {maximized ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
-          </button>
-          <button
-            onClick={toggleAiAssistant}
-            className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[#ff7b72]"
-            title="Close"
-          >
-            <X size={14} />
-          </button>
-        </div>
-      </div>
-
-      {/* Device context bar */}
-      <div className="flex items-center gap-2 px-3 py-1.5 border-b border-[var(--bg-tertiary)] bg-[var(--bg-secondary)]">
-        <Terminal size={11} className={activeSession?.connected ? 'text-[#3fb950]' : 'text-[var(--text-muted)]'} />
+      {/* Context bar: the device the assistant acts on (left), and the model
+          answering plus MCP tools (right). The model chip opens AI settings —
+          it replaces the panel's old header row now that the side panel's
+          tab strip names the panel. */}
+      <div className="flex items-center gap-2 h-9 px-3 border-b border-[var(--border)] bg-[var(--bg-secondary)] flex-shrink-0">
+        <Terminal
+          size={11}
+          className="flex-shrink-0"
+          style={{ color: activeSession?.connected ? 'var(--accent-success)' : 'var(--text-muted)' }}
+        />
         {activeSession ? (
-          <span className="text-[10px] text-[var(--text-secondary)]">
+          <span className="min-w-0 truncate text-[11px] text-[var(--text-secondary)]">
             <span className="text-[var(--text-primary)]">{activeSession.config.name}</span>
-            <span className="mx-1 text-[var(--border)]">·</span>
+            <span className="mx-1 text-[var(--text-muted)]">·</span>
             {activeSession.config.deviceType}
-            <span className="mx-1 text-[var(--border)]">·</span>
-            <span className={activeSession.connected ? 'text-[#3fb950]' : 'text-[var(--text-muted)]'}>
+            <span className="mx-1 text-[var(--text-muted)]">·</span>
+            <span style={{ color: activeSession.connected ? 'var(--accent-success)' : 'var(--text-muted)' }}>
               {activeSession.connected ? 'connected' : 'disconnected'}
             </span>
           </span>
         ) : (
-          <span className="text-[10px] text-[var(--text-muted)]">No active session</span>
+          <span className="min-w-0 truncate text-[11px] text-[var(--text-muted)]">No active session</span>
         )}
         {activeAgent && (
           <button
@@ -1561,7 +1547,7 @@ export default function AiAssistant() {
               s.setSettingsFocus('agents');
               s.setShowSettings(true);
             }}
-            className="flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full"
+            className="flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full flex-shrink-0"
             style={{ color: activeAgent.color, background: `${activeAgent.color}1f` }}
             title={`AI agent "${activeAgent.name}" is active for this session — click to manage`}
           >
@@ -1569,9 +1555,10 @@ export default function AiAssistant() {
             {activeAgent.name}
           </button>
         )}
+        <span className="flex-1" />
         {mcpToolCount > 0 && (
           <span
-            className="ml-auto flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full"
+            className="flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full flex-shrink-0 whitespace-nowrap"
             style={{ color: 'var(--accent)', background: 'var(--accent-soft)' }}
             title="Tools available from connected MCP servers"
           >
@@ -1579,14 +1566,30 @@ export default function AiAssistant() {
             {mcpToolCount} MCP tools
           </span>
         )}
+        <button
+          onClick={openAiSettings}
+          className="flex items-center gap-1 max-w-[45%] text-[10px] pl-1.5 pr-1 py-0.5 rounded-full flex-shrink-0 transition-[filter] hover:brightness-110"
+          style={{
+            color: isLocalProvider ? 'var(--accent-info)' : 'var(--accent-success)',
+            background: `color-mix(in srgb, ${isLocalProvider ? 'var(--accent-info)' : 'var(--accent-success)'} 14%, transparent)`,
+          }}
+          title={`Answering with ${providerLabel} — click to change the AI provider or model`}
+          aria-label={`AI model: ${providerLabel}. Open AI settings`}
+        >
+          <span className="truncate">
+            {isLocalProvider ? '⬡ ' : '✦ '}
+            {providerLabel}
+          </span>
+          <Settings size={10} className="flex-shrink-0 opacity-80" />
+        </button>
       </div>
 
       {/* Warning when not ready */}
       {!isReady && (
-        <div className="mx-3 mt-3 px-3 py-2 bg-[#d2991520] border border-[#d2991540] rounded-lg flex items-start gap-2">
-          <AlertCircle size={12} className="text-[#d29922] flex-shrink-0 mt-0.5" />
-          <div className="text-[10px] text-[#d29922] leading-relaxed">
-            Add an API key for <strong>{providerMeta?.label}</strong> in <strong>Settings → AI Assistant</strong>, or switch to a local provider (Ollama / Local CLI).
+        <div className="mx-3 mt-3 px-3 py-2 bg-[var(--accent-warning-soft)] border border-[var(--accent-warning-border)] rounded-lg flex items-start gap-2">
+          <AlertCircle size={12} className="text-[var(--accent-warning)] flex-shrink-0 mt-0.5" />
+          <div className="text-[10px] text-[var(--accent-warning)] leading-relaxed">
+            Add an API key for <strong>{providerMeta?.label}</strong> in <strong>Settings → AI &amp; MCP</strong>, or switch to a local provider (Ollama / Local CLI).
           </div>
         </div>
       )}
@@ -1604,7 +1607,7 @@ export default function AiAssistant() {
                 disabled={isLoading}
                 className="w-full flex items-center gap-2 px-3 py-2 text-xs text-left text-[var(--text-secondary)] hover:text-[var(--text-primary)] bg-[var(--bg-secondary)] hover:bg-[var(--bg-tertiary)] border border-[var(--border)] hover:border-[var(--text-muted)] rounded-lg transition-all disabled:opacity-50"
               >
-                <ChevronRight size={10} className="text-[#d2a8ff]" />
+                <ChevronRight size={10} className="text-[var(--accent-violet)]" />
                 {p.label}
               </button>
             ))}
@@ -1628,11 +1631,11 @@ export default function AiAssistant() {
             return !streaming;
           })() && (
             <div className="flex items-center gap-2">
-              <div className="w-6 h-6 rounded-full bg-[#d2a8ff20] flex items-center justify-center flex-shrink-0">
-                <Bot size={12} className="text-[#d2a8ff]" />
+              <div className="w-6 h-6 rounded-full bg-[var(--accent-violet-soft)] flex items-center justify-center flex-shrink-0">
+                <Bot size={12} className="text-[var(--accent-violet)]" />
               </div>
               <div className="flex items-center gap-1.5 px-3 py-2 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg text-[11px] text-[var(--text-secondary)]">
-                <Loader2 size={11} className="animate-spin text-[#d2a8ff]" />
+                <Loader2 size={11} className="animate-spin text-[var(--accent-violet)]" />
                 Thinking…
               </div>
             </div>
@@ -1650,7 +1653,7 @@ export default function AiAssistant() {
             placeholder={isReady ? 'Ask about the device…' : 'Configure AI provider in Settings…'}
             rows={1}
             disabled={isLoading}
-            className="flex-1 text-xs bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg px-3 py-2 text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[#58a6ff] resize-none max-h-28 disabled:opacity-50"
+            className="flex-1 text-xs bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg px-3 py-2 text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)] resize-none max-h-28 disabled:opacity-50"
             style={{ minHeight: '36px' }}
           />
           {isLoading ? (
@@ -1658,7 +1661,7 @@ export default function AiAssistant() {
               type="button"
               onClick={cancelRequest}
               title="Stop"
-              className="flex items-center justify-center w-9 h-9 bg-[var(--accent-danger)] hover:brightness-110 text-white rounded-lg transition-colors flex-shrink-0"
+              className="flex items-center justify-center w-9 h-9 bg-[var(--danger-solid)] hover:brightness-110 text-[var(--danger-solid-fg)] rounded-lg transition-colors flex-shrink-0"
             >
               <Square size={13} fill="currentColor" />
             </button>
