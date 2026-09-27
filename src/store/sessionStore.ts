@@ -19,6 +19,9 @@ interface SessionState {
   showApiExplorer: boolean;
   showAiAssistant: boolean;
   broadcastMode: boolean;
+  /** Multi-send bar targets: every connected session ('all') or the listed
+   *  ids ('selected'). Lives here so the terminal panes can outline targets. */
+  multiSendTargets: { mode: 'all' | 'selected'; ids: string[] };
   showCommandPalette: boolean;
   splitView: boolean;
   /** Sessions shown alongside the active one in split view (pane 2..N, max 3
@@ -79,6 +82,7 @@ interface SessionState {
   toggleApiExplorer: () => void;
   toggleAiAssistant: () => void;
   toggleBroadcast: () => void;
+  setMultiSendTargets: (targets: { mode: 'all' | 'selected'; ids: string[] }) => void;
   toggleSplitView: () => void;
   addSplitPane: () => void;
   removeSplitPane: (sessionId: string) => void;
@@ -117,6 +121,7 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
   showAiAssistant: false,
   showConfigEditor: false,
   broadcastMode: false,
+  multiSendTargets: { mode: 'selected', ids: [] },
   showCommandPalette: false,
   splitView: false,
   splitPanes: [],
@@ -270,6 +275,7 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
   toggleApiExplorer: () => set((state) => ({ showApiExplorer: !state.showApiExplorer })),
   toggleAiAssistant: () => set((state) => ({ showAiAssistant: !state.showAiAssistant })),
   toggleBroadcast: () => set((state) => ({ broadcastMode: !state.broadcastMode })),
+  setMultiSendTargets: (targets) => set({ multiSendTargets: targets }),
   toggleSplitView: () =>
     set((state) => {
       if (state.splitView) return { splitView: false, splitPanes: [] };
