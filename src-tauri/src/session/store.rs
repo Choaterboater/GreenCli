@@ -135,6 +135,27 @@ impl SessionStore {
         self.save(&data)
     }
 
+    /// Create an empty folder and return its id. Ids come from the clock, and
+    /// a host import creates several folders back to back — a taken id gets a
+    /// `-2`, `-3` … suffix instead of two folders sharing one id.
+    pub fn create_folder(&mut self, name: String, now_millis: u128) -> Result<String, AppError> {
+        let data = self.load()?;
+        let base = format!("folder-{}", now_millis);
+        let mut id = base.clone();
+        let mut n = 2;
+        while data.folders.iter().any(|f| f.id == id) {
+            id = format!("{}-{}", base, n);
+            n += 1;
+        }
+        self.add_folder(SessionFolder {
+            id: id.clone(),
+            name,
+            items: vec![],
+            expanded: true,
+        })?;
+        Ok(id)
+    }
+
     /// Save a session into `folder_id`, replacing any stored entry with the same
     /// id (this is how the sidebar's "Edit…" updates a host).
     pub fn add_session(&mut self, folder_id: &str, session: StoredSession) -> Result<(), AppError> {
@@ -366,6 +387,25 @@ mod tests {
         let ids: Vec<&str> = data.folders[0].items.iter().map(|s| s.id.as_str()).collect();
         assert_eq!(ids, ["s1", "s2", "s3"]);
         assert_eq!(data.folders[0].items[0].host.as_deref(), Some("10.0.0.9"));
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn test_create_folder_ids_stay_unique_within_one_millisecond() {
+        let dir = temp_dir();
+        let mut store = SessionStore::new(dir.clone()).unwrap();
+        let a = store.create_folder("Site A".to_string(), 1000).unwrap();
+        let b = store.create_folder("Site B".to_string(), 1000).unwrap();
+        let c = store.create_folder("Site C".to_string(), 1000).unwrap();
+        assert_eq!(
+            [a.as_str(), b.as_str(), c.as_str()],
+            ["folder-1000", "folder-1000-2", "folder-1000-3"]
+        );
+
+        let data = store.load().unwrap();
+        let names: Vec<&str> = data.folders.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, ["Sessions", "Site A", "Site B", "Site C"]);
 
         std::fs::remove_dir_all(dir).ok();
     }
