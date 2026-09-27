@@ -11,6 +11,7 @@ mod local;
 mod mcp;
 mod serial;
 mod session;
+mod session_log;
 mod sftp;
 mod ssh;
 mod telnet;
@@ -48,6 +49,9 @@ use tokio::sync::Mutex as AsyncMutex;
 /// Active SSH port-forwards keyed by forward id (meta + listener task).
 type ForwardsMap =
     Arc<AsyncMutex<HashMap<String, (ssh::forward::ForwardMeta, tokio::task::JoinHandle<()>)>>>;
+
+/// Open session logs keyed by session id.
+type SessionLogs = Arc<AsyncMutex<HashMap<String, session_log::SessionLog>>>;
 
 struct AppState {
     session_manager: Arc<SessionManager>,
@@ -93,8 +97,8 @@ struct AppState {
     /// how a wedged russh session loop (frozen mid-read, TCP window closed)
     /// presents, and it never errors on its own.
     last_input: Arc<AsyncMutex<HashMap<String, std::time::Instant>>>,
-    /// Open session-log files keyed by session id (raw output streamed to disk).
-    session_logs: Arc<AsyncMutex<HashMap<String, std::fs::File>>>,
+    /// Open session logs keyed by session id (output cleaned to plain text).
+    session_logs: SessionLogs,
     /// Active SSH port-forwards keyed by forward id (meta + listener task).
     forwards: ForwardsMap,
     /// Cancellation flags for in-flight AI streams, keyed by stream id, so the
@@ -222,7 +226,7 @@ pub struct ApiLoginRequest {
 async fn write_and_emit(
     app: &AppHandle,
     buffers: &Arc<AsyncMutex<HashMap<String, String>>>,
-    logs: &Arc<AsyncMutex<HashMap<String, std::fs::File>>>,
+    logs: &SessionLogs,
     session_id: &str,
     data: Vec<u8>,
 ) {
@@ -246,11 +250,10 @@ async fn write_and_emit(
     }
     {
         let mut logs = logs.lock().await;
-        if let Some(file) = logs.get_mut(session_id) {
-            use std::io::Write;
+        if let Some(session_log) = logs.get_mut(session_id) {
             // Surface failures (full disk, revoked path) instead of silently
             // dropping log data the user believes is being captured.
-            if let Err(e) = file.write_all(&data) {
+            if let Err(e) = session_log.write_chunk(&data) {
                 log::warn!("session log write failed for {session_id}: {e}");
             }
         }
@@ -288,7 +291,7 @@ async fn close_session_forwards(forwards: &ForwardsMap, session_id: &str) {
 fn spawn_forwarder(
     app: AppHandle,
     buffers: Arc<AsyncMutex<HashMap<String, String>>>,
-    logs: Arc<AsyncMutex<HashMap<String, std::fs::File>>>,
+    logs: SessionLogs,
     session_manager: Arc<SessionManager>,
     session_id: String,
     generation: u64,
@@ -378,7 +381,7 @@ async fn ssh_transport_alive(session_manager: &SessionManager, session_id: &str)
 fn spawn_ssh_supervisor(
     app: AppHandle,
     buffers: Arc<AsyncMutex<HashMap<String, String>>>,
-    logs: Arc<AsyncMutex<HashMap<String, std::fs::File>>>,
+    logs: SessionLogs,
     session_manager: Arc<SessionManager>,
     forwards: ForwardsMap,
     terminal_sizes: Arc<AsyncMutex<HashMap<String, (u16, u16)>>>,
@@ -1401,62 +1404,49 @@ async fn get_terminal_output(
     Ok(map.get(&session_id).cloned().unwrap_or_default())
 }
 
-/// Open a session-log file for appending, creating it owner-only (0600) from
-/// the moment it exists on Unix — captured terminal output can contain pasted
-/// credentials / device secrets, so it must never be briefly group/world-
-/// readable between create and chmod. Mirrors vault::storage::create_restricted
-/// (private there) with append mode instead of truncate.
-#[cfg(unix)]
-fn open_log_file(path: &std::path::Path) -> std::io::Result<std::fs::File> {
-    use std::os::unix::fs::OpenOptionsExt;
-    std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .mode(0o600)
-        .open(path)
-}
-#[cfg(not(unix))]
-fn open_log_file(path: &std::path::Path) -> std::io::Result<std::fs::File> {
-    std::fs::OpenOptions::new().create(true).append(true).open(path)
-}
-
-/// Begin streaming a session's raw output to a timestamped log file under the
-/// app data dir's `logs/` folder. Returns the file path.
+/// Start logging a session's output as plain text (see session_log.rs) to
+/// `<name>_<YYYY-MM-DD_HHMMSS>.log` in `dir` — the user's log folder, or the
+/// app data `logs/` folder when empty. `utc_offset_minutes` is the frontend's
+/// local offset, for the file name and the optional `[HH:MM:SS]` line stamps.
+/// Idempotent: a session that is already logging keeps its file and gets its
+/// path back, so auto-log can call this on every (re)connect. Returns the path.
 #[tauri::command]
 async fn start_session_log(
     session_id: String,
     name: String,
+    dir: Option<String>,
+    timestamps: Option<bool>,
+    utc_offset_minutes: Option<i32>,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
-    let dir = state.app_dir.join("logs");
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let millis = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0);
-    let safe: String = name
-        .chars()
-        .map(|c| {
-            if c.is_alphanumeric() || c == '-' || c == '_' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    let safe = if safe.is_empty() {
-        "session".to_string()
-    } else {
-        safe
-    };
-    let path = dir.join(format!("{}_{}.log", safe, millis));
-    let file = open_log_file(&path).map_err(|e| e.to_string())?;
-    state.session_logs.lock().await.insert(session_id, file);
+    if let Some(log) = state.session_logs.lock().await.get(&session_id) {
+        return Ok(log.path().to_string_lossy().into_owned());
+    }
+    // Create the file outside the map lock: every session's output path
+    // takes that lock, and a slow (network) folder must not stall them.
+    let dir = session_log::resolve_dir(&state.app_dir, dir.as_deref())?;
+    let log = session_log::SessionLog::create(
+        &dir,
+        &name,
+        timestamps.unwrap_or(false),
+        utc_offset_minutes.unwrap_or(0),
+    )
+    .map_err(|e| format!("Could not create a log file in {}: {}", dir.display(), e))?;
+    let path = log.path().to_path_buf();
+    let mut logs = state.session_logs.lock().await;
+    if let Some(existing) = logs.get(&session_id) {
+        // A concurrent start (auto-log racing a click) won; drop our empty file.
+        drop(log);
+        let _ = std::fs::remove_file(&path);
+        return Ok(existing.path().to_string_lossy().into_owned());
+    }
+    logs.insert(session_id, log);
     Ok(path.to_string_lossy().into_owned())
 }
 
 #[tauri::command]
 async fn stop_session_log(session_id: String, state: State<'_, AppState>) -> Result<(), String> {
+    // Dropping the log writes its unfinished last line.
     state.session_logs.lock().await.remove(&session_id);
     Ok(())
 }
@@ -1467,6 +1457,52 @@ async fn is_session_logging(
     state: State<'_, AppState>,
 ) -> Result<bool, String> {
     Ok(state.session_logs.lock().await.contains_key(&session_id))
+}
+
+/// The file a session is logging to, or None when it isn't logging.
+#[tauri::command]
+async fn session_log_path(
+    session_id: String,
+    state: State<'_, AppState>,
+) -> Result<Option<String>, String> {
+    Ok(state
+        .session_logs
+        .lock()
+        .await
+        .get(&session_id)
+        .map(|log| log.path().to_string_lossy().into_owned()))
+}
+
+/// Show a log folder in Finder / Explorer / the desktop file manager. `dir`
+/// is the folder to show (empty = the default log folder). Returns the folder.
+#[tauri::command]
+async fn reveal_log_folder(
+    dir: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let dir = session_log::resolve_dir(&state.app_dir, dir.as_deref())?;
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("Could not open {}: {}", dir.display(), e))?;
+    // Only ever hand the opener a real folder: `open` / `xdg-open` would just
+    // as happily launch a file or a URL.
+    if !dir.is_dir() {
+        return Err(format!("Not a folder: {}", dir.display()));
+    }
+    #[cfg(target_os = "macos")]
+    let opener = "open";
+    #[cfg(windows)]
+    let opener = "explorer";
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let opener = "xdg-open";
+    let mut child = tokio::process::Command::new(opener)
+        .arg(&dir)
+        .spawn()
+        .map_err(|e| format!("Could not open the folder with {opener}: {e}"))?;
+    // Reap the opener in the background so it can't linger as a zombie.
+    tokio::spawn(async move {
+        let _ = child.wait().await;
+    });
+    Ok(dir.to_string_lossy().into_owned())
 }
 
 #[tauri::command]
@@ -2564,6 +2600,8 @@ fn main() {
             start_session_log,
             stop_session_log,
             is_session_logging,
+            session_log_path,
+            reveal_log_folder,
             read_file_text,
             write_file_text,
             generate_keypair,
