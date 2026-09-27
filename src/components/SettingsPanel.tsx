@@ -1,11 +1,12 @@
 import { useState, useEffect, useRef, type ReactNode } from 'react';
-import { X, RotateCcw, Moon, Sun, Eye, EyeOff, CheckCircle2, Download, Upload } from 'lucide-react';
+import { X, RotateCcw, Moon, Sun, Monitor, Eye, EyeOff, CheckCircle2, Download, Upload } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/tauri';
 import { open as openDialog, save as saveDialog } from '@tauri-apps/api/dialog';
 import { useSessionStore } from '../store/sessionStore';
 import { useSettingsStore } from '../store/settingsStore';
 import { askConfirm, useDialogStore } from '../store/dialogStore';
-import { AI_PROVIDERS, AI_CLI_PRESETS, TerminalSettings, TerminalColorScheme, TERMINAL_SCHEMES, DeviceType, DEVICE_TYPES, DeviceProfile, SessionFolder } from '../types';
+import { AI_PROVIDERS, AI_CLI_PRESETS, TerminalSettings, TerminalColorScheme, TERMINAL_SCHEMES, DeviceType, DEVICE_TYPES, DeviceProfile, SessionFolder, ThemePreference } from '../types';
+import { useSystemTheme } from '../hooks/useTheme';
 import { notify } from '../store/toastStore';
 import McpServers from './McpServers';
 import AiAgents from './AiAgents';
@@ -34,6 +35,21 @@ const JVD_REFERENCES = `# Juniper Validated Design (JVD) best-practices
   golden config + commit confirmed.`;
 
 const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
+
+const THEME_OPTIONS: { id: ThemePreference; label: string; Icon: typeof Sun }[] = [
+  { id: 'system', label: 'System', Icon: Monitor },
+  { id: 'dark', label: 'Dark', Icon: Moon },
+  { id: 'light', label: 'Light', Icon: Sun },
+];
+
+function SystemThemeNote() {
+  const system = useSystemTheme();
+  return (
+    <p className="mt-1.5 text-[11px] text-[var(--text-muted)]">
+      Follows your computer&apos;s light/dark setting — {system} right now.
+    </p>
+  );
+}
 
 type SettingsNavId = 'appearance' | 'terminal' | 'ai' | 'cloud' | 'backup';
 
@@ -462,36 +478,27 @@ export default function SettingsPanel() {
               <label className="block text-xs text-[var(--text-secondary)] mb-1.5">
                 Theme
               </label>
-              <div className="flex gap-2">
-                <button
-                  onClick={() => settings.setTheme('dark')}
-                  className={`
-                    flex items-center gap-2 flex-1 py-2 rounded-lg border text-sm transition-colors
-                    ${
-                      settings.theme === 'dark'
-                        ? 'bg-[var(--bg-tertiary)] border-[var(--accent)] text-[var(--text-primary)]'
-                        : 'bg-[var(--bg-primary)] border-[var(--border)] text-[var(--text-secondary)] hover:border-[var(--text-muted)]'
-                    }
-                  `}
-                >
-                  <Moon size={14} />
-                  Dark
-                </button>
-                <button
-                  onClick={() => settings.setTheme('light')}
-                  className={`
-                    flex items-center gap-2 flex-1 py-2 rounded-lg border text-sm transition-colors
-                    ${
-                      settings.theme === 'light'
-                        ? 'bg-[#ffffff] border-[var(--accent)] text-[#1f2328]'
-                        : 'bg-[var(--bg-primary)] border-[var(--border)] text-[var(--text-secondary)] hover:border-[var(--text-muted)]'
-                    }
-                  `}
-                >
-                  <Sun size={14} />
-                  Light
-                </button>
+              <div className="flex gap-2" role="group" aria-label="Theme">
+                {THEME_OPTIONS.map(({ id, label, Icon }) => (
+                  <button
+                    key={id}
+                    aria-pressed={settings.theme === id}
+                    onClick={() => settings.setTheme(id)}
+                    className={`
+                      flex items-center justify-center gap-2 flex-1 py-2 rounded-lg border text-sm transition-colors
+                      ${
+                        settings.theme === id
+                          ? 'bg-[var(--bg-tertiary)] border-[var(--accent)] text-[var(--text-primary)]'
+                          : 'bg-[var(--bg-primary)] border-[var(--border)] text-[var(--text-secondary)] hover:border-[var(--text-muted)]'
+                      }
+                    `}
+                  >
+                    <Icon size={14} />
+                    {label}
+                  </button>
+                ))}
               </div>
+              {settings.theme === 'system' && <SystemThemeNote />}
             </div>
 
             {/* Terminal color scheme */}

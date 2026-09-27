@@ -1,10 +1,10 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import { TerminalSettings, TerminalColorScheme, DEFAULT_SETTINGS, AiProvider, CentralAccount, AiAgent, DeviceProfile, DeviceType } from '../types';
+import { TerminalSettings, TerminalColorScheme, DEFAULT_SETTINGS, AiProvider, CentralAccount, AiAgent, DeviceProfile, DeviceType, ThemePreference } from '../types';
 
 interface SettingsState extends TerminalSettings {
   // Actions
-  setTheme: (theme: 'dark' | 'light') => void;
+  setTheme: (theme: ThemePreference) => void;
   setColorScheme: (scheme: TerminalColorScheme) => void;
   setFontSize: (size: number) => void;
   setFontFamily: (family: string) => void;

@@ -97,8 +97,11 @@ export interface AiAgent {
   color: string;
 }
 
+/** App theme choice; 'system' follows the OS light/dark appearance live. */
+export type ThemePreference = 'dark' | 'light' | 'system';
+
 export interface TerminalSettings {
-  theme: 'dark' | 'light';
+  theme: ThemePreference;
   /** Terminal color scheme; 'greencli' follows the app theme (dark/light). */
   colorScheme: TerminalColorScheme;
   fontSize: number;
@@ -283,7 +286,9 @@ export const BUILTIN_AGENTS: AiAgent[] = [
 ];
 
 export const DEFAULT_SETTINGS: TerminalSettings = {
-  theme: 'dark',
+  // New installs follow the OS. Existing installs keep the theme they had:
+  // `theme` is persisted with the rest of the settings and overrides this.
+  theme: 'system',
   colorScheme: 'greencli',
   fontSize: 14,
   fontFamily: 'JetBrains Mono, Consolas, monospace',
