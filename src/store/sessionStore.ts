@@ -1,6 +1,14 @@
 import { create } from 'zustand';
 import { ConnectionConfig, Session, SessionFolder } from '../types';
 
+/** Why the last login for a session was rejected. Shown inside the password
+ *  dialog, because the error toast sits behind the modal. */
+export interface AuthFailure {
+  message: string;
+  /** Failed logins in a row — repeated failures can lock TACACS/RADIUS accounts. */
+  attempts: number;
+}
+
 /** Quick Connect opened with something already filled in. */
 export interface QuickConnectDraft {
   /** A saved host being edited: Save writes it back under the same id instead
@@ -22,6 +30,8 @@ interface SessionState {
   // UI state
   showAuthDialog: boolean;
   pendingConnection: ConnectionConfig | null;
+  /** Last rejected login per session id (cleared on success / dismiss). */
+  authErrors: Record<string, AuthFailure>;
   showSettings: boolean;
   showSearch: boolean;
   showQuickConnect: boolean;
@@ -68,6 +78,8 @@ interface SessionState {
 
   setShowAuthDialog: (show: boolean) => void;
   setPendingConnection: (config: ConnectionConfig | null) => void;
+  recordAuthError: (sessionId: string, message: string) => void;
+  clearAuthError: (sessionId: string) => void;
   setShowSettings: (show: boolean) => void;
   setShowSearch: (show: boolean) => void;
   setShowQuickConnect: (show: boolean) => void;
@@ -121,6 +133,7 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
   ],
   showAuthDialog: false,
   pendingConnection: null,
+  authErrors: {},
   showSettings: false,
   showSearch: false,
   showQuickConnect: false,
@@ -255,6 +268,20 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
 
   setShowAuthDialog: (show) => set({ showAuthDialog: show }),
   setPendingConnection: (config) => set({ pendingConnection: config }),
+  recordAuthError: (sessionId, message) =>
+    set((state) => ({
+      authErrors: {
+        ...state.authErrors,
+        [sessionId]: { message, attempts: (state.authErrors[sessionId]?.attempts ?? 0) + 1 },
+      },
+    })),
+  clearAuthError: (sessionId) =>
+    set((state) => {
+      if (!(sessionId in state.authErrors)) return state;
+      const authErrors = { ...state.authErrors };
+      delete authErrors[sessionId];
+      return { authErrors };
+    }),
   setShowSettings: (show) => set({ showSettings: show }),
   setShowSearch: (show) => set({ showSearch: show }),
   // Plain open/close carries no prefill — a draft left over from an earlier
