@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback, useMemo, useDeferredValue } from 'react';
-import Editor, { BeforeMount, DiffEditor, OnMount } from '@monaco-editor/react';
+import Editor, { DiffEditor, OnMount } from '@monaco-editor/react';
+import { defineEditorThemes } from './editorThemes';
 import ConfigArchive from './ConfigArchive';
 import { copyText } from '../utils/clipboard';
 import type { editor as MonacoEditor } from 'monaco-editor';
@@ -570,65 +571,6 @@ function buildDiagnostics(text: string, language: string): string[] {
   }
   return diagnostics;
 }
-
-// ─── Editor themes ───
-// Defined via beforeMount on both <Editor> and <DiffEditor> so the prop-driven
-// theme (which follows the app's light/dark setting) always resolves.
-
-const defineEditorThemes: BeforeMount = (monaco) => {
-  monaco.editor.defineTheme('aruba-dark', {
-    base: 'vs-dark',
-    inherit: true,
-    rules: [
-      { token: 'comment', foreground: '6a737d', fontStyle: 'italic' },
-      { token: 'keyword', foreground: 'e06c75' },
-      { token: 'number', foreground: '56b6c2' },
-      { token: 'number.float', foreground: '98c379' },
-      { token: 'type', foreground: 'e5c07b' },
-      { token: 'string', foreground: 'abb2bf' },
-    ],
-    colors: {
-      'editor.background': '#0d1117',
-      'editor.foreground': '#c9d1d9',
-      'editor.lineHighlightBackground': '#161b2240',
-      'editor.selectionBackground': '#264f7880',
-      'editorLineNumber.foreground': '#484f58',
-      'editorLineNumber.activeForeground': '#8b949e',
-      'editorCursor.foreground': '#58a6ff',
-      'editorWhitespace.foreground': '#30363d',
-      'editorIndentGuide.background': '#21262d',
-      'editorIndentGuide.activeBackground': '#30363d',
-      'scrollbarSlider.background': '#21262d80',
-      'scrollbarSlider.hoverBackground': '#30363d',
-    },
-  });
-  monaco.editor.defineTheme('aruba-light', {
-    base: 'vs',
-    inherit: true,
-    rules: [
-      { token: 'comment', foreground: '6e7781', fontStyle: 'italic' },
-      { token: 'keyword', foreground: 'cf222e' },
-      { token: 'number', foreground: '0e7490' },
-      { token: 'number.float', foreground: '1a7f37' },
-      { token: 'type', foreground: '9a6700' },
-      { token: 'string', foreground: '57606a' },
-    ],
-    colors: {
-      'editor.background': '#ffffff',
-      'editor.foreground': '#1f2328',
-      'editor.lineHighlightBackground': '#f4f7f980',
-      'editor.selectionBackground': '#add6ff80',
-      'editorLineNumber.foreground': '#8c959f',
-      'editorLineNumber.activeForeground': '#57606a',
-      'editorCursor.foreground': '#0969da',
-      'editorWhitespace.foreground': '#d0d7de',
-      'editorIndentGuide.background': '#eaeef2',
-      'editorIndentGuide.activeBackground': '#d0d7de',
-      'scrollbarSlider.background': '#d0d7de80',
-      'scrollbarSlider.hoverBackground': '#afb8c1',
-    },
-  });
-};
 
 // ─── Component ───
 
@@ -1528,7 +1470,7 @@ export default function ConfigEditor() {
           <button
             onClick={() => saveFile(false)}
             className={`p-1.5 rounded transition-colors ${
-              isDirty ? 'text-[var(--accent-warning)] hover:bg-[#e5c07b20]' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
+              isDirty ? 'text-[var(--accent-warning)] hover:bg-[var(--accent-warning-soft)]' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
             }`}
             title={currentFilePath ? 'Save (Ctrl+S)' : 'Save As… (Ctrl+S)'}
             aria-label={currentFilePath ? 'Save' : 'Save As'}
@@ -1547,7 +1489,7 @@ export default function ConfigEditor() {
             <button
               onClick={toggleRaw}
               className={`px-1.5 py-1 text-[10px] rounded transition-colors ${
-                viewingRaw ? 'text-[var(--accent-warning)] bg-[#e5c07b20]' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
+                viewingRaw ? 'text-[var(--accent-warning)] bg-[var(--accent-warning-soft)]' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
               }`}
               title="Toggle cleaned / raw capture"
             >
@@ -1589,7 +1531,7 @@ export default function ConfigEditor() {
                       onClick={() => { patchActive({ language: l.id, langExplicit: true }); setShowLangPicker(false); }}
                       className={`flex items-center w-full px-3 py-1.5 text-xs text-left transition-colors ${
                         language === l.id
-                          ? 'text-[var(--accent)] bg-[#58a6ff15]'
+                          ? 'text-[var(--accent)] bg-[var(--accent-soft)]'
                           : 'text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
                       }`}
                     >
@@ -1753,7 +1695,7 @@ export default function ConfigEditor() {
         <button
           onClick={() => (diffMode ? setDiffMode(false) : openDiffAgainst())}
           className={`flex items-center gap-1.5 px-2 py-1 text-xs rounded transition-colors ${
-            diffMode ? 'text-[var(--accent)] bg-[#58a6ff20]' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
+            diffMode ? 'text-[var(--accent)] bg-[var(--accent-soft)]' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
           }`}
           title="Compare the editor against a file"
         >
@@ -1765,7 +1707,7 @@ export default function ConfigEditor() {
         <button
           onClick={() => setShowArchive(!showArchive)}
           className={`flex items-center gap-1.5 px-2 py-1 text-xs rounded transition-colors ${
-            showArchive ? 'text-[var(--accent)] bg-[#58a6ff20]' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
+            showArchive ? 'text-[var(--accent)] bg-[var(--accent-soft)]' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
           }`}
           title="Per-device config history + golden-config diff"
         >
@@ -1793,7 +1735,7 @@ export default function ConfigEditor() {
             onClick={() => {
               cancelSendRef.current = true;
             }}
-            className="flex items-center gap-1.5 px-2.5 py-1 text-xs bg-[var(--accent-danger)] hover:brightness-110 text-white rounded transition-colors"
+            className="flex items-center gap-1.5 px-2.5 py-1 text-xs bg-[var(--danger-solid)] hover:brightness-110 text-[var(--danger-solid-fg)] rounded transition-colors"
             title="Stop sending lines"
             aria-label="Cancel send"
           >
@@ -1805,7 +1747,7 @@ export default function ConfigEditor() {
           <button
             onClick={sendToTerminal}
             disabled={sending || pulling || !activeSession?.connected}
-            className="flex items-center gap-1.5 px-2.5 py-1 text-xs bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-40 text-white rounded transition-colors"
+            className="flex items-center gap-1.5 px-2.5 py-1 text-xs bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-40 text-[var(--accent-fg)] rounded transition-colors"
             title={activeSession ? 'Send lines to terminal' : 'No active session'}
           >
             <Send size={12} />
@@ -1822,7 +1764,7 @@ export default function ConfigEditor() {
       {sendReport && sendReport.bufferId === active.id && (
         <div
           role="alert"
-          className="flex items-start gap-2 px-3 py-2 border-b border-[var(--bg-tertiary)] bg-[rgba(240,83,63,0.08)] text-xs flex-shrink-0"
+          className="flex items-start gap-2 px-3 py-2 border-b border-[var(--bg-tertiary)] bg-[var(--accent-danger-soft)] text-xs flex-shrink-0"
         >
           <AlertTriangle size={13} className="text-[var(--accent-danger)] mt-0.5 flex-shrink-0" />
           <div className="flex-1 min-w-0">

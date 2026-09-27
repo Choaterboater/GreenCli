@@ -950,7 +950,7 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
 
           {/* Error */}
           {error && (
-            <div className="px-3 py-2 rounded-[var(--radius)] text-sm" style={{ background: 'rgba(240,83,63,0.12)', color: 'var(--accent-danger)', border: '1px solid rgba(240,83,63,0.3)' }}>
+            <div className="px-3 py-2 rounded-[var(--radius)] text-sm" style={{ background: 'var(--accent-danger-soft)', color: 'var(--accent-danger)', border: '1px solid var(--accent-danger-border)' }}>
               {error}
             </div>
           )}

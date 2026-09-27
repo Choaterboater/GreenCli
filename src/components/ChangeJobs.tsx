@@ -146,7 +146,7 @@ const inputCls =
   'w-full px-3 py-2 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-xs text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)] font-mono resize-y';
 const btnCls =
   'flex items-center gap-1.5 px-3 h-8 text-xs rounded-lg transition-colors whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed';
-const btnPrimary = `${btnCls} bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white`;
+const btnPrimary = `${btnCls} bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-[var(--accent-fg)]`;
 const btnSecondary = `${btnCls} bg-[var(--bg-tertiary)] hover:bg-[var(--border)] text-[var(--text-primary)]`;
 const btnDanger = `${btnCls} border border-[var(--accent-danger)] text-[var(--accent-danger)] hover:bg-[var(--bg-tertiary)]`;
 
@@ -310,7 +310,7 @@ function PlanCard({
         )}
         {risky > 0 && <span className="text-[10px] text-[var(--accent-warning)]">{plural(risky, 'risky line')}</span>}
         {canary ? (
-          <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--accent)] text-white">Canary</span>
+          <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--accent)] text-[var(--accent-fg)]">Canary</span>
         ) : (
           <button
             onClick={onMakeCanary}
@@ -1381,7 +1381,7 @@ export default function ChangeJobs({ onConnect }: ChangeJobsProps) {
                 <span className="truncate text-[var(--text-primary)]">
                   {r.name}
                   {r.canary && (
-                    <span className="ml-1.5 text-[9px] px-1 py-0.5 rounded bg-[var(--accent)] text-white">canary</span>
+                    <span className="ml-1.5 text-[9px] px-1 py-0.5 rounded bg-[var(--accent)] text-[var(--accent-fg)]">canary</span>
                   )}
                 </span>
                 <span className="text-[var(--text-secondary)] truncate">{r.vendor}</span>
@@ -1451,7 +1451,7 @@ export default function ChangeJobs({ onConnect }: ChangeJobsProps) {
     >
       <span
         className={`w-4 h-4 rounded-full flex items-center justify-center text-[10px] ${
-          step === s ? 'bg-[var(--accent)] text-white' : 'bg-[var(--bg-tertiary)]'
+          step === s ? 'bg-[var(--accent)] text-[var(--accent-fg)]' : 'bg-[var(--bg-tertiary)]'
         }`}
       >
         {n}
@@ -1462,7 +1462,7 @@ export default function ChangeJobs({ onConnect }: ChangeJobsProps) {
 
   return (
     <div
-      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm"
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-[var(--scrim)] backdrop-blur-sm"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) setShowChangeJobs(false);
       }}

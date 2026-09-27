@@ -97,11 +97,11 @@ export default function VaultUnlock({
   };
 
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm">
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-[var(--scrim)] backdrop-blur-sm">
       <div className="w-[400px] bg-[var(--bg-secondary)] border border-[var(--border)] rounded-xl shadow-2xl">
         <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--bg-tertiary)]">
           <div className="flex items-center gap-2">
-            <ShieldCheck size={18} className="text-[#3fb950]" />
+            <ShieldCheck size={18} className="text-[var(--accent-success)]" />
             <h2 className="text-lg font-semibold text-[var(--text-primary)]">
               {isNew ? 'Create Vault Password' : waitingFor.length > 0 ? 'Unlock the Vault' : 'Credential Vault'}
             </h2>
@@ -141,7 +141,7 @@ export default function VaultUnlock({
               value={pw}
               onChange={(e) => setPw(e.target.value)}
               placeholder={isNew ? 'New master password' : 'Master password'}
-              className="w-full h-9 pl-3 pr-10 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] focus:outline-none focus:border-[#58a6ff]"
+              className="w-full h-9 pl-3 pr-10 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)]"
             />
             <button
               type="button"
@@ -157,18 +157,18 @@ export default function VaultUnlock({
               value={confirm}
               onChange={(e) => setConfirm(e.target.value)}
               placeholder="Confirm password"
-              className="w-full h-9 pl-3 pr-10 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] focus:outline-none focus:border-[#58a6ff]"
+              className="w-full h-9 pl-3 pr-10 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)]"
             />
           )}
           {err && (
-            <div className="px-3 py-2 bg-[#3d1518] border border-[#ff7b72]/30 rounded-lg text-xs text-[#ff7b72]">
+            <div className="px-3 py-2 bg-[var(--accent-danger-soft)] border border-[var(--accent-danger-border)] rounded-lg text-xs text-[var(--accent-danger)]">
               {err}
             </div>
           )}
           <button
             type="submit"
             disabled={busy || !pw || (isNew && !confirm)}
-            className="w-full h-9 text-sm bg-[#238636] hover:bg-[#2ea043] disabled:opacity-50 text-white rounded-lg transition-colors"
+            className="w-full h-9 text-sm bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-50 text-[var(--accent-fg)] rounded-lg transition-colors"
           >
             {busy ? 'Unlocking…' : isNew ? 'Create & Unlock' : 'Unlock'}
           </button>

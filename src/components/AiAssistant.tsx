@@ -964,10 +964,10 @@ const MessageItem = memo(function MessageItem({ msg }: { msg: DisplayMessage }) 
   if (msg.role === 'user') {
     return (
       <div className="flex items-start gap-2 flex-row-reverse">
-        <div className="flex-shrink-0 w-6 h-6 rounded-full bg-[#58a6ff20] flex items-center justify-center">
-          <User size={12} className="text-[#58a6ff]" />
+        <div className="flex-shrink-0 w-6 h-6 rounded-full bg-[var(--accent-soft)] flex items-center justify-center">
+          <User size={12} className="text-[var(--accent)]" />
         </div>
-        <div className="max-w-[88%] px-3 py-2 rounded-lg bg-[#58a6ff15] border border-[#58a6ff25] text-[var(--text-primary)]">
+        <div className="max-w-[88%] px-3 py-2 rounded-lg bg-[var(--accent-soft)] border border-[var(--accent-soft)] text-[var(--text-primary)]">
           <p className="text-[11px] leading-relaxed whitespace-pre-wrap">{msg.content}</p>
           <div className="text-[9px] text-[var(--text-muted)] mt-1 flex items-center gap-1 justify-end">
             <Clock size={7} />
@@ -986,11 +986,11 @@ const MessageItem = memo(function MessageItem({ msg }: { msg: DisplayMessage }) 
 
   return (
     <div className="flex items-start gap-2">
-      <div className={`flex-shrink-0 w-6 h-6 rounded-full flex items-center justify-center ${msg.isError ? 'bg-[#ff7b7220]' : 'bg-[#d2a8ff20]'}`}>
+      <div className={`flex-shrink-0 w-6 h-6 rounded-full flex items-center justify-center ${msg.isError ? 'bg-[var(--accent-danger-soft)]' : 'bg-[var(--accent-violet-soft)]'}`}>
         {msg.isError ? (
-          <AlertCircle size={12} className="text-[#ff7b72]" />
+          <AlertCircle size={12} className="text-[var(--accent-danger)]" />
         ) : (
-          <Bot size={12} className="text-[#d2a8ff]" />
+          <Bot size={12} className="text-[var(--accent-violet)]" />
         )}
       </div>
       <div className="flex-1 min-w-0">
@@ -1012,14 +1012,14 @@ const MessageItem = memo(function MessageItem({ msg }: { msg: DisplayMessage }) 
                     }
                     className="w-full flex items-center gap-2 px-2.5 py-1.5 bg-[var(--bg-secondary)] hover:bg-[var(--bg-tertiary)] text-left transition-colors"
                   >
-                    <Terminal size={10} className="text-[#58a6ff]" />
-                    <code className="text-[10px] text-[#58a6ff] font-mono flex-1 truncate">
+                    <Terminal size={10} className="text-[var(--accent-info)]" />
+                    <code className="text-[10px] text-[var(--accent-info)] font-mono flex-1 truncate">
                       {(te.args.command as string) || te.name}
                     </code>
                     {te.isError ? (
-                      <AlertCircle size={9} className="text-[#ff7b72] flex-shrink-0" />
+                      <AlertCircle size={9} className="text-[var(--accent-danger)] flex-shrink-0" />
                     ) : (
-                      <CheckCircle2 size={9} className="text-[#3fb950] flex-shrink-0" />
+                      <CheckCircle2 size={9} className="text-[var(--accent-success)] flex-shrink-0" />
                     )}
                     {open ? (
                       <ChevronDown size={9} className="text-[var(--text-muted)]" />
@@ -1039,7 +1039,7 @@ const MessageItem = memo(function MessageItem({ msg }: { msg: DisplayMessage }) 
         )}
 
         {/* Message content */}
-        <div className={`px-3 py-2 rounded-lg ${msg.isError ? 'bg-[#ff7b7210] border border-[#ff7b7225] text-[#ff7b72]' : 'bg-[var(--bg-secondary)] border border-[var(--border)] text-[var(--text-primary)]'}`}>
+        <div className={`px-3 py-2 rounded-lg ${msg.isError ? 'bg-[var(--accent-danger-soft)] border border-[var(--accent-danger-border)] text-[var(--accent-danger)]' : 'bg-[var(--bg-secondary)] border border-[var(--border)] text-[var(--text-primary)]'}`}>
           <div className="space-y-0.5 text-[11px] leading-relaxed markdown-body">
             <ReactMarkdown
               remarkPlugins={[remarkGfm]}
@@ -1057,7 +1057,7 @@ const MessageItem = memo(function MessageItem({ msg }: { msg: DisplayMessage }) 
                       customStyle={{ margin: '8px 0', borderRadius: '8px', fontSize: '11px', padding: '12px' }}
                     />
                   ) : (
-                    <code {...rest} className="px-1 py-0.5 bg-[var(--bg-primary)] border border-[var(--border)] rounded text-[#d29922] text-[10px] font-mono">
+                    <code {...rest} className="px-1 py-0.5 bg-[var(--bg-primary)] border border-[var(--border)] rounded text-[var(--accent-warning)] text-[10px] font-mono">
                       {children}
                     </code>
                   );
@@ -1526,14 +1526,14 @@ export default function AiAssistant() {
       {/* Header */}
       <div className="flex items-center justify-between h-10 px-3 pl-4 border-b border-[var(--bg-tertiary)] bg-[var(--bg-secondary)]">
         <div className="flex items-center gap-2">
-          <Sparkles size={14} className="text-[#d2a8ff]" />
+          <Sparkles size={14} className="text-[var(--accent-violet)]" />
           <span className="text-xs font-semibold text-[var(--text-primary)] uppercase tracking-wider">
             AI Assistant
           </span>
           <span className={`text-[10px] px-1.5 py-0.5 rounded ${
             isLocalProvider
-              ? 'text-[#56d4dd] bg-[#56d4dd15]'
-              : 'text-[#3fb950] bg-[#3fb95015]'
+              ? 'text-[var(--accent-info)] bg-[var(--accent-info-soft)]'
+              : 'text-[var(--accent-success)] bg-[var(--accent-success-soft)]'
           }`}>
             {isLocalProvider ? '⬡ ' : '✦ '}{providerLabel}
           </span>
@@ -1555,7 +1555,7 @@ export default function AiAssistant() {
           </button>
           <button
             onClick={toggleAiAssistant}
-            className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[#ff7b72]"
+            className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--accent-danger)]"
             title="Close"
           >
             <X size={14} />
@@ -1565,14 +1565,14 @@ export default function AiAssistant() {
 
       {/* Device context bar */}
       <div className="flex items-center gap-2 px-3 py-1.5 border-b border-[var(--bg-tertiary)] bg-[var(--bg-secondary)]">
-        <Terminal size={11} className={activeSession?.connected ? 'text-[#3fb950]' : 'text-[var(--text-muted)]'} />
+        <Terminal size={11} className={activeSession?.connected ? 'text-[var(--accent-success)]' : 'text-[var(--text-muted)]'} />
         {activeSession ? (
           <span className="text-[10px] text-[var(--text-secondary)]">
             <span className="text-[var(--text-primary)]">{activeSession.config.name}</span>
             <span className="mx-1 text-[var(--border)]">·</span>
             {activeSession.config.deviceType}
             <span className="mx-1 text-[var(--border)]">·</span>
-            <span className={activeSession.connected ? 'text-[#3fb950]' : 'text-[var(--text-muted)]'}>
+            <span className={activeSession.connected ? 'text-[var(--accent-success)]' : 'text-[var(--text-muted)]'}>
               {activeSession.connected ? 'connected' : 'disconnected'}
             </span>
           </span>
@@ -1608,9 +1608,9 @@ export default function AiAssistant() {
 
       {/* Warning when not ready */}
       {!isReady && (
-        <div className="mx-3 mt-3 px-3 py-2 bg-[#d2991520] border border-[#d2991540] rounded-lg flex items-start gap-2">
-          <AlertCircle size={12} className="text-[#d29922] flex-shrink-0 mt-0.5" />
-          <div className="text-[10px] text-[#d29922] leading-relaxed">
+        <div className="mx-3 mt-3 px-3 py-2 bg-[var(--accent-warning-soft)] border border-[var(--accent-warning-border)] rounded-lg flex items-start gap-2">
+          <AlertCircle size={12} className="text-[var(--accent-warning)] flex-shrink-0 mt-0.5" />
+          <div className="text-[10px] text-[var(--accent-warning)] leading-relaxed">
             Add an API key for <strong>{providerMeta?.label}</strong> in <strong>Settings → AI Assistant</strong>, or switch to a local provider (Ollama / Local CLI).
           </div>
         </div>
@@ -1629,7 +1629,7 @@ export default function AiAssistant() {
                 disabled={isLoading}
                 className="w-full flex items-center gap-2 px-3 py-2 text-xs text-left text-[var(--text-secondary)] hover:text-[var(--text-primary)] bg-[var(--bg-secondary)] hover:bg-[var(--bg-tertiary)] border border-[var(--border)] hover:border-[var(--text-muted)] rounded-lg transition-all disabled:opacity-50"
               >
-                <ChevronRight size={10} className="text-[#d2a8ff]" />
+                <ChevronRight size={10} className="text-[var(--accent-violet)]" />
                 {p.label}
               </button>
             ))}
@@ -1653,11 +1653,11 @@ export default function AiAssistant() {
             return !streaming;
           })() && (
             <div className="flex items-center gap-2">
-              <div className="w-6 h-6 rounded-full bg-[#d2a8ff20] flex items-center justify-center flex-shrink-0">
-                <Bot size={12} className="text-[#d2a8ff]" />
+              <div className="w-6 h-6 rounded-full bg-[var(--accent-violet-soft)] flex items-center justify-center flex-shrink-0">
+                <Bot size={12} className="text-[var(--accent-violet)]" />
               </div>
               <div className="flex items-center gap-1.5 px-3 py-2 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg text-[11px] text-[var(--text-secondary)]">
-                <Loader2 size={11} className="animate-spin text-[#d2a8ff]" />
+                <Loader2 size={11} className="animate-spin text-[var(--accent-violet)]" />
                 Thinking…
               </div>
             </div>
@@ -1675,7 +1675,7 @@ export default function AiAssistant() {
             placeholder={isReady ? 'Ask about the device…' : 'Configure AI provider in Settings…'}
             rows={1}
             disabled={isLoading}
-            className="flex-1 text-xs bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg px-3 py-2 text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[#58a6ff] resize-none max-h-28 disabled:opacity-50"
+            className="flex-1 text-xs bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg px-3 py-2 text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)] resize-none max-h-28 disabled:opacity-50"
             style={{ minHeight: '36px' }}
           />
           {isLoading ? (
@@ -1683,7 +1683,7 @@ export default function AiAssistant() {
               type="button"
               onClick={cancelRequest}
               title="Stop"
-              className="flex items-center justify-center w-9 h-9 bg-[var(--accent-danger)] hover:brightness-110 text-white rounded-lg transition-colors flex-shrink-0"
+              className="flex items-center justify-center w-9 h-9 bg-[var(--danger-solid)] hover:brightness-110 text-[var(--danger-solid-fg)] rounded-lg transition-colors flex-shrink-0"
             >
               <Square size={13} fill="currentColor" />
             </button>

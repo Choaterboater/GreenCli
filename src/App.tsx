@@ -1599,7 +1599,7 @@ function App() {
       className="h-screen w-screen flex flex-col overflow-hidden"
       data-theme={theme}
       style={{
-        backgroundColor: theme === 'dark' ? 'var(--bg-primary)' : '#ffffff',
+        backgroundColor: 'var(--bg-primary)',
         backgroundImage: theme === 'dark' ? 'var(--app-bg-gradient)' : 'none',
       }}
     >
@@ -1843,8 +1843,8 @@ function App() {
                             onMouseDown={startSplitDrag(i)}
                             className={`absolute top-0 bottom-0 z-20 w-1.5 -ml-[3px] cursor-col-resize transition-colors ${
                               splitDragIdx === i
-                                ? 'bg-[#58a6ff]'
-                                : 'bg-transparent hover:bg-[#58a6ff60]'
+                                ? 'bg-[var(--accent)]'
+                                : 'bg-transparent hover:bg-[var(--accent-ring)]'
                             }`}
                             style={{ left: `${paneOffset(i + 1) * 100}%` }}
                           />

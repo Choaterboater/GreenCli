@@ -410,7 +410,7 @@ export default function StatusBar({ onReconnect, onDisconnect, onMapDevice }: St
               onClick={toggleLog}
               className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] transition-colors ${
                 logging
-                  ? 'text-[var(--accent-danger)] bg-[rgba(240,83,63,0.12)]'
+                  ? 'text-[var(--accent-danger)] bg-[var(--accent-danger-soft)]'
                   : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
               }`}
               title={

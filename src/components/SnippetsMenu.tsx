@@ -108,7 +108,7 @@ export default function SnippetsMenu() {
       <button
         onClick={() => setOpen(!open)}
         className={`flex items-center gap-1.5 px-2 py-1 text-xs rounded transition-colors ${
-          open ? 'text-[#e5c07b] bg-[#e5c07b20]' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
+          open ? 'text-[var(--accent-warning)] bg-[var(--accent-warning-soft)]' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
         }`}
         title="Command snippets"
       >
@@ -145,7 +145,7 @@ export default function SnippetsMenu() {
                       className="flex-1 min-w-0 flex items-center gap-2 px-1 py-1.5 text-left disabled:opacity-40"
                       title={connected ? `${s.command}\n\nClick to insert · Shift+click to run` : 'Connect a session first'}
                     >
-                      <Send size={10} className="text-[#3fb950] flex-shrink-0" />
+                      <Send size={10} className="text-[var(--accent-success)] flex-shrink-0" />
                       <span className="text-xs text-[var(--text-primary)] truncate flex-shrink-0 max-w-[90px]">{s.label}</span>
                       <code className="text-[10px] text-[var(--text-muted)] font-mono truncate">{first}</code>
                       {rest.length > 0 && (
@@ -154,7 +154,7 @@ export default function SnippetsMenu() {
                     </button>
                     <button
                       onClick={() => void deleteSnippet(s)}
-                      className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-[var(--border)] text-[var(--text-secondary)] hover:text-[#ff7b72] flex-shrink-0"
+                      className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-[var(--border)] text-[var(--text-secondary)] hover:text-[var(--accent-danger)] flex-shrink-0"
                       title="Delete snippet"
                     >
                       <X size={11} />
@@ -173,7 +173,7 @@ export default function SnippetsMenu() {
                     onChange={(e) => setLabel(e.target.value)}
                     onKeyDown={(e) => e.key === 'Enter' && saveNew()}
                     placeholder="Label (e.g. PoE status)"
-                    className="w-full text-xs bg-[var(--bg-primary)] border border-[var(--border)] rounded px-2 py-1 text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[#58a6ff]"
+                    className="w-full text-xs bg-[var(--bg-primary)] border border-[var(--border)] rounded px-2 py-1 text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)]"
                   />
                   <textarea
                     value={command}
@@ -188,13 +188,13 @@ export default function SnippetsMenu() {
                     rows={2}
                     spellCheck={false}
                     placeholder={'Command (e.g. show interface {{port}})'}
-                    className="w-full text-xs bg-[var(--bg-primary)] border border-[var(--border)] rounded px-2 py-1 text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[#58a6ff] font-mono resize-y"
+                    className="w-full text-xs bg-[var(--bg-primary)] border border-[var(--border)] rounded px-2 py-1 text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)] font-mono resize-y"
                   />
                   <p className="text-[10px] text-[var(--text-muted)] leading-snug">
                     One command per line. {'{{name}}'} asks for a value each time. {isMac ? '⌘' : 'Ctrl'}+Enter saves.
                   </p>
                   <div className="flex gap-1.5">
-                    <button onClick={saveNew} className="flex-1 px-2 py-1 text-xs bg-[#238636] hover:bg-[#2ea043] text-white rounded">Save</button>
+                    <button onClick={saveNew} className="flex-1 px-2 py-1 text-xs bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-[var(--accent-fg)] rounded">Save</button>
                     <button onClick={() => setAdding(false)} className="px-2 py-1 text-xs bg-[var(--bg-tertiary)] hover:bg-[var(--border)] text-[var(--text-secondary)] rounded">Cancel</button>
                   </div>
                 </div>

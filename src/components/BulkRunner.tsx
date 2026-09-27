@@ -212,7 +212,7 @@ export default function BulkRunner() {
 
   return (
     <div
-      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm"
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-[var(--scrim)] backdrop-blur-sm"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) setShowBulkRunner(false);
       }}
@@ -246,7 +246,7 @@ export default function BulkRunner() {
                       onClick={() => toggle(s.sessionId)}
                       className={`flex items-center gap-1.5 px-2 py-1 text-xs rounded border transition-colors ${
                         on
-                          ? 'bg-[#1f6feb22] border-[var(--accent)] text-[var(--text-primary)]'
+                          ? 'bg-[var(--accent-soft)] border-[var(--accent)] text-[var(--text-primary)]'
                           : 'bg-[var(--bg-primary)] border-[var(--border)] text-[var(--text-secondary)]'
                       }`}
                       title={isDeviceSession(s) ? undefined : 'Not selected by default — click to include'}
@@ -288,7 +288,7 @@ export default function BulkRunner() {
             <button
               onClick={() => void run()}
               disabled={running || lines.length === 0 || targets.length === 0}
-              className="flex items-center gap-1.5 px-3 h-9 text-sm bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-40 text-white rounded-lg transition-colors whitespace-nowrap"
+              className="flex items-center gap-1.5 px-3 h-9 text-sm bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-40 text-[var(--accent-fg)] rounded-lg transition-colors whitespace-nowrap"
             >
               {running ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
               {runLabel}
