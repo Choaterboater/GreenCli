@@ -9,6 +9,7 @@ import { profileForSession } from '../utils/deviceProfiles';
 import { endsAtPager, pagedCommand, pagerQuitKey, withPagingDisabled } from '../utils/paging';
 import { listNames, riskyLines } from '../utils/commandRisk';
 import { Session } from '../types';
+import { tabLabel } from '../utils/tabs';
 
 const isMac = navigator.platform.toUpperCase().includes('MAC');
 
@@ -34,7 +35,8 @@ interface RunResult {
 // a box being staged) shouldn't be swept into a run just by being open.
 const isDeviceSession = (s: Session) => s.config.protocol === 'ssh' || s.config.protocol === 'telnet';
 
-const sessionName = (s: Session) => s.config.name || s.config.host || 'Session';
+// Tab labels, so two sessions to one host ("core-sw-01 (2)") can be told apart.
+const sessionName = (s: Session) => tabLabel(s);
 
 /** Output as shown in the modal / written to the CSV, with any caveat on top. */
 const stepText = (st: StepResult) => (st.note ? `[${st.note}]\n${st.output}` : st.output);

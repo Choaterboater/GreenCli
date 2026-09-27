@@ -51,6 +51,7 @@ import { ChatMessage, Session, AiProvider, AI_PROVIDERS } from '../types';
 import { sleep, stripAnsi, sendAndCapture } from '../utils/terminal';
 import { aiIsWriteCommand, aiMcpLooksWrite, AI_DANGER_CMD } from '../utils/aiGating';
 import { Intent, evaluateAll, summarize } from '../utils/intent';
+import { savedHostId } from '../utils/tabs';
 import { useResizablePanel } from '../hooks/useResizablePanel';
 import { useSidePanelWidth } from '../store/sidePanelStore';
 
@@ -1134,8 +1135,9 @@ export default function AiAssistant() {
   // Per-session AI agent: the persona attached to this session in the sidebar.
   // Its instructions extend the system prompt; its provider/model override the
   // global AI settings for this session only.
+  // Agents are attached to the saved HOST, so every tab of it shares one.
   const activeAgent = (settings.aiAgents ?? []).find(
-    (a) => a.id === (activeSession ? settings.sessionAgents?.[activeSession.config.id] : undefined)
+    (a) => a.id === (activeSession ? settings.sessionAgents?.[savedHostId(activeSession.config)] : undefined)
   );
 
   // Autoscroll only while the user is pinned to the bottom — yanking the view

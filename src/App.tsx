@@ -1,5 +1,6 @@
 import { useEffect, useCallback, useState, useRef, memo } from 'react';
 import { invoke } from '@tauri-apps/api/tauri';
+import { WebviewWindow } from '@tauri-apps/api/window';
 import {
   Settings,
   Search,
@@ -15,7 +16,7 @@ import {
   RefreshCw,
 } from 'lucide-react';
 
-import { useSessionStore } from './store/sessionStore';
+import { CONNECTION_FIELDS, useSessionStore } from './store/sessionStore';
 import { useSettingsStore } from './store/settingsStore';
 import { useDialogStore } from './store/dialogStore';
 import { loadSecrets, persistSecrets } from './utils/secretVault';
@@ -38,6 +39,7 @@ import { getTerminalActionAdapter } from './utils/terminalActions';
 import { isMultiSendTarget } from './utils/multiSend';
 import { openTerminalSearch, sendSearchCommand } from './utils/terminalSearch';
 import { closeSessions } from './utils/closeSessions';
+import { savedHostId, tabConfigForOpen, tabLabel } from './utils/tabs';
 import { MAX_PANES } from './utils/splitPanes';
 import {
   findStep,
@@ -254,7 +256,7 @@ function App() {
   // the prompt is already open still shows up in it.
   const [vaultWaiting, setVaultWaiting] = useState<string[]>([]);
   const syncVaultWaiting = useCallback(() => {
-    setVaultWaiting(pendingVaultConnectsRef.current.map((c) => c.name || c.host || 'session'));
+    setVaultWaiting(pendingVaultConnectsRef.current.map((c) => tabLabel({ config: c })));
   }, []);
 
   // Sessions waiting for the password dialog while it is already showing for
@@ -324,7 +326,7 @@ function App() {
         `popout-meta-${sessionId}`,
         JSON.stringify({
           deviceType: s.config.deviceType,
-          name: s.config.name || s.config.host || s.config.serialPort,
+          name: tabLabel(s),
           // Starting state for the pop-out's status header; live changes
           // arrive via connection_status events.
           status: s.connectionStatus ?? (s.connected ? 'connected' : 'disconnected'),
@@ -336,7 +338,7 @@ function App() {
     useSessionStore.getState().markPoppedOut(sessionId);
     invoke('pop_out_session', {
       sessionId,
-      title: s.config.name || s.config.host || 'GreenCli',
+      title: tabLabel(s),
     }).catch((err) => {
       useSessionStore.getState().restorePoppedOut(sessionId);
       notify.error('Pop-out failed', String(err));
@@ -389,7 +391,10 @@ function App() {
           );
           if (cancelled) return;
           snapshot.sessions.forEach(({ sessionId, config }) => {
-            addSession(config, sessionId);
+            // A tab's config.id is its session id. Older snapshots stored the
+            // saved host's id for both (no savedId), which savedHostId still
+            // resolves to the host — so they restore as-is.
+            addSession({ ...config, id: sessionId }, sessionId);
             useSessionStore.getState().updateSessionConnection(sessionId, false, 'disconnected');
           });
           if (snapshot.activeSessionId) {
@@ -977,9 +982,11 @@ function App() {
       return;
     }
     if (!config.host && !config.serialPort) return; // nothing meaningful to recall
+    // Keyed by the saved HOST, not the tab: two tabs of one host are one recent.
+    const hostId = savedHostId(config);
     const saved = useSessionStore
       .getState()
-      .folders.some((f) => f.items.some((i) => i.id === config.id));
+      .folders.some((f) => f.items.some((i) => i.id === hostId));
     useRecentStore.getState().addRecent({
       name: config.name || config.host || config.serialPort || 'Session',
       protocol: config.protocol,
@@ -987,7 +994,7 @@ function App() {
       port: config.port,
       username: config.username,
       deviceType: config.deviceType,
-      storedSessionId: saved ? config.id : undefined,
+      storedSessionId: saved ? hostId : undefined,
     });
   }, []);
 
@@ -996,9 +1003,10 @@ function App() {
       const sessionId = config.id || generateId();
       const fullConfig = { ...config, id: sessionId };
 
-      // A saved host carries a stable id. If its tab is already connected or
-      // in-flight (manual connect/auth retry/backend auto-reconnect), just focus
-      // it — don't run a second backend connect against the same session id.
+      // config.id is the TAB's session id (openHost picks it). If that tab is
+      // already connected or in-flight (manual connect/auth retry/backend
+      // auto-reconnect), just focus it — don't run a second backend connect
+      // against the same session id.
       const existing = useSessionStore.getState().sessions.find((s) => s.sessionId === sessionId);
       const existingStatus =
         existing?.connectionStatus ?? (existing?.connected ? 'connected' : 'disconnected');
@@ -1028,7 +1036,7 @@ function App() {
 
       addSession(fullConfig, sessionId);
       // addSession is a no-op for an existing (disconnected) tab — refresh its
-      // config with the saved host's current values and focus it explicitly.
+      // config with the values it is reconnecting with and focus it explicitly.
       if (existing) {
         useSessionStore.getState().updateSessionConfig(sessionId, fullConfig);
         useSessionStore.getState().setActiveSession(sessionId);
@@ -1198,10 +1206,17 @@ function App() {
       const session = st.sessions.find((s) => s.sessionId === sessionId);
       if (!session) return;
       st.setActiveSession(sessionId);
-      // A saved host edited while its tab was live only updated the sidebar
-      // item (see QuickConnect) — reconnect with those current details.
-      const saved = st.folders.flatMap((f) => f.items).find((i) => i.id === session.config.id);
-      handleConnect(saved ? { ...session.config, ...saved } : session.config);
+      // A saved host edited while this tab was live left the tab's connection
+      // fields alone (updateSavedHost) — reconnect with the host's current
+      // ones. Only those: the tab keeps its own id, name and copy number.
+      const hostId = savedHostId(session.config);
+      const saved = st.folders.flatMap((f) => f.items).find((i) => i.id === hostId);
+      const current = saved
+        ? (Object.fromEntries(
+            CONNECTION_FIELDS.filter((k) => k in saved).map((k) => [k, saved[k]])
+          ) as Partial<ConnectionConfig>)
+        : {};
+      handleConnect({ ...session.config, ...current });
     },
     [handleConnect]
   );
@@ -1212,6 +1227,38 @@ function App() {
       reconnectFromTerminal = null;
     };
   }, [handleReconnect]);
+
+  // Open a host from the sidebar, palette, Quick Connect or recents. A plain
+  // open brings back the host's tab if it has one (reconnecting it if it
+  // dropped); `newTab` — "Open new session", Shift+double-click, Duplicate
+  // tab — always opens another session with its own tab id.
+  const openHost = useCallback(
+    (config: ConnectionConfig, opts?: { newTab?: boolean }) => {
+      const st = useSessionStore.getState();
+      const tabConfig = tabConfigForOpen(st.sessions, config, {
+        newTab: opts?.newTab,
+        activeSessionId: st.activeSessionId,
+        newId: generateId(),
+      });
+      // A reused tab living in a pop-out window: bring that window forward —
+      // the main window can't show it (setActiveSession ignores it).
+      if (st.poppedSessions.includes(tabConfig.id)) {
+        WebviewWindow.getByLabel(`popout-${tabConfig.id}`)?.setFocus().catch(() => {});
+      }
+      void handleConnect(tabConfig);
+    },
+    [handleConnect]
+  );
+
+  // Another session to the same host as this tab, with the tab's current
+  // details (e.g. a username typed at its login prompt).
+  const duplicateSession = useCallback(
+    (sessionId: string) => {
+      const s = useSessionStore.getState().sessions.find((x) => x.sessionId === sessionId);
+      if (s) openHost(s.config, { newTab: true });
+    },
+    [openHost]
+  );
 
   // One-click local shell — a "normal terminal" running the user's default shell.
   const openLocalShell = useCallback(() => {
@@ -1234,7 +1281,7 @@ function App() {
           .folders.flatMap((f) => f.items)
           .find((i) => i.id === recent.storedSessionId);
         if (saved) {
-          handleConnect(saved);
+          openHost(saved);
           return;
         }
       }
@@ -1245,7 +1292,7 @@ function App() {
       if (recent.host && recent.protocol !== 'serial') {
         // Ad-hoc host: rebuild the config; missing credentials fall through to
         // the vault / auth-dialog path inside handleConnect.
-        handleConnect({
+        openHost({
           id: generateId(),
           name: recent.name,
           protocol: recent.protocol,
@@ -1260,7 +1307,7 @@ function App() {
       // settings are gone) — open Quick Connect instead (it takes no prefill).
       useSessionStore.getState().setShowQuickConnect(true);
     },
-    [handleConnect, openLocalShell]
+    [openHost, openLocalShell]
   );
 
   // A pop-out window's Reconnect button (or Enter on its dropped session)
@@ -1518,13 +1565,14 @@ function App() {
       <div className="flex flex-1 overflow-hidden">
         {/* Sidebar */}
         {sidebarVisible && (
-          <Sidebar onConnect={handleConnect} />
+          <Sidebar onConnect={openHost} />
         )}
 
         {/* Terminal Area */}
         <div className="flex-1 flex flex-col min-w-0">
           {/* Tabs */}
           <TerminalTabs
+            onDuplicate={duplicateSession}
             onPopOut={popOutSession}
             onDisconnect={handleDisconnect}
             onReconnect={handleReconnect}
@@ -1611,7 +1659,7 @@ function App() {
                                   )
                                   .map((c) => (
                                     <option key={c.sessionId} value={c.sessionId}>
-                                      {c.config.name || c.config.host || 'Session'}
+                                      {tabLabel(c)}
                                     </option>
                                   ))}
                               </select>
@@ -1896,12 +1944,17 @@ function App() {
         onSkip={skipVaultConnect}
         waitingFor={vaultWaiting}
       />
-      <CommandPalette onConnect={handleConnect} onLocalShell={openLocalShell} onConnectRecent={connectRecent} />
+      <CommandPalette
+        onConnect={openHost}
+        onDuplicateTab={duplicateSession}
+        onLocalShell={openLocalShell}
+        onConnectRecent={connectRecent}
+      />
       <TunnelsManager />
       <IntentPanel />
       <HelpPanel />
       <ImportHosts />
-      <QuickConnect onConnect={handleConnect} />
+      <QuickConnect onConnect={openHost} />
       <SshAuthDialog onAuthenticate={handleAuthenticate} />
       <DeviceMapper sessionId={mappingSessionId} onClose={() => setMappingSessionId(null)} />
       <SettingsPanel />

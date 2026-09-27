@@ -5,7 +5,14 @@ import { useSessionStore } from '../store/sessionStore';
 import { askConfirm } from '../store/dialogStore';
 import { notify } from '../store/toastStore';
 import { isRiskyCommand, listNames } from '../utils/commandRisk';
-import { isMultiSendTarget, multiSendTargetSessions, pushHistory, stepHistory } from '../utils/multiSend';
+import {
+  configModeSummary,
+  isMultiSendTarget,
+  multiSendTargetSessions,
+  pushHistory,
+  stepHistory,
+} from '../utils/multiSend';
+import { tabLabel } from '../utils/tabs';
 import { Session } from '../types';
 
 // Sent commands, newest last. Module-level so closing and reopening the bar
@@ -15,7 +22,8 @@ const rememberSent = (text: string) => {
   sentHistory = pushHistory(sentHistory, text);
 };
 
-const sessionName = (s: Session) => s.config.name || s.config.host || 'session';
+// Tab labels, so two sessions to one host ("core-sw-01 (2)") can be told apart.
+const sessionName = (s: Session) => tabLabel(s);
 
 // Multi-send bar: type once into several sessions. Targets default to the
 // chosen sessions (starting with the active one), not "all" — with "all", a
@@ -35,6 +43,7 @@ export default function MultiSendBar() {
   const connected = sessions.filter((s) => s.connected);
   const targets = multiSendTargetSessions(sessions, targetsState);
   const n = targets.length;
+  const configNote = configModeSummary(targets);
   const plural = (k: number) => `${k} session${k === 1 ? '' : 's'}`;
 
   const activeConnectedIds = () => {
@@ -159,10 +168,26 @@ export default function MultiSendBar() {
               >
                 {on ? '✓ ' : ''}
                 {sessionName(s)}
+                {s.configMode && (
+                  <span
+                    className="inline-block w-1.5 h-1.5 ml-1 rounded-full align-middle"
+                    style={{ background: 'var(--config-mode)' }}
+                    title="In config mode"
+                  />
+                )}
               </button>
             );
           })}
         </div>
+      )}
+      {configNote && (
+        <span
+          className="text-[10px] font-medium flex-shrink-0"
+          style={{ color: 'var(--config-mode)' }}
+          title="Read from each device's prompt. A command meant for one mode may fail — or do something else — in the other."
+        >
+          {configNote}
+        </span>
       )}
       <input
         ref={inputRef}

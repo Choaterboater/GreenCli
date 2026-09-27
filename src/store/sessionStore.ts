@@ -8,6 +8,8 @@ import {
   settleSplit,
 } from '../utils/splitPanes';
 import type { ImportSource } from '../utils/importHosts';
+import { savedHostId } from '../utils/tabs';
+import type { DevicePrompt } from '../utils/devicePrompt';
 
 /** Why the last login for a session was rejected. Shown inside the password
  *  dialog, because the error toast sits behind the modal. */
@@ -81,7 +83,15 @@ interface SessionState {
   addSession: (config: ConnectionConfig, sessionId: string) => void;
   removeSession: (sessionId: string) => void;
   setActiveSession: (sessionId: string | null) => void;
+  /** Change ONE tab's config (e.g. the username typed at the login prompt,
+   *  Rename tab). The saved host is left alone — see updateSavedHost. */
   updateSessionConfig: (sessionId: string, updates: Partial<ConnectionConfig>) => void;
+  /** Change a saved host (sidebar item) and every open tab of it, so their
+   *  Reconnect uses the new details. Tab ids and tab-only fields are kept. */
+  updateSavedHost: (savedId: string, updates: Partial<ConnectionConfig>) => void;
+  /** Record the device prompt read from a session's output (no-op when it
+   *  hasn't changed — this is called from the ~8ms output flush). */
+  setPromptState: (sessionId: string, prompt: DevicePrompt) => void;
   updateSessionConnection: (
     sessionId: string,
     connected: boolean,
@@ -136,6 +146,16 @@ interface SessionState {
   removeSessionFromFolder: (folderId: string, sessionId: string) => void;
   moveSessionToFolder: (sessionId: string, fromFolderId: string, toFolderId: string) => void;
 }
+
+/** Fields that say WHERE and HOW a session connects. Changing any of them
+ *  only means something for the next connect, so they never overwrite a tab
+ *  that is live (see updateSavedHost). */
+export const CONNECTION_FIELDS = [
+  'protocol', 'host', 'port', 'username', 'authType', 'keyPath',
+  'serialPort', 'baudRate', 'dataBits', 'parity', 'stopBits',
+  'command', 'args', 'cwd',
+  'jumpHost', 'jumpPort', 'jumpUsername',
+] as const;
 
 export const useSessionStore = create<SessionState>()((set, get) => ({
   sessions: [],
@@ -267,20 +287,72 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
       };
     }),
 
+  // Tab only. This used to mirror the change onto the sidebar item with the
+  // same id — back when a tab's id WAS its saved host's id — so a username
+  // typed at one tab's login prompt quietly changed the sidebar's copy of the
+  // host too. Host-wide changes go through updateSavedHost.
   updateSessionConfig: (sessionId, updates) =>
     set((state) => ({
       sessions: state.sessions.map((s) =>
         s.sessionId === sessionId
-          ? { ...s, config: { ...s.config, ...updates } }
+          ? { ...s, config: { ...s.config, ...updates, id: s.config.id } }
           : s
       ),
-      folders: state.folders.map((f) => ({
-        ...f,
-        items: f.items.map((item) =>
-          item.id === sessionId ? { ...item, ...updates } : item
-        ),
-      })),
     })),
+
+  updateSavedHost: (savedId, updates) =>
+    set((state) => {
+      // The host's own identity and tab-only fields never flow onto its tabs.
+      const { id, savedId: _saved, copyNumber, tabName, ...hostFields } = updates;
+      void id;
+      void _saved;
+      void copyNumber;
+      void tabName;
+      // A LIVE tab is still connected to the old address: rewriting its
+      // host/port/user/protocol would label it as the new device while its
+      // keystrokes still reach the old one (tab, status bar, multi-send, Config
+      // Editor's "Send to …" would all lie). Live tabs keep their connection
+      // fields — and their name, when the address changed, since auto-names
+      // follow the address — and pick the new details up on Reconnect.
+      const changesConnection = CONNECTION_FIELDS.some((k) => k in hostFields);
+      const liveFields = Object.fromEntries(
+        Object.entries(hostFields).filter(
+          ([k]) =>
+            !(CONNECTION_FIELDS as readonly string[]).includes(k) &&
+            !(changesConnection && k === 'name')
+        )
+      ) as Partial<ConnectionConfig>;
+      return {
+        sessions: state.sessions.map((s) => {
+          if (savedHostId(s.config) !== savedId) return s;
+          const live =
+            s.connected || s.connectionStatus === 'connecting' || s.connectionStatus === 'reconnecting';
+          return { ...s, config: { ...s.config, ...(live ? liveFields : hostFields) } };
+        }),
+        folders: state.folders.map((f) => ({
+          ...f,
+          items: f.items.map((item) =>
+            item.id === savedId ? { ...item, ...hostFields } : item
+          ),
+        })),
+      };
+    }),
+
+  setPromptState: (sessionId, prompt) =>
+    set((state) => {
+      const s = state.sessions.find((x) => x.sessionId === sessionId);
+      // Local shells aren't devices: a root shell's `host#` is not a prompt
+      // to name the tab after or to read a mode from.
+      if (!s || s.config.protocol === 'local') return state;
+      if (s.promptHost === prompt.host && !!s.configMode === prompt.configMode) return state;
+      return {
+        sessions: state.sessions.map((x) =>
+          x.sessionId === sessionId
+            ? { ...x, promptHost: prompt.host, configMode: prompt.configMode }
+            : x
+        ),
+      };
+    }),
 
   markUnseenOutput: (sessionId) =>
     set((state) =>
@@ -298,6 +370,9 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
               connected,
               connectionStatus: connectionStatus ?? (connected ? 'connected' : 'disconnected'),
               lastActivity: Date.now(),
+              // A dropped session's next login starts outside config mode, so
+              // don't leave its CONFIG badge up; the next prompt sets it again.
+              configMode: connected ? s.configMode : false,
             }
           : s
       ),

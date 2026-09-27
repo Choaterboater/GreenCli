@@ -27,6 +27,7 @@ import {
   ZoomOut,
   RotateCcw,
   Download,
+  CopyPlus,
 } from 'lucide-react';
 import { useSessionStore } from '../store/sessionStore';
 import { getTerminalActionAdapter } from '../utils/terminalActions';
@@ -36,6 +37,7 @@ import { shortcutLabel } from '../utils/shortcuts';
 import { useSettingsStore } from '../store/settingsStore';
 import { useRecentStore, timeAgo, RecentConnection } from '../store/recentStore';
 import { ConnectionConfig } from '../types';
+import { tabLabel } from '../utils/tabs';
 
 interface PaletteAction {
   id: string;
@@ -48,11 +50,13 @@ interface PaletteAction {
 
 interface CommandPaletteProps {
   onConnect: (config: ConnectionConfig) => void;
+  /** Open another session to the same host as this tab. */
+  onDuplicateTab: (sessionId: string) => void;
   onLocalShell: () => void;
   onConnectRecent: (recent: RecentConnection) => void;
 }
 
-export default function CommandPalette({ onConnect, onLocalShell, onConnectRecent }: CommandPaletteProps) {
+export default function CommandPalette({ onConnect, onDuplicateTab, onLocalShell, onConnectRecent }: CommandPaletteProps) {
   // Narrow selectors — a whole-store subscription re-rendered the palette on
   // every session/UI change. Action callbacks read the store imperatively
   // (getState) so the memoized action list stays stable.
@@ -241,8 +245,8 @@ export default function CommandPalette({ onConnect, onLocalShell, onConnectRecen
       const isPopped = poppedSessions.includes(s.sessionId);
       a.push({
         id: `goto-${s.sessionId}`,
-        label: `${isPopped ? 'Focus window' : 'Go to tab'}: ${s.config.name || s.config.host || 'Session'}`,
-        keywords: `tab switch ${s.config.host ?? ''}`,
+        label: `${isPopped ? 'Focus window' : 'Go to tab'}: ${tabLabel(s)}`,
+        keywords: `tab switch ${s.config.host ?? ''} ${s.promptHost ?? ''}`,
         icon: <TerminalSquare size={14} className="text-[#58a6ff]" />,
         run: () => {
           if (isPopped) {
@@ -251,6 +255,16 @@ export default function CommandPalette({ onConnect, onLocalShell, onConnectRecen
             useSessionStore.getState().setActiveSession(s.sessionId);
           }
         },
+      });
+    }
+
+    if (activeSessionId) {
+      a.push({
+        id: 'duplicate-tab',
+        label: 'Duplicate Current Tab',
+        keywords: 'new session same host another shell clone copy',
+        icon: <CopyPlus size={14} className="text-[var(--accent)]" />,
+        run: () => onDuplicateTab(activeSessionId),
       });
     }
 
@@ -270,7 +284,7 @@ export default function CommandPalette({ onConnect, onLocalShell, onConnectRecen
 
     return a;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [folders, sessions, activeSessionId, poppedSessions, theme, vaultUnlocked, recents, onConnect, onLocalShell, onConnectRecent]);
+  }, [folders, sessions, activeSessionId, poppedSessions, theme, vaultUnlocked, recents, onConnect, onDuplicateTab, onLocalShell, onConnectRecent]);
 
   const filtered = useMemo(() => {
     const q = query.trim();

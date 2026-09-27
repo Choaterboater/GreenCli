@@ -90,9 +90,13 @@ export const HELP_TOPICS: HelpTopic[] = [
     title: 'Connecting to devices',
     icon: PlugZap,
     summary: 'SSH/Telnet/Serial/Local, auth methods, jump host, startup commands.',
-    keywords: ['ssh', 'telnet', 'serial', 'local', 'jump', 'proxyjump', 'bastion', 'agent', 'key', 'password', 'connect'],
+    keywords: ['ssh', 'telnet', 'serial', 'local', 'jump', 'proxyjump', 'bastion', 'agent', 'key', 'password', 'connect', 'duplicate', 'second session', 'new session'],
     blocks: [
       { kind: 'p', text: `Open **Quick Connect** (${k('quickConnect')}) or double-click a saved host in the sidebar.` },
+      {
+        kind: 'p',
+        text: `Double-clicking a host that already has a tab brings that tab back. For **another session** to the same device, ${isMac ? '`⇧`-double-click' : '`Shift`+double-click'} it, right-click it → **Open new session**, or right-click its tab → **Duplicate tab**. Extra tabs are numbered: \`core-sw-01 (2)\`.`,
+      },
       {
         kind: 'bullets',
         items: [
@@ -324,7 +328,7 @@ export const HELP_TOPICS: HelpTopic[] = [
     keywords: [
       'terminal', 'copy', 'paste', 'select', 'selection', 'mouse', 'right-click', 'context menu', 'paste guard',
       'log', 'logging', 'record', 'drop', 'file', 'path', 'split', 'pane', 'pop-out', 'window', 'tab', 'reconnect',
-      'scrollback', 'save', 'option', 'alt', 'meta',
+      'scrollback', 'save', 'option', 'alt', 'meta', 'rename', 'duplicate', 'config mode', 'configure', 'prompt', 'hostname',
     ],
     blocks: [
       {
@@ -346,6 +350,8 @@ export const HELP_TOPICS: HelpTopic[] = [
         kind: 'bullets',
         items: [
           `**Tabs**: ${k('nextTab')} / ${k('prevTab')} move between tabs, ${k('jumpTab')} jumps to tab 1–9 — also while typing in a session.${isMac ? '' : ' (`Ctrl`+digit is left for the device.)'}`,
+          '**Right-click a tab** for Duplicate tab, Reconnect, Disconnect, **Rename tab** (double-clicking the tab works too — only the tab is renamed, not the saved host), Pop out, Close other tabs and Close disconnected tabs.',
+          '**Config mode**: GreenCLI reads the device prompt. While a device is in configuration mode — `switch(config)#`, `(host) [mynode] (config) #`, Junos `user@host#` — its tab turns amber with a **CONFIG** badge and the status bar says **Config mode**. A tab named only by its IP address shows the hostname from the prompt.',
           '**Split view** (**Tools → Split view**): up to four sessions side by side. Click a pane to work in it — its header gets the accent bar, and Close, Find, snippets, logging and file drops all act on that pane. Each pane header has a session picker, an add-pane `+` and a close `×` (the session stays open as a tab).',
           '**Pop-out**: the tab’s pop-out button moves a session into its own window. Its header shows the live status, **Find**, **Reconnect** when the session drops, and **Dock** to put it back in its tab.',
           '**Dropped session**: press `Enter` in the terminal (or click **Reconnect**) to connect again.',

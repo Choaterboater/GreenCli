@@ -44,6 +44,11 @@
   --accent-warning: #f0a83c;
   --accent-danger: #f0533f;
   --accent-info: #4aa8ff;
+  /* Device in configuration mode (tab tint + CONFIG badge): amber, calm
+     enough to stay on for a whole change window. */
+  --config-mode: #f0a83c;
+  --config-mode-soft: rgba(240, 168, 60, 0.1);
+  --config-mode-ring: rgba(240, 168, 60, 0.5);
   /* Solid danger buttons: the text-red above is too light under white label
      text (3.5:1), so fills use a deeper red (4.6:1). */
   --danger-solid: #d63d2a;
@@ -122,6 +127,10 @@
   --accent-warning: #b5760a;
   --accent-danger: #cf3520;
   --accent-info: #0969da;
+  /* Darker than accent-warning (3.8:1 on white): the badge text is 9px. */
+  --config-mode: #8a5a00;
+  --config-mode-soft: rgba(181, 118, 10, 0.1);
+  --config-mode-ring: rgba(138, 90, 0, 0.45);
   --danger-solid: #cf3520;
   --danger-solid-fg: #ffffff;
 

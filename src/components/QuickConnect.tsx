@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { open as openDialog } from '@tauri-apps/api/dialog';
 import { useSessionStore } from '../store/sessionStore';
+import { savedHostId } from '../utils/tabs';
 import {
   ConnectionConfig,
   Protocol,
@@ -321,25 +322,19 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
         void jumpPassword;
         void privateKey;
         void keyPassphrase;
-        // A LIVE tab of this host is still connected to the old address: relabel
-        // it and the tab, status bar, multi-send chips and Config Editor would
-        // all name the new device while commands still reach the old one. Only
-        // the sidebar item changes then; Reconnect picks up the new details.
+        // Updates the sidebar item and every open tab of it. A tab that is
+        // still connected keeps its connection details (updateSavedHost) —
+        // say so, or the old address staying on the tab looks like a bug.
         const st = useSessionStore.getState();
-        const tab = st.sessions.find((s) => s.sessionId === updated.id);
-        const live =
-          !!tab &&
-          (tab.connected || tab.connectionStatus === 'connecting' || tab.connectionStatus === 'reconnecting');
-        if (live) {
-          useSessionStore.setState((s) => ({
-            folders: s.folders.map((f) => ({
-              ...f,
-              items: f.items.map((i) => (i.id === updated.id ? { ...i, ...safe } : i)),
-            })),
-          }));
+        st.updateSavedHost(updated.id, safe);
+        const liveTab = st.sessions.some(
+          (s) =>
+            savedHostId(s.config) === updated.id &&
+            (s.connected || s.connectionStatus === 'connecting' || s.connectionStatus === 'reconnecting')
+        );
+        if (liveTab) {
           notify.info('Host updated', `${updated.name}: the open tab keeps its current connection — Reconnect to use the new details.`);
         } else {
-          st.updateSessionConfig(updated.id, safe);
           notify.success('Host updated', updated.name);
         }
         setShowQuickConnect(false);
