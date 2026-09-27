@@ -335,6 +335,41 @@ fn spawn_forwarder(
     });
 }
 
+/// Push the tab's remembered terminal size to a session that just registered.
+/// The tab's first resize usually arrives while `connect` is still running —
+/// it fails (no session yet) and is only remembered — so without this, local
+/// shells and telnet sat at 80x24 (and SSH too, when the size arrived
+/// mid-handshake) until the user happened to resize the window. `already` is
+/// the size the session was created with, to skip a redundant resize.
+async fn apply_remembered_size(state: &AppState, session_id: &str, already: Option<(u16, u16)>) {
+    let size = state.terminal_sizes.lock().await.get(session_id).copied();
+    if let Some((cols, rows)) = size {
+        if Some((cols, rows)) != already {
+            let _ = state
+                .session_manager
+                .resize_session(session_id, cols, rows)
+                .await;
+        }
+    }
+}
+
+/// Round-trip an SSH-level ping (`keepalive@openssh.com`, want_reply) through
+/// russh's session loop. The SSH server answers it itself, independent of the
+/// shell, so it tells "the transport is wedged" apart from "the device is idle
+/// or busy and simply not printing". Bounded: a wedged loop never answers, and
+/// a send() stuck on the dead transport may hold the connection lock.
+async fn ssh_transport_alive(session_manager: &SessionManager, session_id: &str) -> bool {
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        let Some(handle) = session_manager.get_ssh_handle(session_id).await else {
+            return false;
+        };
+        let handle = handle.lock().await;
+        handle.send_ping().await.is_ok()
+    })
+    .await
+    .unwrap_or(false)
+}
+
 /// SSH forwarder with auto-reconnect. Forwards output like `spawn_forwarder`,
 /// but when the stream closes it reconnects with exponential backoff — unless
 /// the session was removed from the manager (a user-initiated disconnect) or
@@ -505,24 +540,33 @@ fn spawn_ssh_supervisor(
             }
             first = false;
 
-            // Forward until the stream closes — or the echo watchdog fires.
+            // Forward until the stream closes — or the watchdog proves the
+            // transport wedged.
             //
-            // russh's client loop can wedge silently mid-read under bursty TUI
-            // output: the socket stops being read (the peer's send buffer fills,
-            // our TCP receive window closes) while everything still LOOKS
-            // connected — no error, no EOF, no panic. The only reliable signal
-            // from out here is an echo: user input must produce output quickly.
-            // Input that gets nothing back for ECHO_STALE means the transport
-            // is wedged → tear down just the transport; the session stays
-            // registered so the stream-end path below reconnects it.
+            // russh's client loop could wedge silently mid-read (the root cause
+            // — an undrained primary channel — is fixed in ssh/client.rs; this
+            // is the backstop): the socket stops being read while everything
+            // still LOOKS connected. Two things make us SUSPECT a wedge:
+            //  1) Echo stall: input sent after the last output, nothing back
+            //     for ECHO_STALE.
+            //  2) Silence: no output at all for IDLE_PROBE.
+            // Neither is proof. A network CLI sitting at its prompt is silent
+            // forever (keepalive replies never reach the terminal channel), and
+            // a busy device — Junos `commit`, `write memory`, `tar logs` — does
+            // not echo typeahead until it finishes. Killing on suspicion alone
+            // reset every idle tab every 5 minutes and cut sessions mid-commit.
+            // So a suspicion only triggers an SSH-level ping, which the SSH
+            // server answers itself; only an UNANSWERED ping tears the
+            // transport down (the session stays registered, so the stream-end
+            // path below reconnects it).
             const ECHO_STALE: std::time::Duration = std::time::Duration::from_secs(20);
-            // Absolute-silence backstop: nothing was even read for this long.
-            // (Echo stalls are caught by ECHO_STALE; this catches a wedge that
-            // started before any keystroke — e.g. mid-I/O during a session the
-            // user stepped away from.)
-            const IDLE_STALE: std::time::Duration = std::time::Duration::from_secs(300);
+            const IDLE_PROBE: std::time::Duration = std::time::Duration::from_secs(300);
             let started = std::time::Instant::now();
             let mut last_rx = started;
+            // Input whose missing echo was already explained by a good ping —
+            // don't re-probe it every tick; the next keystroke re-arms.
+            let mut cleared_input: Option<std::time::Instant> = None;
+            let mut last_idle_probe = started;
             let mut watchdog_hit = false;
             let mut idle_tick = tokio::time::interval(std::time::Duration::from_secs(2));
             idle_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -547,31 +591,38 @@ fn spawn_ssh_supervisor(
                             .await
                             .get(&session_id)
                             .unwrap_or(&started);
-                        // Two failure modes:
-                        //  1) Echo stall: input sent AFTER the last output and
-                        //     nothing came back for ECHO_STALE — the transport
-                        //     is wedged mid-read (russh read-loop freeze).
-                        //  2) Absolute silence: no bytes at ALL for
-                        //     IDLE_STALE, even with no recent input. A healthy
-                        //     session still carries SSH-level keepalive/traffic,
-                        //     so minutes of absolute silence while "connected"
-                        //     is a wedge, not idleness.
-                        let echo_stale =
-                            input_at > last_rx && input_at.elapsed() >= ECHO_STALE;
-                        let idle_stale = last_rx.elapsed() >= IDLE_STALE;
-                        if echo_stale || idle_stale {
-                            eprintln!(
-                                "[WATCHDOG] {} (last_rx {}s ago) — forcing transport reconnect (session {})",
-                                if echo_stale { "no output for input" } else { "absolute silence" },
-                                last_rx.elapsed().as_secs(),
-                                session_id
-                            );
-                            watchdog_hit = true;
-                            if let Some(conn) = session_manager.connection_handle(&session_id).await {
-                                let _ = conn.lock().await.disconnect().await;
-                            }
-                            break;
+                        let echo_stale = input_at > last_rx
+                            && input_at.elapsed() >= ECHO_STALE
+                            && cleared_input != Some(input_at);
+                        let idle_stale = last_rx.elapsed() >= IDLE_PROBE
+                            && last_idle_probe.elapsed() >= IDLE_PROBE;
+                        if !echo_stale && !idle_stale {
+                            continue;
                         }
+                        if ssh_transport_alive(&session_manager, &session_id).await {
+                            // The server answered: the transport is fine and the
+                            // device is just quiet or busy. Leave it alone.
+                            cleared_input = Some(input_at);
+                            last_idle_probe = std::time::Instant::now();
+                            continue;
+                        }
+                        eprintln!(
+                            "[WATCHDOG] {} (last_rx {}s ago) and SSH ping unanswered — forcing transport reconnect (session {})",
+                            if echo_stale { "no output for input" } else { "long silence" },
+                            last_rx.elapsed().as_secs(),
+                            session_id
+                        );
+                        watchdog_hit = true;
+                        if let Some(conn) = session_manager.connection_handle(&session_id).await {
+                            // Bounded: a send() wedged on the dead transport can
+                            // hold this lock forever, which used to park the
+                            // watchdog here instead of recovering the session.
+                            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                                conn.lock().await.disconnect().await
+                            })
+                            .await;
+                        }
+                        break;
                     }
                 }
             }
@@ -668,7 +719,41 @@ async fn connect(
 
             let auto_reconnect = config.auto_reconnect.unwrap_or(false);
             let mut connection = SshConnection::new(session_id.clone(), ssh_config.clone());
-            let response = connection.connect().await.map_err(|e| e.to_string())?;
+            // The tab's terminal usually reports its size before this runs (the
+            // resize fails — no session yet — but the size is remembered).
+            // Request the PTY at that size instead of 80x24: the device pages
+            // and wraps by the PTY size, so a big window kept paging every 24
+            // lines and wrapping at 80 columns until it was resized.
+            let requested_size = state.terminal_sizes.lock().await.get(&session_id).copied();
+            if let Some((cols, rows)) = requested_size {
+                connection.set_initial_size(cols, rows).await;
+            }
+            // Bound the whole handshake (TCP + key exchange + auth + PTY/shell).
+            // Unbounded, a device that accepts TCP but never finishes SSH (e.g.
+            // out of VTY lines) left the tab on "connecting" forever, and a
+            // 'connecting' tab can't be retried. Generous enough for slow
+            // TACACS/RADIUS fallback. The reconnect path has its own bound.
+            let response = match tokio::time::timeout(
+                std::time::Duration::from_secs(60),
+                connection.connect(),
+            )
+            .await
+            {
+                Ok(result) => result.map_err(|e| e.to_string())?,
+                Err(_) => {
+                    let _ = tokio::time::timeout(
+                        std::time::Duration::from_secs(3),
+                        connection.disconnect(),
+                    )
+                    .await;
+                    return Err(AppError::SshError(format!(
+                        "Timed out after 60s connecting to {}:{} (no answer, or the \
+                         SSH login never finished)",
+                        host, ssh_config.port
+                    ))
+                    .to_string());
+                }
+            };
             let rx_opt = connection.take_data_receiver();
 
             // Surface a non-fatal host-key advisory recorded during the
@@ -688,6 +773,7 @@ async fn connect(
                 .session_manager.add_session(session_id.clone(), Box::new(connection))
                 .await
                 .map_err(|e| e.to_string())?;
+            apply_remembered_size(&state, &session_id, requested_size).await;
 
             let _ = app.emit_all(
                 "connection_status",
@@ -738,6 +824,7 @@ async fn connect(
                 .session_manager.add_session(session_id.clone(), Box::new(connection))
                 .await
                 .map_err(|e| e.to_string())?;
+            apply_remembered_size(&state, &session_id, None).await;
 
             // Emit "connected" BEFORE spawning the forwarder (mirrors SSH), so an
             // instantly-dying stream can't emit "disconnected" first and leave a
@@ -786,6 +873,7 @@ async fn connect(
                 .session_manager.add_session(session_id.clone(), Box::new(connection))
                 .await
                 .map_err(|e| e.to_string())?;
+            apply_remembered_size(&state, &session_id, None).await;
 
             // Emit "connected" before spawning the forwarder (see telnet note).
             let _ = app.emit_all(
@@ -830,6 +918,7 @@ async fn connect(
                 .session_manager.add_session(session_id.clone(), Box::new(connection))
                 .await
                 .map_err(|e| e.to_string())?;
+            apply_remembered_size(&state, &session_id, None).await;
 
             // Emit "connected" before spawning the forwarder (see telnet note).
             let _ = app.emit_all(
@@ -1233,22 +1322,42 @@ async fn write_file_text(path: String, contents: String) -> Result<(), String> {
 /// emit_all, so the new window receives the stream with no extra routing. When
 /// the pop-out closes, `popout_closed` tells the main window to restore the tab.
 ///
-/// Deliberately NOT async: async commands run on the async runtime's thread
-/// pool, but macOS requires NSWindow creation on the main thread — an
-/// off-thread WindowBuilder yields a window that can't be moved/managed.
-/// Sync commands run on the main thread.
+/// Sync (main thread) on macOS/Linux: an off-thread WindowBuilder on macOS
+/// yielded a window that couldn't be moved/managed. But on Windows a window
+/// built inside a SYNC command deadlocks (WebView2 can't create a webview from
+/// inside the IPC callback — see the "Known issues" on tauri's
+/// WindowBuilder::build), freezing the whole app, so there it is async.
+#[cfg(not(windows))]
 #[tauri::command]
 fn pop_out_session(
     session_id: String,
     title: Option<String>,
     app: AppHandle,
 ) -> Result<(), String> {
+    open_pop_out_window(&app, session_id, title)
+}
+
+#[cfg(windows)]
+#[tauri::command]
+async fn pop_out_session(
+    session_id: String,
+    title: Option<String>,
+    app: AppHandle,
+) -> Result<(), String> {
+    open_pop_out_window(&app, session_id, title)
+}
+
+fn open_pop_out_window(
+    app: &AppHandle,
+    session_id: String,
+    title: Option<String>,
+) -> Result<(), String> {
     let label = format!("popout-{}", session_id);
     if let Some(w) = app.get_window(&label) {
         let _ = w.set_focus();
         return Ok(());
     }
-    let win = tauri::WindowBuilder::new(&app, &label, tauri::WindowUrl::App("index.html".into()))
+    let win = tauri::WindowBuilder::new(app, &label, tauri::WindowUrl::App("index.html".into()))
         .title(title.unwrap_or_else(|| "GreenCli".into()))
         .inner_size(960.0, 600.0)
         .min_inner_size(480.0, 320.0)

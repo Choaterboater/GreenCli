@@ -1053,4 +1053,63 @@ mod tests {
             panic!("{error}");
         }
     }
+
+    /// The SSH supervisor's watchdog only tears a session down when an
+    /// SSH-level ping goes unanswered. That ping must round-trip through a
+    /// live transport even while the shell itself prints nothing — otherwise
+    /// every quiet session would still look wedged.
+    async fn run_ping_round_trip() -> Result<(), String> {
+        let tofu_dir = TempTofuDir::create()?;
+        let (address, _probe_rx, server_task) = start_loopback_server().await?;
+        let mut connection = SshConnection::new(
+            "ping-round-trip".to_string(),
+            ConnectionConfig {
+                host: address.ip().to_string(),
+                port: address.port(),
+                username: "test-user".to_string(),
+                auth_type: AuthType::Password,
+                password: Some(zeroize::Zeroizing::new("test-password".to_string())),
+                private_key: None,
+                key_passphrase: None,
+                keep_alive_interval: None,
+                known_hosts_path: Some(tofu_dir.known_hosts_path()),
+                jump_host: None,
+                jump_port: None,
+                jump_username: None,
+                jump_password: None,
+            },
+        );
+
+        let test_result = async {
+            timeout(AWAIT_TIMEOUT, connection.connect())
+                .await
+                .map_err(|_| "timed out connecting production SSH client".to_string())?
+                .map_err(|error| format!("connect production SSH client: {error}"))?;
+            let handle = connection
+                .ssh_handle()
+                .ok_or_else(|| "connected client exposed no SSH handle".to_string())?;
+            for round in 0..3 {
+                timeout(AWAIT_TIMEOUT, async {
+                    handle.lock().await.send_ping().await
+                })
+                .await
+                .map_err(|_| format!("ping {round} was never answered"))?
+                .map_err(|error| format!("ping {round}: {error}"))?;
+            }
+            Ok(())
+        }
+        .await;
+
+        let _ = timeout(AWAIT_TIMEOUT, connection.disconnect()).await;
+        server_task.stop().await;
+        drop(tofu_dir);
+        test_result
+    }
+
+    #[tokio::test]
+    async fn ssh_ping_round_trips_on_a_live_session() {
+        if let Err(error) = run_ping_round_trip().await {
+            panic!("{error}");
+        }
+    }
 }
