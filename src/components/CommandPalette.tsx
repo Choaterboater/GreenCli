@@ -26,6 +26,7 @@ import {
   ZoomIn,
   ZoomOut,
   RotateCcw,
+  GitPullRequestArrow,
 } from 'lucide-react';
 import { useSessionStore } from '../store/sessionStore';
 import { getTerminalActionAdapter } from '../utils/terminalActions';
@@ -85,6 +86,7 @@ export default function CommandPalette({ onConnect, onLocalShell, onConnectRecen
       { id: 'toggle-ai', label: 'Toggle AI Assistant', hint: shortcutLabel('ai'), icon: <Sparkles size={14} />, run: () => useSessionStore.getState().toggleAiAssistant() },
       { id: 'toggle-broadcast', label: 'Toggle Multi-send', keywords: 'send all multiple sessions broadcast subset', icon: <Radio size={14} />, run: () => useSessionStore.getState().toggleBroadcast() },
       { id: 'bulk-runner', label: 'Bulk Command Runner', keywords: 'run all devices batch collect csv', icon: <Radio size={14} />, run: () => useSessionStore.getState().setShowBulkRunner(true) },
+      { id: 'change-jobs', label: 'Change Jobs', keywords: 'push config change many devices canary rollback commit confirmed checkpoint bulk deploy variables csv', icon: <GitPullRequestArrow size={14} />, run: () => useSessionStore.getState().setShowChangeJobs(true) },
       { id: 'sftp', label: 'SFTP File Transfer', keywords: 'sftp upload download file transfer scp', icon: <HardDrive size={14} />, run: () => useSessionStore.getState().setShowSftp(true) },
       {
         id: 'mcp-servers',

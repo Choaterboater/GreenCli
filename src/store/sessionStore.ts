@@ -64,6 +64,8 @@ interface SessionState {
   showVaultUnlock: boolean;
   vaultUnlocked: boolean;
   showBulkRunner: boolean;
+  /** Change Jobs: push one config change to many devices (dry run, canary). */
+  showChangeJobs: boolean;
   showSftp: boolean;
   showTunnels: boolean;
   showIntent: boolean;
@@ -101,6 +103,7 @@ interface SessionState {
   setShowVaultUnlock: (show: boolean) => void;
   setVaultUnlocked: (unlocked: boolean) => void;
   setShowBulkRunner: (show: boolean) => void;
+  setShowChangeJobs: (show: boolean) => void;
   setShowSftp: (show: boolean) => void;
   setShowTunnels: (show: boolean) => void;
   setShowIntent: (show: boolean) => void;
@@ -163,6 +166,7 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
   showVaultUnlock: false,
   vaultUnlocked: false,
   showBulkRunner: false,
+  showChangeJobs: false,
   showSftp: false,
   showTunnels: false,
   showIntent: false,
@@ -332,6 +336,7 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
   setShowVaultUnlock: (show) => set({ showVaultUnlock: show }),
   setVaultUnlocked: (unlocked) => set({ vaultUnlocked: unlocked }),
   setShowBulkRunner: (show) => set({ showBulkRunner: show }),
+  setShowChangeJobs: (show) => set({ showChangeJobs: show }),
   // SFTP browses the ACTIVE session; "open" with no session rendered nothing
   // but left the flag set, so the modal popped over the next tab and Ctrl+W /
   // file drops stayed disabled until then.
