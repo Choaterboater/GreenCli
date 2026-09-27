@@ -159,7 +159,7 @@ fn read_sessions_dir_capped(root: &Path, max_files: usize) -> Result<SessionScan
         }
     }
 
-    found.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+    found.sort_by_key(|a| a.0.to_lowercase());
     if found.len() > max_files {
         found.truncate(max_files);
         scan.truncated = true;
