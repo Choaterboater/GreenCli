@@ -50,6 +50,7 @@ import {
   promptState,
   resolveTargets,
   runDevice,
+  savedHostId,
   runJob,
   toCsv,
   vendorSteps,
@@ -441,13 +442,24 @@ async function ensureSession(
   t: JobTarget,
   onConnect: (config: ConnectionConfig) => Promise<ConnectOutcome>
 ): Promise<Ready> {
-  const sessionId = t.sessionId ?? t.config.id;
-  const find = () => useSessionStore.getState().sessions.find((s) => s.sessionId === sessionId);
-  const fresh = !find()?.connected;
+  const all = () => useSessionStore.getState().sessions;
+  // The tab picked at dry-run time; for a saved host that wasn't open then, a
+  // tab of it opened since (connected first) — else connect it now.
+  const tab = t.sessionId
+    ? all().find((s) => s.sessionId === t.sessionId)
+    : (() => {
+        const mine = all().filter((s) => savedHostId(s.config) === t.config.id);
+        return mine.find((s) => s.connected) ?? mine[0];
+      })();
+  let sessionId = tab?.sessionId ?? '';
+  const fresh = !tab?.connected;
   if (fresh) {
-    const outcome = await onConnect(find()?.config ?? t.config);
+    const outcome = await onConnect(tab?.config ?? t.config);
     if (outcome.status === 'needs-login') return { ok: false, status: 'needs-login', detail: outcome.reason };
     if (outcome.status === 'failed') return { ok: false, status: 'error', detail: `Could not connect: ${outcome.reason}` };
+    // The connect decides which tab it used — don't assume it's the saved id.
+    sessionId = outcome.sessionId;
+    const find = () => all().find((s) => s.sessionId === sessionId);
     const started = Date.now();
     while (!find()?.connected) {
       if (Date.now() - started > CONNECT_TIMEOUT_MS)

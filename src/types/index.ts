@@ -28,6 +28,7 @@ export const VENDOR_META: Record<Vendor, VendorMeta> = {
 
 export interface ConnectionConfig {
   id: string;
+  savedId?: string;
   name: string;
   protocol: Protocol;
   host?: string;

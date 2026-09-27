@@ -495,6 +495,14 @@ export interface JobTarget {
 
 const isNetworkProtocol = (c: ConnectionConfig) => c.protocol === 'ssh' || c.protocol === 'telnet';
 
+/** The saved (sidebar) host a tab was opened from. A tab's own `id` is its
+ *  session id; `savedId` points at the saved host when the two differ (a
+ *  saved host can have several tabs). Older tabs carry no savedId: there
+ *  the ids are the same. The one place Change Jobs maps tab → saved host. */
+export function savedHostId(config: Pick<ConnectionConfig, 'id' | 'savedId'>): string {
+  return config.savedId ?? config.id;
+}
+
 /** Same box, however it was opened: a saved host and an ad-hoc tab to the
  *  same address must not get the change twice. */
 export function deviceIdentity(c: ConnectionConfig): string {
@@ -512,9 +520,15 @@ export function deviceIdentity(c: ConnectionConfig): string {
 export function resolveTargets(folders: SessionFolder[], sessions: Session[], pick: TargetPick): JobTarget[] {
   const out: JobTarget[] = [];
   const byIdentity = new Map<string, JobTarget>();
-  const openFor = (c: ConnectionConfig) =>
-    sessions.find((s) => s.sessionId === c.id) ??
-    sessions.find((s) => s.config.protocol !== 'local' && deviceIdentity(s.config) === deviceIdentity(c));
+  // A tab of this saved host (or any tab to the same device), connected first.
+  const openFor = (c: ConnectionConfig) => {
+    const tabs = sessions.filter(
+      (s) =>
+        s.config.protocol !== 'local' &&
+        (savedHostId(s.config) === c.id || deviceIdentity(s.config) === deviceIdentity(c))
+    );
+    return tabs.find((s) => s.connected) ?? tabs[0];
+  };
   const add = (config: ConnectionConfig, sessionId: string | null) => {
     const id = deviceIdentity(config);
     if (byIdentity.has(id)) return;
