@@ -1589,7 +1589,7 @@ export default function AiAssistant() {
         <div className="mx-3 mt-3 px-3 py-2 bg-[#d2991520] border border-[#d2991540] rounded-lg flex items-start gap-2">
           <AlertCircle size={12} className="text-[#d29922] flex-shrink-0 mt-0.5" />
           <div className="text-[10px] text-[#d29922] leading-relaxed">
-            Add an API key for <strong>{providerMeta?.label}</strong> in <strong>Settings → AI Assistant</strong>, or switch to a local provider (Ollama / Local CLI).
+            Add an API key for <strong>{providerMeta?.label}</strong> in <strong>Settings → AI &amp; MCP</strong>, or switch to a local provider (Ollama / Local CLI).
           </div>
         </div>
       )}
