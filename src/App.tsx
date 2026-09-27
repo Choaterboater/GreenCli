@@ -234,6 +234,13 @@ function App() {
   // used to overwrite the first, stranding its tab on 'connecting' forever
   // (and handleConnect refuses to restart a 'connecting' tab).
   const pendingVaultConnectsRef = useRef<ConnectionConfig[]>([]);
+  // Their names, for the vault prompt ("…saved password for core-sw-01").
+  // State rather than read from the ref at render, so a connect parked while
+  // the prompt is already open still shows up in it.
+  const [vaultWaiting, setVaultWaiting] = useState<string[]>([]);
+  const syncVaultWaiting = useCallback(() => {
+    setVaultWaiting(pendingVaultConnectsRef.current.map((c) => c.name || c.host || 'session'));
+  }, []);
 
   // Sessions waiting for the password dialog while it is already showing for
   // another session. The dialog is one slot too: a second failed connect used
@@ -243,7 +250,10 @@ function App() {
   const showAuthDialog = useSessionStore((s) => s.showAuthDialog);
 
   const promptForAuth = useCallback(
-    (config: ConnectionConfig) => {
+    (config: ConnectionConfig, error?: string) => {
+      // Shown inside the dialog with an attempt count — the error toast sits
+      // behind the modal, so a wrong password used to look like nothing happened.
+      if (error) useSessionStore.getState().recordAuthError(config.id, error);
       const st = useSessionStore.getState();
       if (st.showAuthDialog && st.pendingConnection && st.pendingConnection.id !== config.id) {
         if (!authQueueRef.current.some((c) => c.id === config.id)) {
@@ -981,6 +991,7 @@ function App() {
         if (!pendingVaultConnectsRef.current.some((c) => c.id === sessionId)) {
           pendingVaultConnectsRef.current.push(fullConfig);
         }
+        syncVaultWaiting();
         setShowVaultUnlock(true);
         return;
       }
@@ -1010,7 +1021,7 @@ function App() {
         if (!stillOpen) return;
         useSessionStore.getState().updateSessionConnection(sessionId, false, 'disconnected');
         if (fullConfig.protocol === 'ssh' && isAuthFailure(error)) {
-          promptForAuth(fullConfig);
+          promptForAuth(fullConfig, error);
         } else {
           notify.error(`Could not connect to ${fullConfig.name || fullConfig.host || fullConfig.protocol}`, error);
         }
@@ -1063,7 +1074,7 @@ function App() {
         connectingIdsRef.current.delete(sessionId);
       }
     },
-    [addSession, promptForAuth, setShowVaultUnlock, recordRecent]
+    [addSession, promptForAuth, setShowVaultUnlock, recordRecent, syncVaultWaiting]
   );
 
   // Vault unlocked: flush any deferred credential SAVE, then resume the parked
@@ -1073,6 +1084,7 @@ function App() {
     flushPendingCredSave();
     const parked = pendingVaultConnectsRef.current;
     pendingVaultConnectsRef.current = [];
+    syncVaultWaiting();
     for (const cfg of parked) {
       // handleConnect parked this AFTER registering the tab (status
       // 'connecting', id in connectingIdsRef, cleared when it parked) —
@@ -1080,16 +1092,30 @@ function App() {
       useSessionStore.getState().updateSessionConnection(cfg.id, false, 'disconnected');
       void handleConnect(cfg);
     }
-  }, [flushPendingCredSave, handleConnect]);
+  }, [flushPendingCredSave, handleConnect, syncVaultWaiting]);
 
   // Vault prompt dismissed: drop the parked connects and un-stick their tabs.
   const cancelVaultConnect = useCallback(() => {
     const parked = pendingVaultConnectsRef.current;
     pendingVaultConnectsRef.current = [];
+    syncVaultWaiting();
     for (const cfg of parked) {
       useSessionStore.getState().updateSessionConnection(cfg.id, false, 'disconnected');
     }
-  }, []);
+  }, [syncVaultWaiting]);
+
+  // Vault prompt skipped: a locked vault can't say whether it even holds a
+  // password for these hosts, so ask for the device password instead of
+  // dropping the connects (the auth queue takes them one at a time).
+  const skipVaultConnect = useCallback(() => {
+    const parked = pendingVaultConnectsRef.current;
+    pendingVaultConnectsRef.current = [];
+    syncVaultWaiting();
+    for (const cfg of parked) {
+      useSessionStore.getState().updateSessionConnection(cfg.id, false, 'disconnected');
+      promptForAuth(cfg);
+    }
+  }, [promptForAuth, syncVaultWaiting]);
 
   const handleDisconnect = useCallback(async (sessionId: string) => {
     const session = useSessionStore.getState().sessions.find((s) => s.sessionId === sessionId);
@@ -1175,9 +1201,17 @@ function App() {
 
   const handleAuthenticate = useCallback(
     async (creds: AuthCredentials, saveCredential: boolean) => {
-      const pending = useSessionStore.getState().pendingConnection;
-      if (!pending) return;
-      if (connectingIdsRef.current.has(pending.id)) return;
+      const prompted = useSessionStore.getState().pendingConnection;
+      if (!prompted) return;
+      if (connectingIdsRef.current.has(prompted.id)) return;
+      // The dialog's Username wins: a login sent with a blank or wrong user
+      // fails whatever the password. Keep it on the tab so Reconnect and the
+      // next prompt reuse it; the vault key below follows it too.
+      const username = creds.username?.trim() || prompted.username;
+      const pending = username === prompted.username ? prompted : { ...prompted, username };
+      if (pending !== prompted) {
+        useSessionStore.getState().updateSessionConfig(pending.id, { username });
+      }
       connectingIdsRef.current.add(pending.id);
 
       try {
@@ -1218,6 +1252,7 @@ function App() {
 
         if (result.success) {
           useSessionStore.getState().updateSessionConnection(pending.id, true);
+          useSessionStore.getState().clearAuthError(pending.id);
           recordRecent(pending);
           // (The dialog already closed on submit; closing it here would dismiss
           // a prompt that has since opened for the NEXT queued session.)
@@ -1241,11 +1276,9 @@ function App() {
           }
         } else {
           useSessionStore.getState().updateSessionConnection(pending.id, false, 'disconnected');
-          notify.error(
-            'Authentication failed',
-            result.error || 'The device rejected the supplied credentials.'
-          );
-          promptForAuth(pending);
+          const error = result.error || 'The device rejected the supplied credentials.';
+          notify.error('Authentication failed', error);
+          promptForAuth(pending, error);
         }
       } catch (err) {
         console.error('Auth connection error:', err);
@@ -1257,7 +1290,7 @@ function App() {
         useSessionStore.getState().updateSessionConnection(pending.id, false, 'disconnected');
         if (isAuthFailure(error)) {
           notify.error('Authentication failed', error);
-          promptForAuth(pending);
+          promptForAuth(pending, error);
         } else {
           // Unreachable / timed out / host key: re-asking for the password
           // can't help — show why, and leave the tab's Reconnect button.
@@ -1744,7 +1777,12 @@ function App() {
         // old session's listing/cwd on screen while actions hit the new one.
         <SftpBrowser key={activeSessionId} sessionId={activeSessionId} onClose={() => setShowSftp(false)} />
       )}
-      <VaultUnlock onUnlocked={resumeVaultConnect} onCancel={cancelVaultConnect} />
+      <VaultUnlock
+        onUnlocked={resumeVaultConnect}
+        onCancel={cancelVaultConnect}
+        onSkip={skipVaultConnect}
+        waitingFor={vaultWaiting}
+      />
       <CommandPalette onConnect={handleConnect} onLocalShell={openLocalShell} onConnectRecent={connectRecent} />
       <TunnelsManager />
       <IntentPanel />
