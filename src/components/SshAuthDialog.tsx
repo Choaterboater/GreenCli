@@ -1,12 +1,16 @@
 import { useState, useEffect } from 'react';
-import { X, KeyRound, Eye, EyeOff, Lock, FolderOpen, FileKey } from 'lucide-react';
+import { X, KeyRound, Eye, EyeOff, Lock, FolderOpen, FileKey, AlertTriangle } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/tauri';
 import { open as openDialog } from '@tauri-apps/api/dialog';
 import { useSessionStore } from '../store/sessionStore';
 import { notify } from '../store/toastStore';
+import { hostSummary } from '../utils/hosts';
 
 export interface AuthCredentials {
   authType: 'password' | 'key' | 'agent';
+  /** Login name from the dialog — may differ from the pending connection's
+   *  (a blank or wrong username can't be fixed by any password). */
+  username?: string;
   password?: string;
   privateKey?: string;
   keyPassphrase?: string;
@@ -18,6 +22,12 @@ interface SshAuthDialogProps {
 
 export default function SshAuthDialog({ onAuthenticate }: SshAuthDialogProps) {
   const { showAuthDialog, pendingConnection, setShowAuthDialog } = useSessionStore();
+  const authError = useSessionStore((s) =>
+    s.pendingConnection ? s.authErrors[s.pendingConnection.id] : undefined
+  );
+  // null = not edited: show the pending connection's own username.
+  const [usernameDraft, setUsernameDraft] = useState<string | null>(null);
+  const username = usernameDraft ?? pendingConnection?.username ?? '';
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [saveCredential, setSaveCredential] = useState(false);
@@ -39,9 +49,13 @@ export default function SshAuthDialog({ onAuthenticate }: SshAuthDialogProps) {
     setKeyName(null);
     setKeyPassphrase('');
     setShowKeyPassphrase(false);
+    setUsernameDraft(null);
   };
 
   const dismiss = () => {
+    // Giving up on this host ends its run of failed attempts.
+    const id = useSessionStore.getState().pendingConnection?.id;
+    if (id) useSessionStore.getState().clearAuthError(id);
     resetForm();
     setShowAuthDialog(false);
   };
@@ -92,19 +106,26 @@ export default function SshAuthDialog({ onAuthenticate }: SshAuthDialogProps) {
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    const user = username.trim();
     if (authType === 'password') {
-      onAuthenticate({ authType: 'password', password }, saveCredential);
+      onAuthenticate({ authType: 'password', username: user, password }, saveCredential);
     } else if (authType === 'agent') {
-      onAuthenticate({ authType: 'agent' }, false);
+      onAuthenticate({ authType: 'agent', username: user }, false);
     } else {
+      // Only passwords are ever saved to the vault — keys stay in their files.
       onAuthenticate(
-        { authType: 'key', privateKey, keyPassphrase: keyPassphrase || undefined },
-        saveCredential
+        { authType: 'key', username: user, privateKey, keyPassphrase: keyPassphrase || undefined },
+        false
       );
     }
     resetForm();
     setShowAuthDialog(false);
   };
+
+  // No username yet: start there, it's what's missing.
+  const focusUsername = !username.trim();
+  // Live: follows the Username field as it's edited.
+  const target = hostSummary({ ...pendingConnection, username: username.trim() });
 
   const tab = (t: 'password' | 'key' | 'agent', label: string) => (
     <button
@@ -130,11 +151,15 @@ export default function SshAuthDialog({ onAuthenticate }: SshAuthDialogProps) {
       <div className="surface-elevated w-[440px] max-w-[94vw] animate-scale-in">
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--border)]">
-          <div className="flex items-center gap-2.5">
-            <div className="flex items-center justify-center w-7 h-7 rounded-md" style={{ background: 'var(--accent-soft)' }}>
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="flex items-center justify-center w-7 h-7 rounded-md flex-shrink-0" style={{ background: 'var(--accent-soft)' }}>
               <KeyRound size={15} style={{ color: 'var(--accent)' }} />
             </div>
-            <h2 className="text-[16px] font-semibold text-[var(--text-primary)]">Authentication</h2>
+            {/* Name the device — with several prompts queued, "Authentication"
+                alone didn't say which session this password was for. */}
+            <h2 className="text-[16px] font-semibold text-[var(--text-primary)] truncate">
+              {pendingConnection.name || pendingConnection.host || 'Authentication'}
+            </h2>
           </div>
           <button
             onClick={dismiss}
@@ -147,16 +172,48 @@ export default function SshAuthDialog({ onAuthenticate }: SshAuthDialogProps) {
         {/* Target */}
         <div className="px-5 py-3 bg-[var(--bg-inset)] border-b border-[var(--border)]">
           <div className="flex items-center gap-2 text-sm">
-            <span className="text-[var(--text-secondary)]">Connecting to</span>
-            <span className="font-mono" style={{ color: 'var(--accent)' }}>
-              {pendingConnection.username ? `${pendingConnection.username}@` : ''}
-              {pendingConnection.host}
-              {pendingConnection.port && pendingConnection.port !== 22 ? `:${pendingConnection.port}` : ''}
+            <span className="text-[var(--text-secondary)]">Logging in to</span>
+            <span className="font-mono truncate" style={{ color: 'var(--accent)' }}>
+              {target}
             </span>
           </div>
         </div>
 
         <form onSubmit={handleSubmit} className="px-5 py-4 space-y-4">
+          {/* Why we're asking again — the error toast is hidden behind this modal. */}
+          {authError && (
+            <div
+              role="alert"
+              className="flex items-start gap-2 px-3 py-2 rounded-[var(--radius)] text-[12px] leading-relaxed"
+              style={{ background: 'rgba(240,83,63,0.12)', color: 'var(--accent-danger)', border: '1px solid rgba(240,83,63,0.3)' }}
+            >
+              <AlertTriangle size={14} className="flex-shrink-0 mt-0.5" />
+              <div className="min-w-0">
+                <p>
+                  <span className="font-semibold">Access denied (attempt {authError.attempts}).</span>{' '}
+                  Several failures can lock the account on TACACS/RADIUS.
+                </p>
+                <p className="mt-0.5 font-mono text-[11px] opacity-80 break-words">{authError.message}</p>
+              </div>
+            </div>
+          )}
+
+          {/* Username — editable, since a blank or wrong one can never log in */}
+          <div>
+            <label className="block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-secondary)] mb-1.5">
+              Username
+            </label>
+            <input
+              type="text"
+              value={username}
+              onChange={(e) => setUsernameDraft(e.target.value)}
+              autoFocus={focusUsername}
+              autoComplete="username"
+              required
+              className="input-field w-full h-9 px-3 text-sm"
+            />
+          </div>
+
           {/* Tabs */}
           <div className="flex gap-1 p-1 bg-[var(--bg-inset)] rounded-lg">
             {tab('password', 'Password')}
@@ -178,8 +235,7 @@ export default function SshAuthDialog({ onAuthenticate }: SshAuthDialogProps) {
                   type={showPassword ? 'text' : 'password'}
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  autoFocus
-                  required
+                  autoFocus={!focusUsername}
                   className="input-field w-full h-9 pl-3 pr-10 text-sm"
                 />
                 <button
@@ -190,6 +246,14 @@ export default function SshAuthDialog({ onAuthenticate }: SshAuthDialogProps) {
                   {showPassword ? <EyeOff size={14} /> : <Eye size={14} />}
                 </button>
               </div>
+              {/* An empty password is allowed on purpose — the app no longer
+                  sends one by itself, so this is the only way to reach gear
+                  that has none (e.g. a factory-default AOS-CX "admin"). */}
+              {!password && (
+                <p className="mt-1 text-[10px] text-[var(--text-muted)]">
+                  Leave empty only for a device with no password set.
+                </p>
+              )}
             </div>
           ) : (
             <div className="space-y-3">
@@ -255,8 +319,8 @@ export default function SshAuthDialog({ onAuthenticate }: SshAuthDialogProps) {
             </div>
           )}
 
-          {/* Save — hidden on the SSH Agent tab, where nothing is persisted */}
-          {authType !== 'agent' && (
+          {/* Save — Password tab only: keys and the agent are never stored in the vault */}
+          {authType === 'password' && (
             <label className="flex items-center gap-2 cursor-pointer">
               <input
                 type="checkbox"
@@ -264,7 +328,7 @@ export default function SshAuthDialog({ onAuthenticate }: SshAuthDialogProps) {
                 onChange={(e) => setSaveCredential(e.target.checked)}
                 className="w-4 h-4 rounded"
               />
-              <span className="text-sm text-[var(--text-secondary)]">Save credential to encrypted vault</span>
+              <span className="text-sm text-[var(--text-secondary)]">Save password to encrypted vault</span>
             </label>
           )}
 
@@ -279,7 +343,9 @@ export default function SshAuthDialog({ onAuthenticate }: SshAuthDialogProps) {
             </button>
             <button
               type="submit"
-              disabled={authType === 'password' ? !password : authType === 'key' ? !privateKey : false}
+              disabled={
+                !username.trim() || (authType === 'key' && !privateKey)
+              }
               className="btn-accent flex-1 flex items-center justify-center gap-2 h-10 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <Lock size={14} />

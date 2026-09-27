@@ -9,9 +9,16 @@ import { useSessionStore } from '../store/sessionStore';
 export default function VaultUnlock({
   onUnlocked,
   onCancel,
+  onSkip,
+  waitingFor = [],
 }: {
   onUnlocked?: () => void;
   onCancel?: () => void;
+  /** Connect the waiting sessions by typing their device password instead —
+   *  a locked vault can't say whether it even holds one for them. */
+  onSkip?: () => void;
+  /** Names of the sessions whose connect is parked on this unlock. */
+  waitingFor?: string[];
 }) {
   const { showVaultUnlock, setShowVaultUnlock, setVaultUnlocked } = useSessionStore();
   const [pw, setPw] = useState('');
@@ -36,7 +43,24 @@ export default function VaultUnlock({
     }
   }, [showVaultUnlock]);
 
+  // Esc = Cancel, like the other modals. Captured and stopped here: this prompt
+  // sits above the rest (z-60), so the dialog underneath must not also close.
+  useEffect(() => {
+    if (!showVaultUnlock) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      e.stopPropagation();
+      onCancel?.();
+      setShowVaultUnlock(false);
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [showVaultUnlock, onCancel, setShowVaultUnlock]);
+
   if (!showVaultUnlock) return null;
+
+  const skip = onSkip && waitingFor.length > 0 ? onSkip : undefined;
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -79,7 +103,7 @@ export default function VaultUnlock({
           <div className="flex items-center gap-2">
             <ShieldCheck size={18} className="text-[#3fb950]" />
             <h2 className="text-lg font-semibold text-[var(--text-primary)]">
-              {isNew ? 'Create Vault Password' : 'Credential Vault'}
+              {isNew ? 'Create Vault Password' : waitingFor.length > 0 ? 'Unlock the Vault' : 'Credential Vault'}
             </h2>
           </div>
           <button
@@ -94,9 +118,21 @@ export default function VaultUnlock({
         </div>
         <form onSubmit={submit} className="px-5 py-4 space-y-3">
           <p className="text-xs text-[var(--text-secondary)]">
-            {isNew
-              ? 'Choose a master password (at least 12 characters) for your credential vault. You\u2019ll need this to access saved passwords.'
-              : 'Enter your vault master password to unlock saved credentials.'}
+            {isNew ? (
+              'Choose a master password (at least 12 characters) for your credential vault. You\u2019ll need this to access saved passwords.'
+            ) : waitingFor.length === 1 ? (
+              <>
+                Unlock the vault to use the saved password for{' '}
+                <span className="font-medium text-[var(--text-primary)]">{waitingFor[0]}</span>.
+              </>
+            ) : waitingFor.length > 1 ? (
+              <>
+                Unlock the vault to use saved passwords for {waitingFor.length} sessions:{' '}
+                <span className="text-[var(--text-primary)]">{waitingFor.join(', ')}</span>.
+              </>
+            ) : (
+              'Enter your vault master password to unlock saved credentials.'
+            )}
           </p>
           <div className="relative">
             <input
@@ -136,6 +172,19 @@ export default function VaultUnlock({
           >
             {busy ? 'Unlocking…' : isNew ? 'Create & Unlock' : 'Unlock'}
           </button>
+          {skip && (
+            <button
+              type="button"
+              onClick={() => {
+                skip();
+                setShowVaultUnlock(false);
+              }}
+              disabled={busy}
+              className="w-full h-9 text-sm rounded-lg bg-[var(--bg-tertiary)] hover:bg-[var(--border-strong)] disabled:opacity-50 text-[var(--text-primary)] transition-colors"
+            >
+              Skip — type the device password
+            </button>
+          )}
         </form>
       </div>
     </div>

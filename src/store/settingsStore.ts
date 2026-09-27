@@ -23,6 +23,7 @@ interface SettingsState extends TerminalSettings {
   setMiddleClickPaste: (enabled: boolean) => void;
   setLastUsedDeviceType: (deviceType: DeviceType) => void;
   setLastUsedDeviceProfileId: (profileId: string) => void;
+  setLastUsedSshUsername: (username: string) => void;
   addDeviceProfile: (profile: DeviceProfile) => void;
   updateDeviceProfile: (id: string, patch: Partial<DeviceProfile>) => void;
   removeDeviceProfile: (id: string) => void;
@@ -70,6 +71,7 @@ export const useSettingsStore = create<SettingsState>()(
       setMiddleClickPaste: (middleClickPaste) => set({ middleClickPaste }),
       setLastUsedDeviceType: (lastUsedDeviceType) => set({ lastUsedDeviceType }),
       setLastUsedDeviceProfileId: (lastUsedDeviceProfileId) => set({ lastUsedDeviceProfileId }),
+      setLastUsedSshUsername: (lastUsedSshUsername) => set({ lastUsedSshUsername }),
       setAiModel: (aiModel) => set({ aiModel }),
       setAiProvider: (aiProvider) => set({ aiProvider }),
       setOllamaUrl: (ollamaUrl) => set({ ollamaUrl }),

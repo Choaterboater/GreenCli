@@ -135,8 +135,17 @@ impl SessionStore {
         self.save(&data)
     }
 
+    /// Save a session into `folder_id`, replacing any stored entry with the same
+    /// id (this is how the sidebar's "Edit…" updates a host).
     pub fn add_session(&mut self, folder_id: &str, session: StoredSession) -> Result<(), AppError> {
         let mut data = self.load()?;
+        // An update keeps its place in the folder — re-appending moved every
+        // edited host to the bottom of its folder on the next launch.
+        let position = data
+            .folders
+            .iter()
+            .find(|f| f.id == folder_id)
+            .and_then(|f| f.items.iter().position(|s| s.id == session.id));
         for folder in &mut data.folders {
             folder.items.retain(|s| s.id != session.id);
         }
@@ -144,7 +153,8 @@ impl SessionStore {
 
         for folder in &mut data.folders {
             if folder.id == folder_id {
-                folder.items.push(session);
+                let at = position.unwrap_or(folder.items.len()).min(folder.items.len());
+                folder.items.insert(at, session);
                 return self.save(&data);
             }
         }
@@ -336,6 +346,26 @@ mod tests {
         store.remove_session("s1").unwrap();
         let data = store.load().unwrap();
         assert_eq!(data.folders[0].items.len(), 0);
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn test_resave_updates_in_place() {
+        let dir = temp_dir();
+        let mut store = SessionStore::new(dir.clone()).unwrap();
+        for (id, name) in [("s1", "a"), ("s2", "b"), ("s3", "c")] {
+            store.add_session("default", mock_session(id, name)).unwrap();
+        }
+
+        let mut edited = mock_session("s1", "a");
+        edited.host = Some("10.0.0.9".to_string());
+        store.add_session("default", edited).unwrap();
+
+        let data = store.load().unwrap();
+        let ids: Vec<&str> = data.folders[0].items.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, ["s1", "s2", "s3"]);
+        assert_eq!(data.folders[0].items[0].host.as_deref(), Some("10.0.0.9"));
 
         std::fs::remove_dir_all(dir).ok();
     }
