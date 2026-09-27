@@ -216,6 +216,90 @@ async fn rsa_hash_alg(handle: &client::Handle<ClientHandler>) -> Option<russh::k
         .flatten()
 }
 
+/// How a password login to a jump host went.
+#[derive(Debug, PartialEq, Eq)]
+enum JumpPasswordAuth {
+    Accepted,
+    Rejected,
+    /// The bastion took the password but wants another method as well (e.g.
+    /// "password,publickey") — the key / agent attempts that follow may finish it.
+    NeedsMore,
+}
+
+/// A bastion that asks for more than the password (OTP, push approval, …).
+/// Nobody can type a one-time code in the middle of a connect, so say so
+/// plainly instead of failing with a generic "authentication failed".
+const JUMP_MFA_UNSUPPORTED: &str = "The jump host asked for a second login step \
+    (MFA / one-time code). Jump hosts that need MFA aren't supported yet — use a bastion \
+    account without MFA, or log in to the bastion in its own tab";
+
+/// Log in to a jump host with a password: the `password` method first, then
+/// keyboard-interactive answering the first prompt with the same password —
+/// TACACS/RADIUS bastions often offer only keyboard-interactive, exactly like
+/// the devices behind them. Any further prompt fails fast (see
+/// JUMP_MFA_UNSUPPORTED) rather than sending it the password or stalling.
+async fn jump_password_auth(
+    jump: &mut client::Handle<ClientHandler>,
+    user: &str,
+    password: &str,
+) -> Result<JumpPasswordAuth, AppError> {
+    use russh::client::{AuthResult, KeyboardInteractiveAuthResponse as Kbi};
+
+    match jump
+        .authenticate_password(user, password)
+        .await
+        .map_err(|e| AppError::SshError(format!("Jump host auth failed: {}", e)))?
+    {
+        AuthResult::Success => return Ok(JumpPasswordAuth::Accepted),
+        AuthResult::Failure {
+            partial_success: true,
+            ..
+        } => return Ok(JumpPasswordAuth::NeedsMore),
+        AuthResult::Failure { .. } => {}
+    }
+
+    let mut res = jump
+        .authenticate_keyboard_interactive_start(user, None)
+        .await
+        .map_err(|e| AppError::SshError(format!("Jump host keyboard-interactive start: {}", e)))?;
+    let mut answered = false;
+    // Bounded like the target's challenge loop.
+    for _ in 0..4 {
+        let answers = match res {
+            Kbi::Success => return Ok(JumpPasswordAuth::Accepted),
+            Kbi::Failure {
+                partial_success: true,
+                ..
+            } => return Ok(JumpPasswordAuth::NeedsMore),
+            Kbi::Failure { .. } => return Ok(JumpPasswordAuth::Rejected),
+            // A banner / instructions-only round: nothing to answer yet.
+            Kbi::InfoRequest { prompts, .. } if prompts.is_empty() => Vec::new(),
+            Kbi::InfoRequest { prompts, .. } if !answered && prompts.len() == 1 => {
+                answered = true;
+                vec![password.to_string()]
+            }
+            // Asked for the password again: the one we sent was wrong.
+            Kbi::InfoRequest { prompts, .. }
+                if answered
+                    && prompts.len() == 1
+                    && prompts[0].prompt.to_ascii_lowercase().contains("password") =>
+            {
+                return Ok(JumpPasswordAuth::Rejected)
+            }
+            Kbi::InfoRequest { .. } => {
+                return Err(AppError::AuthError(JUMP_MFA_UNSUPPORTED.into()))
+            }
+        };
+        res = jump
+            .authenticate_keyboard_interactive_respond(answers)
+            .await
+            .map_err(|e| {
+                AppError::SshError(format!("Jump host keyboard-interactive respond: {}", e))
+            })?;
+    }
+    Ok(JumpPasswordAuth::Rejected)
+}
+
 impl SshConnection {
     pub fn new(session_id: String, config: ConnectionConfig) -> Self {
         Self {
@@ -324,12 +408,14 @@ impl SshConnection {
             // Track WHY key auth to the bastion failed so the final error can
             // say more than "tried password, key, and agent".
             let mut jump_key_err: Option<String> = None;
+            // The bastion accepted the password but wanted a second method.
+            let mut jump_needs_more = false;
             if !jump_pass.is_empty() {
-                jump_ok = jump
-                    .authenticate_password(&jump_user, jump_pass)
-                    .await
-                    .map_err(|e| AppError::SshError(format!("Jump host auth failed: {}", e)))?
-                    .success();
+                match jump_password_auth(&mut jump, &jump_user, jump_pass).await? {
+                    JumpPasswordAuth::Accepted => jump_ok = true,
+                    JumpPasswordAuth::NeedsMore => jump_needs_more = true,
+                    JumpPasswordAuth::Rejected => {}
+                }
             }
             if !jump_ok {
                 if let Some(ref key_str) = self.config.private_key {
@@ -380,6 +466,9 @@ impl SshConnection {
                 }
             }
             if !jump_ok {
+                if jump_needs_more {
+                    return Err(AppError::AuthError(JUMP_MFA_UNSUPPORTED.into()));
+                }
                 let detail = jump_key_err
                     .map(|e| format!("; key auth error: {}", e))
                     .unwrap_or_default();
@@ -1051,6 +1140,219 @@ mod tests {
     async fn drains_more_than_russh_channel_buffer_and_keeps_input_writable() {
         if let Err(error) = run_channel_drain_regression().await {
             panic!("{error}");
+        }
+    }
+
+    /// The SSH supervisor's watchdog only tears a session down when an
+    /// SSH-level ping goes unanswered. That ping must round-trip through a
+    /// live transport even while the shell itself prints nothing — otherwise
+    /// every quiet session would still look wedged.
+    async fn run_ping_round_trip() -> Result<(), String> {
+        let tofu_dir = TempTofuDir::create()?;
+        let (address, _probe_rx, server_task) = start_loopback_server().await?;
+        let mut connection = SshConnection::new(
+            "ping-round-trip".to_string(),
+            ConnectionConfig {
+                host: address.ip().to_string(),
+                port: address.port(),
+                username: "test-user".to_string(),
+                auth_type: AuthType::Password,
+                password: Some(zeroize::Zeroizing::new("test-password".to_string())),
+                private_key: None,
+                key_passphrase: None,
+                keep_alive_interval: None,
+                known_hosts_path: Some(tofu_dir.known_hosts_path()),
+                jump_host: None,
+                jump_port: None,
+                jump_username: None,
+                jump_password: None,
+            },
+        );
+
+        let test_result = async {
+            timeout(AWAIT_TIMEOUT, connection.connect())
+                .await
+                .map_err(|_| "timed out connecting production SSH client".to_string())?
+                .map_err(|error| format!("connect production SSH client: {error}"))?;
+            let handle = connection
+                .ssh_handle()
+                .ok_or_else(|| "connected client exposed no SSH handle".to_string())?;
+            for round in 0..3 {
+                timeout(AWAIT_TIMEOUT, async {
+                    handle.lock().await.send_ping().await
+                })
+                .await
+                .map_err(|_| format!("ping {round} was never answered"))?
+                .map_err(|error| format!("ping {round}: {error}"))?;
+            }
+            Ok(())
+        }
+        .await;
+
+        let _ = timeout(AWAIT_TIMEOUT, connection.disconnect()).await;
+        server_task.stop().await;
+        drop(tofu_dir);
+        test_result
+    }
+
+    #[tokio::test]
+    async fn ssh_ping_round_trips_on_a_live_session() {
+        if let Err(error) = run_ping_round_trip().await {
+            panic!("{error}");
+        }
+    }
+
+    /// How the fake bastion behaves after refusing the plain `password` method.
+    #[derive(Clone, Copy)]
+    enum Bastion {
+        /// One "Password:" prompt, accepts "secret".
+        PasswordPrompt,
+        /// Accepts the password, then asks for a one-time code.
+        SecondFactor,
+        /// Password and code asked together in a single round.
+        CombinedPrompt,
+        /// Re-asks "Password:" when the answer is wrong.
+        Reprompts,
+    }
+
+    struct KbdIntBastion {
+        mode: Bastion,
+        round: u8,
+    }
+
+    fn challenge(prompts: &[&'static str]) -> server::Auth {
+        server::Auth::Partial {
+            name: "".into(),
+            instructions: "".into(),
+            prompts: std::borrow::Cow::Owned(
+                prompts.iter().map(|p| ((*p).into(), false)).collect(),
+            ),
+        }
+    }
+
+    impl server::Handler for KbdIntBastion {
+        type Error = russh::Error;
+
+        async fn auth_password(
+            &mut self,
+            _user: &str,
+            _password: &str,
+        ) -> Result<server::Auth, Self::Error> {
+            Ok(server::Auth::reject())
+        }
+
+        async fn auth_keyboard_interactive<'a>(
+            &'a mut self,
+            _user: &str,
+            _submethods: &str,
+            response: Option<server::Response<'a>>,
+        ) -> Result<server::Auth, Self::Error> {
+            let answers: Vec<Vec<u8>> = response
+                .map(|r| r.map(|answer| answer.to_vec()).collect())
+                .unwrap_or_default();
+            let right = answers == [b"secret".to_vec()];
+            self.round += 1;
+            Ok(match (self.mode, self.round) {
+                (Bastion::CombinedPrompt, 1) => challenge(&["Password: ", "Verification code: "]),
+                (_, 1) => challenge(&["Password: "]),
+                (Bastion::PasswordPrompt, 2) if right => server::Auth::Accept,
+                (Bastion::SecondFactor, 2) if right => challenge(&["Verification code: "]),
+                (Bastion::Reprompts, 2) if !right => challenge(&["Password: "]),
+                _ => server::Auth::reject(),
+            })
+        }
+    }
+
+    /// Log in to a loopback bastion with `jump_password_auth`.
+    async fn jump_auth_against(
+        mode: Bastion,
+        password: &str,
+    ) -> Result<Result<JumpPasswordAuth, AppError>, String> {
+        let tofu_dir = TempTofuDir::create()?;
+        let host_key = PrivateKey::random(&mut rand_os::rng(), Algorithm::Ed25519)
+            .map_err(|error| format!("generate Ed25519 host key: {error}"))?;
+        let server_config = Arc::new(server::Config {
+            auth_rejection_time: Duration::ZERO,
+            auth_rejection_time_initial: Some(Duration::ZERO),
+            keys: vec![host_key],
+            ..Default::default()
+        });
+        let listener = TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .map_err(|error| format!("bind loopback bastion: {error}"))?;
+        let address = listener
+            .local_addr()
+            .map_err(|error| format!("read loopback bastion address: {error}"))?;
+        let task = tokio::spawn(async move {
+            let Ok(Ok((socket, _))) = timeout(AWAIT_TIMEOUT, listener.accept()).await else {
+                return;
+            };
+            let bastion = KbdIntBastion { mode, round: 0 };
+            if let Ok(Ok(running)) = timeout(
+                AWAIT_TIMEOUT,
+                server::run_stream(server_config, socket, bastion),
+            )
+            .await
+            {
+                let _ = timeout(SERVER_LIFETIME_TIMEOUT, running).await;
+            }
+        });
+        let server_task = AbortOnDropTask::new(task);
+
+        let handler = ClientHandler {
+            host_port: address.to_string(),
+            known_hosts_path: Some(tofu_dir.known_hosts_path()),
+            reject_reason: Arc::new(std::sync::Mutex::new(None)),
+            warning: Arc::new(std::sync::Mutex::new(None)),
+        };
+        let mut jump = timeout(
+            AWAIT_TIMEOUT,
+            russh::client::connect(Arc::new(client::Config::default()), address, handler),
+        )
+        .await
+        .map_err(|_| "timed out connecting to the loopback bastion".to_string())?
+        .map_err(|error| format!("connect to loopback bastion: {error}"))?;
+        let outcome = timeout(
+            AWAIT_TIMEOUT,
+            jump_password_auth(&mut jump, "ops", password),
+        )
+        .await
+        .map_err(|_| "jump auth hung instead of finishing".to_string())?;
+        server_task.stop().await;
+        Ok(outcome)
+    }
+
+    #[tokio::test]
+    async fn jump_host_falls_back_to_keyboard_interactive_with_the_password() {
+        let outcome = jump_auth_against(Bastion::PasswordPrompt, "secret")
+            .await
+            .unwrap();
+        assert_eq!(outcome.unwrap(), JumpPasswordAuth::Accepted);
+    }
+
+    #[tokio::test]
+    async fn jump_host_wrong_password_is_rejected_not_mfa() {
+        let refused = jump_auth_against(Bastion::PasswordPrompt, "wrong")
+            .await
+            .unwrap();
+        assert_eq!(refused.unwrap(), JumpPasswordAuth::Rejected);
+        // A bastion that re-asks for the password is a wrong password too.
+        let reasked = jump_auth_against(Bastion::Reprompts, "wrong")
+            .await
+            .unwrap();
+        assert_eq!(reasked.unwrap(), JumpPasswordAuth::Rejected);
+    }
+
+    #[tokio::test]
+    async fn jump_host_asking_for_a_second_factor_fails_with_a_clear_error() {
+        for mode in [Bastion::SecondFactor, Bastion::CombinedPrompt] {
+            let error = jump_auth_against(mode, "secret")
+                .await
+                .unwrap()
+                .unwrap_err();
+            let text = error.to_string();
+            assert!(text.contains("MFA"), "{text}");
+            assert!(text.contains("aren't supported yet"), "{text}");
         }
     }
 }

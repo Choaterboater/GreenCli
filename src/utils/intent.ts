@@ -4,8 +4,9 @@
 
 import { invoke } from '@tauri-apps/api/tauri';
 import { Session, DeviceProfile } from '../types';
-import { sendAndCapture, sleep } from './terminal';
+import { sendAndCapture } from './terminal';
 import { profileForSession } from './deviceProfiles';
+import { endsAtPager, pagedCommand, withPagingDisabled } from './paging';
 
 export type MatcherKind = 'contains' | 'notContains' | 'regex' | 'regexAbsent';
 export type IntentStatus = 'ok' | 'violation' | 'unknown';
@@ -103,7 +104,7 @@ export function matchOutcome(m: Matcher, output: string): { status: IntentStatus
   // capture stopped at page 1. Judging it risks a false "compliant" for
   // notContains/regexAbsent when the offending content is on a later page — so
   // treat truncated output as indeterminate, not a pass.
-  if (/(-{2,}\s*more|---\(more|--More--)/i.test(output.slice(-80))) {
+  if (endsAtPager(output)) {
     return { status: 'unknown', detail: 'output truncated at pager prompt' };
   }
   let present: boolean;
@@ -145,24 +146,9 @@ export async function evaluateIntent(
       // Without this, sendAndCapture returns only page 1 (the device pauses at a
       // pager prompt) and a violation on a later page silently reads as compliant.
       const profile = profileForSession(s.config, customProfiles);
-      let cmd = intent.command;
-      // Junos/Mist have no session paging toggle — pipe `| no-more` on show commands.
-      if (
-        (profile.deviceType === 'juniper-junos' || profile.deviceType === 'mist') &&
-        /^\s*show\b/i.test(cmd) &&
-        !/\|\s*no-more\b/i.test(cmd)
-      ) {
-        cmd = `${cmd} | no-more`;
-      }
-      if (profile.pagingDisableCommand) {
-        await invoke('send_data', { sessionId: s.sessionId, data: profile.pagingDisableCommand + '\r' });
-        await sleep(300);
-      }
-      const { output: out, truncated } = await sendAndCapture(s.sessionId, cmd);
-      if (profile.pagingRestoreCommand) {
-        await invoke('send_data', { sessionId: s.sessionId, data: profile.pagingRestoreCommand + '\r' });
-        await sleep(150);
-      }
+      const { output: out, truncated } = await withPagingDisabled(s.sessionId, profile, () =>
+        sendAndCapture(s.sessionId, pagedCommand(profile, intent.command))
+      );
       if (truncated) {
         // Fail closed: a partial capture must not count as a pass.
         perDevice.push({

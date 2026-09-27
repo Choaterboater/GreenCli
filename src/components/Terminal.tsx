@@ -14,11 +14,22 @@ import { askConfirm } from '../store/dialogStore';
 import { useTheme } from '../hooks/useTheme';
 import { DeviceType } from '../types';
 import { ArubaHighlighter, AnsiProcessor } from '../syntax';
-import { registerSearchAdapter, unregisterSearchAdapter, createSearchAdapter } from '../utils/terminalSearch';
+import {
+  registerSearchAdapter,
+  unregisterSearchAdapter,
+  createSearchAdapter,
+  openTerminalSearch,
+} from '../utils/terminalSearch';
 import { captureOnConnect } from '../utils/configArchive';
 import { copyText, readClipboardText } from '../utils/clipboard';
 import { registerTerminalActionAdapter, unregisterTerminalActionAdapter } from '../utils/terminalActions';
 import { countPasteLines, useTerminalToolsStore } from '../store/terminalToolsStore';
+import { isAppChord, resolveTabSwitch, shortcutLabel, tabSwitchIntent } from '../utils/shortcuts';
+import { bufferToText, scrollbackFileName } from '../utils/scrollback';
+import { detectDevicePrompt } from '../utils/devicePrompt';
+import { tabLabel } from '../utils/tabs';
+import { isTauri, browserSave, tauriWriteText } from '../utils/fileSystem';
+import { save as saveDialog } from '@tauri-apps/api/dialog';
 import { appWindow } from '@tauri-apps/api/window';
 import 'xterm/css/xterm.css';
 
@@ -37,6 +48,15 @@ interface CtxMenuState {
   y: number;
   hasSelection: boolean;
 }
+
+type CtxAction =
+  | 'copy'
+  | 'paste'
+  | 'copyPaste'
+  | 'findSelection'
+  | 'selectAll'
+  | 'saveScrollback'
+  | 'clear';
 
 interface TerminalProps {
   sessionId: string;
@@ -71,7 +91,14 @@ const SEMANTIC_LINK_PATTERNS: Array<{ kind: string; regex: RegExp; capture?: num
 
 function sessionLabel(sessionId: string): string {
   const session = useSessionStore.getState().sessions.find((s) => s.sessionId === sessionId);
-  return session?.config.name || session?.config.host || session?.config.serialPort || 'Session';
+  if (session) return tabLabel(session);
+  // Pop-out windows have no session list; the main window hands the name
+  // over in localStorage (see popOutSession in App.tsx).
+  try {
+    return JSON.parse(localStorage.getItem(`popout-meta-${sessionId}`) || '{}').name || 'Session';
+  } catch {
+    return 'Session';
+  }
 }
 
 function semanticLinksForLine(term: XTerm, bufferLineNumber: number): ILink[] | undefined {
@@ -103,7 +130,15 @@ function semanticLinksForLine(term: XTerm, bufferLineNumber: number): ILink[] | 
           end: { x: endIndex, y: bufferLineNumber },
         },
         decorations: { pointerCursor: true, underline: true },
-        activate: () => {
+        activate: (event) => {
+          // xterm activates a link on ANY mouseup over it — a plain click to
+          // focus the pane or clear a selection, or a right-click — and IPs /
+          // interfaces / paths are everywhere in device output, so a plain
+          // click silently replaced whatever the user had just copied (and a
+          // right-click "paste" on Windows could paste the IP instead).
+          // Require Ctrl+click (Cmd+click on macOS), like VS Code / iTerm2.
+          const modifier = isMac ? event.metaKey : event.ctrlKey;
+          if (event.button !== 0 || !modifier) return;
           copyText(text).then((ok) =>
             ok ? notify.info(`Copied ${kind}`, text) : notify.warning('Copy failed', text)
           );
@@ -164,15 +199,10 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
   // keyboard selection is in progress.
   const selAnchorRef = useRef<number | null>(null);
   const selFocusRef = useRef<number | null>(null);
-  // Right-click context menu (Copy / Paste / Select All / Clear); null = closed.
+  // Right-click context menu (Copy / Paste / Find / Save / …); null = closed.
   const [ctxMenu, setCtxMenu] = useState<CtxMenuState | null>(null);
   // Menu actions bound to the live xterm instance by the init effect below.
-  const ctxActionsRef = useRef<{
-    copy: () => void;
-    paste: () => void;
-    selectAll: () => void;
-    clear: () => void;
-  } | null>(null);
+  const ctxActionsRef = useRef<Record<CtxAction, () => void> | null>(null);
 
   // Short audible blip, reusing the shared AudioContext.
   const beep = () => {
@@ -209,6 +239,7 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
   const cursorBlink = useSettingsStore((s) => s.cursorBlink);
   const scrollback = useSettingsStore((s) => s.scrollback);
   const rightClickBehavior = useSettingsStore((s) => s.rightClickBehavior);
+  const macOptionIsMeta = useSettingsStore((s) => s.macOptionIsMeta);
   const updateSessionConnection = useSessionStore((s) => s.updateSessionConnection);
 
   useEffect(() => {
@@ -236,7 +267,15 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
       scrollback,
       allowProposedApi: true,
       allowTransparency: false,
-      macOptionIsMeta: true,
+      // macOS: Option as Meta (Esc prefix) by default; off lets non-US
+      // layouts type | [ ] { } @ \ ~ with Option. Applied live below too.
+      macOptionIsMeta: useSettingsStore.getState().macOptionIsMeta,
+      // When a TUI turns on mouse reporting (vim, tmux, htop, omp, claude…),
+      // a plain drag goes to the app instead of selecting. Windows/Linux can
+      // force a selection with Shift+drag, but on macOS xterm only allows
+      // Option+drag — and only with this on (default off), so Mac users had
+      // NO way to select/copy text in those apps.
+      macOptionClickForcesSelection: true,
       // Only in 'menu' mode: word-select-then-menu is handy (right-click a word
       // → Copy), but in paste/copyPaste modes the implicit selection would turn
       // every right-click paste into a word copy instead.
@@ -426,6 +465,26 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
     term.attachCustomKeyEventHandler((event) => {
       if (event.type !== 'keydown') return true;
 
+      // ── App chords ─────────────────────────────────────────────────────
+      // Tab switching (Ctrl+Tab, Ctrl+PgUp/PgDn, ⌘1–9 / Alt+1–9, ⌘⇧[ ]),
+      // the Windows/Linux Ctrl+Shift app shortcuts (Find, New connection,
+      // palette, close tab, panels) and F3 while Find is open belong to the
+      // app. Returning false sends nothing to the PTY — before, Ctrl+Tab
+      // reached the device as a Tab (a completion) and Ctrl+Shift+W as ^W —
+      // and the keydown bubbles on to App's window-level handler. Checked
+      // before the alternate-buffer bailout so it works inside TUIs too.
+      const ss = useSessionStore.getState();
+      const tabIntent = tabSwitchIntent(event);
+      if (
+        tabIntent &&
+        !resolveTabSwitch(tabIntent, ss.sessions.map((x) => x.sessionId), ss.poppedSessions, ss.activeSessionId)
+      ) {
+        // No tab to switch to (e.g. Alt+3 with two tabs): the chord does
+        // nothing in the app, so let the device have it instead of eating it.
+      } else if (isAppChord(event, { searchOpen: ss.showSearch })) {
+        return false;
+      }
+
       // ── Copy/paste chords ──────────────────────────────────────────────
       // Handled BEFORE the alternate-buffer bailout so copy/paste also works
       // inside full-screen TUIs (vim, htop, claude) — like every normal
@@ -441,6 +500,12 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
           (event.metaKey || (!isMac && event.ctrlKey && !event.altKey))) ||
           (event.key === 'Insert' && event.ctrlKey && !event.shiftKey && !event.altKey))
       ) {
+        // We own this copy. Without preventDefault the webview ALSO ran its
+        // native copy (macOS Edit ▸ Copy key equivalent / WebView2 Ctrl+C)
+        // after we cleared the selection below — on the xterm helper
+        // textarea, which still holds the word from the last right-click.
+        // Two clipboard writes then raced, and the stale word sometimes won.
+        event.preventDefault();
         copySelection();
         // Clear the selection after copying — getSelection() already captured
         // it synchronously, so the async clipboard write is unaffected — and
@@ -561,7 +626,7 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
     // ── Right-click ──────────────────────────────────────────────────────
     // The webview's native menu is suppressed app-wide (main.tsx), so the
     // terminal provides its own, like a real terminal app. Behavior is a
-    // setting: 'menu' shows Copy/Paste/Select All/Clear, 'paste' pastes
+    // setting: 'menu' shows the context menu (Copy/Paste/Find/Save/…), 'paste' pastes
     // immediately (PuTTY), 'copyPaste' copies the selection if there is one
     // and pastes otherwise (Windows Terminal).
     const handleContextMenu = (e: MouseEvent) => {
@@ -586,12 +651,19 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
 
     // Copy-on-select (PuTTY-style), gated on the live setting: copy when a
     // mouse selection gesture ends with text selected. Silent on failure —
-    // toasting every drag would be noise.
+    // toasting every drag would be noise. The mouseup is caught on the
+    // DOCUMENT: a drag that starts in the terminal but is released outside it
+    // (past the edge, over a panel) never fires mouseup on the container, so
+    // those selections were silently never copied.
     const handleCopyOnSelect = () => {
       if (!useSettingsStore.getState().copyOnSelect) return;
       if (term.hasSelection()) void copyText(term.getSelection());
     };
-    containerRef.current.addEventListener('mouseup', handleCopyOnSelect);
+    const armCopyOnSelect = (e: MouseEvent) => {
+      if (e.button !== 0) return;
+      document.addEventListener('mouseup', handleCopyOnSelect, { once: true });
+    };
+    containerRef.current.addEventListener('mousedown', armCopyOnSelect);
 
     // Middle-click paste (X11 / SecureCRT muscle memory, W2-12): opt-in
     // setting, off by default. Goes through pasteFromClipboard → guardedPaste,
@@ -605,15 +677,62 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
     };
     containerRef.current.addEventListener('mousedown', handleMiddleClickPaste);
 
+    // Save the whole scrollback (the normal buffer — a running TUI's
+    // alternate screen holds no history) to a text file the user picks.
+    const saveScrollback = async () => {
+      const text = bufferToText(term.buffer.normal);
+      if (!text) {
+        notify.info('Nothing to save', 'This terminal has no output yet.');
+        return;
+      }
+      const fileName = scrollbackFileName(sessionLabel(sessionId));
+      try {
+        if (!isTauri) {
+          browserSave(text, fileName);
+          return;
+        }
+        const path = await saveDialog({
+          title: 'Save scrollback',
+          defaultPath: fileName,
+          filters: [{ name: 'Text', extensions: ['txt', 'log'] }],
+        });
+        if (!path) return;
+        await tauriWriteText(path, text);
+        notify.success('Scrollback saved', path);
+      } catch (err) {
+        notify.error('Could not save scrollback', String(err));
+      }
+    };
+
     ctxActionsRef.current = {
       copy: () => {
         copySelection();
         term.focus();
       },
       paste: () => pasteFromClipboard(),
+      // Copy the selection AND type it at the prompt (re-run a command or
+      // reuse an address from the output) — through the paste guard, like
+      // any other paste.
+      copyPaste: () => {
+        const text = copySelection();
+        term.clearSelection();
+        if (text) guardedPaste(text);
+      },
+      // Search the first selected line as literal text.
+      findSelection: () => {
+        const needle = term
+          .getSelection()
+          .split(/\r?\n/)
+          .map((l) => l.trim())
+          .find(Boolean);
+        if (needle) openTerminalSearch(needle.slice(0, 200));
+      },
       selectAll: () => {
         term.selectAll();
         term.focus();
+      },
+      saveScrollback: () => {
+        void saveScrollback();
       },
       clear: () => {
         term.clear();
@@ -729,7 +848,8 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
       zoomEl.removeEventListener('mousedown', resetKbSelection);
       zoomEl.removeEventListener('mousedown', restoreTermFocus);
       zoomEl.removeEventListener('contextmenu', handleContextMenu);
-      zoomEl.removeEventListener('mouseup', handleCopyOnSelect);
+      zoomEl.removeEventListener('mousedown', armCopyOnSelect);
+      document.removeEventListener('mouseup', handleCopyOnSelect);
       zoomEl.removeEventListener('mousedown', handleMiddleClickPaste);
       ctxActionsRef.current = null;
       setCtxMenu(null);
@@ -807,6 +927,16 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
           bufferRef.current += text;
           if (bufferRef.current.length > 5000) {
             bufferRef.current = bufferRef.current.slice(-3000);
+          }
+
+          // The device prompt the output ends at → tab hostname + CONFIG
+          // badge. Cheap (only the trailing line is parsed; mid-output and
+          // command echo match nothing), and the store ignores an unchanged
+          // prompt, so this ~8ms path doesn't churn the tab strip. Pop-out
+          // windows skip it: the main window's terminal sees the same output.
+          if (!isPopOutWindow) {
+            const prompt = detectDevicePrompt(bufferRef.current);
+            if (prompt) useSessionStore.getState().setPromptState(sessionId, prompt);
           }
 
           // Output triggers: toast (+ optional beep) when a keyword/regex appears.
@@ -1138,6 +1268,7 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
     term.options.scrollback = scrollback;
     term.options.theme = terminalTheme;
     term.options.rightClickSelectsWord = rightClickBehavior === 'menu';
+    term.options.macOptionIsMeta = macOptionIsMeta;
 
     // Only fit() when actually visible. A hidden (display:none) background tab, or
     // the main-window copy of a popped-out session, has a zero-size box — but
@@ -1158,10 +1289,27 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
     scrollback,
     terminalTheme,
     rightClickBehavior,
+    macOptionIsMeta,
   ]);
 
+  // Esc closes the context menu. Capture phase on the window runs before
+  // xterm's own listener on its textarea, so the Esc never reaches the device
+  // (it used to go to the shell while the menu stayed open).
+  useEffect(() => {
+    if (!ctxMenu) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      e.stopPropagation();
+      setCtxMenu(null);
+      terminalRef.current?.focus();
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [ctxMenu]);
+
   const closeCtxMenu = () => setCtxMenu(null);
-  const runCtxAction = (action: 'copy' | 'paste' | 'selectAll' | 'clear') => {
+  const runCtxAction = (action: CtxAction) => {
     setCtxMenu(null);
     ctxActionsRef.current?.[action]();
   };
@@ -1191,10 +1339,11 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
             }}
           />
           <div
-            className="fixed z-50 min-w-[180px] py-1 rounded-md border border-[var(--border-strong)] bg-[var(--bg-secondary)] shadow-xl"
+            role="menu"
+            className="fixed z-50 min-w-[200px] py-1 rounded-md border border-[var(--border-strong)] bg-[var(--bg-secondary)] shadow-xl"
             style={{
-              left: Math.min(ctxMenu.x, Math.max(0, window.innerWidth - 190)),
-              top: Math.min(ctxMenu.y, Math.max(0, window.innerHeight - 150)),
+              left: Math.min(ctxMenu.x, Math.max(0, window.innerWidth - 210)),
+              top: Math.min(ctxMenu.y, Math.max(0, window.innerHeight - 250)),
             }}
           >
             <button
@@ -1203,17 +1352,34 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
               onClick={() => runCtxAction('copy')}
             >
               <span>Copy</span>
-              <span className={menuHintClass}>{isMac ? '⌘C' : 'Ctrl+Shift+C'}</span>
+              <span className={menuHintClass}>{shortcutLabel('copy')}</span>
             </button>
             <button className={menuItemClass} onClick={() => runCtxAction('paste')}>
               <span>Paste</span>
-              <span className={menuHintClass}>
-                {isMac ? '⌘V' : isWindows ? 'Ctrl+V' : 'Ctrl+Shift+V'}
-              </span>
+              <span className={menuHintClass}>{shortcutLabel('paste')}</span>
+            </button>
+            <button
+              className={menuItemClass}
+              disabled={!ctxMenu.hasSelection}
+              onClick={() => runCtxAction('copyPaste')}
+              title="Copy the selection and paste it at the prompt"
+            >
+              <span>Copy &amp; Paste</span>
+            </button>
+            <button
+              className={menuItemClass}
+              disabled={!ctxMenu.hasSelection}
+              onClick={() => runCtxAction('findSelection')}
+            >
+              <span>Find Selection</span>
             </button>
             <div className="my-1 border-t border-[var(--border-strong)]" />
             <button className={menuItemClass} onClick={() => runCtxAction('selectAll')}>
               <span>Select All</span>
+              <span className={menuHintClass}>{shortcutLabel('selectAll')}</span>
+            </button>
+            <button className={menuItemClass} onClick={() => runCtxAction('saveScrollback')}>
+              <span>Save Scrollback…</span>
             </button>
             <button className={menuItemClass} onClick={() => runCtxAction('clear')}>
               <span>Clear Buffer</span>

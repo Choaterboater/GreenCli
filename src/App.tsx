@@ -1,25 +1,15 @@
 import { useEffect, useCallback, useState, useRef, memo } from 'react';
 import { invoke } from '@tauri-apps/api/tauri';
-import {
-  Settings,
-  Search,
-  PanelLeft,
-  Plug,
-  Command,
-  Globe,
-  Sparkles,
-  FileCode,
-  Radio,
-  TerminalSquare,
-  X,
-  Plus,
-} from 'lucide-react';
+import { WebviewWindow } from '@tauri-apps/api/window';
+import { Search, Plug, TerminalSquare, X, Plus, RefreshCw } from 'lucide-react';
 
-import { useSessionStore } from './store/sessionStore';
+import { CONNECTION_FIELDS, useSessionStore, PromptLogin } from './store/sessionStore';
 import { useSettingsStore } from './store/settingsStore';
 import { useDialogStore } from './store/dialogStore';
 import { loadSecrets, persistSecrets } from './utils/secretVault';
 import { useTheme } from './hooks/useTheme';
+import { useEditorFills, useSidePanelFit } from './hooks/useSidePanelFit';
+import { useSidePanelStore } from './store/sidePanelStore';
 import { ConnectionConfig, Protocol, DeviceType, vendorColor } from './types';
 import { generateId, shellQuote } from './utils';
 import { listen } from '@tauri-apps/api/event';
@@ -28,10 +18,35 @@ import { useRecentStore, timeAgo, RecentConnection } from './store/recentStore';
 import { armIntentScheduler } from './utils/intentScheduler';
 import {
   buildConnectPayload,
-  resolveSshPassword,
+  type ConnectOutcome,
+  isAuthFailure,
+  needsPasswordPrompt,
+  resolveJumpLogin,
+  resolveSshLogin,
   sshCredentialKey,
+  VaultCredentialSource,
 } from './utils/connect';
+import { loginChoiceFor, loginSecretKey, PER_HOST_PASSWORD, savedHostOf } from './utils/logins';
+import { backendVault, flushDeferredVaultWrites, saveToVault } from './utils/vaultAccess';
+import { saveSessionPayload } from './utils/deviceProfiles';
 import { getTerminalActionAdapter } from './utils/terminalActions';
+import { isMultiSendTarget } from './utils/multiSend';
+import { openTerminalSearch, sendSearchCommand } from './utils/terminalSearch';
+import { closeSessions } from './utils/closeSessions';
+import { savedHostId, tabConfigForOpen, tabLabel } from './utils/tabs';
+import { MAX_PANES } from './utils/splitPanes';
+import {
+  findStep,
+  isFindChord,
+  isMac,
+  isPcNewConnectionChord,
+  isPcPaletteChord,
+  resolveTabSwitch,
+  shortcutLabel,
+  tabSwitchIntent,
+  withShortcut,
+} from './utils/shortcuts';
+import { appWindow } from '@tauri-apps/api/window';
 import Toaster from './components/Toaster';
 import DialogHost from './components/DialogHost';
 
@@ -40,20 +55,21 @@ import TerminalTabs from './components/TerminalTabs';
 import Sidebar from './components/Sidebar';
 import StatusBar from './components/StatusBar';
 import QuickConnect from './components/QuickConnect';
-import SshAuthDialog, { AuthCredentials } from './components/SshAuthDialog';
+import SshAuthDialog, { AuthCredentials, AuthSaveChoice } from './components/SshAuthDialog';
 import SettingsPanel from './components/SettingsPanel';
 import SearchOverlay from './components/SearchOverlay';
-import ApiExplorer from './components/ApiExplorer';
-import AiAssistant from './components/AiAssistant';
-import ConfigEditor from './components/ConfigEditor';
-import SnippetsMenu from './components/SnippetsMenu';
-import WorkspaceMenu from './components/WorkspaceMenu';
+import SidePanel from './components/SidePanel';
+import { toggleSessionsSidebar } from './components/sidePanelActions';
+import ActivityBar from './components/ActivityBar';
 import CommandPalette from './components/CommandPalette';
 import TunnelsManager from './components/TunnelsManager';
 import IntentPanel from './components/IntentPanel';
 import HelpPanel from './components/HelpPanel';
+import ImportHosts from './components/ImportHosts';
 import VaultUnlock from './components/VaultUnlock';
 import BulkRunner from './components/BulkRunner';
+import ChangeJobs from './components/ChangeJobs';
+import MultiSendBar from './components/MultiSendBar';
 import SftpBrowser from './components/SftpBrowser';
 import DeviceMapper from './components/DeviceMapper';
 
@@ -99,6 +115,19 @@ function toastHostKeyWarning(message: string | undefined) {
   notify.warning('Host key warning', text);
 }
 
+// Is this session's terminal on screen — the active tab, a split pane, or its
+// own pop-out window? Connect/disconnect toasts are only for background tabs:
+// a visible terminal already shows the change, and opening ten devices used to
+// stack ten "Connected" toasts.
+function isSessionOnScreen(sessionId: string): boolean {
+  const st = useSessionStore.getState();
+  return (
+    st.activeSessionId === sessionId ||
+    st.poppedSessions.includes(sessionId) ||
+    (st.splitView && st.splitPanes.includes(sessionId))
+  );
+}
+
 function runStartupCommands(sessionId: string, startupCommands?: string) {
   const startup = startupCommands?.trim();
   if (!startup) return;
@@ -110,6 +139,49 @@ function runStartupCommands(sessionId: string, startupCommands?: string) {
   }, 700);
 }
 
+// The vault as seen after "Skip" on the unlock prompt: nothing saved can be
+// read, and nothing asks to unlock again — connect as if there were no vault.
+const skippedVault: VaultCredentialSource = {
+  isUnlocked: async () => false,
+  isInitialized: async () => false,
+  retrieve: async () => null,
+};
+
+// After a login typed into the password dialog fails, what the next prompt
+// says about the host's shared login: its password was refused (typed for the
+// login) or the host's own password was (the user chose "just this host").
+function nextPromptLogin(
+  login: PromptLogin | undefined,
+  creds: AuthCredentials,
+  save: AuthSaveChoice
+): PromptLogin | undefined {
+  if (!login) return undefined;
+  const typedForLogin =
+    creds.authType === 'password' && (save === 'login' || login.reason === 'locked');
+  return { ...login, reason: typedForLogin ? 'rejected' : 'hostPassword' };
+}
+
+// Apply a change to a tab and write it back to the saved host it came from:
+// its sidebar item and sessions.json, under the SAVED host's id (a tab's own
+// id is its session id — see savedHostOf). Only the tab for an unsaved connect.
+function persistSavedHost(tab: Pick<ConnectionConfig, 'id' | 'savedId'>, patch: Partial<ConnectionConfig>) {
+  const st = useSessionStore.getState();
+  st.updateSessionConfig(tab.id, patch);
+  const saved = savedHostOf(st.folders, tab);
+  if (!saved) return;
+  const updated = { ...saved.host, ...patch };
+  // The sidebar item plus the host's other tabs (a live one keeps its
+  // connection fields — see updateSavedHost).
+  st.updateSavedHost(saved.host.id, patch);
+  invoke('save_session', { config: saveSessionPayload(updated), folderId: saved.folder.id }).catch((err) =>
+    notify.warning(`Could not update the saved host ${updated.name}`, String(err))
+  );
+}
+
+// Set by App to its reconnect handler, so the module-level send handlers below
+// can offer SecureCRT-style "press Enter to reconnect" on a dropped session.
+let reconnectFromTerminal: ((sessionId: string) => void) | null = null;
+
 // One stable onSend per session id — the memoized per-session Terminal below
 // would otherwise be re-rendered by a fresh inline closure on every App render.
 const sessionSendHandlers = new Map<string, (data: string) => void>();
@@ -120,7 +192,12 @@ function sendHandlerFor(sessionId: string): (data: string) => void {
       const current = useSessionStore
         .getState()
         .sessions.find((session) => session.sessionId === sessionId);
-      if (!current?.connected) return;
+      if (!current?.connected) {
+        if (data === '\r' && current?.connectionStatus === 'disconnected') {
+          reconnectFromTerminal?.(sessionId);
+        }
+        return;
+      }
       invoke('send_data', { sessionId, data }).catch(console.error);
     };
     sessionSendHandlers.set(sessionId, handler);
@@ -149,23 +226,14 @@ function App() {
   const sessions = useSessionStore((s) => s.sessions);
   const activeSessionId = useSessionStore((s) => s.activeSessionId);
   const sidebarVisible = useSessionStore((s) => s.sidebarVisible);
-  const showApiExplorer = useSessionStore((s) => s.showApiExplorer);
-  const showAiAssistant = useSessionStore((s) => s.showAiAssistant);
-  const showConfigEditor = useSessionStore((s) => s.showConfigEditor);
-  const setShowSettings = useSessionStore((s) => s.setShowSettings);
-  const setShowSearch = useSessionStore((s) => s.setShowSearch);
   const addSession = useSessionStore((s) => s.addSession);
   const removeSession = useSessionStore((s) => s.removeSession);
   const setPendingConnection = useSessionStore((s) => s.setPendingConnection);
   const setShowAuthDialog = useSessionStore((s) => s.setShowAuthDialog);
-  const toggleApiExplorer = useSessionStore((s) => s.toggleApiExplorer);
-  const toggleAiAssistant = useSessionStore((s) => s.toggleAiAssistant);
-  const toggleConfigEditor = useSessionStore((s) => s.toggleConfigEditor);
   const broadcastMode = useSessionStore((s) => s.broadcastMode);
-  const toggleBroadcast = useSessionStore((s) => s.toggleBroadcast);
+  const multiSendTargets = useSessionStore((s) => s.multiSendTargets);
   const splitView = useSessionStore((s) => s.splitView);
   const splitPanes = useSessionStore((s) => s.splitPanes);
-  const toggleSplitView = useSessionStore((s) => s.toggleSplitView);
   const addSplitPane = useSessionStore((s) => s.addSplitPane);
   const removeSplitPane = useSessionStore((s) => s.removeSplitPane);
   const setSplitPaneAt = useSessionStore((s) => s.setSplitPaneAt);
@@ -182,22 +250,94 @@ function App() {
   const recents = useRecentStore((s) => s.recents);
   const clearRecents = useRecentStore((s) => s.clearRecents);
 
-  // Credential save deferred until the vault is unlocked.
-  const pendingCredSave = useRef<{ key: string; value: string } | null>(null);
+  // The terminal + side panel row. The panel shrinks so the terminal keeps a
+  // usable width — see useSidePanelFit.
+  const panelRowRef = useRef<HTMLDivElement>(null);
+  useSidePanelFit(panelRowRef);
+  // Maximized, the side panel takes over the window; with no session open, its
+  // Editor tab stands in for the empty terminal area. Either way the terminal
+  // column is hidden (still mounted, so scrollback survives).
+  const panelMaximized = useSidePanelStore((s) => s.maximized);
+  const editorFills = useEditorFills();
+  const terminalHidden = panelMaximized || editorFills;
+
   const connectingIdsRef = useRef<Set<string>>(new Set());
   const [workspaceLoaded, setWorkspaceLoaded] = useState(false);
   const [mappingSessionId, setMappingSessionId] = useState<string | null>(null);
 
-  const flushPendingCredSave = useCallback(() => {
-    const pending = pendingCredSave.current;
-    if (!pending) return;
-    pendingCredSave.current = null;
-    invoke('vault_store', { key: pending.key, value: pending.value }).catch(() => {});
+  // Connects parked waiting for the vault unlock prompt: kept in a ref so the
+  // unlock completion can resume them (see handleConnect's locked-vault
+  // branch). A LIST, not one slot: opening a second session before unlocking
+  // used to overwrite the first, stranding its tab on 'connecting' forever
+  // (and handleConnect refuses to restart a 'connecting' tab).
+  const pendingVaultConnectsRef = useRef<ConnectionConfig[]>([]);
+  // Their names, for the vault prompt ("…saved password for core-sw-01").
+  // State rather than read from the ref at render, so a connect parked while
+  // the prompt is already open still shows up in it.
+  const [vaultWaiting, setVaultWaiting] = useState<string[]>([]);
+  const syncVaultWaiting = useCallback(() => {
+    setVaultWaiting(pendingVaultConnectsRef.current.map((c) => tabLabel({ config: c })));
   }, []);
+  // Empty the parked list, keeping only tabs that are still open: resuming a
+  // tab closed while it waited would open it again (handleConnect adds it).
+  const takeParkedConnects = useCallback(() => {
+    const open = new Set(useSessionStore.getState().sessions.map((s) => s.sessionId));
+    const parked = pendingVaultConnectsRef.current.filter((c) => open.has(c.id));
+    pendingVaultConnectsRef.current = [];
+    syncVaultWaiting();
+    return parked;
+  }, [syncVaultWaiting]);
 
-  // A connect parked waiting for the vault unlock prompt: kept in a ref so the
-  // unlock completion can resume it (see handleConnect's locked-vault branch).
-  const pendingVaultConnectRef = useRef<ConnectionConfig | null>(null);
+  // Sessions waiting for the password dialog while it is already showing for
+  // another session. The dialog is one slot too: a second failed connect used
+  // to swap it to the new host mid-typing (the password typed for A went to
+  // B) and made A's in-flight login look "superseded", tearing it down.
+  const authQueueRef = useRef<ConnectionConfig[]>([]);
+  const showAuthDialog = useSessionStore((s) => s.showAuthDialog);
+
+  const promptForAuth = useCallback(
+    (config: ConnectionConfig, error?: string, login?: PromptLogin) => {
+      // Shown inside the dialog with an attempt count — the error toast sits
+      // behind the modal, so a wrong password used to look like nothing happened.
+      // A refused shared login is named, since it affects every host using it.
+      if (error) {
+        useSessionStore
+          .getState()
+          .recordAuthError(
+            config.id,
+            error,
+            login?.reason === 'rejected' ? { id: login.id, name: login.name } : undefined
+          );
+      }
+      useSessionStore.getState().setAuthLogin(config.id, login ?? null);
+      const st = useSessionStore.getState();
+      if (st.showAuthDialog && st.pendingConnection && st.pendingConnection.id !== config.id) {
+        if (!authQueueRef.current.some((c) => c.id === config.id)) {
+          authQueueRef.current.push(config);
+        }
+        return;
+      }
+      setPendingConnection(config);
+      setShowAuthDialog(true);
+    },
+    [setPendingConnection, setShowAuthDialog]
+  );
+
+  // When the dialog closes (submitted or dismissed), prompt for the next
+  // queued session that still needs credentials.
+  useEffect(() => {
+    if (showAuthDialog) return;
+    while (authQueueRef.current.length > 0) {
+      const next = authQueueRef.current.shift()!;
+      const s = useSessionStore.getState().sessions.find((x) => x.sessionId === next.id);
+      if (!s || s.connected || s.connectionStatus === 'connecting' || s.connectionStatus === 'reconnecting') {
+        continue;
+      }
+      setPendingConnection(next);
+      setShowAuthDialog(true);
+      break;
+    }
+  }, [showAuthDialog, setPendingConnection, setShowAuthDialog]);
 
   // xterm only refits on window resize, so nudge a resize when the pane layout
   // changes so both terminals size correctly.
@@ -205,10 +345,13 @@ function App() {
     setTimeout(() => window.dispatchEvent(new Event('resize')), 60);
 
   // When the visible terminal changes (tab switch / split toggle), refit it — the
-  // one that was hidden had its fit skipped while it had zero size.
+  // one that was hidden had its fit skipped while it had zero size. Keyed on
+  // what is SHOWN: moving focus between split panes changes the active
+  // session but not the layout, so it doesn't refit every pane.
+  const visibleLayout = splitView ? splitPanes.join('|') : activeSessionId;
   useEffect(() => {
     refitTerminals();
-  }, [activeSessionId, splitView, splitPanes, poppedSessions]);
+  }, [visibleLayout, splitView, poppedSessions, terminalHidden]);
 
   // Pop a session out into its own OS window. The main-window terminal stays
   // mounted but hidden (scrollback survives); only the pop-out fits the PTY, so
@@ -220,7 +363,13 @@ function App() {
     try {
       localStorage.setItem(
         `popout-meta-${sessionId}`,
-        JSON.stringify({ deviceType: s.config.deviceType, name: s.config.name }),
+        JSON.stringify({
+          deviceType: s.config.deviceType,
+          name: tabLabel(s),
+          // Starting state for the pop-out's status header; live changes
+          // arrive via connection_status events.
+          status: s.connectionStatus ?? (s.connected ? 'connected' : 'disconnected'),
+        }),
       );
     } catch {
       /* meta is best-effort; pop-out falls back to generic highlighting */
@@ -228,7 +377,7 @@ function App() {
     useSessionStore.getState().markPoppedOut(sessionId);
     invoke('pop_out_session', {
       sessionId,
-      title: s.config.name || s.config.host || 'GreenCli',
+      title: tabLabel(s),
     }).catch((err) => {
       useSessionStore.getState().restorePoppedOut(sessionId);
       notify.error('Pop-out failed', String(err));
@@ -238,6 +387,10 @@ function App() {
   useEffect(() => {
     const un = listen<string>('popout_closed', (e) => {
       useSessionStore.getState().restorePoppedOut(e.payload);
+      // Docking makes the returning session active, but DOM focus would stay
+      // in the previous (now hidden) terminal — typing would go to a device
+      // you can't see. Hand focus to the docked one once it has rendered.
+      setTimeout(() => getTerminalActionAdapter(e.payload)?.focus(), 0);
       // The handover metadata has served its purpose.
       try {
         localStorage.removeItem(`popout-meta-${e.payload}`);
@@ -277,7 +430,10 @@ function App() {
           );
           if (cancelled) return;
           snapshot.sessions.forEach(({ sessionId, config }) => {
-            addSession(config, sessionId);
+            // A tab's config.id is its session id. Older snapshots stored the
+            // saved host's id for both (no savedId), which savedHostId still
+            // resolves to the host — so they restore as-is.
+            addSession({ ...config, id: sessionId }, sessionId);
             useSessionStore.getState().updateSessionConnection(sessionId, false, 'disconnected');
           });
           if (snapshot.activeSessionId) {
@@ -343,8 +499,6 @@ function App() {
     return () => window.removeEventListener('beforeunload', preventSessionReload);
   }, []);
 
-  const [broadcastInput, setBroadcastInput] = useState('');
-
   // Split-view column widths (fractions summing to 1, one per pane). Dragging
   // the divider between pane i and i+1 trades width between just those two.
   const [paneRatios, setPaneRatios] = useState<number[]>([1]);
@@ -376,9 +530,6 @@ function App() {
     window.addEventListener('mousemove', move);
     window.addEventListener('mouseup', up);
   };
-  // Multi-send targeting: send to 'all' connected sessions, or a chosen 'selected' subset.
-  const [targetMode, setTargetMode] = useState<'all' | 'selected'>('all');
-  const [selectedTargets, setSelectedTargets] = useState<Set<string>>(new Set());
 
   // Detect macOS desktop build so the title bar can clear the native traffic
   // lights (window uses an overlay title bar). In the browser dev preview there
@@ -389,39 +540,17 @@ function App() {
     typeof window !== 'undefined' &&
     '__TAURI_IPC__' in window;
 
-  // Multi-send: run a command on several sessions at once — all connected, or a
-  // selected subset.
-  const sendBroadcast = useCallback(() => {
-    const cmd = broadcastInput;
-    if (!cmd.trim()) return;
-    const connected = sessions.filter((s) => s.connected);
-    const targets =
-      targetMode === 'all' ? connected : connected.filter((s) => selectedTargets.has(s.sessionId));
-    if (targets.length === 0) {
-      notify.warning(
-        'Nothing to send',
-        targetMode === 'selected'
-          ? 'No target sessions are selected (or none are connected).'
-          : 'No sessions are currently connected.'
-      );
-      return;
-    }
-    targets.forEach((s) =>
-      invoke('send_data', { sessionId: s.sessionId, data: cmd + '\r' }).catch(() => {})
-    );
-    notify.success('Multi-send', `Sent to ${targets.length} session${targets.length > 1 ? 's' : ''}.`);
-    setBroadcastInput('');
-  }, [broadcastInput, sessions, targetMode, selectedTargets]);
 
   // Load saved sessions from backend on mount
   useEffect(() => {
-    invoke<Array<{ id: string; name: string; items: Array<{ id: string; name: string; protocol: string; host?: string; port?: number; username?: string; authType?: string; keyPath?: string; deviceType: string; deviceProfileId?: string; serialPort?: string; baudRate?: number; dataBits?: number; parity?: string; stopBits?: number; startupCommands?: string; tags?: string[]; command?: string; args?: string[]; cwd?: string; jumpHost?: string; jumpPort?: number; jumpUsername?: string }>; expanded: boolean }>>('list_folders')
+    invoke<Array<{ id: string; name: string; items: Array<{ id: string; name: string; protocol: string; host?: string; port?: number; username?: string; authType?: string; keyPath?: string; deviceType: string; deviceProfileId?: string; serialPort?: string; baudRate?: number; dataBits?: number; parity?: string; stopBits?: number; startupCommands?: string; tags?: string[]; command?: string; args?: string[]; cwd?: string; jumpHost?: string; jumpPort?: number; jumpUsername?: string; loginProfileId?: string; jumpLoginProfileId?: string }>; expanded: boolean; loginProfileId?: string }>>('list_folders')
       .then((folders) => {
         setFolders(
           folders.map((f) => ({
             id: f.id,
             name: f.name,
             expanded: f.expanded,
+            loginProfileId: f.loginProfileId,
             items: f.items.map((s) => ({
               id: s.id,
               name: s.name,
@@ -448,6 +577,9 @@ function App() {
               jumpHost: s.jumpHost,
               jumpPort: s.jumpPort,
               jumpUsername: s.jumpUsername,
+              // Shared login assignments (ids only; passwords are in the vault).
+              loginProfileId: s.loginProfileId,
+              jumpLoginProfileId: s.jumpLoginProfileId,
             })),
           }))
         );
@@ -582,30 +714,30 @@ function App() {
 
   const activeSession = sessions.find((s) => s.sessionId === activeSessionId);
 
-  // Split view panes: the active session is always pane 1; splitPanes holds
-  // panes 2..N. Popped-out sessions never render here (they live in their own
-  // window) and the active session can't double up in a side pane.
-  const paneSessions = [
-    ...(activeSession && !poppedSessions.includes(activeSession.sessionId)
-      ? [activeSession]
-      : []),
-    ...splitPanes
-      .map((id) => sessions.find((s) => s.sessionId === id))
-      .filter(
-        (s): s is NonNullable<typeof s> =>
-          !!s &&
-          s.sessionId !== activeSessionId &&
-          !poppedSessions.includes(s.sessionId),
-      ),
-  ];
+  // Split view panes: splitPanes lists every pane's session in column order,
+  // and the FOCUSED pane is the active session (sessionStore). Popped-out
+  // sessions never render here (they live in their own window).
+  const paneSessions = splitView
+    ? splitPanes
+        .map((id) => sessions.find((s) => s.sessionId === id))
+        .filter(
+          (s): s is NonNullable<typeof s> => !!s && !poppedSessions.includes(s.sessionId),
+        )
+    : [];
   const canSplit = splitView && paneSessions.length >= 2;
-  // Sessions that could still be added/selected into a pane.
-  const paneCandidates = sessions.filter(
-    (s) => !poppedSessions.includes(s.sessionId) && s.sessionId !== activeSessionId,
-  );
+  // Sessions that could be picked into a pane.
+  const paneCandidates = sessions.filter((s) => !poppedSessions.includes(s.sessionId));
   const unusedPaneCandidates = paneCandidates.filter(
     (s) => !splitPanes.includes(s.sessionId),
   );
+
+  // Clicking into a pane makes its session the active one — so Close, Find,
+  // snippets, logging and file drop all act on the pane you are working in,
+  // not always the first column. The columns themselves never move.
+  const focusPane = (sessionId: string) => {
+    const st = useSessionStore.getState();
+    if (st.splitView && st.activeSessionId !== sessionId) st.setActiveSession(sessionId);
+  };
 
   // Reset column widths to equal whenever the pane count changes.
   const paneCount = canSplit ? paneSessions.length : 1;
@@ -640,6 +772,10 @@ function App() {
         !!target &&
         (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable);
       const shellCtrl = e.ctrlKey && !e.metaKey && inEditable;
+      const inTerminal = !!target && !!target.closest?.('.xterm');
+      // macOS: a Ctrl chord typed in the terminal was already sent to the
+      // device (^A, ^E, ^I…) — the app chords there are the Cmd ones.
+      const macCtrlInTerminal = isMac && e.ctrlKey && !e.metaKey && inTerminal;
 
       // F1: Help & documentation
       if (e.key === 'F1') {
@@ -647,15 +783,22 @@ function App() {
         const s = useSessionStore.getState();
         s.setShowHelp(!s.showHelp);
       }
-      // Ctrl+K: Command Palette
-      if ((e.ctrlKey || e.metaKey) && e.key === 'k' && !shellCtrl) {
+      // Command palette: Cmd+K (macOS) / Ctrl+K outside the terminal, and
+      // Ctrl+Shift+P on Windows/Linux — which also works from inside a
+      // session (Terminal.tsx hands it to us instead of the device).
+      if (((e.ctrlKey || e.metaKey) && e.key === 'k' && !shellCtrl) || isPcPaletteChord(e)) {
         e.preventDefault();
         useSessionStore.getState().setShowCommandPalette(true);
       }
-      // Ctrl+T: Quick Connect
-      if ((e.ctrlKey || e.metaKey) && e.key === 't' && !shellCtrl) {
+      // Quick Connect: Cmd+T / Ctrl+T outside the terminal; Ctrl+Shift+T on
+      // Windows/Linux from anywhere.
+      if (((e.ctrlKey || e.metaKey) && e.key === 't' && !shellCtrl) || isPcNewConnectionChord(e)) {
         e.preventDefault();
-        useSessionStore.getState().setShowQuickConnect(true);
+        // Already open (e.g. an Edit… of a saved host): reopening would reset
+        // it to a plain Connect form and turn Save into a new connection.
+        if (!useSessionStore.getState().showQuickConnect) {
+          useSessionStore.getState().setShowQuickConnect(true);
+        }
       }
       // Ctrl+W: Close Tab. Skip popped-out sessions — closing from here would
       // disconnect the backend while their pop-out window stays open. Also bail
@@ -666,81 +809,89 @@ function App() {
         const st = useSessionStore.getState();
         const activeId = st.activeSessionId;
         if (!activeId) return;
+        // Side panels only block when the keys are aimed at them — from inside
+        // a terminal, Ctrl+Shift+W / Cmd+W closes that tab even with the
+        // Editor, API or AI panel open beside it.
         const overlayOpen =
           st.showSettings || st.showQuickConnect || st.showAuthDialog ||
           st.showCommandPalette || st.showHelp || st.showVaultUnlock ||
-          st.showSftp || st.showSearch || st.showConfigEditor ||
-          st.showApiExplorer || st.showAiAssistant ||
+          st.showSftp || st.showSearch || st.showImportHosts ||
+          (!inTerminal && (st.showConfigEditor || st.showApiExplorer || st.showAiAssistant)) ||
           useDialogStore.getState().current != null;
         if (overlayOpen) return; // let the overlay keep focus; don't kill the live session
         // Plain Ctrl+W is the shell's delete-word when the terminal (or any
         // input) is focused. Cmd+W (macOS) and Ctrl+Shift+W (Windows Terminal
         // convention) close the tab even from inside the terminal — like
         // normal terminal apps — but never while typing in some other field.
-        const closeChord = e.metaKey || (e.ctrlKey && e.shiftKey);
-        const inTerminal = !!target && !!target.closest?.('.xterm');
+        // On macOS a Ctrl chord typed in the terminal already went to the
+        // device (^W), so only Cmd+W closes there.
+        const closeChord = e.metaKey || (!isMac && e.ctrlKey && e.shiftKey);
         if (!closeChord && inEditable) return;
         if (closeChord && inEditable && !inTerminal) return;
         e.preventDefault();
+        // In split view the active session is the focused pane. A connected
+        // session asks first (closeSessions / confirmCloseConnected).
         if (!st.poppedSessions.includes(activeId)) {
-          invoke('disconnect', { sessionId: activeId }).catch(() => {});
-          st.removeSession(activeId);
+          void closeSessions([activeId]);
         }
       }
-      // Ctrl+1..9: jump to tab N. Popped-out sessions live in their own window —
-      // activating one here blanks the whole terminal area, so skip them.
-      if ((e.ctrlKey || e.metaKey) && /^[1-9]$/.test(e.key)) {
+      // Tab switching: Ctrl+Tab / Ctrl+Shift+Tab, Ctrl+PgDn / Ctrl+PgUp,
+      // ⌘⇧] / ⌘⇧[ (macOS), and tab N with ⌘1–9 (macOS) / Alt+1–9
+      // (Windows/Linux — Ctrl+digit stays with the device). Popped-out
+      // sessions live in their own window, so they are skipped.
+      const tabIntent = tabSwitchIntent(e);
+      if (tabIntent) {
         const st = useSessionStore.getState();
-        const idx = parseInt(e.key, 10) - 1;
-        if (st.sessions[idx] && !st.poppedSessions.includes(st.sessions[idx].sessionId)) {
-          e.preventDefault();
-          st.setActiveSession(st.sessions[idx].sessionId);
+        const next = resolveTabSwitch(
+          tabIntent,
+          st.sessions.map((s) => s.sessionId),
+          st.poppedSessions,
+          st.activeSessionId,
+        );
+        if (next || (tabIntent.kind !== 'jump' && st.sessions.length > 1)) e.preventDefault();
+        if (next) {
+          st.setActiveSession(next);
+          // Switched from inside a terminal: take the keyboard along, or
+          // typing keeps going to the pane / hidden tab we just left.
+          if (inTerminal) setTimeout(() => getTerminalActionAdapter(next)?.focus(), 0);
         }
       }
-      // Ctrl+Tab: cycle to the next tab still living in this window (popped-out
-      // sessions render in their own window, so cycle past them).
-      const tabSessions = useSessionStore.getState().sessions;
-      if (e.ctrlKey && e.key === 'Tab' && tabSessions.length > 1) {
+      // Find: Cmd+F (macOS) / Ctrl+F outside the terminal, and Ctrl+Shift+F on
+      // Windows/Linux from anywhere. Pressed while Find is already open it
+      // puts the cursor back in the Find box with the query selected.
+      if (((e.ctrlKey || e.metaKey) && e.key === 'f' && !shellCtrl) || isFindChord(e)) {
         e.preventDefault();
-        const st = useSessionStore.getState();
-        const popped = st.poppedSessions;
-        const cur = tabSessions.findIndex((s) => s.sessionId === st.activeSessionId);
-        for (let step = 1; step <= tabSessions.length; step++) {
-          const next = tabSessions[(cur + step) % tabSessions.length];
-          if (popped.includes(next.sessionId)) continue;
-          if (next.sessionId !== st.activeSessionId) {
-            st.setActiveSession(next.sessionId);
-          }
-          break;
-        }
+        openTerminalSearch();
       }
-      // Ctrl+F: Search
-      if ((e.ctrlKey || e.metaKey) && e.key === 'f' && !shellCtrl) {
+      // Find next / previous while Find is open: F3 / Shift+F3, and Cmd+G /
+      // Cmd+Shift+G on macOS — from the Find box or the terminal.
+      const step = findStep(e);
+      if (step && useSessionStore.getState().showSearch) {
         e.preventDefault();
-        useSessionStore.getState().setShowSearch(true);
+        sendSearchCommand({ type: step });
       }
       // Ctrl+,: Settings
       if ((e.ctrlKey || e.metaKey) && e.key === ',') {
         e.preventDefault();
         useSessionStore.getState().setShowSettings(true);
       }
-      // Ctrl+B: Toggle Sidebar
+      // Ctrl+B: Toggle Sidebar (see toggleSessionsSidebar for the maximized case)
       if ((e.ctrlKey || e.metaKey) && e.key === 'b' && !shellCtrl) {
         e.preventDefault();
-        useSessionStore.getState().toggleSidebar();
+        toggleSessionsSidebar();
       }
       // Ctrl+Shift+A: Toggle API Explorer
-      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'A') {
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'A' && !macCtrlInTerminal) {
         e.preventDefault();
         useSessionStore.getState().toggleApiExplorer();
       }
       // Ctrl+Shift+I: Toggle AI Assistant
-      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'I') {
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'I' && !macCtrlInTerminal) {
         e.preventDefault();
         useSessionStore.getState().toggleAiAssistant();
       }
       // Ctrl+Shift+E: Toggle Config Editor
-      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'E') {
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'E' && !macCtrlInTerminal) {
         e.preventDefault();
         useSessionStore.getState().toggleConfigEditor();
       }
@@ -780,7 +931,20 @@ function App() {
     const restoreActiveTermFocus = (e: KeyboardEvent) => {
       const st = useSessionStore.getState();
       if (st.showSearch || st.showCommandPalette) return;
+      // Never pull focus out from under a modal: with a dialog button (or a
+      // non-input spot in Settings / Quick Connect / Help …) focused, the key
+      // went to the device behind the modal — Enter on "Cancel" reached the
+      // switch instead of cancelling.
+      if (
+        st.showSettings || st.showQuickConnect || st.showAuthDialog ||
+        st.showVaultUnlock || st.showHelp || st.showSftp || st.showBulkRunner || st.showChangeJobs ||
+        st.showTunnels || st.showIntent || st.showArchive || st.showImportHosts ||
+        useDialogStore.getState().current != null
+      ) {
+        return;
+      }
       const target = e.target as HTMLElement | null;
+      if (target?.closest?.('[aria-modal="true"], [role="dialog"], .modal-backdrop')) return;
       if (
         target &&
         (target.tagName === 'INPUT' ||
@@ -789,6 +953,21 @@ function App() {
       ) {
         return;
       }
+      // Text selected in a panel (AI chat, API responses, Bulk Runner output,
+      // help) lives in a non-focusable element, so focus is on body. Pulling
+      // focus into xterm's textarea on the Ctrl/Cmd keydown dropped that
+      // selection — the Ctrl+C that followed reached xterm with nothing
+      // selected, copied nothing, and sent ^C to the device instead. Leave
+      // modifier keys / chords alone while such a selection exists; plain
+      // typing still returns focus to the terminal.
+      const domSel = window.getSelection();
+      const panelSelection =
+        !!domSel &&
+        !domSel.isCollapsed &&
+        !domSel.anchorNode?.parentElement?.closest('.xterm');
+      const modifierUse =
+        e.ctrlKey || e.metaKey || e.altKey || ['Control', 'Meta', 'Shift', 'Alt'].includes(e.key);
+      if (panelSelection && modifierUse) return;
       const id = st.activeSessionId;
       if (!id || st.poppedSessions.includes(id)) return;
       getTerminalActionAdapter(id)?.focus();
@@ -846,9 +1025,11 @@ function App() {
       return;
     }
     if (!config.host && !config.serialPort) return; // nothing meaningful to recall
+    // Keyed by the saved HOST, not the tab: two tabs of one host are one recent.
+    const hostId = savedHostId(config);
     const saved = useSessionStore
       .getState()
-      .folders.some((f) => f.items.some((i) => i.id === config.id));
+      .folders.some((f) => f.items.some((i) => i.id === hostId));
     useRecentStore.getState().addRecent({
       name: config.name || config.host || config.serialPort || 'Session',
       protocol: config.protocol,
@@ -856,45 +1037,65 @@ function App() {
       port: config.port,
       username: config.username,
       deviceType: config.deviceType,
-      storedSessionId: saved ? config.id : undefined,
+      storedSessionId: saved ? hostId : undefined,
     });
   }, []);
 
+  // `interactive: false` (Change Jobs): never open the password dialog or the
+  // vault prompt — report 'needs-login' instead, so one device waiting on a
+  // login can't hold up a job running across many.
   const handleConnect = useCallback(
-    async (config: ConnectionConfig) => {
+    async (
+      config: ConnectionConfig,
+      opts: { interactive?: boolean; skipVault?: boolean } = {}
+    ): Promise<ConnectOutcome> => {
+      const interactive = opts.interactive !== false;
+      // A connect made on the user's behalf (Change Jobs, which keeps running
+      // in the background) must never switch the view — or the keyboard —
+      // to the device it is about to change.
+      const focusTab = () => {
+        if (interactive) useSessionStore.getState().setActiveSession(sessionId);
+      };
       const sessionId = config.id || generateId();
       const fullConfig = { ...config, id: sessionId };
 
-      // A saved host carries a stable id. If its tab is already connected or
-      // in-flight (manual connect/auth retry/backend auto-reconnect), just focus
-      // it — don't run a second backend connect against the same session id.
+      // config.id is the TAB's session id (openHost picks it). If that tab is
+      // already connected or in-flight (manual connect/auth retry/backend
+      // auto-reconnect), just focus it — don't run a second backend connect
+      // against the same session id.
       const existing = useSessionStore.getState().sessions.find((s) => s.sessionId === sessionId);
       const existingStatus =
         existing?.connectionStatus ?? (existing?.connected ? 'connected' : 'disconnected');
+      // A 'connecting' tab with nothing actually in flight (no connect running,
+      // not parked on the vault prompt) is stale — let this click retry it
+      // instead of leaving the user no way out but closing the tab.
+      const inFlight =
+        connectingIdsRef.current.has(sessionId) ||
+        pendingVaultConnectsRef.current.some((c) => c.id === sessionId);
       if (
         existing?.connected ||
-        existingStatus === 'connecting' ||
+        (existingStatus === 'connecting' && inFlight) ||
         existingStatus === 'reconnecting'
       ) {
-        useSessionStore.getState().setActiveSession(sessionId);
-        return;
+        focusTab();
+        return existing?.connected ? { status: 'connected', sessionId } : { status: 'in-progress', sessionId };
       }
       if (connectingIdsRef.current.has(sessionId)) {
         if (!existing) {
-          addSession(fullConfig, sessionId);
+          addSession(fullConfig, sessionId, { activate: interactive });
           useSessionStore.getState().updateSessionConnection(sessionId, false, 'connecting');
         }
-        useSessionStore.getState().setActiveSession(sessionId);
-        return;
+        focusTab();
+        return { status: 'in-progress', sessionId };
       }
       connectingIdsRef.current.add(sessionId);
 
-      addSession(fullConfig, sessionId);
+      addSession(fullConfig, sessionId, { activate: interactive });
       // addSession is a no-op for an existing (disconnected) tab — refresh its
-      // config with the saved host's current values and focus it explicitly.
+      // config with the values it is reconnecting with and focus it explicitly.
       if (existing) {
         useSessionStore.getState().updateSessionConfig(sessionId, fullConfig);
-        useSessionStore.getState().setActiveSession(sessionId);
+        focusTab();
       }
       useSessionStore.getState().updateSessionConnection(sessionId, false, 'connecting');
 
@@ -902,25 +1103,108 @@ function App() {
       // value can still be stale immediately after startup or vault_unlock;
       // querying the cheap atomic status commands makes the resumed connect use
       // the saved password instead of reopening the SSH authentication dialog.
-      const { password, requiresVaultUnlock } = await resolveSshPassword(fullConfig, {
-        isUnlocked: () => invoke<boolean>('vault_is_unlocked').catch(() => false),
-        isInitialized: () => invoke<boolean>('vault_is_initialized').catch(() => false),
-        retrieve: (key) =>
-          invoke<string | null>('vault_retrieve', { key }).catch(() => null),
-      });
+      // A saved host's shared login comes from the host, else its folder —
+      // both read from the sidebar, which a stale tab copy can't override.
+      const profiles = useSettingsStore.getState().loginProfiles ?? [];
+      const { loginProfileId, folderLoginProfileId } = loginChoiceFor(
+        useSessionStore.getState().folders,
+        fullConfig
+      );
+      const vault = opts?.skipVault ? skippedVault : backendVault;
+      const [target, jump] = await Promise.all([
+        resolveSshLogin(
+          { ...fullConfig, loginProfileId },
+          { profiles, folderLoginProfileId },
+          vault
+        ),
+        resolveJumpLogin(fullConfig, profiles, vault),
+      ]);
+      const password = target.password;
+      // Who we log in as (a shared login fills in a blank username). Kept off
+      // the tab's own config, so a later change to the login still applies on
+      // Reconnect; secrets never go on it at all.
+      const connectConfig: ConnectionConfig = {
+        ...fullConfig,
+        username: target.username,
+        jumpUsername: jump.username,
+      };
+      const loginPrompt = (reason: PromptLogin['reason']): PromptLogin | undefined =>
+        target.login ? { id: target.login.id, name: target.login.name, reason } : undefined;
 
-      if (requiresVaultUnlock) {
+      if (target.requiresVaultUnlock || jump.requiresVaultUnlock) {
         connectingIdsRef.current.delete(sessionId);
-        pendingVaultConnectRef.current = fullConfig;
+        if (!interactive) {
+          useSessionStore.getState().updateSessionConnection(sessionId, false, 'disconnected');
+          return {
+            status: 'needs-login',
+            reason: 'The saved password is in the locked credential vault — unlock it, then run again.',
+          };
+        }
+        if (!pendingVaultConnectsRef.current.some((c) => c.id === sessionId)) {
+          pendingVaultConnectsRef.current.push(fullConfig);
+        }
+        syncVaultWaiting();
         setShowVaultUnlock(true);
-        return;
+        return { status: 'in-progress', sessionId };
       }
+
+      // No password anywhere (not inline, not saved in the vault): ask for it
+      // BEFORE touching the device. Connecting anyway just sent an empty
+      // password (plus a keyboard-interactive round) that was certain to fail
+      // — a failed login per tab opened, which counts toward TACACS/RADIUS
+      // lockout. The dialog still accepts an empty password for gear that has
+      // none.
+      if (needsPasswordPrompt(fullConfig, password)) {
+        connectingIdsRef.current.delete(sessionId);
+        useSessionStore.getState().updateSessionConnection(sessionId, false, 'disconnected');
+        if (!interactive) {
+          return { status: 'needs-login', reason: 'No saved password — log in to it once (its tab), then run again.' };
+        }
+        promptForAuth(connectConfig, undefined, loginPrompt(opts.skipVault ? 'locked' : 'missing'));
+        return { status: 'in-progress', sessionId };
+      }
+
+      // Shared failure path: ask for credentials again only when the device
+      // actually rejected them. Unreachable hosts, host-key mismatches,
+      // timeouts and telnet (whose login happens in the terminal itself —
+      // the dialog's password was never even sent) get a real error instead
+      // of a password prompt that hides what went wrong.
+      const reportFailure = (error: string): ConnectOutcome => {
+        const stillOpen = useSessionStore
+          .getState()
+          .sessions.some((s) => s.sessionId === sessionId);
+        if (!stillOpen) return { status: 'failed', reason: 'The tab was closed.' };
+        useSessionStore.getState().updateSessionConnection(sessionId, false, 'disconnected');
+        const authFailed = fullConfig.protocol === 'ssh' && isAuthFailure(error);
+        // Non-interactive: the job's results grid shows the reason instead.
+        if (!interactive) {
+          return authFailed
+            ? { status: 'needs-login', reason: `The device rejected the saved login (${error}).` }
+            : { status: 'failed', reason: error };
+        }
+        if (authFailed) {
+          // Only a refused SAVED login password is that login's fault.
+          promptForAuth(
+            connectConfig,
+            error,
+            loginPrompt(target.source === 'login' ? 'rejected' : 'missing')
+          );
+          return { status: 'needs-login', reason: error };
+        }
+        notify.error(
+          `Could not connect to ${fullConfig.name || fullConfig.host || fullConfig.protocol}`,
+          jump.login && /jump host/i.test(error)
+            ? `${error} (jump host login: ${jump.login.name})`
+            : error
+        );
+        return { status: 'failed', reason: error };
+      };
 
       try {
         const settingsState = useSettingsStore.getState();
         const result = await invoke<ConnectInvokeResult>('connect', {
           config: buildConnectPayload(
-            fullConfig,
+            { ...connectConfig, jumpPassword: jump.password },
             { password },
             {
               keepAliveInterval: settingsState.keepAliveInterval,
@@ -929,24 +1213,8 @@ function App() {
           ),
         });
 
-        // The SSH auth dialog only makes sense for credential-based protocols.
-        const authBased = fullConfig.protocol === 'ssh' || fullConfig.protocol === 'telnet';
         if (!result.success) {
-          const stillOpen = useSessionStore
-            .getState()
-            .sessions.some((s) => s.sessionId === sessionId);
-          if (!stillOpen) return;
-          useSessionStore.getState().updateSessionConnection(sessionId, false);
-          if (authBased) {
-            setPendingConnection(fullConfig);
-            setShowAuthDialog(true);
-          } else {
-            // local/serial: no auth to retry — surface the failure.
-            notify.error(
-              `Could not start ${fullConfig.name || fullConfig.protocol}`,
-              result.error || 'The connection failed to start.'
-            );
-          }
+          return reportFailure(result.error || 'The connection failed to start.');
         } else {
           // The user may have closed the tab while connect was awaiting — if the
           // session is gone, tear the orphaned backend connection down.
@@ -955,74 +1223,90 @@ function App() {
             .sessions.some((s) => s.sessionId === sessionId);
           if (!stillOpen) {
             invoke('disconnect', { sessionId }).catch(() => {});
-            return;
+            return { status: 'failed', reason: 'The tab was closed.' };
           }
           useSessionStore.getState().updateSessionConnection(sessionId, true);
-          recordRecent(fullConfig);
+          // With the username actually used, so an ad-hoc recent reconnects
+          // as the same user even when a shared login supplied it.
+          recordRecent(connectConfig);
           const where =
             fullConfig.protocol === 'local'
               ? fullConfig.command || 'local shell'
-              : `${fullConfig.username ? fullConfig.username + '@' : ''}${fullConfig.host || fullConfig.serialPort || ''}`;
-          notify.success('Connected', `${fullConfig.name || where} is online.`);
+              : `${connectConfig.username ? connectConfig.username + '@' : ''}${fullConfig.host || fullConfig.serialPort || ''}`;
+          // Background tabs only; several landing together share one card.
+          if (!isSessionOnScreen(sessionId)) {
+            notify.success('Connected', fullConfig.name || where, { group: 'connected' });
+          }
           toastHostKeyWarning(result.warning);
 
           // Per-host startup commands: run them once the shell is ready.
           runStartupCommands(sessionId, fullConfig.startupCommands);
+          return { status: 'connected', sessionId };
         }
       } catch (err) {
         console.error('Connection error:', err);
-        // For local/serial there's no auth to retry — surface the failure.
-        const stillOpen = useSessionStore
-          .getState()
-          .sessions.some((s) => s.sessionId === sessionId);
-        if (!stillOpen) return;
-        useSessionStore.getState().updateSessionConnection(sessionId, false);
-        if (fullConfig.protocol === 'ssh' || fullConfig.protocol === 'telnet') {
-          setPendingConnection(fullConfig);
-          setShowAuthDialog(true);
-        } else {
-          notify.error(
-            `Could not start ${fullConfig.name || fullConfig.protocol}`,
-            String(err)
-          );
-        }
+        return reportFailure(String(err));
       } finally {
         connectingIdsRef.current.delete(sessionId);
       }
     },
-    [addSession, setPendingConnection, setShowAuthDialog, setShowVaultUnlock, recordRecent]
+    [addSession, promptForAuth, setShowVaultUnlock, recordRecent, syncVaultWaiting]
+  );
+
+  // Change Jobs connects saved hosts itself and must never block on a dialog.
+  const connectForJob = useCallback(
+    (config: ConnectionConfig) => handleConnect(config, { interactive: false }),
+    [handleConnect]
   );
 
   // Vault unlocked: flush any deferred credential SAVE, then resume the parked
   // connect. handleConnect rechecks the backend's live status before retrieving
   // the saved password, so this is safe before React renders vaultUnlocked=true.
-  const resumeVaultConnect = useCallback(() => {
-    flushPendingCredSave();
-    const cfg = pendingVaultConnectRef.current;
-    pendingVaultConnectRef.current = null;
-    if (!cfg) return;
-    // handleConnect parked this AFTER registering the tab (status 'connecting',
-    // id in connectingIdsRef, both cleared when it parked) — restore a clean
-    // disconnected tab so the retry starts fresh.
-    useSessionStore.getState().updateSessionConnection(cfg.id, false, 'disconnected');
-    handleConnect(cfg);
-  }, [flushPendingCredSave, handleConnect]);
+  const resumeVaultConnect = useCallback(async () => {
+    const parked = takeParkedConnects();
+    // Saves made while locked (a login's new password, say) land first, so
+    // the resumed connects read them rather than the old value.
+    await flushDeferredVaultWrites();
+    for (const cfg of parked) {
+      // handleConnect parked this AFTER registering the tab (status
+      // 'connecting', id in connectingIdsRef, cleared when it parked) —
+      // restore a clean disconnected tab so the retry starts fresh.
+      useSessionStore.getState().updateSessionConnection(cfg.id, false, 'disconnected');
+      void handleConnect(cfg);
+    }
+  }, [handleConnect, takeParkedConnects]);
 
-  // Vault prompt dismissed: drop the parked connect and un-stick its tab.
+  // Vault prompt dismissed: drop the parked connects and un-stick their tabs.
   const cancelVaultConnect = useCallback(() => {
-    const cfg = pendingVaultConnectRef.current;
-    pendingVaultConnectRef.current = null;
-    if (cfg) {
+    const parked = takeParkedConnects();
+    for (const cfg of parked) {
       useSessionStore.getState().updateSessionConnection(cfg.id, false, 'disconnected');
     }
-  }, []);
+  }, [takeParkedConnects]);
+
+  // Vault prompt skipped: a locked vault can't say whether it even holds a
+  // password for these hosts, so connect without it — password hosts get the
+  // password dialog (the auth queue takes them one at a time, naming their
+  // shared login), and a key-auth host parked only for its jump host's saved
+  // password goes ahead with the bastion's key / agent.
+  const skipVaultConnect = useCallback(() => {
+    const parked = takeParkedConnects();
+    for (const cfg of parked) {
+      useSessionStore.getState().updateSessionConnection(cfg.id, false, 'disconnected');
+      void handleConnect(cfg, { skipVault: true });
+    }
+  }, [handleConnect, takeParkedConnects]);
 
   const handleDisconnect = useCallback(async (sessionId: string) => {
     const session = useSessionStore.getState().sessions.find((s) => s.sessionId === sessionId);
     try {
       await invoke('disconnect', { sessionId });
       useSessionStore.getState().updateSessionConnection(sessionId, false);
-      notify.info('Disconnected', `${session?.config.name || session?.config.host || 'Session'} is offline.`);
+      if (!isSessionOnScreen(sessionId)) {
+        notify.info('Disconnected', session?.config.name || session?.config.host || 'Session', {
+          group: 'disconnected',
+        });
+      }
     } catch (err) {
       notify.warning('Disconnect failed', String(err));
     }
@@ -1030,12 +1314,65 @@ function App() {
 
   const handleReconnect = useCallback(
     (sessionId: string) => {
-      const session = useSessionStore.getState().sessions.find((s) => s.sessionId === sessionId);
+      const st = useSessionStore.getState();
+      const session = st.sessions.find((s) => s.sessionId === sessionId);
       if (!session) return;
-      useSessionStore.getState().setActiveSession(sessionId);
-      handleConnect(session.config);
+      st.setActiveSession(sessionId);
+      // A saved host edited while this tab was live left the tab's connection
+      // fields alone (updateSavedHost) — reconnect with the host's current
+      // ones. Only those: the tab keeps its own id, name and copy number.
+      const hostId = savedHostId(session.config);
+      const saved = st.folders.flatMap((f) => f.items).find((i) => i.id === hostId);
+      const current = saved
+        ? (Object.fromEntries(
+            CONNECTION_FIELDS.filter((k) => k in saved).map((k) => [k, saved[k]])
+          ) as Partial<ConnectionConfig>)
+        : {};
+      // A host saved without a username (it takes its login's) must not blank
+      // the one this tab has — typed into the password dialog, say.
+      if (!current.username?.trim()) delete current.username;
+      handleConnect({ ...session.config, ...current });
     },
     [handleConnect]
+  );
+
+  useEffect(() => {
+    reconnectFromTerminal = handleReconnect;
+    return () => {
+      reconnectFromTerminal = null;
+    };
+  }, [handleReconnect]);
+
+  // Open a host from the sidebar, palette, Quick Connect or recents. A plain
+  // open brings back the host's tab if it has one (reconnecting it if it
+  // dropped); `newTab` — "Open new session", Shift+double-click, Duplicate
+  // tab — always opens another session with its own tab id.
+  const openHost = useCallback(
+    (config: ConnectionConfig, opts?: { newTab?: boolean }) => {
+      const st = useSessionStore.getState();
+      const tabConfig = tabConfigForOpen(st.sessions, config, {
+        newTab: opts?.newTab,
+        activeSessionId: st.activeSessionId,
+        newId: generateId(),
+      });
+      // A reused tab living in a pop-out window: bring that window forward —
+      // the main window can't show it (setActiveSession ignores it).
+      if (st.poppedSessions.includes(tabConfig.id)) {
+        WebviewWindow.getByLabel(`popout-${tabConfig.id}`)?.setFocus().catch(() => {});
+      }
+      void handleConnect(tabConfig);
+    },
+    [handleConnect]
+  );
+
+  // Another session to the same host as this tab, with the tab's current
+  // details (e.g. a username typed at its login prompt).
+  const duplicateSession = useCallback(
+    (sessionId: string) => {
+      const s = useSessionStore.getState().sessions.find((x) => x.sessionId === sessionId);
+      if (s) openHost(s.config, { newTab: true });
+    },
+    [openHost]
   );
 
   // One-click local shell — a "normal terminal" running the user's default shell.
@@ -1059,7 +1396,7 @@ function App() {
           .folders.flatMap((f) => f.items)
           .find((i) => i.id === recent.storedSessionId);
         if (saved) {
-          handleConnect(saved);
+          openHost(saved);
           return;
         }
       }
@@ -1070,7 +1407,7 @@ function App() {
       if (recent.host && recent.protocol !== 'serial') {
         // Ad-hoc host: rebuild the config; missing credentials fall through to
         // the vault / auth-dialog path inside handleConnect.
-        handleConnect({
+        openHost({
           id: generateId(),
           name: recent.name,
           protocol: recent.protocol,
@@ -1085,25 +1422,79 @@ function App() {
       // settings are gone) — open Quick Connect instead (it takes no prefill).
       useSessionStore.getState().setShowQuickConnect(true);
     },
-    [handleConnect, openLocalShell]
+    [openHost, openLocalShell]
   );
 
+  // A pop-out window's Reconnect button (or Enter on its dropped session)
+  // asks this window to reconnect — the connect flow (vault, password
+  // prompt, startup commands) lives here. The session stays in its pop-out
+  // (setActiveSession ignores popped-out sessions). If the reconnect then
+  // needs the user — password dialog or vault unlock — bring this window
+  // forward, or the prompt would sit unseen behind the pop-out.
+  useEffect(() => {
+    const un = listen<string>('popout_reconnect', (e) => {
+      const sessionId = e.payload;
+      if (!sessionId) return;
+      handleReconnect(sessionId);
+      const needsUser = (s: ReturnType<typeof useSessionStore.getState>) =>
+        s.showAuthDialog || s.showVaultUnlock;
+      if (needsUser(useSessionStore.getState())) {
+        appWindow.setFocus().catch(() => {});
+        return;
+      }
+      const stop = useSessionStore.subscribe((s) => {
+        if (!needsUser(s)) return;
+        clearTimeout(timer);
+        stop();
+        appWindow.setFocus().catch(() => {});
+      });
+      // Only the reconnect just requested — stop watching after a minute.
+      const timer = setTimeout(stop, 60_000);
+    });
+    return () => {
+      un.then((f) => f());
+    };
+  }, [handleReconnect]);
+
   const handleAuthenticate = useCallback(
-    async (creds: AuthCredentials, saveCredential: boolean) => {
-      const pending = useSessionStore.getState().pendingConnection;
-      if (!pending) return;
-      if (connectingIdsRef.current.has(pending.id)) return;
+    async (creds: AuthCredentials, save: AuthSaveChoice) => {
+      const prompted = useSessionStore.getState().pendingConnection;
+      if (!prompted) return;
+      if (connectingIdsRef.current.has(prompted.id)) return;
+      // The shared login this prompt was about (the next prompt replaces it).
+      const login = useSessionStore.getState().authLogins[prompted.id];
+      // The dialog's Username wins: a login sent with a blank or wrong user
+      // fails whatever the password. Keep it on the tab so Reconnect and the
+      // next prompt reuse it; the vault key below follows it too.
+      const username = creds.username?.trim() || prompted.username;
+      const pending = username === prompted.username ? prompted : { ...prompted, username };
+      // The tab's own config as handleConnect saw it — before this dialog (or a
+      // shared login) filled in the username. The jump host's saved password is
+      // keyed by that config's username (jumpCredentialKey), so resolving from
+      // `pending` looked in a different vault slot and sent no jump password.
+      const tabConfig =
+        useSessionStore.getState().sessions.find((s) => s.sessionId === prompted.id)?.config ?? prompted;
+      if (pending !== prompted) {
+        useSessionStore.getState().updateSessionConfig(pending.id, { username });
+      }
       connectingIdsRef.current.add(pending.id);
 
       try {
         useSessionStore.getState().updateSessionConnection(pending.id, false, 'connecting');
         const settingsState = useSettingsStore.getState();
+        // The bastion's password is looked up again rather than carried on
+        // the prompt, so no secret sits in the pending-connection state.
+        const jump = await resolveJumpLogin(
+          tabConfig,
+          settingsState.loginProfiles ?? [],
+          backendVault
+        );
         const result = await invoke<ConnectInvokeResult>('connect', {
           // Same builder as the direct-connect path, so the auth retry keeps the
           // serial line settings (data_bits/parity/stop_bits) and local-shell
           // launch details (command/args/cwd) it used to drop.
           config: buildConnectPayload(
-            pending,
+            { ...pending, jumpUsername: jump.username, jumpPassword: jump.password },
             {
               password: creds.password,
               privateKey: creds.privateKey,
@@ -1118,25 +1509,25 @@ function App() {
             }
           ),
         });
-        const currentState = useSessionStore.getState();
-        const stillOpen = currentState.sessions.some((s) => s.sessionId === pending.id);
-        const stillCurrentAuth = currentState.pendingConnection?.id === pending.id;
-        if (!stillOpen || !stillCurrentAuth) {
+        // Only a CLOSED tab abandons the attempt. This used to also bail when
+        // the dialog had since moved on to another session — so another
+        // tab's failed connect tore down this tab's successful login.
+        const stillOpen = useSessionStore
+          .getState()
+          .sessions.some((s) => s.sessionId === pending.id);
+        if (!stillOpen) {
           if (result.success) {
             invoke('disconnect', { sessionId: pending.id }).catch(() => {});
-          }
-          // A still-open tab must not stay stuck on 'connecting' after we
-          // abandoned (and disconnected) this superseded attempt.
-          if (stillOpen) {
-            useSessionStore.getState().updateSessionConnection(pending.id, false, 'disconnected');
           }
           return;
         }
 
         if (result.success) {
           useSessionStore.getState().updateSessionConnection(pending.id, true);
+          useSessionStore.getState().clearAuthError(pending.id);
           recordRecent(pending);
-          setShowAuthDialog(false);
+          // (The dialog already closed on submit; closing it here would dismiss
+          // a prompt that has since opened for the NEXT queued session.)
           toastHostKeyWarning(result.warning);
 
           // Run per-host startup commands here too — this is the common SSH path
@@ -1144,41 +1535,66 @@ function App() {
           // types the password into the dialog). Previously they were skipped.
           runStartupCommands(pending.id, pending.startupCommands);
 
-          // Save the password to the vault if requested (passwords only).
-          if (saveCredential && creds.authType === 'password' && creds.password) {
-            const key = sshCredentialKey(pending);
-            if (vaultUnlocked) {
-              invoke('vault_store', { key, value: creds.password }).catch(() => {});
-            } else {
-              // Defer the store until the user unlocks the vault.
-              pendingCredSave.current = { key, value: creds.password };
-              setShowVaultUnlock(true);
+          // A username fixed in the dialog belongs to the saved host too,
+          // not just this tab — or the next connect fails the same way. Saved
+          // only now that it worked, so a mistyped name can't overwrite it.
+          const hostPatch: Partial<ConnectionConfig> = pending !== prompted ? { username } : {};
+
+          // Save the password if asked (passwords only; never before it worked).
+          const password = creds.authType === 'password' ? creds.password : undefined;
+          let vaultSave: Promise<'saved' | 'deferred'> | null = null;
+          // Never into the login under a username changed in the dialog
+          // (the dialog doesn't offer it; this keeps it that way).
+          if (password && save === 'login' && login && pending === prompted) {
+            // Rotated shared password: one save updates every host using it.
+            vaultSave = saveToVault(loginSecretKey(login.id), password);
+            void vaultSave.then((r) => {
+              if (r === 'saved') notify.success('Login updated', `New password saved for "${login.name}".`);
+            });
+          } else if (password && save === 'host') {
+            vaultSave = saveToVault(sshCredentialKey(pending), password);
+            // A per-host password is only read when no shared login applies,
+            // so remembering one for this host takes it off the login — and
+            // keeps the username it just logged in with (maybe the login's).
+            if (login) {
+              hostPatch.loginProfileId = PER_HOST_PASSWORD;
+              hostPatch.username = username;
             }
           }
+          if (Object.keys(hostPatch).length > 0) persistSavedHost(pending, hostPatch);
+          void vaultSave?.then((r) => {
+            if (r === 'deferred') {
+              notify.info('Unlock the vault to save the password', 'It is kept until you unlock.');
+              setShowVaultUnlock(true);
+            }
+          });
         } else {
-          useSessionStore.getState().updateSessionConnection(pending.id, false);
-          setPendingConnection(pending);
-          setShowAuthDialog(true);
-          notify.error(
-            'Authentication failed',
-            result.error || 'The device rejected the supplied credentials.'
-          );
+          useSessionStore.getState().updateSessionConnection(pending.id, false, 'disconnected');
+          const error = result.error || 'The device rejected the supplied credentials.';
+          notify.error('Authentication failed', error);
+          promptForAuth(pending, error, nextPromptLogin(login, creds, save));
         }
       } catch (err) {
         console.error('Auth connection error:', err);
-        useSessionStore.getState().updateSessionConnection(pending.id, false);
-        const currentState = useSessionStore.getState();
-        const stillOpen = currentState.sessions.some((s) => s.sessionId === pending.id);
-        const stillCurrentAuth = currentState.pendingConnection?.id === pending.id;
-        if (!stillOpen || !stillCurrentAuth) return;
-        setPendingConnection(pending);
-        setShowAuthDialog(true);
-        notify.error('Authentication failed', String(err));
+        const error = String(err);
+        const stillOpen = useSessionStore
+          .getState()
+          .sessions.some((s) => s.sessionId === pending.id);
+        if (!stillOpen) return;
+        useSessionStore.getState().updateSessionConnection(pending.id, false, 'disconnected');
+        if (isAuthFailure(error)) {
+          notify.error('Authentication failed', error);
+          promptForAuth(pending, error, nextPromptLogin(login, creds, save));
+        } else {
+          // Unreachable / timed out / host key: re-asking for the password
+          // can't help — show why, and leave the tab's Reconnect button.
+          notify.error(`Could not connect to ${pending.name || pending.host || 'session'}`, error);
+        }
       } finally {
         connectingIdsRef.current.delete(pending.id);
       }
     },
-    [setPendingConnection, setShowAuthDialog, vaultUnlocked, setShowVaultUnlock, recordRecent]
+    [promptForAuth, setShowVaultUnlock, recordRecent]
   );
 
   return (
@@ -1186,544 +1602,451 @@ function App() {
       className="h-screen w-screen flex flex-col overflow-hidden"
       data-theme={theme}
       style={{
-        backgroundColor: theme === 'dark' ? 'var(--bg-primary)' : '#ffffff',
+        backgroundColor: 'var(--bg-primary)',
         backgroundImage: theme === 'dark' ? 'var(--app-bg-gradient)' : 'none',
       }}
     >
       {/* Title Bar — data-tauri-drag-region is what actually makes it draggable
           (Tauri ignores -webkit-app-region; that's an Electron-ism). The
           attribute only fires when the mousedown TARGET carries it, so it's
-          repeated on the static children; buttons/selects stay interactive. */}
+          repeated on the static children; buttons stay interactive. Three
+          columns (brand · command field · Connect) keep the field centred. */}
       <div
         data-tauri-drag-region
-        className="flex items-center justify-between h-11 pr-2 bg-[var(--bg-secondary)] border-b border-[var(--border)] drag-region select-none"
+        className="grid grid-cols-[1fr_minmax(0,520px)_1fr] items-center gap-3 h-11 pr-2 bg-[var(--bg-secondary)] border-b border-[var(--border)] drag-region select-none flex-shrink-0"
         style={{ paddingLeft: isTauriMac ? 80 : 12 }}
       >
-        {/* Left: brand + sidebar toggle */}
-        <div data-tauri-drag-region className="flex items-center gap-2.5 min-w-0">
-          <div data-tauri-drag-region className="flex items-center gap-2">
-            <div
-              data-tauri-drag-region
-              className="flex items-center justify-center w-[26px] h-[26px] rounded-md flex-shrink-0"
-              style={{
-                background: 'linear-gradient(135deg, var(--accent-hover), var(--accent))',
-                boxShadow: 'var(--elevation-1)',
-              }}
-            >
-              <PromptGlyph size={16} style={{ color: 'var(--accent-fg)', pointerEvents: 'none' }} />
-            </div>
-            <span
-              data-tauri-drag-region
-              className="text-[13px] font-semibold text-[var(--text-primary)] tracking-tight whitespace-nowrap"
-            >
-              GreenCLI
-            </span>
+        <div data-tauri-drag-region className="flex items-center gap-2 min-w-0">
+          <div
+            data-tauri-drag-region
+            className="flex items-center justify-center w-[26px] h-[26px] rounded-md flex-shrink-0"
+            style={{
+              background: 'linear-gradient(135deg, var(--accent-hover), var(--accent))',
+              boxShadow: 'var(--elevation-1)',
+            }}
+          >
+            <PromptGlyph size={16} style={{ color: 'var(--accent-fg)', pointerEvents: 'none' }} />
           </div>
-          {!sidebarVisible && (
-            <button
-              onClick={() => useSessionStore.getState().toggleSidebar()}
-              className="no-drag p-1.5 rounded-md hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
-              title="Show sidebar (Ctrl+B)"
-            >
-              <PanelLeft size={15} />
-            </button>
-          )}
-
-          {/* Workspace utilities: Tools + Snippets, anchored under the brand like a file menu */}
-          <div className="no-drag flex items-center gap-0.5">
-            <WorkspaceMenu
-              splitView={splitView}
-              onToggleSplit={() => {
-                toggleSplitView();
-                refitTerminals();
-              }}
-              broadcastMode={broadcastMode}
-              onToggleBroadcast={toggleBroadcast}
-            />
-            <SnippetsMenu />
-          </div>
+          <span
+            data-tauri-drag-region
+            className="text-[13px] font-semibold text-[var(--text-primary)] tracking-tight whitespace-nowrap"
+          >
+            GreenCLI
+          </span>
         </div>
 
-        {/* Center: panel segmented control */}
-        <div className="flex items-center gap-2 no-drag">
-          <div className="segmented">
-            <button data-active={showConfigEditor} onClick={toggleConfigEditor} title="Config Editor (Ctrl+Shift+E)">
-              <FileCode size={13} style={showConfigEditor ? { color: 'var(--accent-2)' } : undefined} />
-              <span>Editor</span>
-            </button>
-            <button data-active={showApiExplorer} onClick={toggleApiExplorer} title="API Explorer (Ctrl+Shift+A)">
-              <Globe size={13} style={showApiExplorer ? { color: 'var(--accent-info)' } : undefined} />
-              <span>API</span>
-            </button>
-            <button data-active={showAiAssistant} onClick={toggleAiAssistant} title="AI Assistant (Ctrl+Shift+I)">
-              <Sparkles size={13} style={showAiAssistant ? { color: 'var(--vendor-mist)' } : undefined} />
-              <span>AI</span>
-            </button>
-          </div>
-        </div>
+        {/* One labelled way into everything: the command palette searches
+            hosts, tabs and every action. */}
+        <button
+          type="button"
+          onClick={() => useSessionStore.getState().setShowCommandPalette(true)}
+          className="no-drag flex items-center gap-2 h-7 w-full min-w-0 pl-2.5 pr-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-inset)] text-[var(--text-muted)] hover:text-[var(--text-secondary)] hover:border-[var(--border-strong)] transition-colors"
+          aria-label={withShortcut('Search or run a command', 'commandPalette')}
+        >
+          <Search size={13} className="flex-shrink-0" />
+          <span className="flex-1 min-w-0 text-left text-[12px] truncate">Search or run a command…</span>
+          <kbd className="flex-shrink-0 px-1.5 rounded border border-[var(--border)] bg-[var(--bg-tertiary)] font-mono text-[10px] leading-[18px] text-[var(--text-secondary)]">
+            {shortcutLabel('commandPalette')}
+          </kbd>
+        </button>
 
-        {/* Right: connect + utilities */}
-        <div className="flex items-center gap-1 no-drag">
+        <div data-tauri-drag-region className="flex items-center justify-end">
           <button
             onClick={() => useSessionStore.getState().setShowQuickConnect(true)}
-            className="btn-accent flex items-center gap-1.5 h-8 px-3 text-[12px]"
-            title="New connection (Ctrl+T)"
+            className="no-drag btn-accent flex items-center gap-1.5 h-7 px-3 text-[12px]"
+            title={withShortcut('New connection', 'quickConnect')}
           >
             <Plug size={13} />
             <span>Connect</span>
           </button>
-          <div className="w-px h-5 bg-[var(--border)] mx-1" />
-          <button
-            onClick={() => setShowSearch(true)}
-            className="p-2 rounded-md text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] transition-colors"
-            title="Search (Ctrl+F)"
-          >
-            <Search size={16} />
-          </button>
-          <button
-            onClick={() => useSessionStore.getState().setShowCommandPalette(true)}
-            className="p-2 rounded-md text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] transition-colors"
-            title="Command palette (Ctrl+K)"
-          >
-            <Command size={16} />
-          </button>
-          <button
-            onClick={() => setShowSettings(true)}
-            className="p-2 rounded-md text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] transition-colors"
-            title="Settings (Ctrl+,)"
-          >
-            <Settings size={16} />
-          </button>
         </div>
       </div>
 
-      {/* Main Content */}
-      <div className="flex flex-1 overflow-hidden">
-        {/* Sidebar */}
+      {/* Main Content: activity bar · sessions sidebar · terminal · side panel */}
+      <div className="flex flex-1 min-h-0 overflow-hidden">
+        <ActivityBar />
+
+        {/* Hidden (not unmounted) while the side panel is maximized, so its
+            search text and state survive. */}
         {sidebarVisible && (
-          <Sidebar onConnect={handleConnect} />
+          <div className={panelMaximized ? 'hidden' : 'contents'}>
+            <Sidebar onConnect={openHost} />
+          </div>
         )}
 
-        {/* Terminal Area */}
-        <div className="flex-1 flex flex-col min-w-0">
-          {/* Tabs */}
-          <TerminalTabs
-            onPopOut={popOutSession}
-            onDisconnect={handleDisconnect}
-            onReconnect={handleReconnect}
-            onMapDevice={setMappingSessionId}
-          />
+        {/* Terminal column + side panel. */}
+        <div ref={panelRowRef} className="flex flex-1 min-w-0 overflow-hidden">
+          <div className={`flex-1 flex flex-col min-w-0 ${terminalHidden ? 'hidden' : ''}`}>
+            {/* Tabs */}
+            <TerminalTabs
+              onDuplicate={duplicateSession}
+              onPopOut={popOutSession}
+              onDisconnect={handleDisconnect}
+              onReconnect={handleReconnect}
+              onMapDevice={setMappingSessionId}
+            />
 
-          {/* Multi-send bar — run one command on all connected sessions or a subset */}
-          {broadcastMode && (() => {
-            const connected = sessions.filter((s) => s.connected);
-            const isTarget = (id: string) => targetMode === 'all' || selectedTargets.has(id);
-            const targetCount =
-              targetMode === 'all' ? connected.length : connected.filter((s) => selectedTargets.has(s.sessionId)).length;
-            const toggleTarget = (id: string) =>
-              setSelectedTargets((prev) => {
-                const next = new Set(prev);
-                if (next.has(id)) next.delete(id);
-                else next.add(id);
-                return next;
-              });
-            // First switch to "Selected" starts from all-checked, so you deselect rather
-            // than build the list from nothing.
-            const switchMode = (m: 'all' | 'selected') => {
-              if (m === 'selected' && selectedTargets.size === 0) {
-                setSelectedTargets(new Set(connected.map((s) => s.sessionId)));
-              }
-              setTargetMode(m);
-            };
-            return (
-              <div className="flex flex-wrap items-center gap-2 px-3 py-1.5 bg-[var(--accent-2-soft)] border-b border-[var(--accent-2)]/40">
-                <Radio size={12} className="text-[var(--accent-2)] flex-shrink-0" />
-                <span className="text-[10px] text-[var(--accent-2)] uppercase font-semibold tracking-wide flex-shrink-0">
-                  Multi-send
-                </span>
-                {/* All / Selected toggle */}
-                <div className="flex items-center rounded-md overflow-hidden border border-[var(--border)] flex-shrink-0">
-                  {(['all', 'selected'] as const).map((m) => (
-                    <button
-                      key={m}
-                      onClick={() => switchMode(m)}
-                      className={`px-2 py-0.5 text-[10px] capitalize transition-colors ${
-                        targetMode === m
-                          ? 'bg-[var(--accent-2)] text-white'
-                          : 'text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]'
-                      }`}
-                    >
-                      {m}
-                    </button>
-                  ))}
+            {/* Multi-send bar — type once into the chosen sessions (see MultiSendBar) */}
+            {broadcastMode && <MultiSendBar />}
+
+            <div className="flex-1 relative overflow-hidden">
+              {fileDropHint && activeSession && (
+                <div className="absolute inset-2 z-20 pointer-events-none rounded-lg border-2 border-dashed border-[var(--accent)] bg-[var(--bg-primary)]/60 flex items-center justify-center">
+                  <span className="text-sm text-[var(--text-primary)] bg-[var(--bg-secondary)] px-3 py-1.5 rounded-md border border-[var(--border)]">
+                    Drop to insert file path
+                  </span>
                 </div>
-                {/* Target chips */}
-                {connected.length === 0 ? (
-                  <span className="text-[10px] text-[var(--text-muted)]">No connected sessions</span>
-                ) : (
-                  <div className="flex flex-wrap items-center gap-1">
-                    {connected.map((s) => {
-                      const on = isTarget(s.sessionId);
-                      const label = s.config.name || s.config.host || 'session';
-                      return (
-                        <button
-                          key={s.sessionId}
-                          onClick={() => targetMode === 'selected' && toggleTarget(s.sessionId)}
-                          disabled={targetMode === 'all'}
-                          title={
-                            targetMode === 'selected'
-                              ? on
-                                ? 'Click to exclude'
-                                : 'Click to include'
-                              : 'All connected sessions'
-                          }
-                          className={`px-1.5 py-0.5 rounded text-[10px] border transition-colors ${
-                            on
-                              ? 'bg-[var(--accent-2-soft)] border-[var(--accent-2)] text-[var(--accent-2)]'
-                              : 'bg-[var(--bg-primary)] border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--text-secondary)]'
-                          } ${targetMode === 'all' ? 'cursor-default' : 'cursor-pointer'}`}
-                        >
-                          {on ? '✓ ' : ''}
-                          {label}
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
-                <input
-                  value={broadcastInput}
-                  onChange={(e) => setBroadcastInput(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      e.preventDefault();
-                      sendBroadcast();
-                    }
-                  }}
-                  placeholder={`Command to send to ${targetCount} session${targetCount === 1 ? '' : 's'}…`}
-                  className="flex-1 min-w-[140px] h-7 px-2 bg-[var(--bg-primary)] border border-[var(--border)] rounded text-xs text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent-2)]"
-                />
-                <button
-                  onClick={sendBroadcast}
-                  disabled={targetCount === 0}
-                  className="px-2.5 py-1 text-xs bg-[var(--accent-2)] hover:brightness-110 disabled:opacity-40 text-white rounded transition-colors flex-shrink-0"
-                >
-                  Send to {targetCount}
-                </button>
-              </div>
-            );
-          })()}
-
-          {/* Terminal Container + Side Panels */}
-          <div className="flex flex-1 overflow-hidden">
-            {/* Terminal — hidden with no sessions + editor open, so the editor fills
-                the area and works as a standalone text editor. */}
-            <div className={`flex-1 flex flex-col min-w-0 ${!activeSession && showConfigEditor ? 'hidden' : ''}`}>
-              <div className="flex-1 relative overflow-hidden">
-                {fileDropHint && activeSession && (
-                  <div className="absolute inset-2 z-20 pointer-events-none rounded-lg border-2 border-dashed border-[var(--accent)] bg-[var(--bg-primary)]/60 flex items-center justify-center">
-                    <span className="text-sm text-[var(--text-primary)] bg-[var(--bg-secondary)] px-3 py-1.5 rounded-md border border-[var(--border)]">
-                      Drop to insert file path
-                    </span>
-                  </div>
-                )}
-                {activeSession ? (
-                  // Every session's terminal stays MOUNTED — we only show/hide it via
-                  // CSS — so switching tabs preserves each terminal's screen + scrollback
-                  // (and avoids disposing an xterm mid-render). Active = left/full,
-                  // secondary = right half in split, the rest are display:none.
-                  <div className="h-full w-full relative">
-                    {canSplit && (
-                      <>
-                        {/* Pane headers — pane 1 is the active session; panes
-                            2..N carry a session picker, a close button, and the
-                            last pane an add-pane button (max 4 columns). */}
-                        {paneSessions.map((p, i) => {
-                          const accent = vendorColor(p.config.deviceType);
-                          return (
-                            <div
-                              key={`pane-h-${p.sessionId}`}
-                              className="absolute top-0 z-10 flex items-center gap-2 h-7 px-2.5 bg-[var(--bg-secondary)] border-b border-[var(--border)]"
-                              style={{
-                                left: `${paneOffset(i) * 100}%`,
-                                width: `${ratioAt(i) * 100}%`,
+              )}
+              {activeSession ? (
+                // Every session's terminal stays MOUNTED — we only show/hide it via
+                // CSS — so switching tabs preserves each terminal's screen + scrollback
+                // (and avoids disposing an xterm mid-render). Single view shows the
+                // active one; split view shows each pane's session in its column.
+                // The rest are display:none.
+                <div className="h-full w-full relative">
+                  {canSplit && (
+                    <>
+                      {/* Pane headers — every pane carries a session picker
+                          and a close button, the last one an add-pane button
+                          (max 4 columns). The focused pane (the active
+                          session) gets the accent bar. */}
+                      {paneSessions.map((p, i) => {
+                        const accent = vendorColor(p.config.deviceType);
+                        const focused = p.sessionId === activeSessionId;
+                        return (
+                          <div
+                            key={`pane-h-${p.sessionId}`}
+                            onMouseDown={(e) => {
+                              focusPane(p.sessionId);
+                              // Clicks on the header's bare area also hand the
+                              // keyboard to that pane's terminal.
+                              if (!(e.target as HTMLElement).closest('select, button')) {
+                                e.preventDefault();
+                                getTerminalActionAdapter(p.sessionId)?.focus();
+                              }
+                            }}
+                            className={`absolute top-0 z-10 flex items-center gap-2 h-7 px-2.5 border-b transition-colors ${
+                              focused
+                                ? 'bg-[var(--bg-primary)] border-[var(--accent)]'
+                                : 'bg-[var(--bg-secondary)] border-[var(--border)]'
+                            }`}
+                            style={{
+                              left: `${paneOffset(i) * 100}%`,
+                              width: `${ratioAt(i) * 100}%`,
+                              boxShadow: focused ? 'inset 0 2px 0 var(--accent)' : undefined,
+                            }}
+                          >
+                            <span
+                              className="vendor-dot flex-shrink-0"
+                              style={{ background: accent, color: accent }}
+                            />
+                            <select
+                              value={p.sessionId}
+                              onChange={(e) => {
+                                setSplitPaneAt(splitPanes.indexOf(p.sessionId), e.target.value);
+                                refitTerminals();
                               }}
+                              title={focused ? 'Focused pane — shortcuts and tools act on this session' : 'Session shown in this pane'}
+                              className={`flex-1 min-w-0 text-[11px] bg-transparent border-0 focus:outline-none cursor-pointer ${
+                                focused
+                                  ? 'font-medium text-[var(--text-primary)]'
+                                  : 'text-[var(--text-secondary)]'
+                              }`}
+                            >
+                              {paneCandidates
+                                .filter(
+                                  (c) =>
+                                    c.sessionId === p.sessionId ||
+                                    !splitPanes.includes(c.sessionId),
+                                )
+                                .map((c) => (
+                                  <option key={c.sessionId} value={c.sessionId}>
+                                    {tabLabel(c)}
+                                  </option>
+                                ))}
+                            </select>
+                            {i === paneSessions.length - 1 &&
+                              paneSessions.length < MAX_PANES &&
+                              unusedPaneCandidates.length > 0 && (
+                                <button
+                                  onClick={addSplitPane}
+                                  className="p-0.5 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors flex-shrink-0"
+                                  title="Add pane"
+                                >
+                                  <Plus size={12} />
+                                </button>
+                              )}
+                            <button
+                              onClick={() => {
+                                removeSplitPane(p.sessionId);
+                                refitTerminals();
+                              }}
+                              className="p-0.5 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors flex-shrink-0"
+                              title="Close pane (the session stays open as a tab)"
+                            >
+                              <X size={12} />
+                            </button>
+                          </div>
+                        );
+                      })}
+                      {/* Draggable dividers between adjacent panes */}
+                      {paneSessions.slice(1).map((p, i) => (
+                        <div
+                          key={`pane-d-${p.sessionId}`}
+                          onMouseDown={startSplitDrag(i)}
+                          className={`absolute top-0 bottom-0 z-20 w-1.5 -ml-[3px] cursor-col-resize transition-colors ${
+                            splitDragIdx === i
+                              ? 'bg-[var(--accent)]'
+                              : 'bg-transparent hover:bg-[var(--accent-ring)]'
+                          }`}
+                          style={{ left: `${paneOffset(i + 1) * 100}%` }}
+                        />
+                      ))}
+                    </>
+                  )}
+                  {sessions.map((s) => {
+                    const isPopped = poppedSessions.includes(s.sessionId);
+                    const paneIdx = canSplit
+                      ? paneSessions.findIndex((p) => p.sessionId === s.sessionId)
+                      : -1;
+                    const isActive = s.sessionId === activeSessionId && !isPopped;
+                    const visible = canSplit ? paneIdx >= 0 : isActive;
+                    const style: React.CSSProperties = !visible
+                      ? { display: 'none' }
+                      : canSplit
+                      ? {
+                          position: 'absolute',
+                          top: 28,
+                          bottom: 0,
+                          left: `${paneOffset(paneIdx) * 100}%`,
+                          width: `${ratioAt(paneIdx) * 100}%`,
+                          borderRight:
+                            paneIdx < paneSessions.length - 1
+                              ? '1px solid var(--border)'
+                              : undefined,
+                        }
+                      : { position: 'absolute', inset: 0 };
+                    return (
+                      // Focus landing in a pane's terminal (click, or the
+                      // keyboard) makes that pane the focused one.
+                      <div
+                        key={s.sessionId}
+                        style={style}
+                        onFocus={paneIdx >= 0 ? () => focusPane(s.sessionId) : undefined}
+                        // Outline every terminal the multi-send bar will type
+                        // into, so a stray target is visible before Enter.
+                        className={
+                          broadcastMode && isMultiSendTarget(s, multiSendTargets)
+                            ? 'outline outline-2 -outline-offset-2 outline-[var(--accent-2)]'
+                            : undefined
+                        }
+                      >
+                        <MemoTerminal
+                          sessionId={s.sessionId}
+                          deviceType={s.config.deviceType}
+                          onSend={sendHandlerFor(s.sessionId)}
+                        />
+                        {/* A dropped session says so, with an obvious way back —
+                            the only reconnect controls used to be a hover-only
+                            tab icon and the status-bar text. */}
+                        {!s.connected && s.connectionStatus === 'disconnected' && (
+                          <div className="absolute top-2 left-1/2 -translate-x-1/2 z-10 flex items-center gap-2.5 pl-3 pr-1.5 py-1.5 rounded-lg border border-[var(--border-strong)] bg-[var(--bg-secondary)] shadow-xl text-xs text-[var(--text-secondary)]">
+                            <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent-danger)]" />
+                            <span>
+                              <span className="font-medium text-[var(--text-primary)]">Disconnected</span>
+                              {' '}— press Enter or
+                            </span>
+                            <button
+                              onClick={() => handleReconnect(s.sessionId)}
+                              className="btn-accent flex items-center gap-1.5 h-7 px-3 text-xs"
+                            >
+                              <RefreshCw size={12} />
+                              Reconnect
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="flex flex-col items-center justify-center h-full px-6 text-center animate-fade-in">
+                  <div
+                    className="flex items-center justify-center w-16 h-16 rounded-2xl mb-5"
+                    style={{
+                      background: 'linear-gradient(135deg, var(--accent-hover), var(--accent))',
+                      boxShadow: 'var(--glow-accent)',
+                    }}
+                  >
+                    <PromptGlyph size={32} style={{ color: 'var(--accent-fg)' }} />
+                  </div>
+                  <h1 className="text-[22px] font-semibold text-[var(--text-primary)] tracking-tight">
+                    GreenCLI
+                  </h1>
+                  <p className="mt-1.5 text-[13px] text-[var(--text-secondary)]">
+                    One cockpit for Aruba, Juniper &amp; Mist.
+                  </p>
+
+                  {/* Vendor chips */}
+                  <div className="mt-4 flex items-center gap-2">
+                    {([
+                      ['Aruba', 'var(--vendor-aruba)'],
+                      ['Juniper', 'var(--vendor-juniper)'],
+                      ['Mist', 'var(--vendor-mist)'],
+                    ] as [string, string][]).map(([label, color]) => (
+                      <span
+                        key={label}
+                        className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium border border-[var(--border)] bg-[var(--bg-secondary)] text-[var(--text-secondary)]"
+                      >
+                        <span className="vendor-dot" style={{ background: color, color }} />
+                        {label}
+                      </span>
+                    ))}
+                  </div>
+
+                  <div className="mt-7 flex items-center gap-2.5">
+                    <button
+                      onClick={() => useSessionStore.getState().setShowQuickConnect(true)}
+                      className="btn-accent flex items-center gap-2 h-10 px-5 text-sm"
+                    >
+                      <Plug size={16} />
+                      Quick Connect
+                    </button>
+                    <button
+                      onClick={openLocalShell}
+                      className="flex items-center gap-2 h-10 px-5 text-sm rounded-[var(--radius)] border border-[var(--border-strong)] bg-[var(--bg-secondary)] hover:bg-[var(--bg-tertiary)] text-[var(--text-primary)] transition-colors"
+                      title="Open a local shell terminal"
+                    >
+                      <TerminalSquare size={16} />
+                      Local Shell
+                    </button>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      useSessionStore.getState().setSettingsFocus('mcp');
+                      useSessionStore.getState().setShowSettings(true);
+                    }}
+                    className="mt-3 text-[11px] text-[var(--text-muted)] hover:text-[var(--text-secondary)] transition-colors"
+                  >
+                    Set up AI and MCP servers in Settings
+                  </button>
+
+                  {/* Recent connections — one click back into the last hosts */}
+                  {recents.length > 0 && (
+                    <div className="mt-7 w-full max-w-sm text-left animate-fade-in">
+                      <div className="flex items-center justify-between px-1 mb-1.5">
+                        <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+                          Recent
+                        </span>
+                        <button
+                          onClick={clearRecents}
+                          className="text-[10px] text-[var(--text-muted)] hover:text-[var(--text-secondary)] transition-colors"
+                          title="Clear recent connections"
+                        >
+                          Clear
+                        </button>
+                      </div>
+                      <div className="surface overflow-hidden divide-y divide-[var(--border)]">
+                        {recents.slice(0, 5).map((r) => {
+                          const accent = vendorColor(r.deviceType);
+                          const where = r.host
+                            ? `${r.username ? r.username + '@' : ''}${r.host}`
+                            : '';
+                          return (
+                            <button
+                              key={r.id}
+                              onClick={() => connectRecent(r)}
+                              className="group flex items-center gap-2.5 w-full px-3 py-2 text-left hover:bg-[var(--bg-tertiary)] transition-colors"
+                              title={`Reconnect (${r.protocol.toUpperCase()})`}
                             >
                               <span
                                 className="vendor-dot flex-shrink-0"
                                 style={{ background: accent, color: accent }}
                               />
-                              {i === 0 ? (
-                                <span className="flex-1 min-w-0 text-[11px] font-medium text-[var(--text-primary)] truncate">
-                                  {p.config.name || p.config.host || 'Session'}
+                              <span className="text-[12px] text-[var(--text-primary)] truncate">
+                                {r.name}
+                              </span>
+                              {where && where !== r.name && (
+                                <span className="text-[11px] text-[var(--text-muted)] truncate">
+                                  {where}
                                 </span>
-                              ) : (
-                                <select
-                                  value={p.sessionId}
-                                  onChange={(e) => {
-                                    setSplitPaneAt(i - 1, e.target.value);
-                                    refitTerminals();
-                                  }}
-                                  className="flex-1 min-w-0 text-[11px] bg-transparent border-0 text-[var(--text-primary)] focus:outline-none cursor-pointer"
-                                >
-                                  {paneCandidates
-                                    .filter(
-                                      (c) =>
-                                        c.sessionId === p.sessionId ||
-                                        !splitPanes.includes(c.sessionId),
-                                    )
-                                    .map((c) => (
-                                      <option key={c.sessionId} value={c.sessionId}>
-                                        {c.config.name || c.config.host || 'Session'}
-                                      </option>
-                                    ))}
-                                </select>
                               )}
-                              {i === paneSessions.length - 1 &&
-                                paneSessions.length < 4 &&
-                                unusedPaneCandidates.length > 0 && (
-                                  <button
-                                    onClick={addSplitPane}
-                                    className="p-0.5 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors flex-shrink-0"
-                                    title="Add pane"
-                                  >
-                                    <Plus size={12} />
-                                  </button>
-                                )}
-                              {i > 0 && (
-                                <button
-                                  onClick={() => {
-                                    removeSplitPane(p.sessionId);
-                                    refitTerminals();
-                                  }}
-                                  className="p-0.5 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors flex-shrink-0"
-                                  title="Close pane"
-                                >
-                                  <X size={12} />
-                                </button>
-                              )}
-                            </div>
+                              <span className="ml-auto pl-2 text-[10px] text-[var(--text-muted)] tabular-nums flex-shrink-0">
+                                {timeAgo(r.lastConnectedAt)}
+                              </span>
+                            </button>
                           );
                         })}
-                        {/* Draggable dividers between adjacent panes */}
-                        {paneSessions.slice(1).map((p, i) => (
-                          <div
-                            key={`pane-d-${p.sessionId}`}
-                            onMouseDown={startSplitDrag(i)}
-                            className={`absolute top-0 bottom-0 z-20 w-1.5 -ml-[3px] cursor-col-resize transition-colors ${
-                              splitDragIdx === i
-                                ? 'bg-[#58a6ff]'
-                                : 'bg-transparent hover:bg-[#58a6ff60]'
-                            }`}
-                            style={{ left: `${paneOffset(i + 1) * 100}%` }}
-                          />
-                        ))}
-                      </>
-                    )}
-                    {sessions.map((s) => {
-                      const isPopped = poppedSessions.includes(s.sessionId);
-                      const paneIdx = canSplit
-                        ? paneSessions.findIndex((p) => p.sessionId === s.sessionId)
-                        : -1;
-                      const isActive = s.sessionId === activeSessionId && !isPopped;
-                      const visible = canSplit ? paneIdx >= 0 : isActive;
-                      const style: React.CSSProperties = !visible
-                        ? { display: 'none' }
-                        : canSplit
-                        ? {
-                            position: 'absolute',
-                            top: 28,
-                            bottom: 0,
-                            left: `${paneOffset(paneIdx) * 100}%`,
-                            width: `${ratioAt(paneIdx) * 100}%`,
-                            borderRight:
-                              paneIdx < paneSessions.length - 1
-                                ? '1px solid var(--border)'
-                                : undefined,
-                          }
-                        : { position: 'absolute', inset: 0 };
-                      return (
-                        <div key={s.sessionId} style={style}>
-                          <MemoTerminal
-                            sessionId={s.sessionId}
-                            deviceType={s.config.deviceType}
-                            onSend={sendHandlerFor(s.sessionId)}
-                          />
-                        </div>
-                      );
-                    })}
-                  </div>
-                ) : (
-                  <div className="flex flex-col items-center justify-center h-full px-6 text-center animate-fade-in">
-                    <div
-                      className="flex items-center justify-center w-16 h-16 rounded-2xl mb-5"
-                      style={{
-                        background: 'linear-gradient(135deg, var(--accent-hover), var(--accent))',
-                        boxShadow: 'var(--glow-accent)',
-                      }}
-                    >
-                      <PromptGlyph size={32} style={{ color: 'var(--accent-fg)' }} />
-                    </div>
-                    <h1 className="text-[22px] font-semibold text-[var(--text-primary)] tracking-tight">
-                      GreenCLI
-                    </h1>
-                    <p className="mt-1.5 text-[13px] text-[var(--text-secondary)]">
-                      One cockpit for Aruba, Juniper &amp; Mist.
-                    </p>
-
-                    {/* Vendor chips */}
-                    <div className="mt-4 flex items-center gap-2">
-                      {([
-                        ['Aruba', 'var(--vendor-aruba)'],
-                        ['Juniper', 'var(--vendor-juniper)'],
-                        ['Mist', 'var(--vendor-mist)'],
-                      ] as [string, string][]).map(([label, color]) => (
-                        <span
-                          key={label}
-                          className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium border border-[var(--border)] bg-[var(--bg-secondary)] text-[var(--text-secondary)]"
-                        >
-                          <span className="vendor-dot" style={{ background: color, color }} />
-                          {label}
-                        </span>
-                      ))}
-                    </div>
-
-                    <div className="mt-7 flex items-center gap-2.5">
-                      <button
-                        onClick={() => useSessionStore.getState().setShowQuickConnect(true)}
-                        className="btn-accent flex items-center gap-2 h-10 px-5 text-sm"
-                      >
-                        <Plug size={16} />
-                        Quick Connect
-                      </button>
-                      <button
-                        onClick={openLocalShell}
-                        className="flex items-center gap-2 h-10 px-5 text-sm rounded-[var(--radius)] border border-[var(--border-strong)] bg-[var(--bg-secondary)] hover:bg-[var(--bg-tertiary)] text-[var(--text-primary)] transition-colors"
-                        title="Open a local shell terminal"
-                      >
-                        <TerminalSquare size={16} />
-                        Local Shell
-                      </button>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        useSessionStore.getState().setSettingsFocus('mcp');
-                        useSessionStore.getState().setShowSettings(true);
-                      }}
-                      className="mt-3 text-[11px] text-[var(--text-muted)] hover:text-[var(--text-secondary)] transition-colors"
-                    >
-                      AI / MCP: Settings → MCP Servers
-                    </button>
-
-                    {/* Recent connections — one click back into the last hosts */}
-                    {recents.length > 0 && (
-                      <div className="mt-7 w-full max-w-sm text-left animate-fade-in">
-                        <div className="flex items-center justify-between px-1 mb-1.5">
-                          <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
-                            Recent
-                          </span>
-                          <button
-                            onClick={clearRecents}
-                            className="text-[10px] text-[var(--text-muted)] hover:text-[var(--text-secondary)] transition-colors"
-                            title="Clear recent connections"
-                          >
-                            Clear
-                          </button>
-                        </div>
-                        <div className="surface overflow-hidden divide-y divide-[var(--border)]">
-                          {recents.slice(0, 5).map((r) => {
-                            const accent = vendorColor(r.deviceType);
-                            const where = r.host
-                              ? `${r.username ? r.username + '@' : ''}${r.host}`
-                              : '';
-                            return (
-                              <button
-                                key={r.id}
-                                onClick={() => connectRecent(r)}
-                                className="group flex items-center gap-2.5 w-full px-3 py-2 text-left hover:bg-[var(--bg-tertiary)] transition-colors"
-                                title={`Reconnect (${r.protocol.toUpperCase()})`}
-                              >
-                                <span
-                                  className="vendor-dot flex-shrink-0"
-                                  style={{ background: accent, color: accent }}
-                                />
-                                <span className="text-[12px] text-[var(--text-primary)] truncate">
-                                  {r.name}
-                                </span>
-                                {where && where !== r.name && (
-                                  <span className="text-[11px] text-[var(--text-muted)] truncate">
-                                    {where}
-                                  </span>
-                                )}
-                                <span className="ml-auto pl-2 text-[10px] text-[var(--text-muted)] tabular-nums flex-shrink-0">
-                                  {timeAgo(r.lastConnectedAt)}
-                                </span>
-                              </button>
-                            );
-                          })}
-                        </div>
                       </div>
-                    )}
-
-                    {/* Shortcut hints */}
-                    <div className="mt-8 flex flex-wrap items-center justify-center gap-x-5 gap-y-2 max-w-md text-[11px] text-[var(--text-muted)]">
-                      {([
-                        ['Ctrl+T', 'Connect'],
-                        ['Ctrl+K', 'Commands'],
-                        ['Ctrl+F', 'Search'],
-                        ['Ctrl+Shift+E', 'Editor'],
-                        ['Ctrl+Shift+A', 'API'],
-                        ['Ctrl+Shift+I', 'AI'],
-                      ] as [string, string][]).map(([k, label]) => (
-                        <span key={k} className="flex items-center gap-1.5">
-                          <kbd className="px-1.5 py-0.5 rounded bg-[var(--bg-tertiary)] border border-[var(--border)] text-[var(--text-secondary)] font-mono text-[10px]">
-                            {k}
-                          </kbd>
-                          {label}
-                        </span>
-                      ))}
                     </div>
+                  )}
+
+                  {/* Shortcut hints */}
+                  <div className="mt-8 flex flex-wrap items-center justify-center gap-x-5 gap-y-2 max-w-md text-[11px] text-[var(--text-muted)]">
+                    {([
+                      [shortcutLabel('quickConnect'), 'Connect'],
+                      [shortcutLabel('commandPalette'), 'Commands'],
+                      [shortcutLabel('find'), 'Find'],
+                      [shortcutLabel('editor'), 'Editor'],
+                      [shortcutLabel('api'), 'API'],
+                      [shortcutLabel('ai'), 'AI'],
+                      [shortcutLabel('help'), 'Help'],
+                    ] as [string, string][]).map(([k, label]) => (
+                      <span key={k} className="flex items-center gap-1.5">
+                        <kbd className="px-1.5 py-0.5 rounded bg-[var(--bg-tertiary)] border border-[var(--border)] text-[var(--text-secondary)] font-mono text-[10px]">
+                          {k}
+                        </kbd>
+                        {label}
+                      </span>
+                    ))}
                   </div>
-                )}
+                </div>
+              )}
 
-                {/* Search Overlay */}
-                <SearchOverlay />
-              </div>
-
-              {/* Status Bar */}
-              <StatusBar
-                onDisconnect={handleDisconnect}
-                onReconnect={handleReconnect}
-                onMapDevice={setMappingSessionId}
-              />
+              {/* Search Overlay */}
+              <SearchOverlay />
             </div>
 
-            {/* Config Editor Panel — always MOUNTED (hidden via CSS when closed,
-                like the per-session terminals) so editor buffers/undo history
-                survive closing the panel. Monaco re-lays out on unhide. */}
-            <ConfigEditor />
-
-            {/* API Explorer Panel */}
-            {showApiExplorer && <ApiExplorer />}
-
-            {/* AI Assistant Panel — always mounted for the same reason: closing
-                the panel must not destroy the chat history. */}
-            <AiAssistant />
+            {/* Status Bar */}
+            <StatusBar
+              onDisconnect={handleDisconnect}
+              onReconnect={handleReconnect}
+              onMapDevice={setMappingSessionId}
+            />
           </div>
+
+          {/* Editor / API / AI — one panel with tabs, every tab kept mounted
+              so buffers, requests and the chat survive (see SidePanel). */}
+          <SidePanel />
         </div>
       </div>
 
       {/* Modals & Overlays */}
       <BulkRunner />
+      <ChangeJobs onConnect={connectForJob} />
       {showSftp && activeSessionId && (
-        <SftpBrowser sessionId={activeSessionId} onClose={() => setShowSftp(false)} />
+        // Keyed by session: switching tabs while it is open must not leave the
+        // old session's listing/cwd on screen while actions hit the new one.
+        <SftpBrowser key={activeSessionId} sessionId={activeSessionId} onClose={() => setShowSftp(false)} />
       )}
-      <VaultUnlock onUnlocked={resumeVaultConnect} onCancel={cancelVaultConnect} />
-      <CommandPalette onConnect={handleConnect} onLocalShell={openLocalShell} onConnectRecent={connectRecent} />
+      <VaultUnlock
+        onUnlocked={resumeVaultConnect}
+        onCancel={cancelVaultConnect}
+        onSkip={skipVaultConnect}
+        waitingFor={vaultWaiting}
+      />
+      <CommandPalette
+        onConnect={openHost}
+        onDuplicateTab={duplicateSession}
+        onLocalShell={openLocalShell}
+        onConnectRecent={connectRecent}
+      />
       <TunnelsManager />
       <IntentPanel />
       <HelpPanel />
-      <QuickConnect onConnect={handleConnect} />
+      <ImportHosts />
+      <QuickConnect onConnect={openHost} />
       <SshAuthDialog onAuthenticate={handleAuthenticate} />
       <DeviceMapper sessionId={mappingSessionId} onClose={() => setMappingSessionId(null)} />
       <SettingsPanel />

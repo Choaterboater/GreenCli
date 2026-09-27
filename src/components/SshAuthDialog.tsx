@@ -1,23 +1,48 @@
 import { useState, useEffect } from 'react';
-import { X, KeyRound, Eye, EyeOff, Lock, FolderOpen, FileKey } from 'lucide-react';
+import { X, KeyRound, Eye, EyeOff, Lock, FolderOpen, FileKey, AlertTriangle, Users } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/tauri';
 import { open as openDialog } from '@tauri-apps/api/dialog';
 import { useSessionStore } from '../store/sessionStore';
+import { useSettingsStore } from '../store/settingsStore';
 import { notify } from '../store/toastStore';
+import { hostSummary } from '../utils/hosts';
+import { tabLabel } from '../utils/tabs';
+import { loginUsage } from '../utils/logins';
 
 export interface AuthCredentials {
   authType: 'password' | 'key' | 'agent';
+  /** Login name from the dialog — may differ from the pending connection's
+   *  (a blank or wrong username can't be fixed by any password). */
+  username?: string;
   password?: string;
   privateKey?: string;
   keyPassphrase?: string;
 }
 
+/** Where a password that works gets saved: nowhere, as this host's own
+ *  password, or as the host's shared login's new password. */
+export type AuthSaveChoice = 'none' | 'host' | 'login';
+
 interface SshAuthDialogProps {
-  onAuthenticate: (creds: AuthCredentials, saveCredential: boolean) => void;
+  onAuthenticate: (creds: AuthCredentials, save: AuthSaveChoice) => void;
 }
 
 export default function SshAuthDialog({ onAuthenticate }: SshAuthDialogProps) {
   const { showAuthDialog, pendingConnection, setShowAuthDialog } = useSessionStore();
+  const authError = useSessionStore((s) =>
+    s.pendingConnection ? s.authErrors[s.pendingConnection.id] : undefined
+  );
+  // The shared login this host uses, if any (see PromptLogin).
+  const promptLogin = useSessionStore((s) =>
+    s.pendingConnection ? s.authLogins[s.pendingConnection.id] : undefined
+  );
+  const folders = useSessionStore((s) => s.folders);
+  const loginProfiles = useSettingsStore((s) => s.loginProfiles);
+  // null = not chosen: "just this host" only if that's what was tried last.
+  const [loginModeDraft, setLoginModeDraft] = useState<'login' | 'host' | null>(null);
+  // null = not edited: show the pending connection's own username.
+  const [usernameDraft, setUsernameDraft] = useState<string | null>(null);
+  const username = usernameDraft ?? pendingConnection?.username ?? '';
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [saveCredential, setSaveCredential] = useState(false);
@@ -39,12 +64,25 @@ export default function SshAuthDialog({ onAuthenticate }: SshAuthDialogProps) {
     setKeyName(null);
     setKeyPassphrase('');
     setShowKeyPassphrase(false);
+    setUsernameDraft(null);
+    setLoginModeDraft(null);
   };
 
   const dismiss = () => {
+    // Giving up on this host ends its run of failed attempts.
+    const id = useSessionStore.getState().pendingConnection?.id;
+    if (id) useSessionStore.getState().clearAuthError(id);
     resetForm();
     setShowAuthDialog(false);
   };
+
+  // A different host's prompt must never inherit what was typed for the last
+  // one (a password typed for A must not be sent to — or saved for — B).
+  const pendingId = pendingConnection?.id;
+  useEffect(() => {
+    resetForm();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingId]);
 
   // Close on Escape, matching every other modal in the app.
   useEffect(() => {
@@ -82,21 +120,49 @@ export default function SshAuthDialog({ onAuthenticate }: SshAuthDialogProps) {
     }
   };
 
+  // A username changed here is not the login's: saving its password to the
+  // login would hand every host using that login the wrong password.
+  const usernameEdited = username.trim() !== (pendingConnection.username ?? '').trim();
+  // A shared login offers "update the login" vs "just this host" — except
+  // after Skip on a locked vault, where its password just can't be read, and
+  // when the username was changed here.
+  const offerLogin = !!promptLogin && promptLogin.reason !== 'locked' && !usernameEdited;
+  // Only "just this host" is left: a login is in play but can't take it.
+  const hostOnlySave = !!promptLogin && promptLogin.reason !== 'locked' && usernameEdited;
+  const loginMode = loginModeDraft ?? (promptLogin?.reason === 'hostPassword' ? 'host' : 'login');
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    const user = username.trim();
     if (authType === 'password') {
-      onAuthenticate({ authType: 'password', password }, saveCredential);
+      const save: AuthSaveChoice =
+        offerLogin && loginMode === 'login'
+          ? 'login'
+          : saveCredential && promptLogin?.reason !== 'locked'
+            ? 'host'
+            : 'none';
+      onAuthenticate({ authType: 'password', username: user, password }, save);
     } else if (authType === 'agent') {
-      onAuthenticate({ authType: 'agent' }, false);
+      onAuthenticate({ authType: 'agent', username: user }, 'none');
     } else {
+      // Only passwords are ever saved to the vault — keys stay in their files.
       onAuthenticate(
-        { authType: 'key', privateKey, keyPassphrase: keyPassphrase || undefined },
-        saveCredential
+        { authType: 'key', username: user, privateKey, keyPassphrase: keyPassphrase || undefined },
+        'none'
       );
     }
     resetForm();
     setShowAuthDialog(false);
   };
+
+  // No username yet: start there, it's what's missing.
+  const focusUsername = !username.trim();
+  // How many saved hosts a login update reaches — the reason to prefer it.
+  const loginReach = promptLogin
+    ? loginUsage(promptLogin.id, folders, loginProfiles ?? []).hostCount
+    : 0;
+  // Live: follows the Username field as it's edited.
+  const target = hostSummary({ ...pendingConnection, username: username.trim() });
 
   const tab = (t: 'password' | 'key' | 'agent', label: string) => (
     <button
@@ -122,11 +188,17 @@ export default function SshAuthDialog({ onAuthenticate }: SshAuthDialogProps) {
       <div className="surface-elevated w-[440px] max-w-[94vw] animate-scale-in">
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--border)]">
-          <div className="flex items-center gap-2.5">
-            <div className="flex items-center justify-center w-7 h-7 rounded-md" style={{ background: 'var(--accent-soft)' }}>
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="flex items-center justify-center w-7 h-7 rounded-md flex-shrink-0" style={{ background: 'var(--accent-soft)' }}>
               <KeyRound size={15} style={{ color: 'var(--accent)' }} />
             </div>
-            <h2 className="text-[16px] font-semibold text-[var(--text-primary)]">Authentication</h2>
+            {/* Name the device — with several prompts queued, "Authentication"
+                alone didn't say which session this password was for. */}
+            <h2 className="text-[16px] font-semibold text-[var(--text-primary)] truncate">
+              {/* The tab's label, so two sessions to one host ("core-sw-01 (2)")
+                  asking for a password at once can be told apart. */}
+              {tabLabel({ config: pendingConnection })}
+            </h2>
           </div>
           <button
             onClick={dismiss}
@@ -139,16 +211,61 @@ export default function SshAuthDialog({ onAuthenticate }: SshAuthDialogProps) {
         {/* Target */}
         <div className="px-5 py-3 bg-[var(--bg-inset)] border-b border-[var(--border)]">
           <div className="flex items-center gap-2 text-sm">
-            <span className="text-[var(--text-secondary)]">Connecting to</span>
-            <span className="font-mono" style={{ color: 'var(--accent)' }}>
-              {pendingConnection.username ? `${pendingConnection.username}@` : ''}
-              {pendingConnection.host}
-              {pendingConnection.port && pendingConnection.port !== 22 ? `:${pendingConnection.port}` : ''}
+            <span className="text-[var(--text-secondary)]">Logging in to</span>
+            <span className="font-mono truncate" style={{ color: 'var(--accent)' }}>
+              {target}
             </span>
           </div>
+          {promptLogin && (
+            <div className="flex items-center gap-1.5 mt-1 text-[11px] text-[var(--text-muted)]">
+              <Users size={11} className="flex-shrink-0" />
+              <span className="truncate">
+                Shared login <span className="text-[var(--text-secondary)]">{promptLogin.name}</span>
+                {promptLogin.reason === 'missing' && ' — no password saved for it yet'}
+              </span>
+            </div>
+          )}
         </div>
 
         <form onSubmit={handleSubmit} className="px-5 py-4 space-y-4">
+          {/* Why we're asking again — the error toast is hidden behind this modal. */}
+          {authError && (
+            <div
+              role="alert"
+              className="flex items-start gap-2 px-3 py-2 rounded-[var(--radius)] text-[12px] leading-relaxed"
+              style={{ background: 'var(--accent-danger-soft)', color: 'var(--accent-danger)', border: '1px solid var(--accent-danger-border)' }}
+            >
+              <AlertTriangle size={14} className="flex-shrink-0 mt-0.5" />
+              <div className="min-w-0">
+                <p>
+                  <span className="font-semibold">
+                    {authError.login
+                      ? `Login "${authError.login.name}" was rejected (attempt ${authError.attempts}).`
+                      : `Access denied (attempt ${authError.attempts}).`}
+                  </span>{' '}
+                  Several failures can lock the account on TACACS/RADIUS.
+                </p>
+                <p className="mt-0.5 font-mono text-[11px] opacity-80 break-words">{authError.message}</p>
+              </div>
+            </div>
+          )}
+
+          {/* Username — editable, since a blank or wrong one can never log in */}
+          <div>
+            <label className="block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-secondary)] mb-1.5">
+              Username
+            </label>
+            <input
+              type="text"
+              value={username}
+              onChange={(e) => setUsernameDraft(e.target.value)}
+              autoFocus={focusUsername}
+              autoComplete="username"
+              required
+              className="input-field w-full h-9 px-3 text-sm"
+            />
+          </div>
+
           {/* Tabs */}
           <div className="flex gap-1 p-1 bg-[var(--bg-inset)] rounded-lg">
             {tab('password', 'Password')}
@@ -170,8 +287,7 @@ export default function SshAuthDialog({ onAuthenticate }: SshAuthDialogProps) {
                   type={showPassword ? 'text' : 'password'}
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  autoFocus
-                  required
+                  autoFocus={!focusUsername}
                   className="input-field w-full h-9 pl-3 pr-10 text-sm"
                 />
                 <button
@@ -182,6 +298,20 @@ export default function SshAuthDialog({ onAuthenticate }: SshAuthDialogProps) {
                   {showPassword ? <EyeOff size={14} /> : <Eye size={14} />}
                 </button>
               </div>
+              {/* An empty password is allowed on purpose — the app no longer
+                  sends one by itself, so this is the only way to reach gear
+                  that has none (e.g. a factory-default AOS-CX "admin"). */}
+              {!password && (
+                <p className="mt-1 text-[10px] text-[var(--text-muted)]">
+                  Leave empty only for a device with no password set.
+                </p>
+              )}
+              {promptLogin?.reason === 'locked' && (
+                <p className="mt-1 text-[11px] text-[var(--text-muted)]">
+                  The vault is locked, so type the password for the &ldquo;{promptLogin.name}&rdquo;
+                  login. It&apos;s used for this connection only.
+                </p>
+              )}
             </div>
           ) : (
             <div className="space-y-3">
@@ -247,8 +377,78 @@ export default function SshAuthDialog({ onAuthenticate }: SshAuthDialogProps) {
             </div>
           )}
 
-          {/* Save — hidden on the SSH Agent tab, where nothing is persisted */}
-          {authType !== 'agent' && (
+          {/* Shared login: fix it once for every host, or go around it here */}
+          {authType === 'password' && offerLogin && promptLogin && (
+            <div className="space-y-2" role="radiogroup" aria-label="Where this password goes">
+              <label className="flex items-start gap-2 cursor-pointer">
+                <input
+                  type="radio"
+                  name="login-mode"
+                  checked={loginMode === 'login'}
+                  onChange={() => setLoginModeDraft('login')}
+                  className="mt-0.5"
+                />
+                <span className="text-sm text-[var(--text-primary)]">
+                  {promptLogin.reason === 'missing'
+                    ? `Save it to the "${promptLogin.name}" login`
+                    : 'Update this login\u2019s password'}
+                  <span className="block text-[11px] text-[var(--text-muted)]">
+                    Saved to &ldquo;{promptLogin.name}&rdquo; once it works
+                    {loginReach > 1 ? ` — all ${loginReach} hosts that use it get it.` : '.'}
+                  </span>
+                </span>
+              </label>
+              <label className="flex items-start gap-2 cursor-pointer">
+                <input
+                  type="radio"
+                  name="login-mode"
+                  checked={loginMode === 'host'}
+                  onChange={() => setLoginModeDraft('host')}
+                  className="mt-0.5"
+                />
+                <span className="text-sm text-[var(--text-primary)]">
+                  Use a different password just for this host
+                </span>
+              </label>
+              {loginMode === 'host' && (
+                <label className="flex items-center gap-2 cursor-pointer pl-6">
+                  <input
+                    type="checkbox"
+                    checked={saveCredential}
+                    onChange={(e) => setSaveCredential(e.target.checked)}
+                    className="w-4 h-4 rounded"
+                  />
+                  <span className="text-[12px] text-[var(--text-secondary)]">
+                    Remember it for this host (it stops using &ldquo;{promptLogin.name}&rdquo;)
+                  </span>
+                </label>
+              )}
+            </div>
+          )}
+
+          {/* Username changed: the login can't take this password, only this host */}
+          {authType === 'password' && hostOnlySave && promptLogin && (
+            <div className="space-y-1">
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={saveCredential}
+                  onChange={(e) => setSaveCredential(e.target.checked)}
+                  className="w-4 h-4 rounded"
+                />
+                <span className="text-sm text-[var(--text-secondary)]">
+                  Remember it for this host (it stops using &ldquo;{promptLogin.name}&rdquo;)
+                </span>
+              </label>
+              <p className="text-[11px] text-[var(--text-muted)] pl-6">
+                The username is different from the &ldquo;{promptLogin.name}&rdquo; login, so
+                it won&rsquo;t be saved there.
+              </p>
+            </div>
+          )}
+
+          {/* Save — Password tab only: keys and the agent are never stored in the vault */}
+          {authType === 'password' && !promptLogin && (
             <label className="flex items-center gap-2 cursor-pointer">
               <input
                 type="checkbox"
@@ -256,7 +456,7 @@ export default function SshAuthDialog({ onAuthenticate }: SshAuthDialogProps) {
                 onChange={(e) => setSaveCredential(e.target.checked)}
                 className="w-4 h-4 rounded"
               />
-              <span className="text-sm text-[var(--text-secondary)]">Save credential to encrypted vault</span>
+              <span className="text-sm text-[var(--text-secondary)]">Save password to encrypted vault</span>
             </label>
           )}
 
@@ -271,7 +471,9 @@ export default function SshAuthDialog({ onAuthenticate }: SshAuthDialogProps) {
             </button>
             <button
               type="submit"
-              disabled={authType === 'password' ? !password : authType === 'key' ? !privateKey : false}
+              disabled={
+                !username.trim() || (authType === 'key' && !privateKey)
+              }
               className="btn-accent flex-1 flex items-center justify-center gap-2 h-10 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <Lock size={14} />

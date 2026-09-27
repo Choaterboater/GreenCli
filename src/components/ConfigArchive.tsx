@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { X, Crown, History, GitCompare, RefreshCw, FileText } from 'lucide-react';
-import { BeforeMount, DiffEditor } from '@monaco-editor/react';
+import { DiffEditor } from '@monaco-editor/react';
+import { defineEditorThemes } from './editorThemes';
 import { useSessionStore } from '../store/sessionStore';
 import { useSettingsStore } from '../store/settingsStore';
 import { useTheme } from '../hooks/useTheme';
@@ -14,23 +15,6 @@ import {
   captureNow,
   getDeviceId,
 } from '../utils/configArchive';
-
-// Same editor themes as ConfigEditor so the diff follows the app's dark/light
-// setting (the prop-driven theme must resolve before Mount, per that pattern).
-const defineEditorThemes: BeforeMount = (monaco) => {
-  monaco.editor.defineTheme('aruba-dark', {
-    base: 'vs-dark',
-    inherit: true,
-    rules: [],
-    colors: { 'editor.background': '#0d1117', 'editor.lineHighlightBackground': '#161b22' },
-  });
-  monaco.editor.defineTheme('aruba-light', {
-    base: 'vs',
-    inherit: true,
-    rules: [],
-    colors: { 'editor.background': '#ffffff', 'editor.lineHighlightBackground': '#f4f7f980' },
-  });
-};
 
 const fmtTime = (ts: number) =>
   new Date(ts).toLocaleString(undefined, {
@@ -212,7 +196,7 @@ export default function ConfigArchive({ onOpenSnapshot, onClose }: ConfigArchive
                     </span>
                     <span className="text-[9px] px-1 py-0.5 rounded bg-[var(--bg-tertiary)] text-[var(--text-muted)]">{e.source}</span>
                     {e.golden && (
-                      <span className="text-[9px] px-1 py-0.5 rounded bg-[#58a6ff20] text-[var(--accent)]">golden</span>
+                      <span className="text-[9px] px-1 py-0.5 rounded bg-[var(--accent-soft)] text-[var(--accent)]">golden</span>
                     )}
                   </div>
                   <div className="mt-1.5 flex items-center gap-1">
@@ -255,13 +239,13 @@ export default function ConfigArchive({ onOpenSnapshot, onClose }: ConfigArchive
               <GitCompare size={13} className="text-[var(--text-secondary)]" />
               <button
                 onClick={() => (golden ? diffAgainst(golden.ts, 'golden') : notify.warning('No golden baseline', 'Mark a snapshot golden from the list first.'))}
-                className={`px-2 py-1 text-[11px] rounded transition-colors ${diffTarget === 'golden' ? 'text-[var(--accent)] bg-[#58a6ff20]' : 'text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]'}`}
+                className={`px-2 py-1 text-[11px] rounded transition-colors ${diffTarget === 'golden' ? 'text-[var(--accent)] bg-[var(--accent-soft)]' : 'text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]'}`}
               >
                 Current vs Golden
               </button>
               <button
                 onClick={() => diffAgainst(entries[1]?.ts ?? null, 'previous')}
-                className={`px-2 py-1 text-[11px] rounded transition-colors ${diffTarget === 'previous' ? 'text-[var(--accent)] bg-[#58a6ff20]' : 'text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]'}`}
+                className={`px-2 py-1 text-[11px] rounded transition-colors ${diffTarget === 'previous' ? 'text-[var(--accent)] bg-[var(--accent-soft)]' : 'text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]'}`}
               >
                 Current vs Previous
               </button>

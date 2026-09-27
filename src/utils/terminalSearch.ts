@@ -1,4 +1,5 @@
 import { SearchAddon, ISearchOptions } from 'xterm-addon-search';
+import { useSessionStore } from '../store/sessionStore';
 
 export interface ISearchAdapter {
   findNext(term: string, opts?: ISearchOptions): boolean;
@@ -50,4 +51,38 @@ export function createSearchAdapter(addon: SearchAddon): ISearchAdapter {
       return () => disposable.dispose();
     },
   };
+}
+
+// ── Find bar commands ───────────────────────────────────────────────────
+// The Find bar (SearchOverlay) owns its query and input focus; the keyboard
+// shortcuts and the terminal's right-click menu reach it through these
+// commands instead of prop-drilling. SearchOverlay stays mounted while hidden,
+// so it hears a command sent in the same tick as the "open" state change.
+
+export type SearchCommand =
+  | { type: 'focus'; prefill?: string }
+  | { type: 'next' }
+  | { type: 'prev' };
+
+const commandListeners = new Set<(cmd: SearchCommand) => void>();
+
+export function onSearchCommand(cb: (cmd: SearchCommand) => void): () => void {
+  commandListeners.add(cb);
+  return () => {
+    commandListeners.delete(cb);
+  };
+}
+
+export function sendSearchCommand(cmd: SearchCommand): void {
+  commandListeners.forEach((cb) => cb(cmd));
+}
+
+/**
+ * Open the Find bar — or, if it is already open, put the cursor back in its
+ * input with the text selected (pressing Find again should never be a no-op).
+ * `prefill` searches for that text right away ("Find selection").
+ */
+export function openTerminalSearch(prefill?: string): void {
+  useSessionStore.getState().setShowSearch(true);
+  sendSearchCommand({ type: 'focus', prefill });
 }
