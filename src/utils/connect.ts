@@ -26,6 +26,16 @@ export interface VaultCredentialSource {
   retrieve: (key: string) => Promise<string | null>;
 }
 
+/** How a connect attempt ended — for callers that connect on the user's
+ *  behalf (Change Jobs) and must not stop to ask for a password or a vault
+ *  unlock: those come back as 'needs-login' instead of opening a dialog. */
+export type ConnectOutcome =
+  | { status: 'connected' }
+  /** Already connecting (or reconnecting): wait for the session to come up. */
+  | { status: 'in-progress' }
+  | { status: 'needs-login'; reason: string }
+  | { status: 'failed'; reason: string };
+
 export interface SshPasswordResolution {
   password?: string;
   requiresVaultUnlock: boolean;

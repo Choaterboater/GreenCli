@@ -10,6 +10,7 @@ import {
   HardDrive,
   History,
   Sparkles,
+  GitPullRequestArrow,
   type LucideIcon,
 } from 'lucide-react';
 import { useSessionStore } from '../store/sessionStore';
@@ -52,6 +53,8 @@ export default function WorkspaceMenu({
     setShowSftp,
     showBulkRunner,
     setShowBulkRunner,
+    showChangeJobs,
+    setShowChangeJobs,
     showArchive,
     showConfigEditor,
     setShowConfigEditor,
@@ -113,6 +116,17 @@ export default function WorkspaceMenu({
       active: showBulkRunner,
       onClick: () => {
         setShowBulkRunner(true);
+        setOpen(false);
+      },
+    },
+    {
+      key: 'change-jobs',
+      icon: GitPullRequestArrow,
+      label: 'Change Jobs',
+      title: 'Push a config change to many devices: dry run, canary first, stop at the first error',
+      active: showChangeJobs,
+      onClick: () => {
+        setShowChangeJobs(true);
         setOpen(false);
       },
     },

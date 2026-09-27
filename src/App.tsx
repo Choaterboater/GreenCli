@@ -30,6 +30,7 @@ import { useRecentStore, timeAgo, RecentConnection } from './store/recentStore';
 import { armIntentScheduler } from './utils/intentScheduler';
 import {
   buildConnectPayload,
+  type ConnectOutcome,
   isAuthFailure,
   needsPasswordPrompt,
   resolveSshPassword,
@@ -76,6 +77,7 @@ import HelpPanel from './components/HelpPanel';
 import ImportHosts from './components/ImportHosts';
 import VaultUnlock from './components/VaultUnlock';
 import BulkRunner from './components/BulkRunner';
+import ChangeJobs from './components/ChangeJobs';
 import MultiSendBar from './components/MultiSendBar';
 import SftpBrowser from './components/SftpBrowser';
 import DeviceMapper from './components/DeviceMapper';
@@ -894,7 +896,7 @@ function App() {
       // switch instead of cancelling.
       if (
         st.showSettings || st.showQuickConnect || st.showAuthDialog ||
-        st.showVaultUnlock || st.showHelp || st.showSftp || st.showBulkRunner ||
+        st.showVaultUnlock || st.showHelp || st.showSftp || st.showBulkRunner || st.showChangeJobs ||
         st.showTunnels || st.showIntent || st.showArchive || st.showImportHosts ||
         useDialogStore.getState().current != null
       ) {
@@ -998,8 +1000,12 @@ function App() {
     });
   }, []);
 
+  // `interactive: false` (Change Jobs): never open the password dialog or the
+  // vault prompt — report 'needs-login' instead, so one device waiting on a
+  // login can't hold up a job running across many.
   const handleConnect = useCallback(
-    async (config: ConnectionConfig) => {
+    async (config: ConnectionConfig, opts: { interactive?: boolean } = {}): Promise<ConnectOutcome> => {
+      const interactive = opts.interactive !== false;
       const sessionId = config.id || generateId();
       const fullConfig = { ...config, id: sessionId };
 
@@ -1022,7 +1028,7 @@ function App() {
         existingStatus === 'reconnecting'
       ) {
         useSessionStore.getState().setActiveSession(sessionId);
-        return;
+        return existing?.connected ? { status: 'connected' } : { status: 'in-progress' };
       }
       if (connectingIdsRef.current.has(sessionId)) {
         if (!existing) {
@@ -1030,7 +1036,7 @@ function App() {
           useSessionStore.getState().updateSessionConnection(sessionId, false, 'connecting');
         }
         useSessionStore.getState().setActiveSession(sessionId);
-        return;
+        return { status: 'in-progress' };
       }
       connectingIdsRef.current.add(sessionId);
 
@@ -1056,12 +1062,19 @@ function App() {
 
       if (requiresVaultUnlock) {
         connectingIdsRef.current.delete(sessionId);
+        if (!interactive) {
+          useSessionStore.getState().updateSessionConnection(sessionId, false, 'disconnected');
+          return {
+            status: 'needs-login',
+            reason: 'The saved password is in the locked credential vault — unlock it, then run again.',
+          };
+        }
         if (!pendingVaultConnectsRef.current.some((c) => c.id === sessionId)) {
           pendingVaultConnectsRef.current.push(fullConfig);
         }
         syncVaultWaiting();
         setShowVaultUnlock(true);
-        return;
+        return { status: 'in-progress' };
       }
 
       // No password anywhere (not inline, not saved in the vault): ask for it
@@ -1073,8 +1086,11 @@ function App() {
       if (needsPasswordPrompt(fullConfig, password)) {
         connectingIdsRef.current.delete(sessionId);
         useSessionStore.getState().updateSessionConnection(sessionId, false, 'disconnected');
+        if (!interactive) {
+          return { status: 'needs-login', reason: 'No saved password — log in to it once (its tab), then run again.' };
+        }
         promptForAuth(fullConfig);
-        return;
+        return { status: 'in-progress' };
       }
 
       // Shared failure path: ask for credentials again only when the device
@@ -1082,17 +1098,25 @@ function App() {
       // timeouts and telnet (whose login happens in the terminal itself —
       // the dialog's password was never even sent) get a real error instead
       // of a password prompt that hides what went wrong.
-      const reportFailure = (error: string) => {
+      const reportFailure = (error: string): ConnectOutcome => {
         const stillOpen = useSessionStore
           .getState()
           .sessions.some((s) => s.sessionId === sessionId);
-        if (!stillOpen) return;
+        if (!stillOpen) return { status: 'failed', reason: 'The tab was closed.' };
         useSessionStore.getState().updateSessionConnection(sessionId, false, 'disconnected');
-        if (fullConfig.protocol === 'ssh' && isAuthFailure(error)) {
-          promptForAuth(fullConfig, error);
-        } else {
-          notify.error(`Could not connect to ${fullConfig.name || fullConfig.host || fullConfig.protocol}`, error);
+        const authFailed = fullConfig.protocol === 'ssh' && isAuthFailure(error);
+        // Non-interactive: the job's results grid shows the reason instead.
+        if (!interactive) {
+          return authFailed
+            ? { status: 'needs-login', reason: `The device rejected the saved login (${error}).` }
+            : { status: 'failed', reason: error };
         }
+        if (authFailed) {
+          promptForAuth(fullConfig, error);
+          return { status: 'needs-login', reason: error };
+        }
+        notify.error(`Could not connect to ${fullConfig.name || fullConfig.host || fullConfig.protocol}`, error);
+        return { status: 'failed', reason: error };
       };
 
       try {
@@ -1109,7 +1133,7 @@ function App() {
         });
 
         if (!result.success) {
-          reportFailure(result.error || 'The connection failed to start.');
+          return reportFailure(result.error || 'The connection failed to start.');
         } else {
           // The user may have closed the tab while connect was awaiting — if the
           // session is gone, tear the orphaned backend connection down.
@@ -1118,7 +1142,7 @@ function App() {
             .sessions.some((s) => s.sessionId === sessionId);
           if (!stillOpen) {
             invoke('disconnect', { sessionId }).catch(() => {});
-            return;
+            return { status: 'failed', reason: 'The tab was closed.' };
           }
           useSessionStore.getState().updateSessionConnection(sessionId, true);
           recordRecent(fullConfig);
@@ -1134,15 +1158,22 @@ function App() {
 
           // Per-host startup commands: run them once the shell is ready.
           runStartupCommands(sessionId, fullConfig.startupCommands);
+          return { status: 'connected' };
         }
       } catch (err) {
         console.error('Connection error:', err);
-        reportFailure(String(err));
+        return reportFailure(String(err));
       } finally {
         connectingIdsRef.current.delete(sessionId);
       }
     },
     [addSession, promptForAuth, setShowVaultUnlock, recordRecent, syncVaultWaiting]
+  );
+
+  // Change Jobs connects saved hosts itself and must never block on a dialog.
+  const connectForJob = useCallback(
+    (config: ConnectionConfig) => handleConnect(config, { interactive: false }),
+    [handleConnect]
   );
 
   // Vault unlocked: flush any deferred credential SAVE, then resume the parked
@@ -1933,6 +1964,7 @@ function App() {
 
       {/* Modals & Overlays */}
       <BulkRunner />
+      <ChangeJobs onConnect={connectForJob} />
       {showSftp && activeSessionId && (
         // Keyed by session: switching tabs while it is open must not leave the
         // old session's listing/cwd on screen while actions hit the new one.
