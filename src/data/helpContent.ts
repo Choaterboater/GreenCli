@@ -13,8 +13,22 @@ import {
   Waypoints,
   Keyboard,
   LifeBuoy,
+  TerminalSquare,
   type LucideIcon,
 } from 'lucide-react';
+import { isMac, platform, shortcutLabel, type ShortcutId } from '../utils/shortcuts';
+
+// Help text names the chords for THIS OS (⌘ on macOS, Ctrl / Ctrl+Shift on
+// Windows and Linux) — the owner switches between both.
+const k = (id: ShortcutId) => `\`${shortcutLabel(id)}\``;
+const MOD = isMac ? '⌘' : 'Ctrl';
+
+const COPY_PASTE =
+  platform === 'mac'
+    ? '**Copy / paste**: select text, then `⌘C`; paste with `⌘V`. `Ctrl+C` always goes to the device (interrupt).'
+    : platform === 'windows'
+      ? '**Copy / paste**: select text, then `Ctrl+C` (or `Ctrl+Shift+C` / `Ctrl+Insert`) — with nothing selected, `Ctrl+C` interrupts as usual. Paste with `Ctrl+V`, `Ctrl+Shift+V` or `Shift+Insert`.'
+      : '**Copy / paste**: select text, then `Ctrl+Shift+C` (`Ctrl+C` also copies while text is selected). Paste with `Ctrl+Shift+V` or `Shift+Insert` — plain `Ctrl+V` stays the shell\'s.';
 
 /** Quick-action a topic can offer — resolved to a store action by the Help panel. */
 export type HelpActionId =
@@ -60,7 +74,7 @@ export const HELP_TOPICS: HelpTopic[] = [
       {
         kind: 'steps',
         items: [
-          'Press `Ctrl+T` (or click **Quick Connect**) to open a connection.',
+          `Press ${k('quickConnect')} (or click **Quick Connect**) to open a connection.`,
           'Pick a protocol (SSH / Telnet / Serial / Local) and enter the host.',
           'Optionally check **Save to sidebar** to keep the session (never the password).',
         ],
@@ -76,7 +90,7 @@ export const HELP_TOPICS: HelpTopic[] = [
     summary: 'SSH/Telnet/Serial/Local, auth methods, jump host, startup commands.',
     keywords: ['ssh', 'telnet', 'serial', 'local', 'jump', 'proxyjump', 'bastion', 'agent', 'key', 'password', 'connect'],
     blocks: [
-      { kind: 'p', text: 'Open **Quick Connect** (`Ctrl+T`) or double-click a saved host in the sidebar.' },
+      { kind: 'p', text: `Open **Quick Connect** (${k('quickConnect')}) or double-click a saved host in the sidebar.` },
       {
         kind: 'bullets',
         items: [
@@ -252,22 +266,79 @@ export const HELP_TOPICS: HelpTopic[] = [
     title: 'Keyboard shortcuts',
     icon: Keyboard,
     summary: 'The essentials.',
-    keywords: ['keyboard', 'shortcut', 'hotkey', 'keys'],
+    keywords: ['keyboard', 'shortcut', 'hotkey', 'keys', 'tab', 'find', 'close', 'mac', 'windows'],
     blocks: [
       {
         kind: 'bullets',
         items: [
-          '`Ctrl+T` — Quick Connect',
-          '`Ctrl+W` — Close active tab',
-          '`Ctrl+F` — Search terminal',
-          '`Ctrl+K` — Command palette',
-          '`Ctrl+,` — Settings · `F1` — Help',
-          '`Ctrl+Shift+E / A / I` — Editor / API / AI',
-          '`Ctrl+B` — Toggle sidebar',
-          '`Ctrl+= / Ctrl+- / Ctrl+0` — Zoom terminal + config-editor font (Ctrl+wheel inside the editor)',
+          `${k('quickConnect')} — Quick Connect`,
+          `${k('closeTab')} — Close the active tab (asks first while it is connected)`,
+          `${k('find')} — Find in terminal · ${k('findNext')} / ${k('findPrev')} — next / previous match${isMac ? ' (`F3` / `Shift+F3` work too)' : ''}`,
+          `${k('commandPalette')} — Command palette`,
+          `${k('nextTab')} / ${k('prevTab')} — Next / previous tab${isMac ? ' (also `⌘⇧]` / `⌘⇧[`)' : ' (also `Ctrl+PgDn` / `Ctrl+PgUp`)'}`,
+          `${k('jumpTab')} — Jump to tab 1–9`,
+          `${k('settings')} — Settings · ${k('help')} — Help`,
+          `${k('editor')} / ${k('api')} / ${k('ai')} — Editor / API / AI`,
+          `${k('sidebar')} — Toggle sidebar`,
+          `${k('zoomIn')} / ${k('zoomOut')} / ${k('zoomReset')} — Zoom terminal + config-editor font (${MOD}+wheel inside the editor)`,
         ],
       },
+      ...(isMac
+        ? []
+        : [
+            {
+              kind: 'note' as const,
+              text: 'Inside a session, plain `Ctrl+T`, `Ctrl+F`, `Ctrl+K` and `Ctrl+W` belong to the device shell (transpose, forward, kill-line, delete-word) — that is why the app uses the `Ctrl+Shift` versions. The plain ones still work when the focus is outside the terminal.',
+            },
+          ]),
     ],
+  },
+  {
+    id: 'terminal',
+    title: 'Working in the terminal',
+    icon: TerminalSquare,
+    summary: 'Copy & paste, selecting, right-click, paste guard, logging, split view, pop-out, tabs, reconnect.',
+    keywords: [
+      'terminal', 'copy', 'paste', 'select', 'selection', 'mouse', 'right-click', 'context menu', 'paste guard',
+      'log', 'logging', 'record', 'drop', 'file', 'path', 'split', 'pane', 'pop-out', 'window', 'tab', 'reconnect',
+      'scrollback', 'save', 'option', 'alt', 'meta',
+    ],
+    blocks: [
+      {
+        kind: 'bullets',
+        items: [
+          COPY_PASTE,
+          isMac
+            ? '**Selecting inside full-screen apps** (vim, tmux, htop, AI CLIs): when the app uses the mouse a plain drag goes to the app — hold `Option` while dragging to select text anyway.'
+            : '**Selecting inside full-screen apps** (vim, tmux, htop, AI CLIs): when the app uses the mouse a plain drag goes to the app — hold `Shift` while dragging to select text anyway.',
+          '**Keyboard selection**: `Shift+Arrow`, `Shift+Home` / `Shift+End` extend a selection from the cursor; `Esc` clears it (at the normal prompt — full-screen apps keep those keys).',
+          `**Copy an address**: \`${MOD}\`-click an IP address, MAC address, interface name or path in the output to copy it (Settings → Terminal → Smart Links).`,
+          '**Right-click** opens a menu: Copy, Paste, **Copy & Paste** (types the selection at the prompt), **Find Selection**, Select All, **Save Scrollback…** (the whole buffer to a text file) and Clear. `Esc` closes it. Settings → Terminal → **Right-Click in Terminal** can make it paste straight away (PuTTY) or copy-if-selected-else-paste (Windows Terminal).',
+          '**Paste guard**: pasting two or more lines asks first, because every line runs as a command on the device. Change the threshold or turn it off in Settings → Terminal.',
+          '**Logging**: click **Log** in the status bar to record the session to a file (it shows **REC** while recording). Click again to stop.',
+          '**Drop a file** on the window to type its path at the cursor (quoted when needed) — handy for `scp`, `copy` or AI CLIs. While the SFTP browser is open a drop uploads instead.',
+        ],
+      },
+      {
+        kind: 'bullets',
+        items: [
+          `**Tabs**: ${k('nextTab')} / ${k('prevTab')} move between tabs, ${k('jumpTab')} jumps to tab 1–9 — also while typing in a session.${isMac ? '' : ' (`Ctrl`+digit is left for the device.)'}`,
+          '**Split view** (**Tools → Split view**): up to four sessions side by side. Click a pane to work in it — its header gets the accent bar, and Close, Find, snippets, logging and file drops all act on that pane. Each pane header has a session picker, an add-pane `+` and a close `×` (the session stays open as a tab).',
+          '**Pop-out**: the tab’s pop-out button moves a session into its own window. Its header shows the live status, **Find**, **Reconnect** when the session drops, and **Dock** to put it back in its tab.',
+          '**Dropped session**: press `Enter` in the terminal (or click **Reconnect**) to connect again.',
+          `**Closing** a still-connected tab (× or ${k('closeTab')}) asks first. Turn that off in Settings → Terminal → **Confirm Before Closing a Connected Tab**.`,
+        ],
+      },
+      ...(isMac
+        ? [
+            {
+              kind: 'note' as const,
+              text: 'On non-US keyboards, if `Option` won’t type `| [ ] { } @ \\ ~` in the terminal, turn off Settings → Terminal → **Option Key as Meta**. (Leave it on to use `Option+B` / `Option+F` word jumps at the prompt.)',
+            },
+          ]
+        : []),
+    ],
+    action: { label: 'Terminal settings', id: 'open-settings', focus: 'terminal' },
   },
   {
     id: 'troubleshooting',

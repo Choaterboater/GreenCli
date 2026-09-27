@@ -1,9 +1,14 @@
 import { X, Plus, PictureInPicture2, RefreshCw, Unplug, Wand2 } from 'lucide-react';
-import { invoke } from '@tauri-apps/api/tauri';
 import { WebviewWindow } from '@tauri-apps/api/window';
 import { useSessionStore } from '../store/sessionStore';
 import { getDeviceIcon, getDeviceLabel } from '../utils';
+import { closeSessions } from '../utils/closeSessions';
+import { formatChord, isMac, withShortcut } from '../utils/shortcuts';
 import { vendorColor } from '../types';
+
+// "⌘3" / "Alt+3" — the jump-to-tab chord for the first nine tabs.
+const jumpLabel = (index: number) =>
+  index < 9 ? formatChord(`${isMac ? 'Mod' : 'Alt'}+${index + 1}`) : '';
 
 interface TerminalTabsProps {
   /** Pop the session out into its own OS window. */
@@ -22,24 +27,15 @@ export default function TerminalTabs({ onPopOut, onReconnect, onDisconnect, onMa
   const sessions = useSessionStore((s) => s.sessions);
   const activeSessionId = useSessionStore((s) => s.activeSessionId);
   const setActiveSession = useSessionStore((s) => s.setActiveSession);
-  const removeSession = useSessionStore((s) => s.removeSession);
   const setShowQuickConnect = useSessionStore((s) => s.setShowQuickConnect);
   const poppedSessions = useSessionStore((s) => s.poppedSessions);
   const unseenOutput = useSessionStore((s) => s.unseenOutput);
 
   const handleClose = (e: React.MouseEvent, sessionId: string) => {
     e.stopPropagation();
-    // Tear down the backend connection before dropping the tab so SSH/serial
-    // sessions aren't leaked.
-    invoke('disconnect', { sessionId }).catch(() => {});
-    // If the session lives in a pop-out window, close that window too —
-    // otherwise it would linger showing a dead, disconnected terminal.
-    if (poppedSessions.includes(sessionId)) {
-      WebviewWindow.getByLabel(`popout-${sessionId}`)
-        ?.close()
-        .catch(() => {});
-    }
-    removeSession(sessionId);
+    // Disconnects the backend, closes a pop-out window showing it, and asks
+    // first while the session is still connected (confirmCloseConnected).
+    void closeSessions([sessionId]);
   };
 
   const handlePopOut = (e: React.MouseEvent, sessionId: string) => {
@@ -64,7 +60,7 @@ export default function TerminalTabs({ onPopOut, onReconnect, onDisconnect, onMa
   return (
     <div className="flex items-stretch h-10 overflow-x-auto border-b border-[var(--border)] bg-[var(--bg-secondary)] scrollbar-none">
       <div className="flex items-stretch px-1.5 gap-1">
-        {sessions.map((session) => {
+        {sessions.map((session, index) => {
           const isPopped = poppedSessions.includes(session.sessionId);
           const isActive = session.sessionId === activeSessionId && !isPopped;
           const hasActivity = !isActive && unseenOutput.includes(session.sessionId);
@@ -86,7 +82,9 @@ export default function TerminalTabs({ onPopOut, onReconnect, onDisconnect, onMa
               title={
                 isPopped
                   ? 'Popped out — click to focus its window'
-                  : getDeviceLabel(session.config.deviceType)
+                  : [getDeviceLabel(session.config.deviceType), jumpLabel(index)]
+                      .filter(Boolean)
+                      .join(' · ')
               }
               className={`group relative flex items-center gap-2 min-w-[150px] max-w-[230px] my-1 px-2.5 rounded-md cursor-pointer select-none transition-all ${
                 isActive
@@ -197,7 +195,10 @@ export default function TerminalTabs({ onPopOut, onReconnect, onDisconnect, onMa
               <button
                 onClick={(e) => handleClose(e, session.sessionId)}
                 className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-[var(--border-strong)] transition-all flex-shrink-0"
-                title="Close tab"
+                title={
+                  // The keyboard chord closes the ACTIVE tab only.
+                  isActive ? withShortcut('Close tab', 'closeTab') : 'Close tab'
+                }
               >
                 <X size={12} />
               </button>
@@ -208,7 +209,7 @@ export default function TerminalTabs({ onPopOut, onReconnect, onDisconnect, onMa
         <button
           onClick={() => setShowQuickConnect(true)}
           className="flex items-center justify-center w-7 my-1.5 ml-0.5 rounded-md hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors flex-shrink-0"
-          title="New session (Ctrl+T)"
+          title={withShortcut('New session', 'quickConnect')}
         >
           <Plus size={14} />
         </button>
