@@ -1,9 +1,7 @@
 import { useState, useRef, useCallback, useMemo, useEffect } from 'react';
-import { useResizablePanel } from '../hooks/useResizablePanel';
-import { useSidePanelWidth } from '../store/sidePanelStore';
+import { useSidePanelStore } from '../store/sidePanelStore';
 import { copyText } from '../utils/clipboard';
 import {
-  X,
   Send,
   Globe,
   Link2,
@@ -224,7 +222,6 @@ const METHOD_STYLE: Record<string, { color: string; background: string }> = {
 export default function ApiExplorer() {
   // Narrow per-field selectors instead of a whole-store subscription.
   const showApiExplorer = useSessionStore((s) => s.showApiExplorer);
-  const toggleApiExplorer = useSessionStore((s) => s.toggleApiExplorer);
   const activeSessionId = useSessionStore((s) => s.activeSessionId);
   const sessions = useSessionStore((s) => s.sessions);
   const verifyDeviceTls = useSettingsStore((s) => s.verifyDeviceTls);
@@ -260,12 +257,11 @@ export default function ApiExplorer() {
   const requestInFlightRef = useRef(false);
   const bodyRef = useRef<HTMLTextAreaElement>(null);
 
-  // Collapsible / Resizable panel state
-  const [collapsed, setCollapsed] = useState(false);
-  // Saved width, shrunk to fit beside the terminal (sidePanelStore).
-  const panelSize = useSidePanelWidth('api');
-  const { width: panelWidth, onDragStart: handleDragStart, handleClass: dragHandleClass } =
-    useResizablePanel(panelSize.width, panelSize.min, panelSize.max, { onCommit: panelSize.commit });
+  // A request in flight spins on the side panel's API tab (the panel frame
+  // replaced this panel's own header, which used to carry the spinner).
+  useEffect(() => {
+    useSidePanelStore.getState().setStatus('api', loading ? 'busy' : null);
+  }, [loading]);
 
   const activeConnection = connections.find((c) => c.id === activeConnectionId);
   const activeSession = sessions.find((s) => s.sessionId === activeSessionId);
@@ -593,45 +589,15 @@ export default function ApiExplorer() {
 
   if (!showApiExplorer) return null;
 
-  // Collapsed mode
-  if (collapsed) {
-    return (
-      <div className="w-10 flex-shrink-0 flex flex-col items-center py-3 bg-[var(--bg-primary)] border-l border-[var(--bg-tertiary)] gap-3">
-        <button onClick={() => setCollapsed(false)} className="p-2 rounded-lg hover:bg-[var(--bg-tertiary)] text-[var(--accent)] transition-colors" title="Expand API Explorer">
-          <Globe size={18} />
-        </button>
-        <button onClick={toggleApiExplorer} className="p-2 rounded-lg hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--accent-danger)] transition-colors" title="Close">
-          <X size={16} />
-        </button>
-      </div>
-    );
-  }
-
   return (
-    <div className="flex-shrink-0 flex flex-col bg-[var(--bg-primary)] border-l border-[var(--bg-tertiary)] overflow-hidden relative" style={{ width: panelWidth }}>
-      {/* Drag Handle */}
-      <div className={dragHandleClass} onMouseDown={handleDragStart} />
-      {/* Header */}
-      <div className="flex items-center justify-between h-10 px-3 pl-4 border-b border-[var(--bg-tertiary)] bg-[var(--bg-secondary)]">
-        <div className="flex items-center gap-2">
-          <Globe size={14} className="text-[var(--accent)]" />
-          <span className="text-xs font-semibold text-[var(--text-primary)] uppercase tracking-wider">
-            API Explorer
-          </span>
-          {loading && (
-            <Loader2 size={14} className="animate-spin text-[var(--accent)]" />
-          )}
-        </div>
-        <div className="flex items-center gap-1">
-          <button onClick={() => setCollapsed(true)} className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]" title="Collapse">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M15 3v18"/></svg>
-          </button>
-          <button onClick={toggleApiExplorer} className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--accent-danger)]" title="Close">
-            <X size={14} />
-          </button>
-        </div>
-      </div>
-
+    // A tab of the side panel (SidePanel owns the frame: width, drag handle,
+    // maximize and close).
+    <div
+      id="side-panel-api"
+      role="tabpanel"
+      aria-labelledby="side-tab-api"
+      className="absolute inset-0 flex flex-col bg-[var(--bg-primary)] overflow-hidden"
+    >
       {/* Target toggle: on-box REST · Aruba Central · Juniper Mist */}
       <div className="flex gap-1 px-3 py-2 border-b border-[var(--bg-tertiary)] bg-[var(--bg-secondary)]">
         {(['device', 'central', 'mist'] as const).map((t) => (

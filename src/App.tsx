@@ -1,27 +1,15 @@
 import { useEffect, useCallback, useState, useRef, memo } from 'react';
 import { invoke } from '@tauri-apps/api/tauri';
 import { WebviewWindow } from '@tauri-apps/api/window';
-import {
-  Settings,
-  Search,
-  PanelLeft,
-  Plug,
-  Command,
-  Globe,
-  Sparkles,
-  FileCode,
-  TerminalSquare,
-  X,
-  Plus,
-  RefreshCw,
-} from 'lucide-react';
+import { Search, Plug, TerminalSquare, X, Plus, RefreshCw } from 'lucide-react';
 
 import { CONNECTION_FIELDS, useSessionStore, PromptLogin } from './store/sessionStore';
 import { useSettingsStore } from './store/settingsStore';
 import { useDialogStore } from './store/dialogStore';
 import { loadSecrets, persistSecrets } from './utils/secretVault';
 import { useTheme } from './hooks/useTheme';
-import { useSidePanelFit } from './hooks/useSidePanelFit';
+import { useEditorFills, useSidePanelFit } from './hooks/useSidePanelFit';
+import { useSidePanelStore } from './store/sidePanelStore';
 import { ConnectionConfig, Protocol, DeviceType, vendorColor } from './types';
 import { generateId, shellQuote } from './utils';
 import { listen } from '@tauri-apps/api/event';
@@ -70,11 +58,9 @@ import QuickConnect from './components/QuickConnect';
 import SshAuthDialog, { AuthCredentials, AuthSaveChoice } from './components/SshAuthDialog';
 import SettingsPanel from './components/SettingsPanel';
 import SearchOverlay from './components/SearchOverlay';
-import ApiExplorer from './components/ApiExplorer';
-import AiAssistant from './components/AiAssistant';
-import ConfigEditor from './components/ConfigEditor';
-import SnippetsMenu from './components/SnippetsMenu';
-import WorkspaceMenu from './components/WorkspaceMenu';
+import SidePanel from './components/SidePanel';
+import { toggleSessionsSidebar } from './components/sidePanelActions';
+import ActivityBar from './components/ActivityBar';
 import CommandPalette from './components/CommandPalette';
 import TunnelsManager from './components/TunnelsManager';
 import IntentPanel from './components/IntentPanel';
@@ -240,23 +226,14 @@ function App() {
   const sessions = useSessionStore((s) => s.sessions);
   const activeSessionId = useSessionStore((s) => s.activeSessionId);
   const sidebarVisible = useSessionStore((s) => s.sidebarVisible);
-  const showApiExplorer = useSessionStore((s) => s.showApiExplorer);
-  const showAiAssistant = useSessionStore((s) => s.showAiAssistant);
-  const showConfigEditor = useSessionStore((s) => s.showConfigEditor);
-  const setShowSettings = useSessionStore((s) => s.setShowSettings);
   const addSession = useSessionStore((s) => s.addSession);
   const removeSession = useSessionStore((s) => s.removeSession);
   const setPendingConnection = useSessionStore((s) => s.setPendingConnection);
   const setShowAuthDialog = useSessionStore((s) => s.setShowAuthDialog);
-  const toggleApiExplorer = useSessionStore((s) => s.toggleApiExplorer);
-  const toggleAiAssistant = useSessionStore((s) => s.toggleAiAssistant);
-  const toggleConfigEditor = useSessionStore((s) => s.toggleConfigEditor);
   const broadcastMode = useSessionStore((s) => s.broadcastMode);
   const multiSendTargets = useSessionStore((s) => s.multiSendTargets);
-  const toggleBroadcast = useSessionStore((s) => s.toggleBroadcast);
   const splitView = useSessionStore((s) => s.splitView);
   const splitPanes = useSessionStore((s) => s.splitPanes);
-  const toggleSplitView = useSessionStore((s) => s.toggleSplitView);
   const addSplitPane = useSessionStore((s) => s.addSplitPane);
   const removeSplitPane = useSessionStore((s) => s.removeSplitPane);
   const setSplitPaneAt = useSessionStore((s) => s.setSplitPaneAt);
@@ -273,10 +250,16 @@ function App() {
   const recents = useRecentStore((s) => s.recents);
   const clearRecents = useRecentStore((s) => s.clearRecents);
 
-  // The terminal + side panels row. Opening panels shrinks (or closes) them so
-  // the terminal keeps a usable width — see useSidePanelFit.
+  // The terminal + side panel row. The panel shrinks so the terminal keeps a
+  // usable width — see useSidePanelFit.
   const panelRowRef = useRef<HTMLDivElement>(null);
   useSidePanelFit(panelRowRef);
+  // Maximized, the side panel takes over the window; with no session open, its
+  // Editor tab stands in for the empty terminal area. Either way the terminal
+  // column is hidden (still mounted, so scrollback survives).
+  const panelMaximized = useSidePanelStore((s) => s.maximized);
+  const editorFills = useEditorFills();
+  const terminalHidden = panelMaximized || editorFills;
 
   const connectingIdsRef = useRef<Set<string>>(new Set());
   const [workspaceLoaded, setWorkspaceLoaded] = useState(false);
@@ -368,7 +351,7 @@ function App() {
   const visibleLayout = splitView ? splitPanes.join('|') : activeSessionId;
   useEffect(() => {
     refitTerminals();
-  }, [visibleLayout, splitView, poppedSessions]);
+  }, [visibleLayout, splitView, poppedSessions, terminalHidden]);
 
   // Pop a session out into its own OS window. The main-window terminal stays
   // mounted but hidden (scrollback survives); only the pop-out fits the PTY, so
@@ -892,10 +875,10 @@ function App() {
         e.preventDefault();
         useSessionStore.getState().setShowSettings(true);
       }
-      // Ctrl+B: Toggle Sidebar
+      // Ctrl+B: Toggle Sidebar (see toggleSessionsSidebar for the maximized case)
       if ((e.ctrlKey || e.metaKey) && e.key === 'b' && !shellCtrl) {
         e.preventDefault();
-        useSessionStore.getState().toggleSidebar();
+        toggleSessionsSidebar();
       }
       // Ctrl+Shift+A: Toggle API Explorer
       if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'A' && !macCtrlInTerminal) {
@@ -1626,477 +1609,416 @@ function App() {
       {/* Title Bar — data-tauri-drag-region is what actually makes it draggable
           (Tauri ignores -webkit-app-region; that's an Electron-ism). The
           attribute only fires when the mousedown TARGET carries it, so it's
-          repeated on the static children; buttons/selects stay interactive. */}
+          repeated on the static children; buttons stay interactive. Three
+          columns (brand · command field · Connect) keep the field centred. */}
       <div
         data-tauri-drag-region
-        className="flex items-center justify-between h-11 pr-2 bg-[var(--bg-secondary)] border-b border-[var(--border)] drag-region select-none"
+        className="grid grid-cols-[1fr_minmax(0,520px)_1fr] items-center gap-3 h-11 pr-2 bg-[var(--bg-secondary)] border-b border-[var(--border)] drag-region select-none flex-shrink-0"
         style={{ paddingLeft: isTauriMac ? 80 : 12 }}
       >
-        {/* Left: brand + sidebar toggle */}
-        <div data-tauri-drag-region className="flex items-center gap-2.5 min-w-0">
-          <div data-tauri-drag-region className="flex items-center gap-2">
-            <div
-              data-tauri-drag-region
-              className="flex items-center justify-center w-[26px] h-[26px] rounded-md flex-shrink-0"
-              style={{
-                background: 'linear-gradient(135deg, var(--accent-hover), var(--accent))',
-                boxShadow: 'var(--elevation-1)',
-              }}
-            >
-              <PromptGlyph size={16} style={{ color: 'var(--accent-fg)', pointerEvents: 'none' }} />
-            </div>
-            <span
-              data-tauri-drag-region
-              className="text-[13px] font-semibold text-[var(--text-primary)] tracking-tight whitespace-nowrap"
-            >
-              GreenCLI
-            </span>
+        <div data-tauri-drag-region className="flex items-center gap-2 min-w-0">
+          <div
+            data-tauri-drag-region
+            className="flex items-center justify-center w-[26px] h-[26px] rounded-md flex-shrink-0"
+            style={{
+              background: 'linear-gradient(135deg, var(--accent-hover), var(--accent))',
+              boxShadow: 'var(--elevation-1)',
+            }}
+          >
+            <PromptGlyph size={16} style={{ color: 'var(--accent-fg)', pointerEvents: 'none' }} />
           </div>
-          {!sidebarVisible && (
-            <button
-              onClick={() => useSessionStore.getState().toggleSidebar()}
-              className="no-drag p-1.5 rounded-md hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
-              title={withShortcut('Show sidebar', 'sidebar')}
-            >
-              <PanelLeft size={15} />
-            </button>
-          )}
-
-          {/* Workspace utilities: Tools + Snippets, anchored under the brand like a file menu */}
-          <div className="no-drag flex items-center gap-0.5">
-            <WorkspaceMenu
-              splitView={splitView}
-              onToggleSplit={() => {
-                toggleSplitView();
-                refitTerminals();
-              }}
-              broadcastMode={broadcastMode}
-              onToggleBroadcast={toggleBroadcast}
-            />
-            <SnippetsMenu />
-          </div>
+          <span
+            data-tauri-drag-region
+            className="text-[13px] font-semibold text-[var(--text-primary)] tracking-tight whitespace-nowrap"
+          >
+            GreenCLI
+          </span>
         </div>
 
-        {/* Center: panel segmented control */}
-        <div className="flex items-center gap-2 no-drag">
-          <div className="segmented">
-            <button data-active={showConfigEditor} onClick={toggleConfigEditor} title={withShortcut('Config Editor', 'editor')}>
-              <FileCode size={13} style={showConfigEditor ? { color: 'var(--accent-2)' } : undefined} />
-              <span>Editor</span>
-            </button>
-            <button data-active={showApiExplorer} onClick={toggleApiExplorer} title={withShortcut('API Explorer', 'api')}>
-              <Globe size={13} style={showApiExplorer ? { color: 'var(--accent-info)' } : undefined} />
-              <span>API</span>
-            </button>
-            <button data-active={showAiAssistant} onClick={toggleAiAssistant} title={withShortcut('AI Assistant', 'ai')}>
-              <Sparkles size={13} style={showAiAssistant ? { color: 'var(--vendor-mist)' } : undefined} />
-              <span>AI</span>
-            </button>
-          </div>
-        </div>
+        {/* One labelled way into everything: the command palette searches
+            hosts, tabs and every action. */}
+        <button
+          type="button"
+          onClick={() => useSessionStore.getState().setShowCommandPalette(true)}
+          className="no-drag flex items-center gap-2 h-7 w-full min-w-0 pl-2.5 pr-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-inset)] text-[var(--text-muted)] hover:text-[var(--text-secondary)] hover:border-[var(--border-strong)] transition-colors"
+          aria-label={withShortcut('Search or run a command', 'commandPalette')}
+        >
+          <Search size={13} className="flex-shrink-0" />
+          <span className="flex-1 min-w-0 text-left text-[12px] truncate">Search or run a command…</span>
+          <kbd className="flex-shrink-0 px-1.5 rounded border border-[var(--border)] bg-[var(--bg-tertiary)] font-mono text-[10px] leading-[18px] text-[var(--text-secondary)]">
+            {shortcutLabel('commandPalette')}
+          </kbd>
+        </button>
 
-        {/* Right: connect + utilities */}
-        <div className="flex items-center gap-1 no-drag">
+        <div data-tauri-drag-region className="flex items-center justify-end">
           <button
             onClick={() => useSessionStore.getState().setShowQuickConnect(true)}
-            className="btn-accent flex items-center gap-1.5 h-8 px-3 text-[12px]"
+            className="no-drag btn-accent flex items-center gap-1.5 h-7 px-3 text-[12px]"
             title={withShortcut('New connection', 'quickConnect')}
           >
             <Plug size={13} />
             <span>Connect</span>
           </button>
-          <div className="w-px h-5 bg-[var(--border)] mx-1" />
-          <button
-            onClick={() => openTerminalSearch()}
-            className="p-2 rounded-md text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] transition-colors"
-            title={withShortcut('Find in terminal', 'find')}
-          >
-            <Search size={16} />
-          </button>
-          <button
-            onClick={() => useSessionStore.getState().setShowCommandPalette(true)}
-            className="p-2 rounded-md text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] transition-colors"
-            title={withShortcut('Command palette', 'commandPalette')}
-          >
-            <Command size={16} />
-          </button>
-          <button
-            onClick={() => setShowSettings(true)}
-            className="p-2 rounded-md text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] transition-colors"
-            title={withShortcut('Settings', 'settings')}
-          >
-            <Settings size={16} />
-          </button>
         </div>
       </div>
 
-      {/* Main Content */}
-      <div className="flex flex-1 overflow-hidden">
-        {/* Sidebar */}
+      {/* Main Content: activity bar · sessions sidebar · terminal · side panel */}
+      <div className="flex flex-1 min-h-0 overflow-hidden">
+        <ActivityBar />
+
+        {/* Hidden (not unmounted) while the side panel is maximized, so its
+            search text and state survive. */}
         {sidebarVisible && (
-          <Sidebar onConnect={openHost} />
+          <div className={panelMaximized ? 'hidden' : 'contents'}>
+            <Sidebar onConnect={openHost} />
+          </div>
         )}
 
-        {/* Terminal Area */}
-        <div className="flex-1 flex flex-col min-w-0">
-          {/* Tabs */}
-          <TerminalTabs
-            onDuplicate={duplicateSession}
-            onPopOut={popOutSession}
-            onDisconnect={handleDisconnect}
-            onReconnect={handleReconnect}
-            onMapDevice={setMappingSessionId}
-          />
+        {/* Terminal column + side panel. */}
+        <div ref={panelRowRef} className="flex flex-1 min-w-0 overflow-hidden">
+          <div className={`flex-1 flex flex-col min-w-0 ${terminalHidden ? 'hidden' : ''}`}>
+            {/* Tabs */}
+            <TerminalTabs
+              onDuplicate={duplicateSession}
+              onPopOut={popOutSession}
+              onDisconnect={handleDisconnect}
+              onReconnect={handleReconnect}
+              onMapDevice={setMappingSessionId}
+            />
 
-          {/* Multi-send bar — type once into the chosen sessions (see MultiSendBar) */}
-          {broadcastMode && <MultiSendBar />}
+            {/* Multi-send bar — type once into the chosen sessions (see MultiSendBar) */}
+            {broadcastMode && <MultiSendBar />}
 
-          {/* Terminal Container + Side Panels */}
-          <div ref={panelRowRef} className="flex flex-1 overflow-hidden">
-            {/* Terminal — hidden with no sessions + editor open, so the editor fills
-                the area and works as a standalone text editor. */}
-            <div className={`flex-1 flex flex-col min-w-0 ${!activeSession && showConfigEditor ? 'hidden' : ''}`}>
-              <div className="flex-1 relative overflow-hidden">
-                {fileDropHint && activeSession && (
-                  <div className="absolute inset-2 z-20 pointer-events-none rounded-lg border-2 border-dashed border-[var(--accent)] bg-[var(--bg-primary)]/60 flex items-center justify-center">
-                    <span className="text-sm text-[var(--text-primary)] bg-[var(--bg-secondary)] px-3 py-1.5 rounded-md border border-[var(--border)]">
-                      Drop to insert file path
-                    </span>
-                  </div>
-                )}
-                {activeSession ? (
-                  // Every session's terminal stays MOUNTED — we only show/hide it via
-                  // CSS — so switching tabs preserves each terminal's screen + scrollback
-                  // (and avoids disposing an xterm mid-render). Single view shows the
-                  // active one; split view shows each pane's session in its column.
-                  // The rest are display:none.
-                  <div className="h-full w-full relative">
-                    {canSplit && (
-                      <>
-                        {/* Pane headers — every pane carries a session picker
-                            and a close button, the last one an add-pane button
-                            (max 4 columns). The focused pane (the active
-                            session) gets the accent bar. */}
-                        {paneSessions.map((p, i) => {
-                          const accent = vendorColor(p.config.deviceType);
-                          const focused = p.sessionId === activeSessionId;
-                          return (
-                            <div
-                              key={`pane-h-${p.sessionId}`}
-                              onMouseDown={(e) => {
-                                focusPane(p.sessionId);
-                                // Clicks on the header's bare area also hand the
-                                // keyboard to that pane's terminal.
-                                if (!(e.target as HTMLElement).closest('select, button')) {
-                                  e.preventDefault();
-                                  getTerminalActionAdapter(p.sessionId)?.focus();
-                                }
+            <div className="flex-1 relative overflow-hidden">
+              {fileDropHint && activeSession && (
+                <div className="absolute inset-2 z-20 pointer-events-none rounded-lg border-2 border-dashed border-[var(--accent)] bg-[var(--bg-primary)]/60 flex items-center justify-center">
+                  <span className="text-sm text-[var(--text-primary)] bg-[var(--bg-secondary)] px-3 py-1.5 rounded-md border border-[var(--border)]">
+                    Drop to insert file path
+                  </span>
+                </div>
+              )}
+              {activeSession ? (
+                // Every session's terminal stays MOUNTED — we only show/hide it via
+                // CSS — so switching tabs preserves each terminal's screen + scrollback
+                // (and avoids disposing an xterm mid-render). Single view shows the
+                // active one; split view shows each pane's session in its column.
+                // The rest are display:none.
+                <div className="h-full w-full relative">
+                  {canSplit && (
+                    <>
+                      {/* Pane headers — every pane carries a session picker
+                          and a close button, the last one an add-pane button
+                          (max 4 columns). The focused pane (the active
+                          session) gets the accent bar. */}
+                      {paneSessions.map((p, i) => {
+                        const accent = vendorColor(p.config.deviceType);
+                        const focused = p.sessionId === activeSessionId;
+                        return (
+                          <div
+                            key={`pane-h-${p.sessionId}`}
+                            onMouseDown={(e) => {
+                              focusPane(p.sessionId);
+                              // Clicks on the header's bare area also hand the
+                              // keyboard to that pane's terminal.
+                              if (!(e.target as HTMLElement).closest('select, button')) {
+                                e.preventDefault();
+                                getTerminalActionAdapter(p.sessionId)?.focus();
+                              }
+                            }}
+                            className={`absolute top-0 z-10 flex items-center gap-2 h-7 px-2.5 border-b transition-colors ${
+                              focused
+                                ? 'bg-[var(--bg-primary)] border-[var(--accent)]'
+                                : 'bg-[var(--bg-secondary)] border-[var(--border)]'
+                            }`}
+                            style={{
+                              left: `${paneOffset(i) * 100}%`,
+                              width: `${ratioAt(i) * 100}%`,
+                              boxShadow: focused ? 'inset 0 2px 0 var(--accent)' : undefined,
+                            }}
+                          >
+                            <span
+                              className="vendor-dot flex-shrink-0"
+                              style={{ background: accent, color: accent }}
+                            />
+                            <select
+                              value={p.sessionId}
+                              onChange={(e) => {
+                                setSplitPaneAt(splitPanes.indexOf(p.sessionId), e.target.value);
+                                refitTerminals();
                               }}
-                              className={`absolute top-0 z-10 flex items-center gap-2 h-7 px-2.5 border-b transition-colors ${
+                              title={focused ? 'Focused pane — shortcuts and tools act on this session' : 'Session shown in this pane'}
+                              className={`flex-1 min-w-0 text-[11px] bg-transparent border-0 focus:outline-none cursor-pointer ${
                                 focused
-                                  ? 'bg-[var(--bg-primary)] border-[var(--accent)]'
-                                  : 'bg-[var(--bg-secondary)] border-[var(--border)]'
+                                  ? 'font-medium text-[var(--text-primary)]'
+                                  : 'text-[var(--text-secondary)]'
                               }`}
-                              style={{
-                                left: `${paneOffset(i) * 100}%`,
-                                width: `${ratioAt(i) * 100}%`,
-                                boxShadow: focused ? 'inset 0 2px 0 var(--accent)' : undefined,
+                            >
+                              {paneCandidates
+                                .filter(
+                                  (c) =>
+                                    c.sessionId === p.sessionId ||
+                                    !splitPanes.includes(c.sessionId),
+                                )
+                                .map((c) => (
+                                  <option key={c.sessionId} value={c.sessionId}>
+                                    {tabLabel(c)}
+                                  </option>
+                                ))}
+                            </select>
+                            {i === paneSessions.length - 1 &&
+                              paneSessions.length < MAX_PANES &&
+                              unusedPaneCandidates.length > 0 && (
+                                <button
+                                  onClick={addSplitPane}
+                                  className="p-0.5 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors flex-shrink-0"
+                                  title="Add pane"
+                                >
+                                  <Plus size={12} />
+                                </button>
+                              )}
+                            <button
+                              onClick={() => {
+                                removeSplitPane(p.sessionId);
+                                refitTerminals();
                               }}
+                              className="p-0.5 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors flex-shrink-0"
+                              title="Close pane (the session stays open as a tab)"
+                            >
+                              <X size={12} />
+                            </button>
+                          </div>
+                        );
+                      })}
+                      {/* Draggable dividers between adjacent panes */}
+                      {paneSessions.slice(1).map((p, i) => (
+                        <div
+                          key={`pane-d-${p.sessionId}`}
+                          onMouseDown={startSplitDrag(i)}
+                          className={`absolute top-0 bottom-0 z-20 w-1.5 -ml-[3px] cursor-col-resize transition-colors ${
+                            splitDragIdx === i
+                              ? 'bg-[var(--accent)]'
+                              : 'bg-transparent hover:bg-[var(--accent-ring)]'
+                          }`}
+                          style={{ left: `${paneOffset(i + 1) * 100}%` }}
+                        />
+                      ))}
+                    </>
+                  )}
+                  {sessions.map((s) => {
+                    const isPopped = poppedSessions.includes(s.sessionId);
+                    const paneIdx = canSplit
+                      ? paneSessions.findIndex((p) => p.sessionId === s.sessionId)
+                      : -1;
+                    const isActive = s.sessionId === activeSessionId && !isPopped;
+                    const visible = canSplit ? paneIdx >= 0 : isActive;
+                    const style: React.CSSProperties = !visible
+                      ? { display: 'none' }
+                      : canSplit
+                      ? {
+                          position: 'absolute',
+                          top: 28,
+                          bottom: 0,
+                          left: `${paneOffset(paneIdx) * 100}%`,
+                          width: `${ratioAt(paneIdx) * 100}%`,
+                          borderRight:
+                            paneIdx < paneSessions.length - 1
+                              ? '1px solid var(--border)'
+                              : undefined,
+                        }
+                      : { position: 'absolute', inset: 0 };
+                    return (
+                      // Focus landing in a pane's terminal (click, or the
+                      // keyboard) makes that pane the focused one.
+                      <div
+                        key={s.sessionId}
+                        style={style}
+                        onFocus={paneIdx >= 0 ? () => focusPane(s.sessionId) : undefined}
+                        // Outline every terminal the multi-send bar will type
+                        // into, so a stray target is visible before Enter.
+                        className={
+                          broadcastMode && isMultiSendTarget(s, multiSendTargets)
+                            ? 'outline outline-2 -outline-offset-2 outline-[var(--accent-2)]'
+                            : undefined
+                        }
+                      >
+                        <MemoTerminal
+                          sessionId={s.sessionId}
+                          deviceType={s.config.deviceType}
+                          onSend={sendHandlerFor(s.sessionId)}
+                        />
+                        {/* A dropped session says so, with an obvious way back —
+                            the only reconnect controls used to be a hover-only
+                            tab icon and the status-bar text. */}
+                        {!s.connected && s.connectionStatus === 'disconnected' && (
+                          <div className="absolute top-2 left-1/2 -translate-x-1/2 z-10 flex items-center gap-2.5 pl-3 pr-1.5 py-1.5 rounded-lg border border-[var(--border-strong)] bg-[var(--bg-secondary)] shadow-xl text-xs text-[var(--text-secondary)]">
+                            <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent-danger)]" />
+                            <span>
+                              <span className="font-medium text-[var(--text-primary)]">Disconnected</span>
+                              {' '}— press Enter or
+                            </span>
+                            <button
+                              onClick={() => handleReconnect(s.sessionId)}
+                              className="btn-accent flex items-center gap-1.5 h-7 px-3 text-xs"
+                            >
+                              <RefreshCw size={12} />
+                              Reconnect
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="flex flex-col items-center justify-center h-full px-6 text-center animate-fade-in">
+                  <div
+                    className="flex items-center justify-center w-16 h-16 rounded-2xl mb-5"
+                    style={{
+                      background: 'linear-gradient(135deg, var(--accent-hover), var(--accent))',
+                      boxShadow: 'var(--glow-accent)',
+                    }}
+                  >
+                    <PromptGlyph size={32} style={{ color: 'var(--accent-fg)' }} />
+                  </div>
+                  <h1 className="text-[22px] font-semibold text-[var(--text-primary)] tracking-tight">
+                    GreenCLI
+                  </h1>
+                  <p className="mt-1.5 text-[13px] text-[var(--text-secondary)]">
+                    One cockpit for Aruba, Juniper &amp; Mist.
+                  </p>
+
+                  {/* Vendor chips */}
+                  <div className="mt-4 flex items-center gap-2">
+                    {([
+                      ['Aruba', 'var(--vendor-aruba)'],
+                      ['Juniper', 'var(--vendor-juniper)'],
+                      ['Mist', 'var(--vendor-mist)'],
+                    ] as [string, string][]).map(([label, color]) => (
+                      <span
+                        key={label}
+                        className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium border border-[var(--border)] bg-[var(--bg-secondary)] text-[var(--text-secondary)]"
+                      >
+                        <span className="vendor-dot" style={{ background: color, color }} />
+                        {label}
+                      </span>
+                    ))}
+                  </div>
+
+                  <div className="mt-7 flex items-center gap-2.5">
+                    <button
+                      onClick={() => useSessionStore.getState().setShowQuickConnect(true)}
+                      className="btn-accent flex items-center gap-2 h-10 px-5 text-sm"
+                    >
+                      <Plug size={16} />
+                      Quick Connect
+                    </button>
+                    <button
+                      onClick={openLocalShell}
+                      className="flex items-center gap-2 h-10 px-5 text-sm rounded-[var(--radius)] border border-[var(--border-strong)] bg-[var(--bg-secondary)] hover:bg-[var(--bg-tertiary)] text-[var(--text-primary)] transition-colors"
+                      title="Open a local shell terminal"
+                    >
+                      <TerminalSquare size={16} />
+                      Local Shell
+                    </button>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      useSessionStore.getState().setSettingsFocus('mcp');
+                      useSessionStore.getState().setShowSettings(true);
+                    }}
+                    className="mt-3 text-[11px] text-[var(--text-muted)] hover:text-[var(--text-secondary)] transition-colors"
+                  >
+                    Set up AI and MCP servers in Settings
+                  </button>
+
+                  {/* Recent connections — one click back into the last hosts */}
+                  {recents.length > 0 && (
+                    <div className="mt-7 w-full max-w-sm text-left animate-fade-in">
+                      <div className="flex items-center justify-between px-1 mb-1.5">
+                        <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+                          Recent
+                        </span>
+                        <button
+                          onClick={clearRecents}
+                          className="text-[10px] text-[var(--text-muted)] hover:text-[var(--text-secondary)] transition-colors"
+                          title="Clear recent connections"
+                        >
+                          Clear
+                        </button>
+                      </div>
+                      <div className="surface overflow-hidden divide-y divide-[var(--border)]">
+                        {recents.slice(0, 5).map((r) => {
+                          const accent = vendorColor(r.deviceType);
+                          const where = r.host
+                            ? `${r.username ? r.username + '@' : ''}${r.host}`
+                            : '';
+                          return (
+                            <button
+                              key={r.id}
+                              onClick={() => connectRecent(r)}
+                              className="group flex items-center gap-2.5 w-full px-3 py-2 text-left hover:bg-[var(--bg-tertiary)] transition-colors"
+                              title={`Reconnect (${r.protocol.toUpperCase()})`}
                             >
                               <span
                                 className="vendor-dot flex-shrink-0"
                                 style={{ background: accent, color: accent }}
                               />
-                              <select
-                                value={p.sessionId}
-                                onChange={(e) => {
-                                  setSplitPaneAt(splitPanes.indexOf(p.sessionId), e.target.value);
-                                  refitTerminals();
-                                }}
-                                title={focused ? 'Focused pane — shortcuts and tools act on this session' : 'Session shown in this pane'}
-                                className={`flex-1 min-w-0 text-[11px] bg-transparent border-0 focus:outline-none cursor-pointer ${
-                                  focused
-                                    ? 'font-medium text-[var(--text-primary)]'
-                                    : 'text-[var(--text-secondary)]'
-                                }`}
-                              >
-                                {paneCandidates
-                                  .filter(
-                                    (c) =>
-                                      c.sessionId === p.sessionId ||
-                                      !splitPanes.includes(c.sessionId),
-                                  )
-                                  .map((c) => (
-                                    <option key={c.sessionId} value={c.sessionId}>
-                                      {tabLabel(c)}
-                                    </option>
-                                  ))}
-                              </select>
-                              {i === paneSessions.length - 1 &&
-                                paneSessions.length < MAX_PANES &&
-                                unusedPaneCandidates.length > 0 && (
-                                  <button
-                                    onClick={addSplitPane}
-                                    className="p-0.5 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors flex-shrink-0"
-                                    title="Add pane"
-                                  >
-                                    <Plus size={12} />
-                                  </button>
-                                )}
-                              <button
-                                onClick={() => {
-                                  removeSplitPane(p.sessionId);
-                                  refitTerminals();
-                                }}
-                                className="p-0.5 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors flex-shrink-0"
-                                title="Close pane (the session stays open as a tab)"
-                              >
-                                <X size={12} />
-                              </button>
-                            </div>
+                              <span className="text-[12px] text-[var(--text-primary)] truncate">
+                                {r.name}
+                              </span>
+                              {where && where !== r.name && (
+                                <span className="text-[11px] text-[var(--text-muted)] truncate">
+                                  {where}
+                                </span>
+                              )}
+                              <span className="ml-auto pl-2 text-[10px] text-[var(--text-muted)] tabular-nums flex-shrink-0">
+                                {timeAgo(r.lastConnectedAt)}
+                              </span>
+                            </button>
                           );
                         })}
-                        {/* Draggable dividers between adjacent panes */}
-                        {paneSessions.slice(1).map((p, i) => (
-                          <div
-                            key={`pane-d-${p.sessionId}`}
-                            onMouseDown={startSplitDrag(i)}
-                            className={`absolute top-0 bottom-0 z-20 w-1.5 -ml-[3px] cursor-col-resize transition-colors ${
-                              splitDragIdx === i
-                                ? 'bg-[var(--accent)]'
-                                : 'bg-transparent hover:bg-[var(--accent-ring)]'
-                            }`}
-                            style={{ left: `${paneOffset(i + 1) * 100}%` }}
-                          />
-                        ))}
-                      </>
-                    )}
-                    {sessions.map((s) => {
-                      const isPopped = poppedSessions.includes(s.sessionId);
-                      const paneIdx = canSplit
-                        ? paneSessions.findIndex((p) => p.sessionId === s.sessionId)
-                        : -1;
-                      const isActive = s.sessionId === activeSessionId && !isPopped;
-                      const visible = canSplit ? paneIdx >= 0 : isActive;
-                      const style: React.CSSProperties = !visible
-                        ? { display: 'none' }
-                        : canSplit
-                        ? {
-                            position: 'absolute',
-                            top: 28,
-                            bottom: 0,
-                            left: `${paneOffset(paneIdx) * 100}%`,
-                            width: `${ratioAt(paneIdx) * 100}%`,
-                            borderRight:
-                              paneIdx < paneSessions.length - 1
-                                ? '1px solid var(--border)'
-                                : undefined,
-                          }
-                        : { position: 'absolute', inset: 0 };
-                      return (
-                        // Focus landing in a pane's terminal (click, or the
-                        // keyboard) makes that pane the focused one.
-                        <div
-                          key={s.sessionId}
-                          style={style}
-                          onFocus={paneIdx >= 0 ? () => focusPane(s.sessionId) : undefined}
-                          // Outline every terminal the multi-send bar will type
-                          // into, so a stray target is visible before Enter.
-                          className={
-                            broadcastMode && isMultiSendTarget(s, multiSendTargets)
-                              ? 'outline outline-2 -outline-offset-2 outline-[var(--accent-2)]'
-                              : undefined
-                          }
-                        >
-                          <MemoTerminal
-                            sessionId={s.sessionId}
-                            deviceType={s.config.deviceType}
-                            onSend={sendHandlerFor(s.sessionId)}
-                          />
-                          {/* A dropped session says so, with an obvious way back —
-                              the only reconnect controls used to be a hover-only
-                              tab icon and the status-bar text. */}
-                          {!s.connected && s.connectionStatus === 'disconnected' && (
-                            <div className="absolute top-2 left-1/2 -translate-x-1/2 z-10 flex items-center gap-2.5 pl-3 pr-1.5 py-1.5 rounded-lg border border-[var(--border-strong)] bg-[var(--bg-secondary)] shadow-xl text-xs text-[var(--text-secondary)]">
-                              <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent-danger)]" />
-                              <span>
-                                <span className="font-medium text-[var(--text-primary)]">Disconnected</span>
-                                {' '}— press Enter or
-                              </span>
-                              <button
-                                onClick={() => handleReconnect(s.sessionId)}
-                                className="btn-accent flex items-center gap-1.5 h-7 px-3 text-xs"
-                              >
-                                <RefreshCw size={12} />
-                                Reconnect
-                              </button>
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                ) : (
-                  <div className="flex flex-col items-center justify-center h-full px-6 text-center animate-fade-in">
-                    <div
-                      className="flex items-center justify-center w-16 h-16 rounded-2xl mb-5"
-                      style={{
-                        background: 'linear-gradient(135deg, var(--accent-hover), var(--accent))',
-                        boxShadow: 'var(--glow-accent)',
-                      }}
-                    >
-                      <PromptGlyph size={32} style={{ color: 'var(--accent-fg)' }} />
-                    </div>
-                    <h1 className="text-[22px] font-semibold text-[var(--text-primary)] tracking-tight">
-                      GreenCLI
-                    </h1>
-                    <p className="mt-1.5 text-[13px] text-[var(--text-secondary)]">
-                      One cockpit for Aruba, Juniper &amp; Mist.
-                    </p>
-
-                    {/* Vendor chips */}
-                    <div className="mt-4 flex items-center gap-2">
-                      {([
-                        ['Aruba', 'var(--vendor-aruba)'],
-                        ['Juniper', 'var(--vendor-juniper)'],
-                        ['Mist', 'var(--vendor-mist)'],
-                      ] as [string, string][]).map(([label, color]) => (
-                        <span
-                          key={label}
-                          className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium border border-[var(--border)] bg-[var(--bg-secondary)] text-[var(--text-secondary)]"
-                        >
-                          <span className="vendor-dot" style={{ background: color, color }} />
-                          {label}
-                        </span>
-                      ))}
-                    </div>
-
-                    <div className="mt-7 flex items-center gap-2.5">
-                      <button
-                        onClick={() => useSessionStore.getState().setShowQuickConnect(true)}
-                        className="btn-accent flex items-center gap-2 h-10 px-5 text-sm"
-                      >
-                        <Plug size={16} />
-                        Quick Connect
-                      </button>
-                      <button
-                        onClick={openLocalShell}
-                        className="flex items-center gap-2 h-10 px-5 text-sm rounded-[var(--radius)] border border-[var(--border-strong)] bg-[var(--bg-secondary)] hover:bg-[var(--bg-tertiary)] text-[var(--text-primary)] transition-colors"
-                        title="Open a local shell terminal"
-                      >
-                        <TerminalSquare size={16} />
-                        Local Shell
-                      </button>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        useSessionStore.getState().setSettingsFocus('mcp');
-                        useSessionStore.getState().setShowSettings(true);
-                      }}
-                      className="mt-3 text-[11px] text-[var(--text-muted)] hover:text-[var(--text-secondary)] transition-colors"
-                    >
-                      AI / MCP: Settings → MCP Servers
-                    </button>
-
-                    {/* Recent connections — one click back into the last hosts */}
-                    {recents.length > 0 && (
-                      <div className="mt-7 w-full max-w-sm text-left animate-fade-in">
-                        <div className="flex items-center justify-between px-1 mb-1.5">
-                          <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
-                            Recent
-                          </span>
-                          <button
-                            onClick={clearRecents}
-                            className="text-[10px] text-[var(--text-muted)] hover:text-[var(--text-secondary)] transition-colors"
-                            title="Clear recent connections"
-                          >
-                            Clear
-                          </button>
-                        </div>
-                        <div className="surface overflow-hidden divide-y divide-[var(--border)]">
-                          {recents.slice(0, 5).map((r) => {
-                            const accent = vendorColor(r.deviceType);
-                            const where = r.host
-                              ? `${r.username ? r.username + '@' : ''}${r.host}`
-                              : '';
-                            return (
-                              <button
-                                key={r.id}
-                                onClick={() => connectRecent(r)}
-                                className="group flex items-center gap-2.5 w-full px-3 py-2 text-left hover:bg-[var(--bg-tertiary)] transition-colors"
-                                title={`Reconnect (${r.protocol.toUpperCase()})`}
-                              >
-                                <span
-                                  className="vendor-dot flex-shrink-0"
-                                  style={{ background: accent, color: accent }}
-                                />
-                                <span className="text-[12px] text-[var(--text-primary)] truncate">
-                                  {r.name}
-                                </span>
-                                {where && where !== r.name && (
-                                  <span className="text-[11px] text-[var(--text-muted)] truncate">
-                                    {where}
-                                  </span>
-                                )}
-                                <span className="ml-auto pl-2 text-[10px] text-[var(--text-muted)] tabular-nums flex-shrink-0">
-                                  {timeAgo(r.lastConnectedAt)}
-                                </span>
-                              </button>
-                            );
-                          })}
-                        </div>
                       </div>
-                    )}
-
-                    {/* Shortcut hints */}
-                    <div className="mt-8 flex flex-wrap items-center justify-center gap-x-5 gap-y-2 max-w-md text-[11px] text-[var(--text-muted)]">
-                      {([
-                        [shortcutLabel('quickConnect'), 'Connect'],
-                        [shortcutLabel('commandPalette'), 'Commands'],
-                        [shortcutLabel('find'), 'Find'],
-                        [shortcutLabel('editor'), 'Editor'],
-                        [shortcutLabel('api'), 'API'],
-                        [shortcutLabel('ai'), 'AI'],
-                        [shortcutLabel('help'), 'Help'],
-                      ] as [string, string][]).map(([k, label]) => (
-                        <span key={k} className="flex items-center gap-1.5">
-                          <kbd className="px-1.5 py-0.5 rounded bg-[var(--bg-tertiary)] border border-[var(--border)] text-[var(--text-secondary)] font-mono text-[10px]">
-                            {k}
-                          </kbd>
-                          {label}
-                        </span>
-                      ))}
                     </div>
+                  )}
+
+                  {/* Shortcut hints */}
+                  <div className="mt-8 flex flex-wrap items-center justify-center gap-x-5 gap-y-2 max-w-md text-[11px] text-[var(--text-muted)]">
+                    {([
+                      [shortcutLabel('quickConnect'), 'Connect'],
+                      [shortcutLabel('commandPalette'), 'Commands'],
+                      [shortcutLabel('find'), 'Find'],
+                      [shortcutLabel('editor'), 'Editor'],
+                      [shortcutLabel('api'), 'API'],
+                      [shortcutLabel('ai'), 'AI'],
+                      [shortcutLabel('help'), 'Help'],
+                    ] as [string, string][]).map(([k, label]) => (
+                      <span key={k} className="flex items-center gap-1.5">
+                        <kbd className="px-1.5 py-0.5 rounded bg-[var(--bg-tertiary)] border border-[var(--border)] text-[var(--text-secondary)] font-mono text-[10px]">
+                          {k}
+                        </kbd>
+                        {label}
+                      </span>
+                    ))}
                   </div>
-                )}
+                </div>
+              )}
 
-                {/* Search Overlay */}
-                <SearchOverlay />
-              </div>
-
-              {/* Status Bar */}
-              <StatusBar
-                onDisconnect={handleDisconnect}
-                onReconnect={handleReconnect}
-                onMapDevice={setMappingSessionId}
-              />
+              {/* Search Overlay */}
+              <SearchOverlay />
             </div>
 
-            {/* Config Editor Panel — always MOUNTED (hidden via CSS when closed,
-                like the per-session terminals) so editor buffers/undo history
-                survive closing the panel. Monaco re-lays out on unhide. */}
-            <ConfigEditor />
-
-            {/* API Explorer Panel — always mounted too (it renders nothing
-                while closed): a panel closed to make room for another must
-                not throw away a half-built request. */}
-            <ApiExplorer />
-
-            {/* AI Assistant Panel — always mounted for the same reason: closing
-                the panel must not destroy the chat history. */}
-            <AiAssistant />
+            {/* Status Bar */}
+            <StatusBar
+              onDisconnect={handleDisconnect}
+              onReconnect={handleReconnect}
+              onMapDevice={setMappingSessionId}
+            />
           </div>
+
+          {/* Editor / API / AI — one panel with tabs, every tab kept mounted
+              so buffers, requests and the chat survive (see SidePanel). */}
+          <SidePanel />
         </div>
       </div>
 

@@ -571,11 +571,11 @@ export default function ImportHosts() {
             (centralReady === false ? (
               <div className="flex items-center justify-between gap-4 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--bg-inset)] px-3 py-2.5">
                 <p className="text-[12px] text-[var(--text-secondary)]">
-                  Aruba Central isn&apos;t connected yet. Add your API gateway and token in Settings → Cloud, then come back.
+                  Aruba Central isn&apos;t connected yet. Add your API gateway and token in Settings → Integrations, then come back.
                 </p>
                 <button onClick={() => openCloudSettings('central')} className={`${btn} flex-shrink-0`}>
                   <Settings2 size={13} />
-                  Open Settings → Cloud
+                  Open Settings → Integrations
                 </button>
               </div>
             ) : (
@@ -596,11 +596,11 @@ export default function ImportHosts() {
             (!mistToken ? (
               <div className="flex items-center justify-between gap-4 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--bg-inset)] px-3 py-2.5">
                 <p className="text-[12px] text-[var(--text-secondary)]">
-                  Juniper Mist isn&apos;t connected yet. Add your API token in Settings → Cloud, then come back.
+                  Juniper Mist isn&apos;t connected yet. Add your API token in Settings → Integrations, then come back.
                 </p>
                 <button onClick={() => openCloudSettings('mist')} className={`${btn} flex-shrink-0`}>
                   <Settings2 size={13} />
-                  Open Settings → Cloud
+                  Open Settings → Integrations
                 </button>
               </div>
             ) : (

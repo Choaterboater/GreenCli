@@ -29,6 +29,10 @@ import {
   Download,
   CopyPlus,
   GitPullRequestArrow,
+  Waypoints,
+  Target,
+  PanelRight,
+  Maximize2,
 } from 'lucide-react';
 import { useSessionStore } from '../store/sessionStore';
 import { getTerminalActionAdapter } from '../utils/terminalActions';
@@ -39,6 +43,8 @@ import { useSettingsStore } from '../store/settingsStore';
 import { useRecentStore, timeAgo, RecentConnection } from '../store/recentStore';
 import { ConnectionConfig } from '../types';
 import { tabLabel } from '../utils/tabs';
+import { useSidePanelStore } from '../store/sidePanelStore';
+import { closeSidePanel, showSidePanel, toggleSessionsSidebar } from './sidePanelActions';
 
 interface PaletteAction {
   id: string;
@@ -89,6 +95,34 @@ export default function CommandPalette({ onConnect, onDuplicateTab, onLocalShell
       { id: 'toggle-editor', label: 'Toggle Config Editor', hint: shortcutLabel('editor'), icon: <FileCode size={14} />, run: () => useSessionStore.getState().toggleConfigEditor() },
       { id: 'toggle-api', label: 'Toggle API Explorer', hint: shortcutLabel('api'), icon: <Globe size={14} />, run: () => useSessionStore.getState().toggleApiExplorer() },
       { id: 'toggle-ai', label: 'Toggle AI Assistant', hint: shortcutLabel('ai'), icon: <Sparkles size={14} />, run: () => useSessionStore.getState().toggleAiAssistant() },
+      {
+        id: 'toggle-side-panel',
+        label: 'Toggle Side Panel',
+        keywords: 'right panel editor api ai show hide last tab',
+        icon: <PanelRight size={14} />,
+        run: () => {
+          const s = useSessionStore.getState();
+          // Reopens on the tab used last (remembered across restarts).
+          if (s.showConfigEditor || s.showApiExplorer || s.showAiAssistant) closeSidePanel();
+          else showSidePanel(useSidePanelStore.getState().tab);
+        },
+      },
+      {
+        id: 'maximize-side-panel',
+        label: 'Maximize / Restore Side Panel',
+        keywords: 'full screen fill window editor api ai zen',
+        icon: <Maximize2 size={14} />,
+        run: () => {
+          const sp = useSidePanelStore.getState();
+          const s = useSessionStore.getState();
+          if (!(s.showConfigEditor || s.showApiExplorer || s.showAiAssistant)) {
+            showSidePanel(sp.tab);
+            sp.setMaximized(true);
+          } else {
+            sp.setMaximized(!sp.maximized);
+          }
+        },
+      },
       { id: 'toggle-broadcast', label: 'Toggle Multi-send', keywords: 'send all multiple sessions broadcast subset', icon: <Radio size={14} />, run: () => useSessionStore.getState().toggleBroadcast() },
       { id: 'bulk-runner', label: 'Bulk Command Runner', keywords: 'run all devices batch collect csv', icon: <Radio size={14} />, run: () => useSessionStore.getState().setShowBulkRunner(true) },
       {
@@ -99,6 +133,8 @@ export default function CommandPalette({ onConnect, onDuplicateTab, onLocalShell
         run: () => useSessionStore.getState().openImportHosts(),
       },
       { id: 'change-jobs', label: 'Change Jobs', keywords: 'push config change many devices canary rollback commit confirmed checkpoint bulk deploy variables csv', icon: <GitPullRequestArrow size={14} />, run: () => useSessionStore.getState().setShowChangeJobs(true) },
+      { id: 'tunnels', label: 'SSH Tunnels', keywords: 'port forwarding forward local remote socks', icon: <Waypoints size={14} />, run: () => useSessionStore.getState().setShowTunnels(true) },
+      { id: 'intent', label: 'Network Intent', keywords: 'desired state assurance compliance drift check', icon: <Target size={14} />, run: () => useSessionStore.getState().setShowIntent(true) },
       { id: 'sftp', label: 'SFTP File Transfer', keywords: 'sftp upload download file transfer scp', icon: <HardDrive size={14} />, run: () => useSessionStore.getState().setShowSftp(true) },
       {
         id: 'mcp-servers',
@@ -160,7 +196,7 @@ export default function CommandPalette({ onConnect, onDuplicateTab, onLocalShell
           setTimeout(() => window.dispatchEvent(new Event('resize')), 60);
         },
       },
-      { id: 'toggle-sidebar', label: 'Toggle Sidebar', hint: shortcutLabel('sidebar'), icon: <PanelLeft size={14} />, run: () => useSessionStore.getState().toggleSidebar() },
+      { id: 'toggle-sidebar', label: 'Toggle Sidebar', hint: shortcutLabel('sidebar'), icon: <PanelLeft size={14} />, run: toggleSessionsSidebar },
       // Zoom the terminal + config-editor font — same persisted setting as the
       // Ctrl+= / Ctrl+- / Ctrl+0 bindings (W2-11).
       {
@@ -338,9 +374,14 @@ export default function CommandPalette({ onConnect, onDuplicateTab, onLocalShell
   };
 
   return (
-    <div className="fixed inset-0 z-[60] flex items-start justify-center pt-[12vh] bg-[var(--scrim)] backdrop-blur-sm" onClick={close}>
+    // Drops from just under the title bar's "Search or run a command…" field
+    // that opens it, at about its width.
+    <div className="fixed inset-0 z-[60] flex items-start justify-center pt-[52px] modal-backdrop animate-fade-in" onClick={close}>
       <div
-        className="w-[560px] max-w-[90vw] bg-[var(--bg-secondary)] border border-[var(--border)] rounded-xl shadow-2xl overflow-hidden"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Command palette"
+        className="surface-elevated w-[600px] max-w-[90vw] overflow-hidden animate-scale-in"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center gap-2 px-3 py-2.5 border-b border-[var(--bg-tertiary)]">
@@ -350,7 +391,8 @@ export default function CommandPalette({ onConnect, onDuplicateTab, onLocalShell
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={onKeyDown}
-            placeholder="Type a command or search sessions…"
+            placeholder="Search hosts and tabs, or type a command…"
+            aria-label="Search or run a command"
             className="flex-1 bg-transparent text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none"
           />
           <kbd className="text-[10px] text-[var(--text-muted)] border border-[var(--border)] rounded px-1">esc</kbd>

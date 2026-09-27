@@ -55,7 +55,7 @@ function PasswordInput({
 }
 
 /**
- * Settings → Logins: shared logins (e.g. the TACACS account) that folders and
+ * Settings → Connections & Security → Shared Logins: shared logins (e.g. the TACACS account) that folders and
  * hosts point at. Name and username live in settings; the password only in
  * the vault, so a password rotation is one change here instead of one per host.
  */

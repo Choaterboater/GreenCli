@@ -1,5 +1,24 @@
-import { useState, useEffect, useRef, type ReactNode } from 'react';
-import { X, RotateCcw, Moon, Sun, Monitor, Eye, EyeOff, CheckCircle2, Download, Upload } from 'lucide-react';
+import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import {
+  RotateCcw,
+  Moon,
+  Sun,
+  Monitor,
+  Eye,
+  EyeOff,
+  CheckCircle2,
+  Download,
+  Upload,
+  Settings as SettingsIcon,
+  Palette,
+  TerminalSquare,
+  ShieldCheck,
+  Workflow,
+  Sparkles,
+  Cloud,
+  ArchiveRestore,
+  type LucideIcon,
+} from 'lucide-react';
 import { invoke } from '@tauri-apps/api/tauri';
 import { open as openDialog, save as saveDialog } from '@tauri-apps/api/dialog';
 import { useSessionStore } from '../store/sessionStore';
@@ -18,6 +37,14 @@ import { generateId } from '../utils';
 import { BackupImportMode, createGreenCliBackup, GreenCliBackup, importGreenCliBackup } from '../utils/backup';
 import { sanitizeStandaloneImportedProfiles } from '../utils/deviceProfiles';
 import { isMac } from '../utils/shortcuts';
+import {
+  SETTINGS_GROUPS,
+  SETTINGS_SECTIONS,
+  groupForFocus,
+  searchSettings,
+  type SettingsGroupId,
+} from '../utils/settingsSections';
+import LargeModal, { ModalRail, RailItem } from './LargeModal';
 
 // Curated best-practices the AI should apply, distilled from Juniper Validated
 // Designs (JVDs). Appended to the references field on request.
@@ -53,43 +80,45 @@ function SystemThemeNote() {
   );
 }
 
-type SettingsNavId = 'appearance' | 'terminal' | 'logins' | 'ai' | 'cloud' | 'backup';
-
-const SETTINGS_NAV: { id: SettingsNavId; label: string }[] = [
-  { id: 'appearance', label: 'Appearance' },
-  { id: 'terminal', label: 'Terminal' },
-  { id: 'logins', label: 'Logins' },
-  { id: 'ai', label: 'AI + MCP' },
-  { id: 'cloud', label: 'Cloud' },
-  { id: 'backup', label: 'Backup' },
-];
-
-const FOCUS_NAV: Record<string, SettingsNavId> = {
-  appearance: 'appearance',
-  terminal: 'terminal',
-  'device-profiles': 'terminal',
-  logging: 'terminal',
-  logins: 'logins',
-  ai: 'ai',
-  mcp: 'ai',
-  central: 'cloud',
-  mist: 'cloud',
-  tls: 'cloud',
-  backup: 'backup',
-  'config-archive': 'backup',
-  'intent-schedule': 'backup',
+const GROUP_ICONS: Record<SettingsGroupId, LucideIcon> = {
+  appearance: Palette,
+  terminal: TerminalSquare,
+  connections: ShieldCheck,
+  automation: Workflow,
+  ai: Sparkles,
+  integrations: Cloud,
+  backup: ArchiveRestore,
 };
 
-function NavGroup({
-  nav,
-  active,
-  children,
-}: {
-  nav: SettingsNavId;
-  active: SettingsNavId;
-  children: ReactNode;
-}) {
-  return <div hidden={active !== nav}>{children}</div>;
+// Which sections are showing — the active group's, or every search hit — so
+// each <Section> can hide itself and draw the divider above itself only when
+// something visible comes before it.
+const SectionVisibility = createContext<{ visible: string[]; searching: boolean }>({
+  visible: [],
+  searching: false,
+});
+
+function Section({ id, children }: { id: string; children: ReactNode }) {
+  const { visible, searching } = useContext(SectionVisibility);
+  const idx = visible.indexOf(id);
+  const meta = SETTINGS_SECTIONS.find((m) => m.id === id);
+  const prev = idx > 0 ? SETTINGS_SECTIONS.find((m) => m.id === visible[idx - 1]) : undefined;
+  // While searching, hits from several groups are listed together: label the
+  // first hit of each group so you know where it lives.
+  const groupLabel =
+    searching && idx >= 0 && meta && prev?.group !== meta.group
+      ? SETTINGS_GROUPS.find((g) => g.id === meta.group)?.label
+      : undefined;
+  return (
+    <div hidden={idx < 0} className={idx > 0 ? 'mt-5 pt-5 border-t border-[var(--border)]' : undefined}>
+      {groupLabel && (
+        <p className="mb-2.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+          {groupLabel}
+        </p>
+      )}
+      {children}
+    </div>
+  );
 }
 
 function Toggle({ on, onChange, label }: { on: boolean; onChange: (v: boolean) => void; label: string }) {
@@ -299,13 +328,33 @@ export default function SettingsPanel() {
     verifyDeviceTls: useSettingsStore((s) => s.verifyDeviceTls),
   };
 
-  const [activeNav, setActiveNav] = useState<SettingsNavId>('appearance');
+  const [activeNav, setActiveNav] = useState<SettingsGroupId>('appearance');
+  const [query, setQuery] = useState('');
+  const matches = useMemo(() => searchSettings(query), [query]);
+  const searchRef = useRef<HTMLInputElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
 
-  // When opened via a Help deep-link (or Tools → MCP), switch to the nav
-  // group that owns the section, then scroll + flash it.
+  // Each opening starts with an empty search, and the cursor in it — unless
+  // a deep link is about to jump to a section.
+  useEffect(() => {
+    if (!showSettings) return;
+    setQuery('');
+    if (useSessionStore.getState().settingsFocus) return;
+    const id = setTimeout(() => searchRef.current?.focus(), 50);
+    return () => clearTimeout(id);
+  }, [showSettings]);
+
+  // A new group or search starts at the top.
+  useEffect(() => {
+    contentRef.current?.scrollTo({ top: 0 });
+  }, [activeNav, query]);
+
+  // When opened via a Help deep-link (or the palette's MCP Servers), switch to
+  // the nav group that owns the section, then scroll + flash it.
   useEffect(() => {
     if (!showSettings || !settingsFocus) return;
-    const group = FOCUS_NAV[settingsFocus];
+    setQuery('');
+    const group = groupForFocus(settingsFocus);
     if (group) setActiveNav(group);
     const id = setTimeout(() => {
       const el = document.getElementById(`set-${settingsFocus}`);
@@ -543,824 +592,650 @@ export default function SettingsPanel() {
 
   if (!showSettings) return null;
 
+  const searching = query.trim() !== '';
+  const visible = searching
+    ? matches.map((m) => m.id)
+    : SETTINGS_SECTIONS.filter((m) => m.group === activeNav).map((m) => m.id);
+
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-[var(--scrim)] backdrop-blur-sm"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) setShowSettings(false);
-      }}
-    >
-      <div className="w-[720px] max-w-[92vw] max-h-[80vh] bg-[var(--bg-secondary)] border border-[var(--border)] rounded-xl shadow-2xl flex flex-col">
-        {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--bg-tertiary)]">
-          <h2 className="text-lg font-semibold text-[var(--text-primary)]">Settings</h2>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => setShowSettings(false)}
-              className="p-1.5 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
-            >
-              <X size={16} />
-            </button>
-          </div>
-        </div>
+    <LargeModal title="Settings" icon={SettingsIcon} onClose={() => setShowSettings(false)}>
+      <ModalRail
+        query={query}
+        onQueryChange={setQuery}
+        placeholder="Search settings…"
+        inputRef={searchRef}
+        listLabel="Settings sections"
+      >
+        {SETTINGS_GROUPS.map((g) => {
+          const hits = matches.filter((m) => m.group === g.id).length;
+          return (
+            <RailItem
+              key={g.id}
+              icon={GROUP_ICONS[g.id]}
+              label={g.label}
+              active={!searching && activeNav === g.id}
+              count={searching && hits > 0 ? hits : undefined}
+              dimmed={searching && hits === 0}
+              onClick={() => {
+                // Picking a group leaves search: show that group's sections.
+                setQuery('');
+                setActiveNav(g.id);
+              }}
+            />
+          );
+        })}
+      </ModalRail>
 
-        {/* Left nav + content */}
-        <div className="flex min-h-0 flex-1">
-          <nav className="w-36 shrink-0 border-r border-[var(--bg-tertiary)] py-2 overflow-y-auto">
-            {SETTINGS_NAV.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => setActiveNav(item.id)}
-                className={`w-full text-left px-3 py-2 text-xs transition-colors ${
-                  activeNav === item.id
-                    ? 'text-[var(--accent)] bg-[var(--accent-soft)]'
-                    : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
-                }`}
-              >
-                {item.label}
-              </button>
-            ))}
-          </nav>
-        <div className="flex-1 overflow-y-auto px-5 py-4 space-y-5">
-          <NavGroup nav="appearance" active={activeNav}>
-          {/* Appearance */}
-          <section id="set-appearance">
-            <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-3">
-              Appearance
-            </h3>
+      <div ref={contentRef} className="flex-1 overflow-y-auto px-6 py-5">
+        {searching && (
+          <p className="mb-4 text-[12px] text-[var(--text-muted)]" aria-live="polite">
+            {matches.length === 0
+              ? `No settings match “${query.trim()}”.`
+              : `${matches.length} ${matches.length === 1 ? 'section matches' : 'sections match'} “${query.trim()}”.`}
+          </p>
+        )}
+        <SectionVisibility.Provider value={{ visible, searching }}>
+          <Section id="appearance">
+            <section id="set-appearance">
+              <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-3">
+                Appearance
+              </h3>
 
-            {/* Theme */}
-            <div className="mb-3">
-              <label className="block text-xs text-[var(--text-secondary)] mb-1.5">
-                Theme
-              </label>
-              <div className="flex gap-2" role="group" aria-label="Theme">
-                {THEME_OPTIONS.map(({ id, label, Icon }) => (
-                  <button
-                    key={id}
-                    aria-pressed={settings.theme === id}
-                    onClick={() => settings.setTheme(id)}
-                    className={`
-                      flex items-center justify-center gap-2 flex-1 py-2 rounded-lg border text-sm transition-colors
-                      ${
-                        settings.theme === id
-                          ? 'bg-[var(--bg-tertiary)] border-[var(--accent)] text-[var(--text-primary)]'
-                          : 'bg-[var(--bg-primary)] border-[var(--border)] text-[var(--text-secondary)] hover:border-[var(--text-muted)]'
-                      }
-                    `}
-                  >
-                    <Icon size={14} />
-                    {label}
-                  </button>
-                ))}
-              </div>
-              {settings.theme === 'system' && <SystemThemeNote />}
-            </div>
-
-            {/* Terminal color scheme */}
-            <div className="mb-3">
-              <label className="block text-xs text-[var(--text-secondary)] mb-1.5">
-                Terminal Color Scheme
-              </label>
-              <select
-                value={settings.colorScheme}
-                onChange={(e) => settings.setColorScheme(e.target.value as TerminalColorScheme)}
-                className="w-full px-3 py-2 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)]"
-              >
-                {TERMINAL_SCHEMES.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            {/* Font */}
-            <div className="grid grid-cols-2 gap-3">
-              <div>
+              {/* Theme */}
+              <div className="mb-3">
                 <label className="block text-xs text-[var(--text-secondary)] mb-1.5">
-                  Font Size
+                  Theme
                 </label>
-                <div className="flex items-center gap-2">
-                  <input
-                    type="range"
-                    min={8}
-                    max={24}
-                    value={settings.fontSize}
-                    onChange={(e) =>
-                      settings.setFontSize(Number(e.target.value))
-                    }
-                    className="flex-1 accent-[var(--accent)]"
-                  />
-                  <span className="text-sm text-[var(--text-primary)] w-6 text-right">
-                    {settings.fontSize}
-                  </span>
-                </div>
-              </div>
-              <div>
-                <label className="block text-xs text-[var(--text-secondary)] mb-1.5">
-                  Font Family
-                </label>
-                <select
-                  value={settings.fontFamily}
-                  onChange={(e) => settings.setFontFamily(e.target.value)}
-                  className="w-full h-8 px-2 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)]"
-                >
-                  <option value="JetBrains Mono, Consolas, monospace">
-                    JetBrains Mono
-                  </option>
-                  <option value="Consolas, monospace">Consolas</option>
-                  <option value="Fira Code, monospace">Fira Code</option>
-                  <option value="Source Code Pro, monospace">
-                    Source Code Pro
-                  </option>
-                  <option value="Courier New, monospace">Courier New</option>
-                </select>
-              </div>
-            </div>
-          </section>
-          </NavGroup>
-
-          <NavGroup nav="terminal" active={activeNav}>
-          {/* Terminal Behavior */}
-          <section id="set-terminal">
-            <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-3">
-              Terminal
-            </h3>
-
-            <div className="grid grid-cols-2 gap-3 mb-3">
-              {/* Cursor Style */}
-              <div>
-                <label className="block text-xs text-[var(--text-secondary)] mb-1.5">
-                  Cursor Style
-                </label>
-                <div className="flex gap-1">
-                  {(['block', 'underline', 'bar'] as const).map((style) => (
+                <div className="flex gap-2" role="group" aria-label="Theme">
+                  {THEME_OPTIONS.map(({ id, label, Icon }) => (
                     <button
-                      key={style}
-                      onClick={() => settings.setCursorStyle(style)}
+                      key={id}
+                      aria-pressed={settings.theme === id}
+                      onClick={() => settings.setTheme(id)}
                       className={`
-                        flex-1 py-1.5 text-xs rounded-md border capitalize transition-colors
+                        flex items-center justify-center gap-2 flex-1 py-2 rounded-lg border text-sm transition-colors
                         ${
-                          settings.cursorStyle === style
+                          settings.theme === id
                             ? 'bg-[var(--bg-tertiary)] border-[var(--accent)] text-[var(--text-primary)]'
                             : 'bg-[var(--bg-primary)] border-[var(--border)] text-[var(--text-secondary)] hover:border-[var(--text-muted)]'
                         }
                       `}
                     >
-                      {style}
+                      <Icon size={14} />
+                      {label}
                     </button>
                   ))}
                 </div>
+                {settings.theme === 'system' && <SystemThemeNote />}
               </div>
 
-              {/* Scrollback */}
-              <div>
+              {/* Terminal color scheme */}
+              <div className="mb-3">
                 <label className="block text-xs text-[var(--text-secondary)] mb-1.5">
-                  Scrollback Lines
+                  Terminal Color Scheme
                 </label>
-                <div className="flex items-center gap-2">
-                  <input
-                    type="range"
-                    min={1000}
-                    max={50000}
-                    step={1000}
-                    value={settings.scrollback}
-                    onChange={(e) =>
-                      settings.setScrollback(Number(e.target.value))
-                    }
-                    className="flex-1 accent-[var(--accent)]"
-                  />
-                  <span className="text-xs text-[var(--text-primary)] w-12 text-right">
-                    {settings.scrollback >= 1000
-                      ? `${settings.scrollback / 1000}K`
-                      : settings.scrollback}
-                  </span>
-                </div>
-              </div>
-            </div>
-
-            {/* Toggles */}
-            <div className="space-y-2">
-              {[
-                {
-                  label: 'Cursor Blink',
-                  value: settings.cursorBlink,
-                  onChange: settings.setCursorBlink,
-                },
-                {
-                  label: 'Bell',
-                  value: settings.bell,
-                  onChange: settings.setBell,
-                },
-                {
-                  label: 'Syntax Highlighting',
-                  value: settings.syntaxHighlighting,
-                  onChange: settings.setSyntaxHighlighting,
-                },
-                {
-                  label: 'Auto Reconnect',
-                  value: settings.autoReconnect,
-                  onChange: settings.setAutoReconnect,
-                },
-                {
-                  label: 'Paste Guard',
-                  value: settings.pasteGuardEnabled,
-                  onChange: (value: boolean) => settings.updateSettings({ pasteGuardEnabled: value }),
-                },
-                {
-                  label: 'Paste History',
-                  value: settings.pasteHistoryEnabled,
-                  onChange: (value: boolean) => settings.updateSettings({ pasteHistoryEnabled: value }),
-                },
-                {
-                  label: 'Copy on Select',
-                  value: settings.copyOnSelect,
-                  onChange: (value: boolean) => settings.updateSettings({ copyOnSelect: value }),
-                },
-                {
-                  label: `Smart Links (${navigator.platform.toUpperCase().includes('MAC') ? 'Cmd' : 'Ctrl'}+Click to Copy)`,
-                  value: settings.smartTerminalLinks,
-                  onChange: (value: boolean) => settings.updateSettings({ smartTerminalLinks: value }),
-                },
-                {
-                  label: 'Background Activity Alerts',
-                  value: settings.terminalActivityNotifications,
-                  onChange: (value: boolean) => settings.updateSettings({ terminalActivityNotifications: value }),
-                },
-                {
-                  label: 'Silence Alerts After Input',
-                  value: settings.terminalSilenceNotifications,
-                  onChange: (value: boolean) => settings.updateSettings({ terminalSilenceNotifications: value }),
-                },
-                {
-                  label: 'Confirm Before Closing a Connected Tab',
-                  value: settings.confirmCloseConnected,
-                  onChange: (value: boolean) => settings.updateSettings({ confirmCloseConnected: value }),
-                },
-                // macOS only: Option-as-Meta blocks typing | [ ] { } @ \ ~
-                // with Option on many non-US keyboards.
-                ...(isMac
-                  ? [
-                      {
-                        label: 'Option Key as Meta (turn off to type [ ] { } | @ with Option)',
-                        value: settings.macOptionIsMeta,
-                        onChange: (value: boolean) => settings.updateSettings({ macOptionIsMeta: value }),
-                      },
-                    ]
-                  : []),
-              ].map(({ label, value, onChange }) => (
-                <label
-                  key={label}
-                  className="flex items-center justify-between cursor-pointer py-1"
-                >
-                  <span className="text-sm text-[var(--text-primary)]">{label}</span>
-                  <div
-                    onClick={() => onChange(!value)}
-                    className="w-9 h-5 rounded-full transition-colors cursor-pointer relative"
-                    style={{ background: value ? 'var(--accent)' : 'var(--border-strong)' }}
-                  >
-                    <div
-                      className="absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow-sm transition-transform"
-                      style={{ transform: value ? 'translateX(16px)' : 'translateX(0)' }}
-                    />
-                  </div>
-                </label>
-              ))}
-            </div>
-
-            {/* Terminal ergonomics (W2-12): SecureCRT-style mouse behaviors,
-                opt-in. copy-on-select + right-click paste already live above;
-                middle-click paste is the new gate. */}
-            <div className="mt-4">
-              <label className="block text-xs text-[var(--text-secondary)] mb-1.5">
-                Terminal ergonomics
-              </label>
-              <div className="space-y-2">
-                <label className="flex items-center justify-between cursor-pointer py-1">
-                  <span className="text-sm text-[var(--text-primary)]">Middle-Click Paste</span>
-                  <div
-                    onClick={() => settings.setMiddleClickPaste(!settings.middleClickPaste)}
-                    className="w-9 h-5 rounded-full transition-colors cursor-pointer relative"
-                    style={{ background: settings.middleClickPaste ? 'var(--accent)' : 'var(--border-strong)' }}
-                  >
-                    <div
-                      className="absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow-sm transition-transform"
-                      style={{ transform: settings.middleClickPaste ? 'translateX(16px)' : 'translateX(0)' }}
-                    />
-                  </div>
-                </label>
-              </div>
-              <p className="text-[11px] text-[var(--text-muted)] mt-1">
-                Paste the clipboard on middle-click (SecureCRT convention). Multi-line pastes still hit the paste guard.
-              </p>
-            </div>
-
-            {/* Right-Click Behavior */}
-            <div className="mt-4">
-              <label className="block text-xs text-[var(--text-secondary)] mb-1.5">
-                Right-Click in Terminal
-              </label>
-              <div className="flex gap-1">
-                {(
-                  [
-                    { value: 'menu', label: 'Context Menu' },
-                    { value: 'paste', label: 'Paste' },
-                    { value: 'copyPaste', label: 'Copy / Paste' },
-                  ] as const
-                ).map(({ value, label }) => (
-                  <button
-                    key={value}
-                    onClick={() => settings.updateSettings({ rightClickBehavior: value })}
-                    className={`
-                      flex-1 py-1.5 text-xs rounded-md border transition-colors
-                      ${
-                        settings.rightClickBehavior === value
-                          ? 'bg-[var(--bg-tertiary)] border-[var(--accent)] text-[var(--text-primary)]'
-                          : 'bg-[var(--bg-primary)] border-[var(--border)] text-[var(--text-secondary)] hover:border-[var(--text-muted)]'
-                      }
-                    `}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
-              <p className="text-[11px] text-[var(--text-muted)] mt-1">
-                Paste = PuTTY style. Copy / Paste = copy the selection if there is one, otherwise paste (Windows Terminal style).
-              </p>
-            </div>
-
-            <div className="grid grid-cols-2 gap-3 mt-4">
-              <div>
-                <label className="block text-xs text-[var(--text-secondary)] mb-1.5">
-                  Paste Guard Threshold
-                </label>
-                <div className="flex items-center gap-2">
-                  <input
-                    type="range"
-                    min={2}
-                    max={25}
-                    value={settings.pasteGuardLineThreshold}
-                    onChange={(e) => settings.updateSettings({ pasteGuardLineThreshold: Number(e.target.value) })}
-                    className="flex-1 accent-[var(--accent)]"
-                  />
-                  <span className="text-xs text-[var(--text-primary)] w-14 text-right">
-                    {settings.pasteGuardLineThreshold} lines
-                  </span>
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-xs text-[var(--text-secondary)] mb-1.5">
-                  Silence Alert Delay
-                </label>
-                <div className="flex items-center gap-2">
-                  <input
-                    type="range"
-                    min={15}
-                    max={300}
-                    step={15}
-                    value={settings.terminalSilenceThresholdSeconds}
-                    onChange={(e) => settings.updateSettings({ terminalSilenceThresholdSeconds: Number(e.target.value) })}
-                    className="flex-1 accent-[var(--accent)]"
-                  />
-                  <span className="text-xs text-[var(--text-primary)] w-12 text-right">
-                    {settings.terminalSilenceThresholdSeconds}s
-                  </span>
-                </div>
-              </div>
-            </div>
-          </section>
-
-          <div className="border-t border-[var(--bg-tertiary)]" />
-
-          {/* Device profiles */}
-          <section id="set-device-profiles">
-            <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-3">
-              Device Profiles
-            </h3>
-            <div className="space-y-3">
-              <div className="grid grid-cols-[1fr_160px_auto] gap-2">
-                <input
-                  value={profileName}
-                  onChange={(e) => setProfileName(e.target.value)}
-                  placeholder="Custom profile name"
-                  className="input-field h-8 px-2 text-sm"
-                />
                 <select
-                  value={profileBase}
-                  onChange={(e) => setProfileBase(e.target.value as DeviceType)}
-                  className="input-field h-8 px-2 text-sm"
+                  value={settings.colorScheme}
+                  onChange={(e) => settings.setColorScheme(e.target.value as TerminalColorScheme)}
+                  className="w-full px-3 py-2 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)]"
                 >
-                  {DEVICE_TYPES.map((dt) => (
-                    <option key={dt.value} value={dt.value}>
-                      {dt.short}
+                  {TERMINAL_SCHEMES.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.label}
                     </option>
                   ))}
                 </select>
-                <button
-                  onClick={addProfile}
-                  className="px-3 h-8 rounded bg-[var(--bg-tertiary)] hover:bg-[var(--border-strong)] text-xs text-[var(--text-primary)]"
-                >
-                  Add
-                </button>
               </div>
-              <div className="flex items-center gap-2">
-                <button onClick={exportProfiles} className="px-2 py-1 rounded text-xs text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]">
-                  Export
-                </button>
-                <button onClick={importProfiles} className="px-2 py-1 rounded text-xs text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]">
-                  Import
-                </button>
-                <span className="text-[10px] text-[var(--text-muted)]">
-                  {settings.customDeviceProfiles.length} custom profile{settings.customDeviceProfiles.length === 1 ? '' : 's'}
-                </span>
+
+              {/* Font */}
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs text-[var(--text-secondary)] mb-1.5">
+                    Font Size
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="range"
+                      min={8}
+                      max={24}
+                      value={settings.fontSize}
+                      onChange={(e) =>
+                        settings.setFontSize(Number(e.target.value))
+                      }
+                      className="flex-1 accent-[var(--accent)]"
+                    />
+                    <span className="text-sm text-[var(--text-primary)] w-6 text-right">
+                      {settings.fontSize}
+                    </span>
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-xs text-[var(--text-secondary)] mb-1.5">
+                    Font Family
+                  </label>
+                  <select
+                    value={settings.fontFamily}
+                    onChange={(e) => settings.setFontFamily(e.target.value)}
+                    className="w-full h-8 px-2 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)]"
+                  >
+                    <option value="JetBrains Mono, Consolas, monospace">
+                      JetBrains Mono
+                    </option>
+                    <option value="Consolas, monospace">Consolas</option>
+                    <option value="Fira Code, monospace">Fira Code</option>
+                    <option value="Source Code Pro, monospace">
+                      Source Code Pro
+                    </option>
+                    <option value="Courier New, monospace">Courier New</option>
+                  </select>
+                </div>
               </div>
-              <div className="space-y-1">
-                {settings.customDeviceProfiles.length === 0 ? (
-                  <p className="text-xs text-[var(--text-muted)]">
-                    Create custom profiles here or from Map Device. Built-in profiles remain available automatically.
-                  </p>
-                ) : (
-                  settings.customDeviceProfiles.map((profile) => (
-                    <div key={profile.id} className="flex items-center justify-between rounded-lg bg-[var(--bg-inset)] border border-[var(--border)] px-2 py-1.5">
-                      <span className="text-xs text-[var(--text-primary)]">
-                        {profile.name}
-                        <span className="ml-2 text-[10px] text-[var(--text-muted)]">{profile.short}</span>
-                      </span>
+            </section>
+          </Section>
+          <Section id="terminal">
+            <section id="set-terminal">
+              <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-3">
+                Terminal
+              </h3>
+
+              <div className="grid grid-cols-2 gap-3 mb-3">
+                {/* Cursor Style */}
+                <div>
+                  <label className="block text-xs text-[var(--text-secondary)] mb-1.5">
+                    Cursor Style
+                  </label>
+                  <div className="flex gap-1">
+                    {(['block', 'underline', 'bar'] as const).map((style) => (
                       <button
-                        onClick={() => settings.removeDeviceProfile(profile.id)}
-                        className="text-[10px] text-[var(--accent-danger)] hover:underline"
+                        key={style}
+                        onClick={() => settings.setCursorStyle(style)}
+                        className={`
+                          flex-1 py-1.5 text-xs rounded-md border capitalize transition-colors
+                          ${
+                            settings.cursorStyle === style
+                              ? 'bg-[var(--bg-tertiary)] border-[var(--accent)] text-[var(--text-primary)]'
+                              : 'bg-[var(--bg-primary)] border-[var(--border)] text-[var(--text-secondary)] hover:border-[var(--text-muted)]'
+                          }
+                        `}
                       >
-                        Delete
+                        {style}
                       </button>
-                    </div>
-                  ))
-                )}
+                    ))}
+                  </div>
+                </div>
+
+                {/* Scrollback */}
+                <div>
+                  <label className="block text-xs text-[var(--text-secondary)] mb-1.5">
+                    Scrollback Lines
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="range"
+                      min={1000}
+                      max={50000}
+                      step={1000}
+                      value={settings.scrollback}
+                      onChange={(e) =>
+                        settings.setScrollback(Number(e.target.value))
+                      }
+                      className="flex-1 accent-[var(--accent)]"
+                    />
+                    <span className="text-xs text-[var(--text-primary)] w-12 text-right">
+                      {settings.scrollback >= 1000
+                        ? `${settings.scrollback / 1000}K`
+                        : settings.scrollback}
+                    </span>
+                  </div>
+                </div>
               </div>
-            </div>
-          </section>
-          </NavGroup>
 
-          <NavGroup nav="backup" active={activeNav}>
-          {/* Backup / transfer */}
-          <section id="set-backup">
-            <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-2">
-              Backup &amp; Transfer
-            </h3>
-            <p className="text-xs text-[var(--text-muted)] mb-3">
-              Export settings, snippets, device profiles, saved sessions, triggers, and intents. Secrets and vault data are never included.
-            </p>
-            <div className="flex items-center gap-2 mb-3">
-              {(['merge', 'replace'] as BackupImportMode[]).map((mode) => (
-                <button
-                  key={mode}
-                  onClick={() => setBackupMode(mode)}
-                  className={`px-2.5 py-1 rounded-md text-xs border capitalize transition-colors ${
-                    backupMode === mode
-                      ? 'border-[var(--accent)] text-[var(--accent)] bg-[var(--accent-soft)]'
-                      : 'border-[var(--border)] text-[var(--text-secondary)] hover:border-[var(--border-strong)]'
-                  }`}
-                  title={mode === 'merge' ? 'Add/update backup items without deleting local data' : 'Replace supported local data with the backup'}
-                >
-                  {mode}
-                </button>
-              ))}
-              <span className="text-[10px] text-[var(--text-muted)]">
-                {backupMode === 'merge' ? 'Import adds or updates matching IDs.' : 'Import clears supported local data first.'}
-              </span>
-            </div>
-            <div className="flex items-center gap-2">
-              <button
-                onClick={exportBackup}
-                disabled={backupBusy !== null}
-                className="flex items-center gap-1.5 px-3 h-8 rounded bg-[var(--bg-tertiary)] hover:bg-[var(--border-strong)] disabled:opacity-50 text-xs text-[var(--text-primary)]"
-              >
-                <Download size={13} />
-                {backupBusy === 'export' ? 'Exporting…' : 'Export backup'}
-              </button>
-              <button
-                onClick={importBackup}
-                disabled={backupBusy !== null}
-                className="flex items-center gap-1.5 px-3 h-8 rounded bg-[var(--bg-tertiary)] hover:bg-[var(--border-strong)] disabled:opacity-50 text-xs text-[var(--text-primary)]"
-              >
-                <Upload size={13} />
-                {backupBusy === 'import' ? 'Importing…' : 'Import backup'}
-              </button>
-            </div>
-          </section>
-
-          <div className="border-t border-[var(--bg-tertiary)]" />
-
-          {/* Output triggers */}
-          <TriggersSettings />
-
-          <div className="border-t border-[var(--bg-tertiary)]" />
-
-          {/* Config archive — capture on connect (NW-16 / W2-6 opt-in) */}
-          <section id="set-config-archive">
-            <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-1.5">
-              Config archive
-            </h3>
-            <p className="text-[11px] text-[var(--text-secondary)] mb-3">
-              Snapshot the device running-config into archive history once on
-              every ssh/telnet connect. Off by default; the manual{' '}
-              {'"'}Capture now{'"'} button in the Config Archive panel is
-              unaffected. This choice persists across app updates.
-            </p>
-
-            <label className="flex items-center justify-between cursor-pointer py-1">
-              <span className="text-sm text-[var(--text-primary)]">Capture running-config on connect</span>
-              <div
-                onClick={() => settings.setCaptureOnConnect(!settings.captureOnConnect)}
-                className="w-9 h-5 rounded-full transition-colors cursor-pointer relative"
-                style={{ background: settings.captureOnConnect ? 'var(--accent)' : 'var(--border-strong)' }}
-              >
-                <div
-                  className="absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow-sm transition-transform"
-                  style={{ transform: settings.captureOnConnect ? 'translateX(16px)' : 'translateX(0)' }}
-                />
-              </div>
-            </label>
-          </section>
-
-          <div className="border-t border-[var(--bg-tertiary)]" />
-
-          {/* Scheduled intent evaluation (drift alerting) */}
-          <section id="set-intent-schedule">
-            <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-1.5">
-              Scheduled intent evaluation
-            </h3>
-            <p className="text-[11px] text-[var(--text-secondary)] mb-3">
-              Re-run the intent-assurance sweep on an interval and alert on{' '}
-              <em>new</em> violations only — a drift toast fires once per
-              ok/unknown→violation transition, never on unchanged violations.
-              Configure a webhook to get the same drift alerts off-box.
-            </p>
-
-            <label className="flex items-center justify-between cursor-pointer py-1">
-              <span className="text-sm text-[var(--text-primary)]">Scheduled evaluation</span>
-              <div
-                onClick={() => settings.setIntentScheduling(!settings.intentScheduling)}
-                className="w-9 h-5 rounded-full transition-colors cursor-pointer relative"
-                style={{ background: settings.intentScheduling ? 'var(--accent)' : 'var(--border-strong)' }}
-              >
-                <div
-                  className="absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow-sm transition-transform"
-                  style={{ transform: settings.intentScheduling ? 'translateX(16px)' : 'translateX(0)' }}
-                />
-              </div>
-            </label>
-
-            <div className="mt-3">
-              <label className="block text-xs text-[var(--text-secondary)] mb-1.5">
-                Interval (minutes)
-              </label>
-              <div className="flex items-center gap-2">
-                <input
-                  type="range"
-                  min={1}
-                  max={240}
-                  step={5}
-                  value={settings.intentScheduleMinutes}
-                  onChange={(e) => settings.setIntentScheduleMinutes(Number(e.target.value))}
-                  className="flex-1 accent-[var(--accent)]"
-                />
-                <span className="text-sm text-[var(--text-primary)] w-12 text-right">
-                  {settings.intentScheduleMinutes}
-                </span>
-              </div>
-            </div>
-
-            <div className="mt-3">
-              <label className="block text-xs text-[var(--text-secondary)] mb-1.5">
-                Drift webhook URL (optional)
-              </label>
-              <input
-                type="url"
-                value={settings.intentWebhookUrl}
-                onChange={(e) => settings.setIntentWebhookUrl(e.target.value)}
-                placeholder="https://hooks.example.com/drift"
-                className="input-field w-full h-9 px-2.5 text-sm font-mono"
-              />
-              <p className="text-[10px] text-[var(--text-muted)] mt-1">
-                POSTed only on new-violation transitions ({'{'}event, count, violations{'}'}). Empty octets / failures are logged and skipped.
-              </p>
-            </div>
-          </section>
-
-          <div className="border-t border-[var(--bg-tertiary)]" />
-
-          {/* Reset lives here, next to Export, instead of in the Settings
-              header beside the close X — where it was easy to hit by mistake
-              and read like an app "reset". */}
-          <section id="set-reset">
-            <h3 className="text-sm font-semibold text-[var(--accent-danger)] mb-2">
-              Reset Settings
-            </h3>
-            <p className="text-xs text-[var(--text-muted)] mb-3">
-              Puts every setting back to its default: theme and terminal options,
-              custom device profiles, AI agents and providers, and Central / Mist
-              accounts. Saved sessions, shared logins, snippets, the vault and open
-              tabs are not touched. Export a backup first if you might want them back.
-            </p>
-            <button
-              onClick={async () => {
-                const ok = await askConfirm({
-                  title: 'Reset all settings to defaults?',
-                  message:
-                    'Theme and terminal options, custom device profiles, AI agents and providers, and Central / Mist accounts all go back to defaults. Saved sessions and the vault are kept. This cannot be undone.',
-                  confirmLabel: 'Reset settings',
-                  danger: true,
-                });
-                if (ok) settings.resetToDefaults();
-              }}
-              className="flex items-center gap-1.5 px-3 h-8 rounded border border-[var(--accent-danger)] text-[var(--accent-danger)] hover:bg-[var(--bg-tertiary)] text-xs"
-            >
-              <RotateCcw size={13} />
-              Reset all settings…
-            </button>
-          </section>
-          </NavGroup>
-
-          <NavGroup nav="terminal" active={activeNav}>
-          {/* Connection */}
-          <section>
-            <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-3">
-              Connection
-            </h3>
-            <div>
-              <label className="block text-xs text-[var(--text-secondary)] mb-1.5">
-                Keep-Alive Interval (seconds)
-              </label>
-              <div className="flex items-center gap-2">
-                <input
-                  type="range"
-                  min={5}
-                  max={120}
-                  value={settings.keepAliveInterval}
-                  onChange={(e) =>
-                    settings.setKeepAliveInterval(Number(e.target.value))
-                  }
-                  className="flex-1 accent-[var(--accent)]"
-                />
-                <span className="text-sm text-[var(--text-primary)] w-8 text-right">
-                  {settings.keepAliveInterval}
-                </span>
-              </div>
-            </div>
-          </section>
-
-          <div className="border-t border-[var(--bg-tertiary)]" />
-
-          <SessionLogSettings />
-
-          <div className="border-t border-[var(--bg-tertiary)]" />
-
-          {/* SSH config import + host-key management */}
-          <HostsManager />
-          </NavGroup>
-
-          <NavGroup nav="logins" active={activeNav}>
-          {/* Shared logins (credential profiles) for folders and hosts */}
-          <LoginProfiles />
-          </NavGroup>
-
-          <NavGroup nav="ai" active={activeNav}>
-          {/* AI */}
-          <section id="set-ai">
-            <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-3">
-              AI Assistant
-            </h3>
-            <div className="space-y-3">
-              {/* Provider selector */}
-              <div>
-                <label className="block text-xs text-[var(--text-secondary)] mb-1.5">Provider</label>
-                <div className="grid grid-cols-3 gap-2">
-                  {AI_PROVIDERS.map((p) => (
-                    <button
-                      key={p.value}
-                      onClick={() => settings.setAiProvider(p.value)}
-                      className={`py-2 text-[11px] rounded-lg border transition-colors ${
-                        settings.aiProvider === p.value
-                          ? 'bg-[var(--bg-tertiary)] border-[var(--accent)] text-[var(--text-primary)]'
-                          : 'bg-[var(--bg-primary)] border-[var(--border)] text-[var(--text-secondary)] hover:border-[var(--text-muted)]'
-                      }`}
+              {/* Toggles */}
+              <div className="space-y-2">
+                {[
+                  {
+                    label: 'Cursor Blink',
+                    value: settings.cursorBlink,
+                    onChange: settings.setCursorBlink,
+                  },
+                  {
+                    label: 'Bell',
+                    value: settings.bell,
+                    onChange: settings.setBell,
+                  },
+                  {
+                    label: 'Syntax Highlighting',
+                    value: settings.syntaxHighlighting,
+                    onChange: settings.setSyntaxHighlighting,
+                  },
+                  {
+                    label: 'Paste Guard',
+                    value: settings.pasteGuardEnabled,
+                    onChange: (value: boolean) => settings.updateSettings({ pasteGuardEnabled: value }),
+                  },
+                  {
+                    label: 'Paste History',
+                    value: settings.pasteHistoryEnabled,
+                    onChange: (value: boolean) => settings.updateSettings({ pasteHistoryEnabled: value }),
+                  },
+                  {
+                    label: 'Copy on Select',
+                    value: settings.copyOnSelect,
+                    onChange: (value: boolean) => settings.updateSettings({ copyOnSelect: value }),
+                  },
+                  {
+                    label: `Smart Links (${navigator.platform.toUpperCase().includes('MAC') ? 'Cmd' : 'Ctrl'}+Click to Copy)`,
+                    value: settings.smartTerminalLinks,
+                    onChange: (value: boolean) => settings.updateSettings({ smartTerminalLinks: value }),
+                  },
+                  {
+                    label: 'Background Activity Alerts',
+                    value: settings.terminalActivityNotifications,
+                    onChange: (value: boolean) => settings.updateSettings({ terminalActivityNotifications: value }),
+                  },
+                  {
+                    label: 'Silence Alerts After Input',
+                    value: settings.terminalSilenceNotifications,
+                    onChange: (value: boolean) => settings.updateSettings({ terminalSilenceNotifications: value }),
+                  },
+                  {
+                    label: 'Confirm Before Closing a Connected Tab',
+                    value: settings.confirmCloseConnected,
+                    onChange: (value: boolean) => settings.updateSettings({ confirmCloseConnected: value }),
+                  },
+                  // macOS only: Option-as-Meta blocks typing | [ ] { } @ \ ~
+                  // with Option on many non-US keyboards.
+                  ...(isMac
+                    ? [
+                        {
+                          label: 'Option Key as Meta (turn off to type [ ] { } | @ with Option)',
+                          value: settings.macOptionIsMeta,
+                          onChange: (value: boolean) => settings.updateSettings({ macOptionIsMeta: value }),
+                        },
+                      ]
+                    : []),
+                ].map(({ label, value, onChange }) => (
+                  <label
+                    key={label}
+                    className="flex items-center justify-between cursor-pointer py-1"
+                  >
+                    <span className="text-sm text-[var(--text-primary)]">{label}</span>
+                    <div
+                      onClick={() => onChange(!value)}
+                      className="w-9 h-5 rounded-full transition-colors cursor-pointer relative"
+                      style={{ background: value ? 'var(--accent)' : 'var(--border-strong)' }}
                     >
-                      {p.label}
+                      <div
+                        className="absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow-sm transition-transform"
+                        style={{ transform: value ? 'translateX(16px)' : 'translateX(0)' }}
+                      />
+                    </div>
+                  </label>
+                ))}
+              </div>
+
+              {/* Terminal ergonomics (W2-12): SecureCRT-style mouse behaviors,
+                  opt-in. copy-on-select + right-click paste already live above;
+                  middle-click paste is the new gate. */}
+              <div className="mt-4">
+                <label className="block text-xs text-[var(--text-secondary)] mb-1.5">
+                  Terminal ergonomics
+                </label>
+                <div className="space-y-2">
+                  <label className="flex items-center justify-between cursor-pointer py-1">
+                    <span className="text-sm text-[var(--text-primary)]">Middle-Click Paste</span>
+                    <div
+                      onClick={() => settings.setMiddleClickPaste(!settings.middleClickPaste)}
+                      className="w-9 h-5 rounded-full transition-colors cursor-pointer relative"
+                      style={{ background: settings.middleClickPaste ? 'var(--accent)' : 'var(--border-strong)' }}
+                    >
+                      <div
+                        className="absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow-sm transition-transform"
+                        style={{ transform: settings.middleClickPaste ? 'translateX(16px)' : 'translateX(0)' }}
+                      />
+                    </div>
+                  </label>
+                </div>
+                <p className="text-[11px] text-[var(--text-muted)] mt-1">
+                  Paste the clipboard on middle-click (SecureCRT convention). Multi-line pastes still hit the paste guard.
+                </p>
+              </div>
+
+              {/* Right-Click Behavior */}
+              <div className="mt-4">
+                <label className="block text-xs text-[var(--text-secondary)] mb-1.5">
+                  Right-Click in Terminal
+                </label>
+                <div className="flex gap-1">
+                  {(
+                    [
+                      { value: 'menu', label: 'Context Menu' },
+                      { value: 'paste', label: 'Paste' },
+                      { value: 'copyPaste', label: 'Copy / Paste' },
+                    ] as const
+                  ).map(({ value, label }) => (
+                    <button
+                      key={value}
+                      onClick={() => settings.updateSettings({ rightClickBehavior: value })}
+                      className={`
+                        flex-1 py-1.5 text-xs rounded-md border transition-colors
+                        ${
+                          settings.rightClickBehavior === value
+                            ? 'bg-[var(--bg-tertiary)] border-[var(--accent)] text-[var(--text-primary)]'
+                            : 'bg-[var(--bg-primary)] border-[var(--border)] text-[var(--text-secondary)] hover:border-[var(--text-muted)]'
+                        }
+                      `}
+                    >
+                      {label}
                     </button>
                   ))}
                 </div>
+                <p className="text-[11px] text-[var(--text-muted)] mt-1">
+                  Paste = PuTTY style. Copy / Paste = copy the selection if there is one, otherwise paste (Windows Terminal style).
+                </p>
               </div>
 
-              {/* Key-based providers: API key (stored in Rust, never in localStorage) */}
-              {providerMeta?.needsKey && (
+              <div className="grid grid-cols-2 gap-3 mt-4">
                 <div>
-                  <label className="block text-xs text-[var(--text-secondary)] mb-1.5 flex items-center gap-1.5">
-                    API Key
-                    {keySaved && (
-                      <>
-                        <span className="flex items-center gap-1 text-[var(--accent-success)]">
-                          <CheckCircle2 size={11} /> saved
+                  <label className="block text-xs text-[var(--text-secondary)] mb-1.5">
+                    Paste Guard Threshold
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="range"
+                      min={2}
+                      max={25}
+                      value={settings.pasteGuardLineThreshold}
+                      onChange={(e) => settings.updateSettings({ pasteGuardLineThreshold: Number(e.target.value) })}
+                      className="flex-1 accent-[var(--accent)]"
+                    />
+                    <span className="text-xs text-[var(--text-primary)] w-14 text-right">
+                      {settings.pasteGuardLineThreshold} lines
+                    </span>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs text-[var(--text-secondary)] mb-1.5">
+                    Silence Alert Delay
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="range"
+                      min={15}
+                      max={300}
+                      step={15}
+                      value={settings.terminalSilenceThresholdSeconds}
+                      onChange={(e) => settings.updateSettings({ terminalSilenceThresholdSeconds: Number(e.target.value) })}
+                      className="flex-1 accent-[var(--accent)]"
+                    />
+                    <span className="text-xs text-[var(--text-primary)] w-12 text-right">
+                      {settings.terminalSilenceThresholdSeconds}s
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </section>
+          </Section>
+          <Section id="device-profiles">
+            <section id="set-device-profiles">
+              <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-3">
+                Device Profiles
+              </h3>
+              <div className="space-y-3">
+                <div className="grid grid-cols-[1fr_160px_auto] gap-2">
+                  <input
+                    value={profileName}
+                    onChange={(e) => setProfileName(e.target.value)}
+                    placeholder="Custom profile name"
+                    className="input-field h-8 px-2 text-sm"
+                  />
+                  <select
+                    value={profileBase}
+                    onChange={(e) => setProfileBase(e.target.value as DeviceType)}
+                    className="input-field h-8 px-2 text-sm"
+                  >
+                    {DEVICE_TYPES.map((dt) => (
+                      <option key={dt.value} value={dt.value}>
+                        {dt.short}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    onClick={addProfile}
+                    className="px-3 h-8 rounded bg-[var(--bg-tertiary)] hover:bg-[var(--border-strong)] text-xs text-[var(--text-primary)]"
+                  >
+                    Add
+                  </button>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button onClick={exportProfiles} className="px-2 py-1 rounded text-xs text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]">
+                    Export
+                  </button>
+                  <button onClick={importProfiles} className="px-2 py-1 rounded text-xs text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]">
+                    Import
+                  </button>
+                  <span className="text-[10px] text-[var(--text-muted)]">
+                    {settings.customDeviceProfiles.length} custom profile{settings.customDeviceProfiles.length === 1 ? '' : 's'}
+                  </span>
+                </div>
+                <div className="space-y-1">
+                  {settings.customDeviceProfiles.length === 0 ? (
+                    <p className="text-xs text-[var(--text-muted)]">
+                      Create custom profiles here or from Map Device. Built-in profiles remain available automatically.
+                    </p>
+                  ) : (
+                    settings.customDeviceProfiles.map((profile) => (
+                      <div key={profile.id} className="flex items-center justify-between rounded-lg bg-[var(--bg-inset)] border border-[var(--border)] px-2 py-1.5">
+                        <span className="text-xs text-[var(--text-primary)]">
+                          {profile.name}
+                          <span className="ml-2 text-[10px] text-[var(--text-muted)]">{profile.short}</span>
                         </span>
                         <button
-                          type="button"
-                          onClick={() => {
-                            invoke('ai_set_key', { provider: aiProvider, key: '' })
-                              .then(() => {
-                                setKeySaved(false);
-                                setKeyInput('');
-                              })
-                              .catch(() => {});
-                          }}
-                          className="ml-auto text-[10px] text-[var(--text-muted)] hover:text-[var(--accent-danger)]"
+                          onClick={() => settings.removeDeviceProfile(profile.id)}
+                          className="text-[10px] text-[var(--accent-danger)] hover:underline"
                         >
-                          remove
+                          Delete
                         </button>
-                      </>
-                    )}
-                  </label>
-                  <div className="relative">
-                    <input
-                      type={showApiKey ? 'text' : 'password'}
-                      value={keyInput}
-                      onChange={(e) => setKeyInput(e.target.value)}
-                      onBlur={saveKey}
-                      placeholder={keySaved ? '•••••••• (saved — type to replace)' : 'Enter API key'}
-                      className="w-full h-8 px-2 pr-8 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)] font-mono"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowApiKey(!showApiKey)}
-                      className="absolute right-2 top-1/2 -translate-y-1/2 text-[var(--text-muted)] hover:text-[var(--text-secondary)]"
-                    >
-                      {showApiKey ? <EyeOff size={12} /> : <Eye size={12} />}
-                    </button>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            </section>
+          </Section>
+          <Section id="logins">
+            <LoginProfiles />
+          </Section>
+          <Section id="connection">
+            <section id="set-connection">
+              <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-3">
+                Connection
+              </h3>
+              <div>
+                <label className="block text-xs text-[var(--text-secondary)] mb-1.5">
+                  Keep-Alive Interval (seconds)
+                </label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="range"
+                    min={5}
+                    max={120}
+                    value={settings.keepAliveInterval}
+                    onChange={(e) =>
+                      settings.setKeepAliveInterval(Number(e.target.value))
+                    }
+                    className="flex-1 accent-[var(--accent)]"
+                  />
+                  <span className="text-sm text-[var(--text-primary)] w-8 text-right">
+                    {settings.keepAliveInterval}
+                  </span>
+                </div>
+              </div>
+              <div className="flex items-center justify-between gap-3 mt-3 py-1">
+                <div className="min-w-0">
+                  <div className="text-sm text-[var(--text-primary)]">Auto Reconnect</div>
+                  <div className="text-[11px] text-[var(--text-muted)]">
+                    Reconnect a session that drops (link flap, device reload) without pressing Enter.
                   </div>
-                  <p className="text-[10px] text-[var(--text-muted)] mt-1">
-                    Stored in the app data dir (outside the browser), sent only to the provider from the Rust backend.
-                  </p>
                 </div>
-              )}
-
-              {/* Model for key-based providers */}
-              {providerMeta?.needsKey && aiProvider === 'anthropic' && (
-                <div>
-                  <label className="block text-xs text-[var(--text-secondary)] mb-1.5">Model</label>
-                  <select
-                    value={settings.aiModel}
-                    onChange={(e) => settings.setAiModel(e.target.value)}
-                    className="w-full h-8 px-2 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)]"
-                  >
-                    <option value="claude-sonnet-4-6">Claude Sonnet 4.6 (Recommended)</option>
-                    <option value="claude-opus-4-8">Claude Opus 4.8 (Most capable)</option>
-                    <option value="claude-haiku-4-5-20251001">Claude Haiku 4.5 (Fastest)</option>
-                  </select>
-                </div>
-              )}
-              {aiProvider === 'openrouter' && (
-                <div>
-                  <label className="block text-xs text-[var(--text-secondary)] mb-1.5">Model</label>
-                  <input
-                    type="text"
-                    value={settings.openrouterModel}
-                    onChange={(e) => settings.setOpenrouterModel(e.target.value)}
-                    placeholder="e.g. anthropic/claude-3.5-sonnet"
-                    className="w-full h-8 px-2 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)] font-mono"
+                <Toggle on={settings.autoReconnect} onChange={settings.setAutoReconnect} label="Auto Reconnect" />
+              </div>
+            </section>
+          </Section>
+          <Section id="hosts">
+            <div id="set-hosts">
+              <HostsManager />
+            </div>
+          </Section>
+          <Section id="tls">
+            <section id="set-tls">
+              <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-3">Device REST security</h3>
+              <label className="flex items-center justify-between cursor-pointer gap-3">
+                <span className="min-w-0">
+                  <span className="text-sm text-[var(--text-primary)]">Verify device TLS certificates</span>
+                  <span className="block text-[10px] text-[var(--text-muted)]">
+                    Reject untrusted/self-signed certs on AOS-CX / AOS-8 / AOS-S REST. On by
+                    default — most field gear ships a self-signed cert, so turn it off only for
+                    lab devices you trust.
+                  </span>
+                  {!settings.verifyDeviceTls && (
+                    <span className="block text-[10px] text-[var(--accent-warning)] mt-1">
+                      Device admin and SSH credentials can be intercepted on untrusted networks
+                      when TLS verification is off. Disable only for self-signed lab devices.
+                    </span>
+                  )}
+                </span>
+                <div
+                  onClick={() => settings.updateSettings({ verifyDeviceTls: !settings.verifyDeviceTls })}
+                  className="w-9 h-5 rounded-full relative cursor-pointer transition-colors flex-shrink-0"
+                  style={{ background: settings.verifyDeviceTls ? 'var(--accent)' : 'var(--border-strong)' }}
+                  role="switch"
+                  aria-checked={settings.verifyDeviceTls}
+                  aria-label="Verify device TLS certificates"
+                >
+                  <div
+                    className="absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow-sm transition-transform"
+                    style={{ transform: settings.verifyDeviceTls ? 'translateX(16px)' : 'translateX(0)' }}
                   />
-                  <p className="text-[10px] text-[var(--text-muted)] mt-1">
-                    Any OpenRouter model id (see openrouter.ai/models), e.g. <code className="text-[var(--text-primary)]">openai/gpt-4o</code>, <code className="text-[var(--text-primary)]">meta-llama/llama-3.1-70b-instruct</code>.
-                  </p>
                 </div>
-              )}
-              {aiProvider === 'moonshot' && (
-                <div>
-                  <label className="block text-xs text-[var(--text-secondary)] mb-1.5">Model</label>
-                  <input
-                    type="text"
-                    value={settings.moonshotModel}
-                    onChange={(e) => settings.setMoonshotModel(e.target.value)}
-                    placeholder="e.g. kimi-k2-0905-preview"
-                    className="w-full h-8 px-2 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)] font-mono"
-                  />
-                  <p className="text-[10px] text-[var(--text-muted)] mt-1">
-                    A Moonshot/Kimi model id (see platform.moonshot.ai), e.g. <code className="text-[var(--text-primary)]">moonshot-v1-8k</code>.
-                  </p>
-                </div>
-              )}
+              </label>
+            </section>
+          </Section>
+          <Section id="triggers">
+            <div id="set-triggers">
+              <TriggersSettings />
+            </div>
+          </Section>
+          <Section id="config-archive">
+            <section id="set-config-archive">
+              <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-1.5">
+                Config archive
+              </h3>
+              <p className="text-[11px] text-[var(--text-secondary)] mb-3">
+                Snapshot the device running-config into archive history once on
+                every ssh/telnet connect. Off by default; the manual{' '}
+                {'"'}Capture now{'"'} button in the Config Archive panel is
+                unaffected. This choice persists across app updates.
+              </p>
 
-              {/* Local CLI settings — no API key; the CLI handles its own login */}
-              {aiProvider === 'local-cli' && (
+              <label className="flex items-center justify-between cursor-pointer py-1">
+                <span className="text-sm text-[var(--text-primary)]">Capture running-config on connect</span>
+                <div
+                  onClick={() => settings.setCaptureOnConnect(!settings.captureOnConnect)}
+                  className="w-9 h-5 rounded-full transition-colors cursor-pointer relative"
+                  style={{ background: settings.captureOnConnect ? 'var(--accent)' : 'var(--border-strong)' }}
+                >
+                  <div
+                    className="absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow-sm transition-transform"
+                    style={{ transform: settings.captureOnConnect ? 'translateX(16px)' : 'translateX(0)' }}
+                  />
+                </div>
+              </label>
+            </section>
+          </Section>
+          <Section id="intent-schedule">
+            <section id="set-intent-schedule">
+              <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-1.5">
+                Scheduled intent evaluation
+              </h3>
+              <p className="text-[11px] text-[var(--text-secondary)] mb-3">
+                Re-run the intent-assurance sweep on an interval and alert on{' '}
+                <em>new</em> violations only — a drift toast fires once per
+                ok/unknown→violation transition, never on unchanged violations.
+                Configure a webhook to get the same drift alerts off-box.
+              </p>
+
+              <label className="flex items-center justify-between cursor-pointer py-1">
+                <span className="text-sm text-[var(--text-primary)]">Scheduled evaluation</span>
+                <div
+                  onClick={() => settings.setIntentScheduling(!settings.intentScheduling)}
+                  className="w-9 h-5 rounded-full transition-colors cursor-pointer relative"
+                  style={{ background: settings.intentScheduling ? 'var(--accent)' : 'var(--border-strong)' }}
+                >
+                  <div
+                    className="absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow-sm transition-transform"
+                    style={{ transform: settings.intentScheduling ? 'translateX(16px)' : 'translateX(0)' }}
+                  />
+                </div>
+              </label>
+
+              <div className="mt-3">
+                <label className="block text-xs text-[var(--text-secondary)] mb-1.5">
+                  Interval (minutes)
+                </label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="range"
+                    min={1}
+                    max={240}
+                    step={5}
+                    value={settings.intentScheduleMinutes}
+                    onChange={(e) => settings.setIntentScheduleMinutes(Number(e.target.value))}
+                    className="flex-1 accent-[var(--accent)]"
+                  />
+                  <span className="text-sm text-[var(--text-primary)] w-12 text-right">
+                    {settings.intentScheduleMinutes}
+                  </span>
+                </div>
+              </div>
+
+              <div className="mt-3">
+                <label className="block text-xs text-[var(--text-secondary)] mb-1.5">
+                  Drift webhook URL (optional)
+                </label>
+                <input
+                  type="url"
+                  value={settings.intentWebhookUrl}
+                  onChange={(e) => settings.setIntentWebhookUrl(e.target.value)}
+                  placeholder="https://hooks.example.com/drift"
+                  className="input-field w-full h-9 px-2.5 text-sm font-mono"
+                />
+                <p className="text-[10px] text-[var(--text-muted)] mt-1">
+                  POSTed only on new-violation transitions ({'{'}event, count, violations{'}'}). Empty octets / failures are logged and skipped.
+                </p>
+              </div>
+            </section>
+          </Section>
+          <Section id="logging">
+            <SessionLogSettings />
+          </Section>
+          <Section id="ai">
+            <section id="set-ai">
+              <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-3">
+                AI Assistant
+              </h3>
+              <div className="space-y-3">
+                {/* Provider selector */}
                 <div>
-                  <label className="block text-xs text-[var(--text-secondary)] mb-1.5">CLI Command</label>
-                  <div className="flex gap-2 mb-2">
-                    {AI_CLI_PRESETS.map((p) => (
+                  <label className="block text-xs text-[var(--text-secondary)] mb-1.5">Provider</label>
+                  <div className="grid grid-cols-3 gap-2">
+                    {AI_PROVIDERS.map((p) => (
                       <button
-                        key={p.label}
-                        onClick={() => settings.setLocalCliCommand(p.command)}
-                        className={`flex-1 py-1.5 text-[11px] rounded-lg border transition-colors ${
-                          settings.localCliCommand === p.command
+                        key={p.value}
+                        onClick={() => settings.setAiProvider(p.value)}
+                        className={`py-2 text-[11px] rounded-lg border transition-colors ${
+                          settings.aiProvider === p.value
                             ? 'bg-[var(--bg-tertiary)] border-[var(--accent)] text-[var(--text-primary)]'
                             : 'bg-[var(--bg-primary)] border-[var(--border)] text-[var(--text-secondary)] hover:border-[var(--text-muted)]'
                         }`}
@@ -1369,209 +1244,362 @@ export default function SettingsPanel() {
                       </button>
                     ))}
                   </div>
-                  <input
-                    type="text"
-                    value={settings.localCliCommand}
-                    onChange={(e) => settings.setLocalCliCommand(e.target.value)}
-                    placeholder="claude -p"
-                    className="w-full h-8 px-2 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)] font-mono"
-                  />
-                  <p className="text-[10px] text-[var(--text-muted)] mt-1">
-                    Runs a locally-installed CLI one-shot with the prompt on stdin — <span className="text-[var(--accent-success)]">no API key needed</span> (the CLI uses its own login). E.g. <code className="text-[var(--text-primary)]">claude -p</code> or <code className="text-[var(--text-primary)]">kimi</code>.
-                  </p>
-                  <p className="text-[10px] text-[var(--text-muted)] mt-1">
-                    For <code className="text-[var(--text-primary)]">claude</code>, a fast model (<code className="text-[var(--text-primary)]">--model haiku</code>) and <code className="text-[var(--text-primary)]">--strict-mcp-config</code> (skip your MCP servers at startup) are added automatically — pass your own <code className="text-[var(--text-primary)]">--model</code> / <code className="text-[var(--text-primary)]">--mcp-config</code> to override.
-                  </p>
                 </div>
-              )}
 
-              {/* Ollama settings */}
-              {settings.aiProvider === 'ollama' && (
-                <>
+                {/* Key-based providers: API key (stored in Rust, never in localStorage) */}
+                {providerMeta?.needsKey && (
                   <div>
-                    <label className="block text-xs text-[var(--text-secondary)] mb-1.5">Ollama URL</label>
-                    <input
-                      type="text"
-                      value={settings.ollamaUrl}
-                      onChange={(e) => settings.setOllamaUrl(e.target.value)}
-                      placeholder="http://localhost:11434"
-                      className="w-full h-8 px-2 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)] font-mono"
-                    />
+                    <label className="block text-xs text-[var(--text-secondary)] mb-1.5 flex items-center gap-1.5">
+                      API Key
+                      {keySaved && (
+                        <>
+                          <span className="flex items-center gap-1 text-[var(--accent-success)]">
+                            <CheckCircle2 size={11} /> saved
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              invoke('ai_set_key', { provider: aiProvider, key: '' })
+                                .then(() => {
+                                  setKeySaved(false);
+                                  setKeyInput('');
+                                })
+                                .catch(() => {});
+                            }}
+                            className="ml-auto text-[10px] text-[var(--text-muted)] hover:text-[var(--accent-danger)]"
+                          >
+                            remove
+                          </button>
+                        </>
+                      )}
+                    </label>
+                    <div className="relative">
+                      <input
+                        type={showApiKey ? 'text' : 'password'}
+                        value={keyInput}
+                        onChange={(e) => setKeyInput(e.target.value)}
+                        onBlur={saveKey}
+                        placeholder={keySaved ? '•••••••• (saved — type to replace)' : 'Enter API key'}
+                        className="w-full h-8 px-2 pr-8 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)] font-mono"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowApiKey(!showApiKey)}
+                        className="absolute right-2 top-1/2 -translate-y-1/2 text-[var(--text-muted)] hover:text-[var(--text-secondary)]"
+                      >
+                        {showApiKey ? <EyeOff size={12} /> : <Eye size={12} />}
+                      </button>
+                    </div>
+                    <p className="text-[10px] text-[var(--text-muted)] mt-1">
+                      Stored in the app data dir (outside the browser), sent only to the provider from the Rust backend.
+                    </p>
                   </div>
+                )}
+
+                {/* Model for key-based providers */}
+                {providerMeta?.needsKey && aiProvider === 'anthropic' && (
+                  <div>
+                    <label className="block text-xs text-[var(--text-secondary)] mb-1.5">Model</label>
+                    <select
+                      value={settings.aiModel}
+                      onChange={(e) => settings.setAiModel(e.target.value)}
+                      className="w-full h-8 px-2 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)]"
+                    >
+                      <option value="claude-sonnet-4-6">Claude Sonnet 4.6 (Recommended)</option>
+                      <option value="claude-opus-4-8">Claude Opus 4.8 (Most capable)</option>
+                      <option value="claude-haiku-4-5-20251001">Claude Haiku 4.5 (Fastest)</option>
+                    </select>
+                  </div>
+                )}
+                {aiProvider === 'openrouter' && (
                   <div>
                     <label className="block text-xs text-[var(--text-secondary)] mb-1.5">Model</label>
                     <input
                       type="text"
-                      value={settings.ollamaModel}
-                      onChange={(e) => settings.setOllamaModel(e.target.value)}
-                      placeholder="llama3.2"
+                      value={settings.openrouterModel}
+                      onChange={(e) => settings.setOpenrouterModel(e.target.value)}
+                      placeholder="e.g. anthropic/claude-3.5-sonnet"
                       className="w-full h-8 px-2 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)] font-mono"
                     />
                     <p className="text-[10px] text-[var(--text-muted)] mt-1">
-                      Run <code className="text-[var(--text-primary)]">ollama list</code> to see installed models. Recommended: llama3.2, mistral, codellama
+                      Any OpenRouter model id (see openrouter.ai/models), e.g. <code className="text-[var(--text-primary)]">openai/gpt-4o</code>, <code className="text-[var(--text-primary)]">meta-llama/llama-3.1-70b-instruct</code>.
                     </p>
                   </div>
-                </>
-              )}
+                )}
+                {aiProvider === 'moonshot' && (
+                  <div>
+                    <label className="block text-xs text-[var(--text-secondary)] mb-1.5">Model</label>
+                    <input
+                      type="text"
+                      value={settings.moonshotModel}
+                      onChange={(e) => settings.setMoonshotModel(e.target.value)}
+                      placeholder="e.g. kimi-k2-0905-preview"
+                      className="w-full h-8 px-2 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)] font-mono"
+                    />
+                    <p className="text-[10px] text-[var(--text-muted)] mt-1">
+                      A Moonshot/Kimi model id (see platform.moonshot.ai), e.g. <code className="text-[var(--text-primary)]">moonshot-v1-8k</code>.
+                    </p>
+                  </div>
+                )}
 
-              {/* Tool sources the assistant may use (opt-in beyond plain CLI) */}
-              <div>
-                <label className="block text-xs text-[var(--text-secondary)] mb-1.5">
-                  Assistant tools <span className="text-[var(--text-muted)]">(opt-in)</span>
-                </label>
-                <div className="space-y-2.5 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--bg-inset)] p-2.5">
-                  {(
-                    [
-                      { key: 'aiUseTerminal', label: 'Run device CLI commands', hint: 'Execute show/config on the active SSH/terminal session' },
-                      { key: 'aiUseCxRest', label: 'Aruba device REST APIs', hint: 'On-box REST for CX / AOS-S / AOS-8 — structured data, no Central' },
-                      { key: 'aiUseMcp', label: 'MCP server tools', hint: 'Tools from connected MCP servers (centralmcp, etc.)' },
-                    ] as const
-                  ).map(({ key, label, hint }) => {
-                    const val = settings[key] as boolean;
-                    return (
-                      <label key={key} className="flex items-center justify-between cursor-pointer gap-3">
-                        <span className="min-w-0">
-                          <span className="text-sm text-[var(--text-primary)]">{label}</span>
-                          <span className="block text-[10px] text-[var(--text-muted)] truncate">{hint}</span>
-                        </span>
-                        <div
-                          onClick={() => settings.updateSettings({ [key]: !val } as Partial<TerminalSettings>)}
-                          className="w-9 h-5 rounded-full relative cursor-pointer transition-colors flex-shrink-0"
-                          style={{ background: val ? 'var(--accent)' : 'var(--border-strong)' }}
+                {/* Local CLI settings — no API key; the CLI handles its own login */}
+                {aiProvider === 'local-cli' && (
+                  <div>
+                    <label className="block text-xs text-[var(--text-secondary)] mb-1.5">CLI Command</label>
+                    <div className="flex gap-2 mb-2">
+                      {AI_CLI_PRESETS.map((p) => (
+                        <button
+                          key={p.label}
+                          onClick={() => settings.setLocalCliCommand(p.command)}
+                          className={`flex-1 py-1.5 text-[11px] rounded-lg border transition-colors ${
+                            settings.localCliCommand === p.command
+                              ? 'bg-[var(--bg-tertiary)] border-[var(--accent)] text-[var(--text-primary)]'
+                              : 'bg-[var(--bg-primary)] border-[var(--border)] text-[var(--text-secondary)] hover:border-[var(--text-muted)]'
+                          }`}
                         >
+                          {p.label}
+                        </button>
+                      ))}
+                    </div>
+                    <input
+                      type="text"
+                      value={settings.localCliCommand}
+                      onChange={(e) => settings.setLocalCliCommand(e.target.value)}
+                      placeholder="claude -p"
+                      className="w-full h-8 px-2 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)] font-mono"
+                    />
+                    <p className="text-[10px] text-[var(--text-muted)] mt-1">
+                      Runs a locally-installed CLI one-shot with the prompt on stdin — <span className="text-[var(--accent-success)]">no API key needed</span> (the CLI uses its own login). E.g. <code className="text-[var(--text-primary)]">claude -p</code> or <code className="text-[var(--text-primary)]">kimi</code>.
+                    </p>
+                    <p className="text-[10px] text-[var(--text-muted)] mt-1">
+                      For <code className="text-[var(--text-primary)]">claude</code>, a fast model (<code className="text-[var(--text-primary)]">--model haiku</code>) and <code className="text-[var(--text-primary)]">--strict-mcp-config</code> (skip your MCP servers at startup) are added automatically — pass your own <code className="text-[var(--text-primary)]">--model</code> / <code className="text-[var(--text-primary)]">--mcp-config</code> to override.
+                    </p>
+                  </div>
+                )}
+
+                {/* Ollama settings */}
+                {settings.aiProvider === 'ollama' && (
+                  <>
+                    <div>
+                      <label className="block text-xs text-[var(--text-secondary)] mb-1.5">Ollama URL</label>
+                      <input
+                        type="text"
+                        value={settings.ollamaUrl}
+                        onChange={(e) => settings.setOllamaUrl(e.target.value)}
+                        placeholder="http://localhost:11434"
+                        className="w-full h-8 px-2 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)] font-mono"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-[var(--text-secondary)] mb-1.5">Model</label>
+                      <input
+                        type="text"
+                        value={settings.ollamaModel}
+                        onChange={(e) => settings.setOllamaModel(e.target.value)}
+                        placeholder="llama3.2"
+                        className="w-full h-8 px-2 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)] font-mono"
+                      />
+                      <p className="text-[10px] text-[var(--text-muted)] mt-1">
+                        Run <code className="text-[var(--text-primary)]">ollama list</code> to see installed models. Recommended: llama3.2, mistral, codellama
+                      </p>
+                    </div>
+                  </>
+                )}
+
+                {/* Tool sources the assistant may use (opt-in beyond plain CLI) */}
+                <div>
+                  <label className="block text-xs text-[var(--text-secondary)] mb-1.5">
+                    Assistant tools <span className="text-[var(--text-muted)]">(opt-in)</span>
+                  </label>
+                  <div className="space-y-2.5 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--bg-inset)] p-2.5">
+                    {(
+                      [
+                        { key: 'aiUseTerminal', label: 'Run device CLI commands', hint: 'Execute show/config on the active SSH/terminal session' },
+                        { key: 'aiUseCxRest', label: 'Aruba device REST APIs', hint: 'On-box REST for CX / AOS-S / AOS-8 — structured data, no Central' },
+                        { key: 'aiUseMcp', label: 'MCP server tools', hint: 'Tools from connected MCP servers (centralmcp, etc.)' },
+                      ] as const
+                    ).map(({ key, label, hint }) => {
+                      const val = settings[key] as boolean;
+                      return (
+                        <label key={key} className="flex items-center justify-between cursor-pointer gap-3">
+                          <span className="min-w-0">
+                            <span className="text-sm text-[var(--text-primary)]">{label}</span>
+                            <span className="block text-[10px] text-[var(--text-muted)] truncate">{hint}</span>
+                          </span>
                           <div
-                            className="absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow-sm transition-transform"
-                            style={{ transform: val ? 'translateX(16px)' : 'translateX(0)' }}
-                          />
-                        </div>
-                      </label>
-                    );
-                  })}
+                            onClick={() => settings.updateSettings({ [key]: !val } as Partial<TerminalSettings>)}
+                            className="w-9 h-5 rounded-full relative cursor-pointer transition-colors flex-shrink-0"
+                            style={{ background: val ? 'var(--accent)' : 'var(--border-strong)' }}
+                          >
+                            <div
+                              className="absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow-sm transition-transform"
+                              style={{ transform: val ? 'translateX(16px)' : 'translateX(0)' }}
+                            />
+                          </div>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* References / standards — lightweight grounding for the AI */}
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="block text-xs text-[var(--text-secondary)]">
+                      Best-practice references / standards
+                    </label>
+                    <button
+                      onClick={() => {
+                        if (settings.aiReferences.includes('Juniper Validated Design')) return;
+                        const cur = settings.aiReferences.trimEnd();
+                        settings.setAiReferences((cur ? cur + '\n\n' : '') + JVD_REFERENCES);
+                      }}
+                      className="text-[10px] px-2 py-0.5 rounded bg-[var(--bg-tertiary)] hover:bg-[var(--border-strong)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+                      title="Append Juniper Validated Design best-practices"
+                    >
+                      + JVD best-practices
+                    </button>
+                  </div>
+                  <textarea
+                    value={settings.aiReferences}
+                    onChange={(e) => settings.setAiReferences(e.target.value)}
+                    rows={6}
+                    placeholder="Add your org standards, golden-config rules, or doc links the AI should apply…"
+                    className="w-full px-2 py-1.5 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-xs text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)] font-mono resize-y"
+                  />
+                  <p className="text-[10px] text-[var(--text-muted)] mt-1">
+                    Injected into the AI's context (used by the Best-practices audit). Lightweight
+                    alternative to RAG — paste rules or links here; a hosted RAG endpoint can feed
+                    this same field later.
+                  </p>
                 </div>
               </div>
-
-              {/* References / standards — lightweight grounding for the AI */}
-              <div>
-                <div className="flex items-center justify-between mb-1.5">
-                  <label className="block text-xs text-[var(--text-secondary)]">
-                    Best-practice references / standards
-                  </label>
-                  <button
-                    onClick={() => {
-                      if (settings.aiReferences.includes('Juniper Validated Design')) return;
-                      const cur = settings.aiReferences.trimEnd();
-                      settings.setAiReferences((cur ? cur + '\n\n' : '') + JVD_REFERENCES);
-                    }}
-                    className="text-[10px] px-2 py-0.5 rounded bg-[var(--bg-tertiary)] hover:bg-[var(--border-strong)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
-                    title="Append Juniper Validated Design best-practices"
-                  >
-                    + JVD best-practices
-                  </button>
+            </section>
+          </Section>
+          <Section id="agents">
+            <AiAgents />
+          </Section>
+          <Section id="mcp">
+            <div id="set-mcp">
+              <McpServers />
+            </div>
+          </Section>
+          <Section id="central">
+            <div id="set-central">
+              <CentralSettings />
+            </div>
+          </Section>
+          <Section id="mist">
+            <section id="set-mist">
+              <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-3">Juniper Mist</h3>
+              <div className="space-y-3">
+                <div>
+                  <label className="block text-xs text-[var(--text-secondary)] mb-1.5">API base (region)</label>
+                  <input
+                    value={settings.mistBaseUrl}
+                    onChange={(e) => settings.updateSettings({ mistBaseUrl: e.target.value })}
+                    placeholder="https://api.mist.com  (or api.eu.mist.com, api.gc1.mist.com …)"
+                    className="input-field w-full h-8 px-2 text-sm font-mono"
+                  />
                 </div>
-                <textarea
-                  value={settings.aiReferences}
-                  onChange={(e) => settings.setAiReferences(e.target.value)}
-                  rows={6}
-                  placeholder="Add your org standards, golden-config rules, or doc links the AI should apply…"
-                  className="w-full px-2 py-1.5 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-xs text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)] font-mono resize-y"
-                />
-                <p className="text-[10px] text-[var(--text-muted)] mt-1">
-                  Injected into the AI's context (used by the Best-practices audit). Lightweight
-                  alternative to RAG — paste rules or links here; a hosted RAG endpoint can feed
-                  this same field later.
+                <div>
+                  <label className="block text-xs text-[var(--text-secondary)] mb-1.5">API token</label>
+                  <input
+                    type="password"
+                    value={settings.mistToken}
+                    onChange={(e) => settings.updateSettings({ mistToken: e.target.value })}
+                    placeholder="Mist API token"
+                    className="input-field w-full h-8 px-2 text-sm font-mono"
+                  />
+                </div>
+                <p className="text-[10px] text-[var(--text-muted)]">
+                  Mist cloud REST (token auth). Create a token in the Mist portal (My Account → API Tokens).
+                  Use it from the <strong>API Explorer → Mist</strong> target.
                 </p>
               </div>
-            </div>
-          </section>
-
-          <div className="border-t border-[var(--bg-tertiary)]" />
-
-          {/* AI agents (per-session personas) */}
-          <AiAgents />
-
-          <div className="border-t border-[var(--bg-tertiary)]" />
-
-          {/* MCP servers (external tools for the AI) */}
-          <div id="set-mcp">
-            <McpServers />
-          </div>
-          </NavGroup>
-
-          <NavGroup nav="cloud" active={activeNav}>
-          {/* Aruba Central (cloud API) — multi-account + token */}
-          <div id="set-central">
-            <CentralSettings />
-          </div>
-
-          <div className="border-t border-[var(--bg-tertiary)]" />
-
-          {/* Juniper Mist (cloud) */}
-          <section id="set-mist">
-            <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-3">Juniper Mist</h3>
-            <div className="space-y-3">
-              <div>
-                <label className="block text-xs text-[var(--text-secondary)] mb-1.5">API base (region)</label>
-                <input
-                  value={settings.mistBaseUrl}
-                  onChange={(e) => settings.updateSettings({ mistBaseUrl: e.target.value })}
-                  placeholder="https://api.mist.com  (or api.eu.mist.com, api.gc1.mist.com …)"
-                  className="input-field w-full h-8 px-2 text-sm font-mono"
-                />
-              </div>
-              <div>
-                <label className="block text-xs text-[var(--text-secondary)] mb-1.5">API token</label>
-                <input
-                  type="password"
-                  value={settings.mistToken}
-                  onChange={(e) => settings.updateSettings({ mistToken: e.target.value })}
-                  placeholder="Mist API token"
-                  className="input-field w-full h-8 px-2 text-sm font-mono"
-                />
-              </div>
-              <p className="text-[10px] text-[var(--text-muted)]">
-                Mist cloud REST (token auth). Create a token in the Mist portal (My Account → API Tokens).
-                Use it from the <strong>API Explorer → Mist</strong> target.
+            </section>
+          </Section>
+          <Section id="backup">
+            <section id="set-backup">
+              <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-2">
+                Backup &amp; Transfer
+              </h3>
+              <p className="text-xs text-[var(--text-muted)] mb-3">
+                Export settings, snippets, device profiles, saved sessions, triggers, and intents. Secrets and vault data are never included.
               </p>
-            </div>
-          </section>
-
-          {/* Device REST security */}
-          <section id="set-tls">
-            <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-3">Device REST security</h3>
-            <label className="flex items-center justify-between cursor-pointer gap-3">
-              <span className="min-w-0">
-                <span className="text-sm text-[var(--text-primary)]">Verify device TLS certificates</span>
-                <span className="block text-[10px] text-[var(--text-muted)]">
-                  Reject untrusted/self-signed certs on AOS-CX / AOS-8 / AOS-S REST. On by
-                  default — most field gear ships a self-signed cert, so turn it off only for
-                  lab devices you trust.
+              <div className="flex items-center gap-2 mb-3">
+                {(['merge', 'replace'] as BackupImportMode[]).map((mode) => (
+                  <button
+                    key={mode}
+                    onClick={() => setBackupMode(mode)}
+                    className={`px-2.5 py-1 rounded-md text-xs border capitalize transition-colors ${
+                      backupMode === mode
+                        ? 'border-[var(--accent)] text-[var(--accent)] bg-[var(--accent-soft)]'
+                        : 'border-[var(--border)] text-[var(--text-secondary)] hover:border-[var(--border-strong)]'
+                    }`}
+                    title={mode === 'merge' ? 'Add/update backup items without deleting local data' : 'Replace supported local data with the backup'}
+                  >
+                    {mode}
+                  </button>
+                ))}
+                <span className="text-[10px] text-[var(--text-muted)]">
+                  {backupMode === 'merge' ? 'Import adds or updates matching IDs.' : 'Import clears supported local data first.'}
                 </span>
-                {!settings.verifyDeviceTls && (
-                  <span className="block text-[10px] text-[var(--accent-warning)] mt-1">
-                    Device admin and SSH credentials can be intercepted on untrusted networks
-                    when TLS verification is off. Disable only for self-signed lab devices.
-                  </span>
-                )}
-              </span>
-              <div
-                onClick={() => settings.updateSettings({ verifyDeviceTls: !settings.verifyDeviceTls })}
-                className="w-9 h-5 rounded-full relative cursor-pointer transition-colors flex-shrink-0"
-                style={{ background: settings.verifyDeviceTls ? 'var(--accent)' : 'var(--border-strong)' }}
-                role="switch"
-                aria-checked={settings.verifyDeviceTls}
-                aria-label="Verify device TLS certificates"
-              >
-                <div
-                  className="absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow-sm transition-transform"
-                  style={{ transform: settings.verifyDeviceTls ? 'translateX(16px)' : 'translateX(0)' }}
-                />
               </div>
-            </label>
-          </section>
-          </NavGroup>
-        </div>
-        </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={exportBackup}
+                  disabled={backupBusy !== null}
+                  className="flex items-center gap-1.5 px-3 h-8 rounded bg-[var(--bg-tertiary)] hover:bg-[var(--border-strong)] disabled:opacity-50 text-xs text-[var(--text-primary)]"
+                >
+                  <Download size={13} />
+                  {backupBusy === 'export' ? 'Exporting…' : 'Export backup'}
+                </button>
+                <button
+                  onClick={importBackup}
+                  disabled={backupBusy !== null}
+                  className="flex items-center gap-1.5 px-3 h-8 rounded bg-[var(--bg-tertiary)] hover:bg-[var(--border-strong)] disabled:opacity-50 text-xs text-[var(--text-primary)]"
+                >
+                  <Upload size={13} />
+                  {backupBusy === 'import' ? 'Importing…' : 'Import backup'}
+                </button>
+              </div>
+            </section>
+          </Section>
+          <Section id="reset">
+            {/* Reset lives here, next to Export, instead of in the Settings
+                header beside the close X — where it was easy to hit by mistake
+                and read like an app "reset". */}
+            <section id="set-reset">
+              <h3 className="text-sm font-semibold text-[var(--accent-danger)] mb-2">
+                Reset Settings
+              </h3>
+              <p className="text-xs text-[var(--text-muted)] mb-3">
+                Puts every setting back to its default: theme and terminal options,
+                custom device profiles, AI agents and providers, and Central / Mist
+                accounts. Saved sessions, shared logins, snippets, the vault and open
+                tabs are not touched. Export a backup first if you might want them back.
+              </p>
+              <button
+                onClick={async () => {
+                  const ok = await askConfirm({
+                    title: 'Reset all settings to defaults?',
+                    message:
+                      'Theme and terminal options, custom device profiles, AI agents and providers, and Central / Mist accounts all go back to defaults. Saved sessions and the vault are kept. This cannot be undone.',
+                    confirmLabel: 'Reset settings',
+                    danger: true,
+                  });
+                  if (ok) settings.resetToDefaults();
+                }}
+                className="flex items-center gap-1.5 px-3 h-8 rounded border border-[var(--accent-danger)] text-[var(--accent-danger)] hover:bg-[var(--bg-tertiary)] text-xs"
+              >
+                <RotateCcw size={13} />
+                Reset all settings…
+              </button>
+            </section>
+          </Section>
+        </SectionVisibility.Provider>
       </div>
-    </div>
+    </LargeModal>
   );
 }

@@ -117,13 +117,13 @@ export const HELP_TOPICS: HelpTopic[] = [
     summary: 'Bring saved hosts in from a CSV file, SecureCRT, Aruba Central, Juniper Mist or ~/.ssh/config.',
     keywords: ['import', 'csv', 'securecrt', 'migrate', 'central', 'mist', 'inventory', 'ssh config', 'bulk', 'sessions', 'folders'],
     blocks: [
-      { kind: 'p', text: 'Open **Import hosts** from the sidebar (download icon), the command palette, or Settings → Terminal. Every source shows a preview first: hosts you already have (same host, port and user) are greyed out, and nothing is saved until you press **Import**.' },
+      { kind: 'p', text: 'Open **Import hosts** from the activity bar on the left, the sidebar (download icon), the command palette, or Settings → Connections & Security. Every source shows a preview first: hosts you already have (same host, port and user) are greyed out, and nothing is saved until you press **Import**.' },
       {
         kind: 'bullets',
         items: [
           '**CSV**: columns `name, host, port, user, type, folder, tags, jump` (only `host` is required; tags separated by `;`). **Download template CSV** gives you a starting file.',
           '**SecureCRT**: choose the **Sessions** folder — macOS `~/Library/Application Support/VanDyke/SecureCRT/Config/Sessions`, Windows `%APPDATA%\\VanDyke\\Config\\Sessions`. SSH, Telnet and Serial sessions come across with their folders. An XML export (File ▸ Export Settings) works too.',
-          '**Aruba Central** / **Juniper Mist**: loads devices with an IP address from the account set up in Settings → Cloud; the site becomes the folder.',
+          '**Aruba Central** / **Juniper Mist**: loads devices with an IP address from the account set up in Settings → Integrations; the site becomes the folder.',
           '**Folders**: keep the source folders, or put everything in one folder. Existing folders with the same name are reused.',
         ],
       },
@@ -150,7 +150,7 @@ export const HELP_TOPICS: HelpTopic[] = [
     summary: 'One TACACS/RADIUS password for many devices — change it once.',
     keywords: ['login', 'tacacs', 'radius', 'credential', 'profile', 'password', 'rotation', 'folder', 'shared'],
     blocks: [
-      { kind: 'p', text: 'Create a **shared login** (name, username, password) in **Settings → Logins**. Make it a folder\'s default (right-click the folder → **Default login…**) or pick it for one host in **Edit…**.' },
+      { kind: 'p', text: 'Create a **shared login** (name, username, password) in **Settings → Connections & Security → Shared Logins**. Make it a folder\'s default (right-click the folder → **Default login…**) or pick it for one host in **Edit…**.' },
       {
         kind: 'bullets',
         items: [
@@ -196,7 +196,7 @@ export const HELP_TOPICS: HelpTopic[] = [
         items: [
           'Settings → **AI Agents** → **New agent**: name it, write instructions, and (optionally) pick a provider + model.',
           'In the **sidebar**, right-click a host → **AI Agent…** and choose the agent (or pick the chip under the host).',
-          'Open the AI assistant on that session — its header shows the active agent, and the instructions/model are applied.',
+          'Open the AI assistant on that session — the bar above the chat shows the active agent, and the instructions/model are applied.',
         ],
       },
       { kind: 'bullets', items: [
@@ -218,7 +218,7 @@ export const HELP_TOPICS: HelpTopic[] = [
       {
         kind: 'steps',
         items: [
-          'Settings → **AI + MCP → MCP Servers** (or header **Tools → MCP**) → Add server.',
+          'Settings → **AI & MCP → MCP Servers** (or **MCP Servers** in the command palette) → Add server.',
           'Click **Paste config JSON instead** to auto-fill from a setup wizard snippet, or fill in by hand.',
           'Stdio: set the **command**, **args** (one per line), and any **env**. HTTP: set the **server URL**.',
           'Stdio only — for secrets, set a **credentials env var** + paste the content — it is written to a 0600 file and injected via that env var.',
@@ -236,7 +236,7 @@ export const HELP_TOPICS: HelpTopic[] = [
     summary: 'OAuth client-credentials or token auth; multi-account.',
     keywords: ['central', 'aruba', 'oauth', 'client', 'token', 'account', 'cloud', 'glp'],
     blocks: [
-      { kind: 'p', text: 'Settings → **Cloud → Aruba Central**: enter a Base URL + Client ID/Secret (OAuth), or paste an access **token** (SSO).' },
+      { kind: 'p', text: 'Settings → **Integrations → Aruba Central**: enter a Base URL + Client ID/Secret (OAuth), or paste an access **token** (SSO).' },
       { kind: 'bullets', items: ['Save/load/delete named **accounts** (loading then Save updates in place, no duplicate).', 'Reach Central data via the **API Explorer** (target = Central) or via centralmcp.'] },
     ],
     action: { label: 'Open Central settings', id: 'open-settings', focus: 'central' },
@@ -248,7 +248,7 @@ export const HELP_TOPICS: HelpTopic[] = [
     summary: 'Control certificate verification for device REST.',
     keywords: ['tls', 'ssl', 'certificate', 'verify', 'self-signed', 'security', 'mitm'],
     blocks: [
-      { kind: 'p', text: 'Settings → **Cloud → Device REST security → Verify device TLS certificates**. **On by default** for new installs — untrusted certs are rejected across AOS-CX/AOS-8/AOS-S.' },
+      { kind: 'p', text: 'Settings → **Connections & Security → Device REST security → Verify device TLS certificates**. **On by default** for new installs — untrusted certs are rejected across AOS-CX/AOS-8/AOS-S.' },
       { kind: 'note', text: 'Turn it off only for self-signed lab gear; the toggle warns that credentials can be intercepted on untrusted networks while verification is off. The API Explorer’s per-login Verify-TLS checkbox defaults from this setting.' },
     ],
     action: { label: 'Open TLS setting', id: 'open-settings', focus: 'tls' },
@@ -260,7 +260,7 @@ export const HELP_TOPICS: HelpTopic[] = [
     summary: 'Declare desired state and check live compliance.',
     keywords: ['intent', 'desired state', 'assurance', 'compliance', 'drift', 'matcher', 'operational', 'config'],
     blocks: [
-      { kind: 'p', text: 'Header **Tools** menu → Network Intent. Declare what should be true and check live compliance.' },
+      { kind: 'p', text: '**Network Intent** in the activity bar on the left (the target icon — a red badge counts intents that failed their last check). Declare what should be true and check live compliance.' },
       {
         kind: 'steps',
         items: [
@@ -282,7 +282,7 @@ export const HELP_TOPICS: HelpTopic[] = [
       {
         kind: 'bullets',
         items: [
-          '**Tunnels** (header **Tools** menu): local (`-L`) and dynamic SOCKS5 (`-D`) forwards over any SSH session.',
+          '**SSH Tunnels** (activity bar on the left): local (`-L`) and dynamic SOCKS5 (`-D`) forwards over any SSH session.',
           '**SFTP**: browse/upload/download; uploads confirm before overwriting a remote file.',
           '**Output triggers** (Settings): toast/beep on a keyword/regex in any terminal.',
           '**Bulk Runner**: run one command across many sessions; export CSV.',
@@ -326,7 +326,7 @@ export const HELP_TOPICS: HelpTopic[] = [
           `${k('nextTab')} / ${k('prevTab')} — Next / previous tab${isMac ? ' (also `⌘⇧]` / `⌘⇧[`)' : ' (also `Ctrl+PgDn` / `Ctrl+PgUp`)'}`,
           `${k('jumpTab')} — Jump to tab 1–9`,
           `${k('settings')} — Settings · ${k('help')} — Help`,
-          `${k('editor')} / ${k('api')} / ${k('ai')} — Editor / API / AI`,
+          `${k('editor')} / ${k('api')} / ${k('ai')} — Editor / API / AI tab of the side panel (again closes it)`,
           `${k('sidebar')} — Toggle sidebar`,
           `${k('zoomIn')} / ${k('zoomOut')} / ${k('zoomReset')} — Zoom terminal + config-editor font (${MOD}+wheel inside the editor)`,
         ],
@@ -373,7 +373,7 @@ export const HELP_TOPICS: HelpTopic[] = [
           `**Tabs**: ${k('nextTab')} / ${k('prevTab')} move between tabs, ${k('jumpTab')} jumps to tab 1–9 — also while typing in a session.${isMac ? '' : ' (`Ctrl`+digit is left for the device.)'}`,
           '**Right-click a tab** for Duplicate tab, Reconnect, Disconnect, **Rename tab** (double-clicking the tab works too — only the tab is renamed, not the saved host), Pop out, Close other tabs and Close disconnected tabs.',
           '**Config mode**: GreenCLI reads the device prompt. While a device is in configuration mode — `switch(config)#`, `(host) [mynode] (config) #`, Junos `user@host#` — its tab turns amber with a **CONFIG** badge and the status bar says **Config mode**. A tab named only by its IP address shows the hostname from the prompt.',
-          '**Split view** (**Tools → Split view**): up to four sessions side by side. Click a pane to work in it — its header gets the accent bar, and Close, Find, snippets, logging and file drops all act on that pane. Each pane header has a session picker, an add-pane `+` and a close `×` (the session stays open as a tab).',
+          '**Split view** (the split button at the right end of the tab strip, next to Snippets and Multi-send): up to four sessions side by side. Click a pane to work in it — its header gets the accent bar, and Close, Find, snippets, logging and file drops all act on that pane. Each pane header has a session picker, an add-pane `+` and a close `×` (the session stays open as a tab).',
           '**Pop-out**: the tab’s pop-out button moves a session into its own window. Its header shows the live status, **Find**, **Reconnect** when the session drops, and **Dock** to put it back in its tab.',
           '**Dropped session**: press `Enter` in the terminal (or click **Reconnect**) to connect again.',
           `**Closing** a still-connected tab (× or ${k('closeTab')}) asks first. Turn that off in Settings → Terminal → **Confirm Before Closing a Connected Tab**.`,
@@ -402,7 +402,7 @@ export const HELP_TOPICS: HelpTopic[] = [
         items: [
           'AI *“is Ollama running?”* — start it with `ollama serve` and check the URL in Settings.',
           'Local CLI not found — the app adds `~/.local/bin`, `~/.cargo/bin`, and Homebrew to PATH; install your CLI there.',
-          'Device REST cert error — verification is on by default; for self-signed lab gear turn *Verify device TLS* off in Settings → Cloud (heed the interception warning).',
+          'Device REST cert error — verification is on by default; for self-signed lab gear turn *Verify device TLS* off in Settings → Connections & Security (heed the interception warning).',
           'Connected tab but no shell — a restricted account/appliance refused a PTY/shell; this now surfaces as a connect error.',
         ],
       },

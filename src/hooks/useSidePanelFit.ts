@@ -1,28 +1,33 @@
 import { useLayoutEffect, type RefObject } from 'react';
 import { useSessionStore } from '../store/sessionStore';
-import { SIDE_PANELS, SidePanelKey, useSidePanelStore } from '../store/sidePanelStore';
-import { notify } from '../store/toastStore';
-import { TERMINAL_MIN_WIDTH } from '../utils/panelFit';
+import { SidePanelKey, useSidePanelStore } from '../store/sidePanelStore';
 
-const CLOSE: Record<SidePanelKey, () => void> = {
-  editor: () => useSessionStore.getState().setShowConfigEditor(false),
-  api: () => useSessionStore.getState().setShowApiExplorer(false),
-  ai: () => useSessionStore.getState().setShowAiAssistant(false),
-};
+/** The side-panel tab showing right now, or null while the panel is closed. */
+export function useOpenSidePanel(): SidePanelKey | null {
+  return useSessionStore((s) =>
+    s.showConfigEditor ? 'editor' : s.showApiExplorer ? 'api' : s.showAiAssistant ? 'ai' : null,
+  );
+}
 
 /**
- * Keeps the docked side panels from squeezing the terminal: measures the
- * terminal + panels row (`rowRef`) and re-fits the panels whenever it resizes
- * or a panel opens/closes. Layout effects, so a newly opened panel is fitted
- * before the first paint instead of flashing at full width.
+ * With no session open, the Editor tab fills the whole work area (a plain
+ * text editor) instead of docking beside the empty-state screen.
+ */
+export function useEditorFills(): boolean {
+  const open = useOpenSidePanel();
+  const noSessions = useSessionStore((s) => s.sessions.length === 0);
+  return open === 'editor' && noSessions;
+}
+
+/**
+ * Keeps the side panel from squeezing the terminal: measures the terminal +
+ * panel row (`rowRef`) and re-fits the panel whenever it resizes. A layout
+ * effect, so an opened panel is fitted before the first paint instead of
+ * flashing at full width. Also remembers the tab last shown, and drops
+ * maximize when the panel closes (so it doesn't reopen covering the terminal).
  */
 export function useSidePanelFit(rowRef: RefObject<HTMLElement>) {
-  const showConfigEditor = useSessionStore((s) => s.showConfigEditor);
-  const showApiExplorer = useSessionStore((s) => s.showApiExplorer);
-  const showAiAssistant = useSessionStore((s) => s.showAiAssistant);
-  // With no session open the editor fills the main area (ConfigEditor's
-  // fullWidth mode) rather than docking beside the terminal.
-  const editorFills = useSessionStore((s) => s.sessions.length === 0);
+  const open = useOpenSidePanel();
 
   useLayoutEffect(() => {
     const el = rowRef.current;
@@ -39,18 +44,8 @@ export function useSidePanelFit(rowRef: RefObject<HTMLElement>) {
   }, [rowRef]);
 
   useLayoutEffect(() => {
-    const visible: SidePanelKey[] = [];
-    if (showConfigEditor) visible.push('editor');
-    if (showApiExplorer) visible.push('api');
-    if (showAiAssistant) visible.push('ai');
-    const dockable = visible.filter((k) => k !== 'editor' || !editorFills);
-    const closed = useSidePanelStore.getState().syncOpen(visible, dockable);
-    for (const key of closed) {
-      CLOSE[key]();
-      notify.info(
-        `Closed the ${SIDE_PANELS[key].label} to make room`,
-        `The terminal needs at least ${TERMINAL_MIN_WIDTH}px, so not every panel fits beside it. Widen the window or hide the sidebar to keep more panels open.`,
-      );
-    }
-  }, [showConfigEditor, showApiExplorer, showAiAssistant, editorFills]);
+    const st = useSidePanelStore.getState();
+    if (open) st.setTab(open);
+    else if (st.maximized) st.setMaximized(false);
+  }, [open]);
 }

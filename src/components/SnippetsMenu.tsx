@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Zap, ChevronDown, Plus, X, Send } from 'lucide-react';
+import { Zap, Plus, X, Send } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/tauri';
 import { useSnippetsStore, Snippet } from '../store/snippetsStore';
 import { useSessionStore } from '../store/sessionStore';
@@ -12,7 +12,7 @@ import { fillPlaceholders, snippetPlaceholders } from '../utils/snippetTemplate'
 
 const isMac = navigator.platform.toUpperCase().includes('MAC');
 
-// Title-bar dropdown of saved command snippets. Clicking one types it into the
+// Tab-strip dropdown of saved command snippets. Clicking one types it into the
 // active terminal WITHOUT Enter, so it can be checked or edited first;
 // Shift+click runs it. New ones can be added inline.
 export default function SnippetsMenu() {
@@ -107,14 +107,17 @@ export default function SnippetsMenu() {
     <div className="relative">
       <button
         onClick={() => setOpen(!open)}
-        className={`flex items-center gap-1.5 px-2 py-1 text-xs rounded transition-colors ${
-          open ? 'text-[var(--accent-warning)] bg-[var(--accent-warning-soft)]' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
+        className={`flex items-center justify-center w-7 h-7 rounded-md transition-colors ${
+          open
+            ? 'text-[var(--accent-warning)] bg-[var(--accent-warning-soft)]'
+            : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
         }`}
-        title="Command snippets"
+        title="Snippets: saved commands to type into the active session"
+        aria-label="Snippets"
+        aria-haspopup="menu"
+        aria-expanded={open}
       >
-        <Zap size={12} />
-        <span>Snippets</span>
-        <ChevronDown size={10} />
+        <Zap size={15} />
       </button>
 
       {open && (

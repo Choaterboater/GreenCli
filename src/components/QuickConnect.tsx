@@ -781,7 +781,7 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
             </div>
           )}
 
-          {/* Shared login (Settings → Logins): change its password once for
+          {/* Shared login (Settings → Connections & Security): change its password once for
               every host that uses it. */}
           {protocol === 'ssh' && passwordAuth && loginProfiles.length > 0 && (
             <div>

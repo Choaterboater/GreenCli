@@ -10,6 +10,7 @@ import {
 import type { ImportSource } from '../utils/importHosts';
 import { savedHostId } from '../utils/tabs';
 import type { DevicePrompt } from '../utils/devicePrompt';
+import type { SidePanelKey } from './sidePanelStore';
 
 /** Why the last login for a session was rejected. Shown inside the password
  *  dialog, because the error toast sits behind the modal. */
@@ -180,6 +181,29 @@ export const CONNECTION_FIELDS = [
   'command', 'args', 'cwd',
   'jumpHost', 'jumpPort', 'jumpUsername',
 ] as const;
+
+type SidePanelFlag = 'showConfigEditor' | 'showApiExplorer' | 'showAiAssistant';
+const SIDE_PANEL_FLAGS: Record<SidePanelKey, SidePanelFlag> = {
+  editor: 'showConfigEditor',
+  api: 'showApiExplorer',
+  ai: 'showAiAssistant',
+};
+
+/** Store patch that shows (or hides) one side-panel tab. The three flags are
+ *  kept, not replaced by one "open tab" field, because every panel and many
+ *  callers (Help, palette, terminal menus) already read and set them — but at
+ *  most one is ever true: they are tabs of the same panel. */
+export function sidePanelPatch(
+  tab: SidePanelKey,
+  show: boolean,
+): Partial<Record<SidePanelFlag, boolean>> {
+  if (!show) return { [SIDE_PANEL_FLAGS[tab]]: false };
+  return {
+    showConfigEditor: tab === 'editor',
+    showApiExplorer: tab === 'api',
+    showAiAssistant: tab === 'ai',
+  };
+}
 
 export const useSessionStore = create<SessionState>()((set, get) => ({
   sessions: [],
@@ -465,8 +489,8 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
   // "Edit…" must not turn the next Quick Connect into an edit.
   setShowQuickConnect: (show) => set({ showQuickConnect: show, quickConnectDraft: null }),
   openQuickConnect: (draft) => set({ showQuickConnect: true, quickConnectDraft: draft ?? null }),
-  setShowApiExplorer: (show) => set({ showApiExplorer: show }),
-  setShowAiAssistant: (show) => set({ showAiAssistant: show }),
+  setShowApiExplorer: (show) => set(sidePanelPatch('api', show)),
+  setShowAiAssistant: (show) => set(sidePanelPatch('ai', show)),
   setShowCommandPalette: (show) => set({ showCommandPalette: show }),
   setShowVaultUnlock: (show) => set({ showVaultUnlock: show }),
   setVaultUnlocked: (unlocked) => set({ vaultUnlocked: unlocked }),
@@ -485,12 +509,12 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
     set((state) => ({ showImportHosts: true, importHostsSource: source ?? state.importHostsSource })),
   setShowImportHosts: (show) => set({ showImportHosts: show }),
   setSettingsFocus: (id) => set({ settingsFocus: id }),
-  setShowConfigEditor: (show) => set({ showConfigEditor: show }),
-  toggleConfigEditor: () => set((state) => ({ showConfigEditor: !state.showConfigEditor })),
-  // Panels coexist — Editor, API, and AI can all be open side-by-side (each is
-  // independently resizable), with the terminal always present.
-  toggleApiExplorer: () => set((state) => ({ showApiExplorer: !state.showApiExplorer })),
-  toggleAiAssistant: () => set((state) => ({ showAiAssistant: !state.showAiAssistant })),
+  setShowConfigEditor: (show) => set(sidePanelPatch('editor', show)),
+  // Editor, API and AI are tabs of ONE side panel: showing one switches the
+  // panel to it; toggling the tab that is already showing closes the panel.
+  toggleConfigEditor: () => set((state) => sidePanelPatch('editor', !state.showConfigEditor)),
+  toggleApiExplorer: () => set((state) => sidePanelPatch('api', !state.showApiExplorer)),
+  toggleAiAssistant: () => set((state) => sidePanelPatch('ai', !state.showAiAssistant)),
   toggleBroadcast: () => set((state) => ({ broadcastMode: !state.broadcastMode })),
   setMultiSendTargets: (targets) => set({ multiSendTargets: targets }),
   toggleSplitView: () =>

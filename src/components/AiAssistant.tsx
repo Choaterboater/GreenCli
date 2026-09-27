@@ -24,12 +24,10 @@ SyntaxHighlighter.registerLanguage('js', javascript);
 SyntaxHighlighter.registerLanguage('typescript', typescript);
 SyntaxHighlighter.registerLanguage('ts', typescript);
 import {
-  X,
   Send,
   Bot,
   User,
   TerminalSquare,
-  Sparkles,
   Loader2,
   ChevronDown,
   ChevronRight,
@@ -38,8 +36,6 @@ import {
   Terminal,
   AlertCircle,
   CheckCircle2,
-  Maximize2,
-  Minimize2,
   Square,
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/tauri';
@@ -52,8 +48,7 @@ import { sleep, stripAnsi, sendAndCapture } from '../utils/terminal';
 import { aiIsWriteCommand, aiMcpLooksWrite, AI_DANGER_CMD } from '../utils/aiGating';
 import { Intent, evaluateAll, summarize } from '../utils/intent';
 import { savedHostId } from '../utils/tabs';
-import { useResizablePanel } from '../hooks/useResizablePanel';
-import { useSidePanelWidth } from '../store/sidePanelStore';
+import { useSidePanelStore } from '../store/sidePanelStore';
 import { resolveSshLogin } from '../utils/connect';
 import { loginChoiceFor } from '../utils/logins';
 import { backendVault } from '../utils/vaultAccess';
@@ -1083,7 +1078,6 @@ export default function AiAssistant() {
   // Narrow per-field selectors — whole-store subscriptions re-rendered the
   // panel on every unrelated session/settings change.
   const showAiAssistant = useSessionStore((s) => s.showAiAssistant);
-  const toggleAiAssistant = useSessionStore((s) => s.toggleAiAssistant);
   const activeSessionId = useSessionStore((s) => s.activeSessionId);
   const sessions = useSessionStore((s) => s.sessions);
   const settings = {
@@ -1102,17 +1096,16 @@ export default function AiAssistant() {
     moonshotModel: useSettingsStore((s) => s.moonshotModel),
   };
 
-  // Saved width, shrunk to fit beside the terminal (sidePanelStore).
-  const panelSize = useSidePanelWidth('ai');
-  const { width: panelWidth, onDragStart: handleDragStart, handleClass: dragHandleClass } =
-    useResizablePanel(panelSize.width, panelSize.min, panelSize.max, { onCommit: panelSize.commit });
-
   const [messages, setMessages] = useState<DisplayMessage[]>([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  // "Thinking" shows on the side panel's AI tab and the activity bar, so a
+  // long answer can run while you work in another tab.
+  useEffect(() => {
+    useSidePanelStore.getState().setStatus('ai', isLoading ? 'busy' : null);
+  }, [isLoading]);
   const [hasKey, setHasKey] = useState(false);
   const [mcpToolCount, setMcpToolCount] = useState(0);
-  const [maximized, setMaximized] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   // Lets us abandon an in-flight request (the underlying invoke still resolves
@@ -1508,76 +1501,44 @@ export default function AiAssistant() {
             ? settings.openrouterModel || providerMeta?.label || provider
             : settings.moonshotModel || providerMeta?.label || provider);
 
+  const openAiSettings = () => {
+    const s = useSessionStore.getState();
+    s.setSettingsFocus('ai');
+    s.setShowSettings(true);
+  };
+
   return (
+    // A tab of the side panel (SidePanel owns the frame: width, drag handle,
+    // maximize and close). App keeps it mounted, so the chat survives closing.
     <div
-      className={
-        `${showAiAssistant ? '' : 'hidden '}${
-        maximized
-          ? 'fixed left-0 right-0 bottom-0 top-11 z-40 flex flex-col bg-[var(--bg-primary)] overflow-hidden animate-fade-in'
-          : 'flex-shrink-0 flex flex-col bg-[var(--bg-primary)] border-l border-[var(--border)] overflow-hidden relative'
-        }`
-      }
-      style={maximized ? undefined : { width: panelWidth }}
+      id="side-panel-ai"
+      role="tabpanel"
+      aria-labelledby="side-tab-ai"
+      className={`${showAiAssistant ? '' : 'hidden '}absolute inset-0 flex flex-col bg-[var(--bg-primary)] overflow-hidden`}
       aria-hidden={!showAiAssistant}
     >
-      {/* Drag handle (hidden when maximized) */}
-      {!maximized && <div className={dragHandleClass} onMouseDown={handleDragStart} />}
-
-      {/* Header */}
-      <div className="flex items-center justify-between h-10 px-3 pl-4 border-b border-[var(--bg-tertiary)] bg-[var(--bg-secondary)]">
-        <div className="flex items-center gap-2">
-          <Sparkles size={14} className="text-[var(--accent-violet)]" />
-          <span className="text-xs font-semibold text-[var(--text-primary)] uppercase tracking-wider">
-            AI Assistant
-          </span>
-          <span className={`text-[10px] px-1.5 py-0.5 rounded ${
-            isLocalProvider
-              ? 'text-[var(--accent-info)] bg-[var(--accent-info-soft)]'
-              : 'text-[var(--accent-success)] bg-[var(--accent-success-soft)]'
-          }`}>
-            {isLocalProvider ? '⬡ ' : '✦ '}{providerLabel}
-          </span>
-        </div>
-        <div className="flex items-center gap-1">
-          <button
-            onClick={() => useSessionStore.getState().setShowSettings(true)}
-            className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
-            title="Settings"
-          >
-            <Settings size={13} />
-          </button>
-          <button
-            onClick={() => setMaximized((m) => !m)}
-            className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
-            title={maximized ? 'Restore to side panel' : 'Maximize'}
-          >
-            {maximized ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
-          </button>
-          <button
-            onClick={toggleAiAssistant}
-            className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--accent-danger)]"
-            title="Close"
-          >
-            <X size={14} />
-          </button>
-        </div>
-      </div>
-
-      {/* Device context bar */}
-      <div className="flex items-center gap-2 px-3 py-1.5 border-b border-[var(--bg-tertiary)] bg-[var(--bg-secondary)]">
-        <Terminal size={11} className={activeSession?.connected ? 'text-[var(--accent-success)]' : 'text-[var(--text-muted)]'} />
+      {/* Context bar: the device the assistant acts on (left), and the model
+          answering plus MCP tools (right). The model chip opens AI settings —
+          it replaces the panel's old header row now that the side panel's
+          tab strip names the panel. */}
+      <div className="flex items-center gap-2 h-9 px-3 border-b border-[var(--border)] bg-[var(--bg-secondary)] flex-shrink-0">
+        <Terminal
+          size={11}
+          className="flex-shrink-0"
+          style={{ color: activeSession?.connected ? 'var(--accent-success)' : 'var(--text-muted)' }}
+        />
         {activeSession ? (
-          <span className="text-[10px] text-[var(--text-secondary)]">
+          <span className="min-w-0 truncate text-[11px] text-[var(--text-secondary)]">
             <span className="text-[var(--text-primary)]">{activeSession.config.name}</span>
-            <span className="mx-1 text-[var(--border)]">·</span>
+            <span className="mx-1 text-[var(--text-muted)]">·</span>
             {activeSession.config.deviceType}
-            <span className="mx-1 text-[var(--border)]">·</span>
-            <span className={activeSession.connected ? 'text-[var(--accent-success)]' : 'text-[var(--text-muted)]'}>
+            <span className="mx-1 text-[var(--text-muted)]">·</span>
+            <span style={{ color: activeSession.connected ? 'var(--accent-success)' : 'var(--text-muted)' }}>
               {activeSession.connected ? 'connected' : 'disconnected'}
             </span>
           </span>
         ) : (
-          <span className="text-[10px] text-[var(--text-muted)]">No active session</span>
+          <span className="min-w-0 truncate text-[11px] text-[var(--text-muted)]">No active session</span>
         )}
         {activeAgent && (
           <button
@@ -1586,7 +1547,7 @@ export default function AiAssistant() {
               s.setSettingsFocus('agents');
               s.setShowSettings(true);
             }}
-            className="flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full"
+            className="flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full flex-shrink-0"
             style={{ color: activeAgent.color, background: `${activeAgent.color}1f` }}
             title={`AI agent "${activeAgent.name}" is active for this session — click to manage`}
           >
@@ -1594,9 +1555,10 @@ export default function AiAssistant() {
             {activeAgent.name}
           </button>
         )}
+        <span className="flex-1" />
         {mcpToolCount > 0 && (
           <span
-            className="ml-auto flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full"
+            className="flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full flex-shrink-0 whitespace-nowrap"
             style={{ color: 'var(--accent)', background: 'var(--accent-soft)' }}
             title="Tools available from connected MCP servers"
           >
@@ -1604,6 +1566,22 @@ export default function AiAssistant() {
             {mcpToolCount} MCP tools
           </span>
         )}
+        <button
+          onClick={openAiSettings}
+          className="flex items-center gap-1 max-w-[45%] text-[10px] pl-1.5 pr-1 py-0.5 rounded-full flex-shrink-0 transition-[filter] hover:brightness-110"
+          style={{
+            color: isLocalProvider ? 'var(--accent-info)' : 'var(--accent-success)',
+            background: `color-mix(in srgb, ${isLocalProvider ? 'var(--accent-info)' : 'var(--accent-success)'} 14%, transparent)`,
+          }}
+          title={`Answering with ${providerLabel} — click to change the AI provider or model`}
+          aria-label={`AI model: ${providerLabel}. Open AI settings`}
+        >
+          <span className="truncate">
+            {isLocalProvider ? '⬡ ' : '✦ '}
+            {providerLabel}
+          </span>
+          <Settings size={10} className="flex-shrink-0 opacity-80" />
+        </button>
       </div>
 
       {/* Warning when not ready */}
@@ -1611,7 +1589,7 @@ export default function AiAssistant() {
         <div className="mx-3 mt-3 px-3 py-2 bg-[var(--accent-warning-soft)] border border-[var(--accent-warning-border)] rounded-lg flex items-start gap-2">
           <AlertCircle size={12} className="text-[var(--accent-warning)] flex-shrink-0 mt-0.5" />
           <div className="text-[10px] text-[var(--accent-warning)] leading-relaxed">
-            Add an API key for <strong>{providerMeta?.label}</strong> in <strong>Settings → AI Assistant</strong>, or switch to a local provider (Ollama / Local CLI).
+            Add an API key for <strong>{providerMeta?.label}</strong> in <strong>Settings → AI &amp; MCP</strong>, or switch to a local provider (Ollama / Local CLI).
           </div>
         </div>
       )}

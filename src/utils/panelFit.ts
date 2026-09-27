@@ -1,6 +1,7 @@
-// Fitting the docked side panels (Config Editor, API Explorer, AI Assistant)
-// next to the terminal. Each opened at a fixed width and all three could be
-// open at once, squeezing the terminal to nothing.
+// Fitting docked side panels next to the terminal. Written when the Config
+// Editor, API Explorer and AI Assistant were three panels that could all be
+// open at once, squeezing the terminal to nothing; they are now tabs of one
+// panel (sidePanelStore), which uses the same shrink-to-a-floor rule.
 
 /** The terminal (or whatever fills the main area) keeps at least this much. */
 export const TERMINAL_MIN_WIDTH = 480;

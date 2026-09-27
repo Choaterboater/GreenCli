@@ -65,7 +65,7 @@ describe('ImportHosts', () => {
     vi.mocked(invoke).mockResolvedValue(false);
     useSessionStore.setState({ importHostsSource: 'central' });
     render(<ImportHosts />);
-    fireEvent.click(await screen.findByText('Open Settings → Cloud'));
+    fireEvent.click(await screen.findByText('Open Settings → Integrations'));
     const st = useSessionStore.getState();
     expect(st.showImportHosts).toBe(false);
     expect(st.showSettings).toBe(true);
