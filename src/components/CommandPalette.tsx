@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/tauri';
 import { WebviewWindow } from '@tauri-apps/api/window';
 import { fuzzyScore } from '../utils';
 import { notify } from '../store/toastStore';
+import { useTheme } from '../hooks/useTheme';
 import {
   Search,
   Plug,
@@ -58,7 +59,7 @@ export default function CommandPalette({ onConnect, onLocalShell, onConnectRecen
   const activeSessionId = useSessionStore((s) => s.activeSessionId);
   const poppedSessions = useSessionStore((s) => s.poppedSessions);
   const vaultUnlocked = useSessionStore((s) => s.vaultUnlocked);
-  const theme = useSettingsStore((s) => s.theme);
+  const { theme } = useTheme(); // resolved dark/light, also when following the OS
   const setTheme = useSettingsStore((s) => s.setTheme);
   const recents = useRecentStore((s) => s.recents);
 

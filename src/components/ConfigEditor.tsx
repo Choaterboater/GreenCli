@@ -31,6 +31,7 @@ import { useSessionStore } from '../store/sessionStore';
 import { useSettingsStore } from '../store/settingsStore';
 import { sleep, stripAnsi as stripAnsiUtil, hasAnsi, sendAndCapture } from '../utils/terminal';
 import { useResizablePanel } from '../hooks/useResizablePanel';
+import { useSidePanelWidth } from '../store/sidePanelStore';
 import { askConfirm, askPrompt } from '../store/dialogStore';
 import { generateId } from '../utils';
 import { profileForSession } from '../utils/deviceProfiles';
@@ -614,8 +615,10 @@ export default function ConfigEditor() {
   const { isDark } = useTheme();
   const editorTheme = isDark ? 'aruba-dark' : 'aruba-light';
 
+  // Saved width, shrunk to fit beside the terminal (sidePanelStore).
+  const panelSize = useSidePanelWidth('editor');
   const { width: panelWidth, onDragStart: handleDragStart, handleClass: dragHandleClass } =
-    useResizablePanel(520, 300, 900);
+    useResizablePanel(panelSize.width, panelSize.min, panelSize.max, { onCommit: panelSize.commit });
   const [maximized, setMaximized] = useState(false);
   // With no sessions open, fill the whole area so it works as a plain text editor.
   const fullWidth = sessions.length === 0;

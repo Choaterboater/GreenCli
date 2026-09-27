@@ -20,6 +20,7 @@ import { useSettingsStore } from './store/settingsStore';
 import { useDialogStore } from './store/dialogStore';
 import { loadSecrets, persistSecrets } from './utils/secretVault';
 import { useTheme } from './hooks/useTheme';
+import { useSidePanelFit } from './hooks/useSidePanelFit';
 import { ConnectionConfig, Protocol, DeviceType, vendorColor } from './types';
 import { generateId, shellQuote } from './utils';
 import { listen } from '@tauri-apps/api/event';
@@ -101,6 +102,19 @@ function toastHostKeyWarning(message: string | undefined) {
   if (text === lastHostKeyToast.message && now - lastHostKeyToast.at < 2000) return;
   lastHostKeyToast = { message: text, at: now };
   notify.warning('Host key warning', text);
+}
+
+// Is this session's terminal on screen — the active tab, a split pane, or its
+// own pop-out window? Connect/disconnect toasts are only for background tabs:
+// a visible terminal already shows the change, and opening ten devices used to
+// stack ten "Connected" toasts.
+function isSessionOnScreen(sessionId: string): boolean {
+  const st = useSessionStore.getState();
+  return (
+    st.activeSessionId === sessionId ||
+    st.poppedSessions.includes(sessionId) ||
+    (st.splitView && st.splitPanes.includes(sessionId))
+  );
 }
 
 function runStartupCommands(sessionId: string, startupCommands?: string) {
@@ -195,6 +209,11 @@ function App() {
 
   const recents = useRecentStore((s) => s.recents);
   const clearRecents = useRecentStore((s) => s.clearRecents);
+
+  // The terminal + side panels row. Opening panels shrinks (or closes) them so
+  // the terminal keeps a usable width — see useSidePanelFit.
+  const panelRowRef = useRef<HTMLDivElement>(null);
+  useSidePanelFit(panelRowRef);
 
   // Credential save deferred until the vault is unlocked.
   const pendingCredSave = useRef<{ key: string; value: string } | null>(null);
@@ -1028,7 +1047,10 @@ function App() {
             fullConfig.protocol === 'local'
               ? fullConfig.command || 'local shell'
               : `${fullConfig.username ? fullConfig.username + '@' : ''}${fullConfig.host || fullConfig.serialPort || ''}`;
-          notify.success('Connected', `${fullConfig.name || where} is online.`);
+          // Background tabs only; several landing together share one card.
+          if (!isSessionOnScreen(sessionId)) {
+            notify.success('Connected', fullConfig.name || where, { group: 'connected' });
+          }
           toastHostKeyWarning(result.warning);
 
           // Per-host startup commands: run them once the shell is ready.
@@ -1074,7 +1096,11 @@ function App() {
     try {
       await invoke('disconnect', { sessionId });
       useSessionStore.getState().updateSessionConnection(sessionId, false);
-      notify.info('Disconnected', `${session?.config.name || session?.config.host || 'Session'} is offline.`);
+      if (!isSessionOnScreen(sessionId)) {
+        notify.info('Disconnected', session?.config.name || session?.config.host || 'Session', {
+          group: 'disconnected',
+        });
+      }
     } catch (err) {
       notify.warning('Disconnect failed', String(err));
     }
@@ -1381,7 +1407,7 @@ function App() {
           {broadcastMode && <MultiSendBar />}
 
           {/* Terminal Container + Side Panels */}
-          <div className="flex flex-1 overflow-hidden">
+          <div ref={panelRowRef} className="flex flex-1 overflow-hidden">
             {/* Terminal — hidden with no sessions + editor open, so the editor fills
                 the area and works as a standalone text editor. */}
             <div className={`flex-1 flex flex-col min-w-0 ${!activeSession && showConfigEditor ? 'hidden' : ''}`}>
@@ -1699,8 +1725,10 @@ function App() {
                 survive closing the panel. Monaco re-lays out on unhide. */}
             <ConfigEditor />
 
-            {/* API Explorer Panel */}
-            {showApiExplorer && <ApiExplorer />}
+            {/* API Explorer Panel — always mounted too (it renders nothing
+                while closed): a panel closed to make room for another must
+                not throw away a half-built request. */}
+            <ApiExplorer />
 
             {/* AI Assistant Panel — always mounted for the same reason: closing
                 the panel must not destroy the chat history. */}

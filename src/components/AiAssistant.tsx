@@ -52,6 +52,7 @@ import { sleep, stripAnsi, sendAndCapture } from '../utils/terminal';
 import { aiIsWriteCommand, aiMcpLooksWrite, AI_DANGER_CMD } from '../utils/aiGating';
 import { Intent, evaluateAll, summarize } from '../utils/intent';
 import { useResizablePanel } from '../hooks/useResizablePanel';
+import { useSidePanelWidth } from '../store/sidePanelStore';
 
 // ─── Anthropic API types (local) ───
 
@@ -1086,8 +1087,10 @@ export default function AiAssistant() {
     moonshotModel: useSettingsStore((s) => s.moonshotModel),
   };
 
+  // Saved width, shrunk to fit beside the terminal (sidePanelStore).
+  const panelSize = useSidePanelWidth('ai');
   const { width: panelWidth, onDragStart: handleDragStart, handleClass: dragHandleClass } =
-    useResizablePanel(420, 300, 800);
+    useResizablePanel(panelSize.width, panelSize.min, panelSize.max, { onCommit: panelSize.commit });
 
   const [messages, setMessages] = useState<DisplayMessage[]>([]);
   const [input, setInput] = useState('');

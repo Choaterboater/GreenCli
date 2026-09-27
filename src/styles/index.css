@@ -21,9 +21,12 @@
   --border: #212b37;
   --border-strong: #30404f;
 
+  /* Contrast on bg-secondary #0f141c: primary 15.6:1, secondary 7.5:1,
+     muted 5.7:1 (4.6:1 even on bg-elevated) — muted carries the 10-11px
+     hints, so it must clear WCAG AA's 4.5:1 on every surface. */
   --text-primary: #e6edf3;
   --text-secondary: #9aa7b4;
-  --text-muted: #5d6b7a;
+  --text-muted: #83909e;
 
   /* Brand accents */
   --accent-primary: #01a982;   /* HPE green */
@@ -41,6 +44,13 @@
   --accent-warning: #f0a83c;
   --accent-danger: #f0533f;
   --accent-info: #4aa8ff;
+  /* Solid danger buttons: the text-red above is too light under white label
+     text (3.5:1), so fills use a deeper red (4.6:1). */
+  --danger-solid: #d63d2a;
+  --danger-solid-fg: #ffffff;
+
+  /* Dims the app behind modals. */
+  --scrim: rgba(4, 7, 11, 0.62);
 
   /* Per-vendor identity (sidebar/tabs/status chips) */
   --vendor-hpe: #01a982;
@@ -90,9 +100,12 @@
   --border: #d6dde3;
   --border-strong: #c2ccd4;
 
+  /* Contrast on bg-secondary #f4f7f9: primary 15.3:1, secondary 7.5:1,
+     muted 5.0:1 (4.6:1 on bg-tertiary). Secondary and muted used to sit
+     within 1:1 of each other, which flattened the hierarchy. */
   --text-primary: #16202a;
-  --text-secondary: #5a6975;
-  --text-muted: #6b7785;
+  --text-secondary: #44525e;
+  --text-muted: #606c78;
 
   --accent-primary: #018f6e;
   --accent: #018f6e;
@@ -109,6 +122,11 @@
   --accent-warning: #b5760a;
   --accent-danger: #cf3520;
   --accent-info: #0969da;
+  --danger-solid: #cf3520;
+  --danger-solid-fg: #ffffff;
+
+  /* A light scrim: the dark one turned the whole window near-black. */
+  --scrim: rgba(22, 32, 42, 0.28);
 
   --vendor-hpe: #018f6e;
   --vendor-aruba: #e06a00;
@@ -280,7 +298,7 @@ body {
 
 /* ─── Modal backdrop ─── */
 .modal-backdrop {
-  background: rgba(4, 7, 11, 0.62);
+  background: var(--scrim);
   backdrop-filter: blur(8px) saturate(1.1);
 }
 

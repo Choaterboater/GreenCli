@@ -1,5 +1,6 @@
 import { useState, useRef, useCallback, useMemo, useEffect } from 'react';
 import { useResizablePanel } from '../hooks/useResizablePanel';
+import { useSidePanelWidth } from '../store/sidePanelStore';
 import { copyText } from '../utils/clipboard';
 import {
   X,
@@ -259,8 +260,10 @@ export default function ApiExplorer() {
 
   // Collapsible / Resizable panel state
   const [collapsed, setCollapsed] = useState(false);
+  // Saved width, shrunk to fit beside the terminal (sidePanelStore).
+  const panelSize = useSidePanelWidth('api');
   const { width: panelWidth, onDragStart: handleDragStart, handleClass: dragHandleClass } =
-    useResizablePanel(420, 200, 800);
+    useResizablePanel(panelSize.width, panelSize.min, panelSize.max, { onCommit: panelSize.commit });
 
   const activeConnection = connections.find((c) => c.id === activeConnectionId);
   const activeSession = sessions.find((s) => s.sessionId === activeSessionId);
