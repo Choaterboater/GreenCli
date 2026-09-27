@@ -518,13 +518,17 @@ export function resolveTargets(folders: SessionFolder[], sessions: Session[], pi
   const out: JobTarget[] = [];
   const byIdentity = new Map<string, JobTarget>();
   // A tab of this saved host (or any tab to the same device), connected first.
+  // Only a tab connected to the SAME address counts. A tab of this saved
+  // host alone isn't enough: edited while connected, it stays on the old
+  // address (updateSavedHost), and pushing through it would change the old
+  // box instead. The host's own tabs win over another host's at that address.
   const openFor = (c: ConnectionConfig) => {
     const tabs = sessions.filter(
-      (s) =>
-        s.config.protocol !== 'local' &&
-        (savedHostId(s.config) === c.id || deviceIdentity(s.config) === deviceIdentity(c))
+      (s) => s.config.protocol !== 'local' && deviceIdentity(s.config) === deviceIdentity(c)
     );
-    return tabs.find((s) => s.connected) ?? tabs[0];
+    const own = tabs.filter((s) => savedHostId(s.config) === c.id);
+    const pool = own.length > 0 ? own : tabs;
+    return pool.find((s) => s.connected) ?? pool[0];
   };
   const add = (config: ConnectionConfig, sessionId: string | null) => {
     const id = deviceIdentity(config);
@@ -542,7 +546,9 @@ export function resolveTargets(folders: SessionFolder[], sessions: Session[], pi
           (pick.folders.includes(f.id) || (item.tags ?? []).some((t) => pick.tags.includes(t))));
       if (!picked) continue;
       const open = openFor(item);
-      add(open ? open.config : item, open?.sessionId ?? null);
+      // Label and look up per-device variables by the SAVED host (the tab may
+      // carry an older name); the tab only supplies the live session.
+      add(item, open?.sessionId ?? null);
     }
   }
   for (const s of sessions) {
@@ -788,6 +794,7 @@ export async function runDevice(plan: DevicePlan, io: DeviceIO, ctl: DeviceContr
   };
 
   let armed = false;
+  let confirmed = false;
   try {
     // 1. Look before touching anything.
     const preFail = await io.withPagingOff(async () => {
@@ -889,6 +896,10 @@ export async function runDevice(plan: DevicePlan, io: DeviceIO, ctl: DeviceContr
       }
       out.revertsAt = null;
       ctl.onArmed(null);
+      // Confirmed: nothing rolls back any more, so a failure from here on
+      // (the save, say) must not be reported as a rollback.
+      armed = false;
+      confirmed = true;
     }
     if (plan.save.length) {
       const save = await io.sendLines(plan.save.map((l) => l.text));
@@ -901,7 +912,7 @@ export async function runDevice(plan: DevicePlan, io: DeviceIO, ctl: DeviceContr
       });
       if (save.result.kind !== 'done') return finish('error', 'The change is live, but saving it failed.');
     }
-    return finish('ok', `Changed${armed ? ' and confirmed' : ''}${plan.save.length ? ', saved' : ''}.`);
+    return finish('ok', `Changed${confirmed ? ' and confirmed' : ''}${plan.save.length ? ', saved' : ''}.`);
   } catch (e) {
     const why = `Stopped: ${e instanceof Error ? e.message : String(e)}.`;
     return finish(armed ? 'rolled-back' : 'error', armed ? `${why} Not confirmed, so the device rolls back on its own.` : why);

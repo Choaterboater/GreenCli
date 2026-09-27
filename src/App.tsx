@@ -295,6 +295,15 @@ function App() {
   const syncVaultWaiting = useCallback(() => {
     setVaultWaiting(pendingVaultConnectsRef.current.map((c) => tabLabel({ config: c })));
   }, []);
+  // Empty the parked list, keeping only tabs that are still open: resuming a
+  // tab closed while it waited would open it again (handleConnect adds it).
+  const takeParkedConnects = useCallback(() => {
+    const open = new Set(useSessionStore.getState().sessions.map((s) => s.sessionId));
+    const parked = pendingVaultConnectsRef.current.filter((c) => open.has(c.id));
+    pendingVaultConnectsRef.current = [];
+    syncVaultWaiting();
+    return parked;
+  }, [syncVaultWaiting]);
 
   // Sessions waiting for the password dialog while it is already showing for
   // another session. The dialog is one slot too: a second failed connect used
@@ -1058,6 +1067,12 @@ function App() {
       opts: { interactive?: boolean; skipVault?: boolean } = {}
     ): Promise<ConnectOutcome> => {
       const interactive = opts.interactive !== false;
+      // A connect made on the user's behalf (Change Jobs, which keeps running
+      // in the background) must never switch the view — or the keyboard —
+      // to the device it is about to change.
+      const focusTab = () => {
+        if (interactive) useSessionStore.getState().setActiveSession(sessionId);
+      };
       const sessionId = config.id || generateId();
       const fullConfig = { ...config, id: sessionId };
 
@@ -1079,25 +1094,25 @@ function App() {
         (existingStatus === 'connecting' && inFlight) ||
         existingStatus === 'reconnecting'
       ) {
-        useSessionStore.getState().setActiveSession(sessionId);
+        focusTab();
         return existing?.connected ? { status: 'connected', sessionId } : { status: 'in-progress', sessionId };
       }
       if (connectingIdsRef.current.has(sessionId)) {
         if (!existing) {
-          addSession(fullConfig, sessionId);
+          addSession(fullConfig, sessionId, { activate: interactive });
           useSessionStore.getState().updateSessionConnection(sessionId, false, 'connecting');
         }
-        useSessionStore.getState().setActiveSession(sessionId);
+        focusTab();
         return { status: 'in-progress', sessionId };
       }
       connectingIdsRef.current.add(sessionId);
 
-      addSession(fullConfig, sessionId);
+      addSession(fullConfig, sessionId, { activate: interactive });
       // addSession is a no-op for an existing (disconnected) tab — refresh its
       // config with the values it is reconnecting with and focus it explicitly.
       if (existing) {
         useSessionStore.getState().updateSessionConfig(sessionId, fullConfig);
-        useSessionStore.getState().setActiveSession(sessionId);
+        focusTab();
       }
       useSessionStore.getState().updateSessionConnection(sessionId, false, 'connecting');
 
@@ -1265,9 +1280,7 @@ function App() {
   // connect. handleConnect rechecks the backend's live status before retrieving
   // the saved password, so this is safe before React renders vaultUnlocked=true.
   const resumeVaultConnect = useCallback(async () => {
-    const parked = pendingVaultConnectsRef.current;
-    pendingVaultConnectsRef.current = [];
-    syncVaultWaiting();
+    const parked = takeParkedConnects();
     // Saves made while locked (a login's new password, say) land first, so
     // the resumed connects read them rather than the old value.
     await flushDeferredVaultWrites();
@@ -1278,17 +1291,15 @@ function App() {
       useSessionStore.getState().updateSessionConnection(cfg.id, false, 'disconnected');
       void handleConnect(cfg);
     }
-  }, [handleConnect, syncVaultWaiting]);
+  }, [handleConnect, takeParkedConnects]);
 
   // Vault prompt dismissed: drop the parked connects and un-stick their tabs.
   const cancelVaultConnect = useCallback(() => {
-    const parked = pendingVaultConnectsRef.current;
-    pendingVaultConnectsRef.current = [];
-    syncVaultWaiting();
+    const parked = takeParkedConnects();
     for (const cfg of parked) {
       useSessionStore.getState().updateSessionConnection(cfg.id, false, 'disconnected');
     }
-  }, [syncVaultWaiting]);
+  }, [takeParkedConnects]);
 
   // Vault prompt skipped: a locked vault can't say whether it even holds a
   // password for these hosts, so connect without it — password hosts get the
@@ -1296,14 +1307,12 @@ function App() {
   // shared login), and a key-auth host parked only for its jump host's saved
   // password goes ahead with the bastion's key / agent.
   const skipVaultConnect = useCallback(() => {
-    const parked = pendingVaultConnectsRef.current;
-    pendingVaultConnectsRef.current = [];
-    syncVaultWaiting();
+    const parked = takeParkedConnects();
     for (const cfg of parked) {
       useSessionStore.getState().updateSessionConnection(cfg.id, false, 'disconnected');
       void handleConnect(cfg, { skipVault: true });
     }
-  }, [handleConnect, syncVaultWaiting]);
+  }, [handleConnect, takeParkedConnects]);
 
   const handleDisconnect = useCallback(async (sessionId: string) => {
     const session = useSessionStore.getState().sessions.find((s) => s.sessionId === sessionId);
@@ -1336,6 +1345,9 @@ function App() {
             CONNECTION_FIELDS.filter((k) => k in saved).map((k) => [k, saved[k]])
           ) as Partial<ConnectionConfig>)
         : {};
+      // A host saved without a username (it takes its login's) must not blank
+      // the one this tab has — typed into the password dialog, say.
+      if (!current.username?.trim()) delete current.username;
       handleConnect({ ...session.config, ...current });
     },
     [handleConnect]
@@ -1473,6 +1485,12 @@ function App() {
       // next prompt reuse it; the vault key below follows it too.
       const username = creds.username?.trim() || prompted.username;
       const pending = username === prompted.username ? prompted : { ...prompted, username };
+      // The tab's own config as handleConnect saw it — before this dialog (or a
+      // shared login) filled in the username. The jump host's saved password is
+      // keyed by that config's username (jumpCredentialKey), so resolving from
+      // `pending` looked in a different vault slot and sent no jump password.
+      const tabConfig =
+        useSessionStore.getState().sessions.find((s) => s.sessionId === prompted.id)?.config ?? prompted;
       if (pending !== prompted) {
         useSessionStore.getState().updateSessionConfig(pending.id, { username });
       }
@@ -1484,7 +1502,7 @@ function App() {
         // The bastion's password is looked up again rather than carried on
         // the prompt, so no secret sits in the pending-connection state.
         const jump = await resolveJumpLogin(
-          pending,
+          tabConfig,
           settingsState.loginProfiles ?? [],
           backendVault
         );
@@ -1542,7 +1560,9 @@ function App() {
           // Save the password if asked (passwords only; never before it worked).
           const password = creds.authType === 'password' ? creds.password : undefined;
           let vaultSave: Promise<'saved' | 'deferred'> | null = null;
-          if (password && save === 'login' && login) {
+          // Never into the login under a username changed in the dialog
+          // (the dialog doesn't offer it; this keeps it that way).
+          if (password && save === 'login' && login && pending === prompted) {
             // Rotated shared password: one save updates every host using it.
             vaultSave = saveToVault(loginSecretKey(login.id), password);
             void vaultSave.then((r) => {

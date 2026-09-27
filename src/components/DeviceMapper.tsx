@@ -104,13 +104,13 @@ export default function DeviceMapper({ sessionId, onClose }: DeviceMapperProps) 
     const hostId = savedHostId(session.config);
     const folder = folders.find((f) => f.items.some((item) => item.id === hostId));
     const savedItem = folder?.items.find((item) => item.id === hostId);
-    const nextConfig = {
-      ...(savedItem ?? {}),
-      ...session.config,
-      id: hostId,
-      tags: savedItem?.tags ?? session.config.tags,
-      ...updates,
-    };
+    // A saved host is written back from ITS sidebar item plus the mapping —
+    // never from the tab: a tab still connected after the host was edited
+    // keeps the old address/user (updateSavedHost), and spreading it here put
+    // those stale fields back into sessions.json.
+    const nextConfig = savedItem
+      ? { ...savedItem, id: hostId, ...updates }
+      : { ...session.config, id: hostId, ...updates };
     // A saved host's mapping applies to every open tab of it.
     if (folder) updateSavedHost(hostId, updates);
     else updateSessionConfig(sessionId, updates);

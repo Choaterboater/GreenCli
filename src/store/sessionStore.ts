@@ -98,7 +98,11 @@ interface SessionState {
   settingsFocus: string | null;
 
   // Actions
-  addSession: (config: ConnectionConfig, sessionId: string) => void;
+  /** Open a tab for `config`. `activate: false` adds it in the background
+   *  (no focus change, no split-pane swap) — for connects made on the user's
+   *  behalf, like Change Jobs, that must not pull the view (and the keyboard)
+   *  onto the device being changed. */
+  addSession: (config: ConnectionConfig, sessionId: string, opts?: { activate?: boolean }) => void;
   removeSession: (sessionId: string) => void;
   setActiveSession: (sessionId: string | null) => void;
   /** Change ONE tab's config (e.g. the username typed at the login prompt,
@@ -220,11 +224,19 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
   importHostsSource: 'csv',
   settingsFocus: null,
 
-  addSession: (config, sessionId) =>
+  addSession: (config, sessionId, opts) =>
     set((state) => {
       // Check if already exists
       const exists = state.sessions.some((s) => s.sessionId === sessionId);
       if (exists) return state;
+      const tab = {
+        config,
+        sessionId,
+        connected: false,
+        connectionStatus: 'connecting' as const,
+        lastActivity: Date.now(),
+      };
+      if (opts?.activate === false) return { sessions: [...state.sessions, tab] };
 
       return {
         sessions: [

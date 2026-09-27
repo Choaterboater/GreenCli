@@ -306,6 +306,14 @@ describe('resolveTargets', () => {
     const local = session('sh', { id: 'sh', name: 'Local', protocol: 'local', deviceType: 'generic' });
     expect(resolveTargets(folders, [local], { ...pick, sessions: ['sh'] })).toEqual([]);
   });
+
+  it('never runs a saved host on a tab still logged in to its old address', () => {
+    // c1 was edited to a new address while its tab stayed on the old device.
+    const moved: SessionFolder[] = [{ ...folders[0], items: [host('c1', '10.0.0.9'), host('c2', '10.0.0.2')] }];
+    const stale = session('t-1', host('t-1', '10.0.0.1', { savedId: 'c1' }));
+    const t = resolveTargets(moved, [stale], { ...pick, hosts: ['c1'] });
+    expect(t.map((x) => [x.key, x.sessionId])).toEqual([['c1', null]]);
+  });
 });
 
 describe('promptState', () => {
@@ -415,6 +423,19 @@ const cxPlan = (over: Parameters<typeof input>[0] = {}) =>
   buildDevicePlan(input({ block: 'vlan 10\n  name MGMT', table: null, preChecks: 'show version', postChecks: 'show vlan 10 => MGMT', ...over }));
 
 describe('runDevice', () => {
+  it('reports a save that throws after the confirm as an error, not a rollback', async () => {
+    const sw = fakeSwitch({ checkOutput: (c) => (c.startsWith('show vlan') ? '10 MGMT up' : 'ArubaOS-CX') });
+    const sendLines = sw.io.sendLines;
+    sw.io.sendLines = async (lines) => {
+      if (lines[0] === 'write memory') throw new Error('session closed');
+      return sendLines(lines);
+    };
+    const out = await runDevice(cxPlan(), sw.io, sw.ctl());
+    expect(sw.sent).toContain('checkpoint auto confirm');
+    expect(out.status).toBe('error');
+    expect(out.detail).not.toMatch(/rolls back/);
+  });
+
   it('runs checks, arms, changes, confirms and saves in order', async () => {
     const sw = fakeSwitch({ checkOutput: (c) => (c.startsWith('show vlan') ? '10 MGMT up' : 'ArubaOS-CX') });
     const out = await runDevice(cxPlan(), sw.io, sw.ctl());

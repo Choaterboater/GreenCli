@@ -35,6 +35,16 @@ beforeEach(() => {
 });
 
 describe('two tabs to one saved host', () => {
+  it('addSession with activate: false opens the tab behind the one in use', () => {
+    // A Change Job connecting in the background must not switch the user's
+    // keyboard to another device.
+    st().addSession({ ...saved, id: 'job', savedId: 'saved-core', copyNumber: 3 }, 'job', { activate: false });
+    expect(st().sessions.map((s) => s.sessionId)).toContain('job');
+    expect(st().activeSessionId).toBe('t1');
+    st().addSession({ ...saved, id: 't4', savedId: 'saved-core', copyNumber: 4 }, 't4');
+    expect(st().activeSessionId).toBe('t4');
+  });
+
   it('addSession keeps a second tab of the same host', () => {
     st().addSession({ ...saved, id: 't3', savedId: 'saved-core', copyNumber: 3 }, 't3');
     expect(st().sessions.map((s) => s.sessionId)).toContain('t3');

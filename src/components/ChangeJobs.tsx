@@ -51,6 +51,7 @@ import {
   resolveTargets,
   runDevice,
   savedHostId,
+  deviceIdentity,
   runJob,
   toCsv,
   vendorSteps,
@@ -448,7 +449,10 @@ async function ensureSession(
   const tab = t.sessionId
     ? all().find((s) => s.sessionId === t.sessionId)
     : (() => {
-        const mine = all().filter((s) => savedHostId(s.config) === t.config.id);
+        // Same saved host AND same address — see resolveTargets.
+        const mine = all().filter(
+          (s) => savedHostId(s.config) === t.config.id && deviceIdentity(s.config) === deviceIdentity(t.config)
+        );
         return mine.find((s) => s.connected) ?? mine[0];
       })();
   let sessionId = tab?.sessionId ?? '';

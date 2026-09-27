@@ -120,9 +120,15 @@ export default function SshAuthDialog({ onAuthenticate }: SshAuthDialogProps) {
     }
   };
 
+  // A username changed here is not the login's: saving its password to the
+  // login would hand every host using that login the wrong password.
+  const usernameEdited = username.trim() !== (pendingConnection.username ?? '').trim();
   // A shared login offers "update the login" vs "just this host" — except
-  // after Skip on a locked vault, where its password just can't be read.
-  const offerLogin = !!promptLogin && promptLogin.reason !== 'locked';
+  // after Skip on a locked vault, where its password just can't be read, and
+  // when the username was changed here.
+  const offerLogin = !!promptLogin && promptLogin.reason !== 'locked' && !usernameEdited;
+  // Only "just this host" is left: a login is in play but can't take it.
+  const hostOnlySave = !!promptLogin && promptLogin.reason !== 'locked' && usernameEdited;
   const loginMode = loginModeDraft ?? (promptLogin?.reason === 'hostPassword' ? 'host' : 'login');
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -417,6 +423,27 @@ export default function SshAuthDialog({ onAuthenticate }: SshAuthDialogProps) {
                   </span>
                 </label>
               )}
+            </div>
+          )}
+
+          {/* Username changed: the login can't take this password, only this host */}
+          {authType === 'password' && hostOnlySave && promptLogin && (
+            <div className="space-y-1">
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={saveCredential}
+                  onChange={(e) => setSaveCredential(e.target.checked)}
+                  className="w-4 h-4 rounded"
+                />
+                <span className="text-sm text-[var(--text-secondary)]">
+                  Remember it for this host (it stops using &ldquo;{promptLogin.name}&rdquo;)
+                </span>
+              </label>
+              <p className="text-[11px] text-[var(--text-muted)] pl-6">
+                The username is different from the &ldquo;{promptLogin.name}&rdquo; login, so
+                it won&rsquo;t be saved there.
+              </p>
             </div>
           )}
 
