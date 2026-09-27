@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Change Jobs** (Tools / command palette): push one config block to many
+  devices picked by folder, tag, host or open tab, with `${var}` values per
+  device from a CSV. A dry run shows exactly what each device gets; the job
+  runs on one canary device and waits for your OK before the rest; it stops
+  at the first device error, takes before/after config snapshots with a diff,
+  and wraps changes in Junos `commit confirmed` / AOS-CX `checkpoint auto` so
+  an unconfirmed change rolls itself back. Results grid with CSV export.
+- **Shared logins** (Settings → Logins): one saved login (e.g. your TACACS
+  account) used by many hosts — set it as a folder's default, override per
+  host. Changing its password once updates every device that uses it. Jump
+  hosts can use a login or a vaulted password; jump auth gains
+  keyboard-interactive.
+- **Import hosts**: from CSV (with a template), a SecureCRT sessions folder or
+  XML export, Aruba Central, Juniper Mist, or `~/.ssh/config` — all through
+  one preview that skips hosts you already have.
+- **Several sessions to one saved host**: "Open new session",
+  Shift+double-click, or Duplicate tab ("core-sw-01 (2)"); a tab right-click
+  menu (Duplicate, Reconnect, Disconnect, Rename, Pop out, Close others /
+  disconnected).
+- **Tabs read the device prompt**: tabs named by the device's hostname and
+  tinted amber with a CONFIG badge while the device is in config mode
+  (AOS-CX, AOS-S, AOS-8, Instant, Junos); the status bar and multi-send bar
+  show it too.
+- **Session logging**: plain-text logs (control codes stripped) named
+  `host_YYYY-MM-DD_HHMMSS.log`, an option to log every session
+  automatically, a chosen log folder, optional per-line timestamps and
+  "Reveal log folder".
+- Keyboard: tab switching from inside a session (Ctrl+Tab, Ctrl+PgUp/PgDn,
+  ⌘1–9 / Alt+1–9), Ctrl+Shift+F/T/P on Windows/Linux, F3 / ⌘G find next, and
+  shortcut hints that show ⌘ on macOS.
+- Serial: port dropdown (lone USB console preselected), baud default by
+  device type (AOS-CX 115200), and a "Send BREAK" button.
+- Quick Connect parses `user@host:port`; saved hosts get **Edit…**, show
+  user@host, and Enter in the sidebar search connects to the top match.
+- "System" theme that follows macOS / Windows; Option-as-Meta setting on Mac;
+  right-click Copy & Paste / Find selection / Save scrollback; pop-out
+  windows get a header with status, Reconnect, Find and Dock.
+
 ### Fixed
 
 - Idle SSH tabs no longer drop to "Reconnecting…" every 5 minutes. The wedge
@@ -46,6 +86,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - "Reset all settings" moved out of the Settings header (next to the close X,
   easy to hit by mistake) to the bottom of Settings → Backup, with a clear
   description of what it clears.
+- Split view acts on the pane you're in: clicking a pane makes it the active
+  one, so close / find / snippets / logging no longer hit the first pane.
+- Bulk Runner and multi-send are safe by default: they target only the
+  devices you pick (not every connected session, local shells or consoles),
+  confirm risky commands naming the devices, turn paging off so output isn't
+  cut at `--More--`, and outline every terminal a multi-send will type into.
+  Snippets insert without pressing Enter (Shift+click runs), support
+  `{{name}}` prompts, and ask before deleting.
+- Closing a connected session asks first (setting); red "danger" dialogs
+  focus Cancel; a key pressed in a dialog no longer reaches the device
+  behind it.
+- The password dialog has a Username field and shows "Access denied
+  (attempt N)" inline; the vault prompt names the waiting hosts and offers
+  "Skip — type the device password".
+- Config Editor: `no shutdown` no longer flagged as dangerous, the send
+  preview compares against the right device, sending stops at the first
+  device error, and templates include `configure terminal` / `configure`.
+- Editing a saved host while its tab is connected no longer relabels the
+  live tab as the new address.
+- Toasts moved top-right (off the AI send box), fold repeats, and only
+  report connects/disconnects for tabs you can't see; dim hint text meets
+  4.5:1 contrast in both themes; light mode gets a light backdrop.
+- Opening several side panels can no longer squeeze the terminal to
+  nothing (panels shrink or the oldest closes); panel widths are remembered.
 - Pop-out windows no longer freeze the app on Windows.
 - Serial writes no longer block a runtime worker until every byte has left the
   port (pastes at 9600 baud stalled echo and other sessions).
