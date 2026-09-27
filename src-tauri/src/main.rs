@@ -51,7 +51,17 @@ type ForwardsMap =
     Arc<AsyncMutex<HashMap<String, (ssh::forward::ForwardMeta, tokio::task::JoinHandle<()>)>>>;
 
 /// Open session logs keyed by session id.
-type SessionLogs = Arc<AsyncMutex<HashMap<String, session_log::SessionLog>>>;
+/// One open session log. Each log has its OWN lock: the map lock is shared by
+/// every session's output path, and a blocking write to a slow (network) log
+/// folder must stall only that session, never all of them. The path is kept
+/// outside the lock so status queries never wait behind a write.
+#[derive(Clone)]
+struct OpenLog {
+    path: std::path::PathBuf,
+    log: Arc<Mutex<session_log::SessionLog>>,
+}
+
+type SessionLogs = Arc<AsyncMutex<HashMap<String, OpenLog>>>;
 
 struct AppState {
     session_manager: Arc<SessionManager>,
@@ -248,15 +258,24 @@ async fn write_and_emit(
             }
         }
     }
-    {
-        let mut logs = logs.lock().await;
-        if let Some(session_log) = logs.get_mut(session_id) {
+    // Clone this session's log handle and release the shared map lock before
+    // touching the disk; the blocking write runs off the async workers. It is
+    // awaited, so this session's chunks still land in order.
+    let open_log = logs.lock().await.get(session_id).cloned();
+    if let Some(open_log) = open_log {
+        let chunk = data.clone();
+        let sid = session_id.to_string();
+        let _ = tauri::async_runtime::spawn_blocking(move || {
+            let Ok(mut session_log) = open_log.log.lock() else {
+                return;
+            };
             // Surface failures (full disk, revoked path) instead of silently
             // dropping log data the user believes is being captured.
-            if let Err(e) = session_log.write_chunk(&data) {
-                log::warn!("session log write failed for {session_id}: {e}");
+            if let Err(e) = session_log.write_chunk(&chunk) {
+                log::warn!("session log write failed for {sid}: {e}");
             }
-        }
+        })
+        .await;
     }
     let _ = app.emit_all(
         "terminal_data",
@@ -971,7 +990,10 @@ async fn disconnect(
     state.terminal_buffers.lock().await.remove(&session_id);
     state.terminal_sizes.lock().await.remove(&session_id);
     state.last_input.lock().await.remove(&session_id);
-    state.session_logs.lock().await.remove(&session_id);
+    // Bind the removed log so its final write (Drop) happens after the shared
+    // map lock is released, not while every session's output waits on it.
+    let removed_log = state.session_logs.lock().await.remove(&session_id);
+    drop(removed_log);
 
     // Tear down any SSH port-forwards belonging to this session, so a disconnect
     // doesn't leave orphaned tunnels with the local port bound and stale entries
@@ -1419,8 +1441,8 @@ async fn start_session_log(
     utc_offset_minutes: Option<i32>,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
-    if let Some(log) = state.session_logs.lock().await.get(&session_id) {
-        return Ok(log.path().to_string_lossy().into_owned());
+    if let Some(open) = state.session_logs.lock().await.get(&session_id) {
+        return Ok(open.path.to_string_lossy().into_owned());
     }
     // Create the file outside the map lock: every session's output path
     // takes that lock, and a slow (network) folder must not stall them.
@@ -1438,16 +1460,25 @@ async fn start_session_log(
         // A concurrent start (auto-log racing a click) won; drop our empty file.
         drop(log);
         let _ = std::fs::remove_file(&path);
-        return Ok(existing.path().to_string_lossy().into_owned());
+        return Ok(existing.path.to_string_lossy().into_owned());
     }
-    logs.insert(session_id, log);
+    logs.insert(
+        session_id,
+        OpenLog {
+            path: path.clone(),
+            log: Arc::new(Mutex::new(log)),
+        },
+    );
     Ok(path.to_string_lossy().into_owned())
 }
 
 #[tauri::command]
 async fn stop_session_log(session_id: String, state: State<'_, AppState>) -> Result<(), String> {
     // Dropping the log writes its unfinished last line.
-    state.session_logs.lock().await.remove(&session_id);
+    // Bind the removed log so its final write (Drop) happens after the shared
+    // map lock is released, not while every session's output waits on it.
+    let removed_log = state.session_logs.lock().await.remove(&session_id);
+    drop(removed_log);
     Ok(())
 }
 
@@ -1470,7 +1501,7 @@ async fn session_log_path(
         .lock()
         .await
         .get(&session_id)
-        .map(|log| log.path().to_string_lossy().into_owned()))
+        .map(|open| open.path.to_string_lossy().into_owned()))
 }
 
 /// Show a log folder in Finder / Explorer / the desktop file manager. `dir`

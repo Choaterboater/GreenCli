@@ -321,9 +321,27 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
         void jumpPassword;
         void privateKey;
         void keyPassphrase;
-        // Updates the sidebar item and an open tab of it, so Reconnect uses the new details.
-        useSessionStore.getState().updateSessionConfig(updated.id, safe);
-        notify.success('Host updated', updated.name);
+        // A LIVE tab of this host is still connected to the old address: relabel
+        // it and the tab, status bar, multi-send chips and Config Editor would
+        // all name the new device while commands still reach the old one. Only
+        // the sidebar item changes then; Reconnect picks up the new details.
+        const st = useSessionStore.getState();
+        const tab = st.sessions.find((s) => s.sessionId === updated.id);
+        const live =
+          !!tab &&
+          (tab.connected || tab.connectionStatus === 'connecting' || tab.connectionStatus === 'reconnecting');
+        if (live) {
+          useSessionStore.setState((s) => ({
+            folders: s.folders.map((f) => ({
+              ...f,
+              items: f.items.map((i) => (i.id === updated.id ? { ...i, ...safe } : i)),
+            })),
+          }));
+          notify.info('Host updated', `${updated.name}: the open tab keeps its current connection — Reconnect to use the new details.`);
+        } else {
+          st.updateSessionConfig(updated.id, safe);
+          notify.success('Host updated', updated.name);
+        }
         setShowQuickConnect(false);
         return;
       }

@@ -208,6 +208,10 @@ export default function DeviceMapper({ sessionId, onClose }: DeviceMapperProps) 
 
   return (
     <div
+      // Marks it as a modal so App's focus restore leaves keys here instead of
+      // sending Enter (after clicking Save) to the device behind it.
+      role="dialog"
+      aria-modal="true"
       className="fixed inset-0 z-[70] flex items-center justify-center bg-black/55 backdrop-blur-sm"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose();

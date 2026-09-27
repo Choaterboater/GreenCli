@@ -227,6 +227,12 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
         unseenOutput: state.unseenOutput.filter((id) => id !== sessionId && id !== nextActive),
         activeSessionId: nextActive,
         showSftp: nextActive != null ? state.showSftp : false,
+        // A closed tab leaves the multi-send selection: saved hosts reopen
+        // under the same id and would silently be a target again.
+        multiSendTargets: {
+          ...state.multiSendTargets,
+          ids: state.multiSendTargets.ids.filter((id) => id !== sessionId),
+        },
         // Don't leave a split pane pointing at a destroyed session.
         splitPanes,
         splitView: splitPanes.length > 0 ? state.splitView : false,
@@ -299,6 +305,7 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
       poppedSessions: [],
       unseenOutput: [],
       showSftp: false,
+      multiSendTargets: { mode: 'selected', ids: [] },
     }),
 
   toggleSidebar: () => set((state) => ({ sidebarVisible: !state.sidebarVisible })),

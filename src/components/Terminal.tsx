@@ -24,7 +24,7 @@ import { captureOnConnect } from '../utils/configArchive';
 import { copyText, readClipboardText } from '../utils/clipboard';
 import { registerTerminalActionAdapter, unregisterTerminalActionAdapter } from '../utils/terminalActions';
 import { countPasteLines, useTerminalToolsStore } from '../store/terminalToolsStore';
-import { isAppChord, shortcutLabel } from '../utils/shortcuts';
+import { isAppChord, resolveTabSwitch, shortcutLabel, tabSwitchIntent } from '../utils/shortcuts';
 import { bufferToText, scrollbackFileName } from '../utils/scrollback';
 import { isTauri, browserSave, tauriWriteText } from '../utils/fileSystem';
 import { save as saveDialog } from '@tauri-apps/api/dialog';
@@ -471,7 +471,15 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
       // reached the device as a Tab (a completion) and Ctrl+Shift+W as ^W —
       // and the keydown bubbles on to App's window-level handler. Checked
       // before the alternate-buffer bailout so it works inside TUIs too.
-      if (isAppChord(event, { searchOpen: useSessionStore.getState().showSearch })) {
+      const ss = useSessionStore.getState();
+      const tabIntent = tabSwitchIntent(event);
+      if (
+        tabIntent &&
+        !resolveTabSwitch(tabIntent, ss.sessions.map((x) => x.sessionId), ss.poppedSessions, ss.activeSessionId)
+      ) {
+        // No tab to switch to (e.g. Alt+3 with two tabs): the chord does
+        // nothing in the app, so let the device have it instead of eating it.
+      } else if (isAppChord(event, { searchOpen: ss.showSearch })) {
         return false;
       }
 

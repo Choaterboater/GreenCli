@@ -42,6 +42,7 @@ import { MAX_PANES } from './utils/splitPanes';
 import {
   findStep,
   isFindChord,
+  isMac,
   isPcNewConnectionChord,
   isPcPaletteChord,
   resolveTabSwitch,
@@ -344,6 +345,10 @@ function App() {
   useEffect(() => {
     const un = listen<string>('popout_closed', (e) => {
       useSessionStore.getState().restorePoppedOut(e.payload);
+      // Docking makes the returning session active, but DOM focus would stay
+      // in the previous (now hidden) terminal — typing would go to a device
+      // you can't see. Hand focus to the docked one once it has rendered.
+      setTimeout(() => getTerminalActionAdapter(e.payload)?.focus(), 0);
       // The handover metadata has served its purpose.
       try {
         localStorage.removeItem(`popout-meta-${e.payload}`);
@@ -719,6 +724,9 @@ function App() {
         (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable);
       const shellCtrl = e.ctrlKey && !e.metaKey && inEditable;
       const inTerminal = !!target && !!target.closest?.('.xterm');
+      // macOS: a Ctrl chord typed in the terminal was already sent to the
+      // device (^A, ^E, ^I…) — the app chords there are the Cmd ones.
+      const macCtrlInTerminal = isMac && e.ctrlKey && !e.metaKey && inTerminal;
 
       // F1: Help & documentation
       if (e.key === 'F1') {
@@ -737,7 +745,11 @@ function App() {
       // Windows/Linux from anywhere.
       if (((e.ctrlKey || e.metaKey) && e.key === 't' && !shellCtrl) || isPcNewConnectionChord(e)) {
         e.preventDefault();
-        useSessionStore.getState().setShowQuickConnect(true);
+        // Already open (e.g. an Edit… of a saved host): reopening would reset
+        // it to a plain Connect form and turn Save into a new connection.
+        if (!useSessionStore.getState().showQuickConnect) {
+          useSessionStore.getState().setShowQuickConnect(true);
+        }
       }
       // Ctrl+W: Close Tab. Skip popped-out sessions — closing from here would
       // disconnect the backend while their pop-out window stays open. Also bail
@@ -748,18 +760,23 @@ function App() {
         const st = useSessionStore.getState();
         const activeId = st.activeSessionId;
         if (!activeId) return;
+        // Side panels only block when the keys are aimed at them — from inside
+        // a terminal, Ctrl+Shift+W / Cmd+W closes that tab even with the
+        // Editor, API or AI panel open beside it.
         const overlayOpen =
           st.showSettings || st.showQuickConnect || st.showAuthDialog ||
           st.showCommandPalette || st.showHelp || st.showVaultUnlock ||
-          st.showSftp || st.showSearch || st.showConfigEditor ||
-          st.showApiExplorer || st.showAiAssistant ||
+          st.showSftp || st.showSearch ||
+          (!inTerminal && (st.showConfigEditor || st.showApiExplorer || st.showAiAssistant)) ||
           useDialogStore.getState().current != null;
         if (overlayOpen) return; // let the overlay keep focus; don't kill the live session
         // Plain Ctrl+W is the shell's delete-word when the terminal (or any
         // input) is focused. Cmd+W (macOS) and Ctrl+Shift+W (Windows Terminal
         // convention) close the tab even from inside the terminal — like
         // normal terminal apps — but never while typing in some other field.
-        const closeChord = e.metaKey || (e.ctrlKey && e.shiftKey);
+        // On macOS a Ctrl chord typed in the terminal already went to the
+        // device (^W), so only Cmd+W closes there.
+        const closeChord = e.metaKey || (!isMac && e.ctrlKey && e.shiftKey);
         if (!closeChord && inEditable) return;
         if (closeChord && inEditable && !inTerminal) return;
         e.preventDefault();
@@ -815,17 +832,17 @@ function App() {
         useSessionStore.getState().toggleSidebar();
       }
       // Ctrl+Shift+A: Toggle API Explorer
-      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'A') {
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'A' && !macCtrlInTerminal) {
         e.preventDefault();
         useSessionStore.getState().toggleApiExplorer();
       }
       // Ctrl+Shift+I: Toggle AI Assistant
-      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'I') {
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'I' && !macCtrlInTerminal) {
         e.preventDefault();
         useSessionStore.getState().toggleAiAssistant();
       }
       // Ctrl+Shift+E: Toggle Config Editor
-      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'E') {
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'E' && !macCtrlInTerminal) {
         e.preventDefault();
         useSessionStore.getState().toggleConfigEditor();
       }
@@ -1176,10 +1193,14 @@ function App() {
 
   const handleReconnect = useCallback(
     (sessionId: string) => {
-      const session = useSessionStore.getState().sessions.find((s) => s.sessionId === sessionId);
+      const st = useSessionStore.getState();
+      const session = st.sessions.find((s) => s.sessionId === sessionId);
       if (!session) return;
-      useSessionStore.getState().setActiveSession(sessionId);
-      handleConnect(session.config);
+      st.setActiveSession(sessionId);
+      // A saved host edited while its tab was live only updated the sidebar
+      // item (see QuickConnect) — reconnect with those current details.
+      const saved = st.folders.flatMap((f) => f.items).find((i) => i.id === session.config.id);
+      handleConnect(saved ? { ...session.config, ...saved } : session.config);
     },
     [handleConnect]
   );

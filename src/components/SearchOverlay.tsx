@@ -151,14 +151,24 @@ export default function SearchOverlay({
     });
   }, [showSearch, sessionId, adapter]);
 
-  // Focus input on open; clear state and decorations on close
+  // Focus the input when the bar OPENS — not whenever the adapter changes:
+  // with split view, clicking another pane switches the searched session, and
+  // refocusing here pulled the typing meant for that pane into the search box.
   useEffect(() => {
-    if (showSearch) {
-      setTimeout(() => {
-        inputRef.current?.focus();
-        inputRef.current?.select();
-      }, 0);
-    } else {
+    if (!showSearch) return;
+    setTimeout(() => {
+      inputRef.current?.focus();
+      inputRef.current?.select();
+    }, 0);
+  }, [showSearch]);
+
+  // Switching the searched session leaves the old pane's match highlights
+  // behind — clear them when the adapter changes (and on unmount).
+  useEffect(() => () => adapter?.clearDecorations(), [adapter]);
+
+  // Clear state and decorations on close
+  useEffect(() => {
+    if (!showSearch) {
       adapter?.clearDecorations();
       setQuery('');
       setChip(null);
