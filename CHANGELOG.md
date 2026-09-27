@@ -35,6 +35,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   IP / MAC / interface no longer silently replaces the clipboard (smart links
   now copy on Ctrl/Cmd+click); copy-on-select also works when the drag ends
   outside the terminal.
+- macOS terminal copy: Option+drag now selects text even when a full-screen
+  app (vim, tmux, htop, omp, claude) has mouse mode on — before, Mac had no
+  way to select there (Windows could Shift+drag). Cmd/Ctrl+C no longer lets
+  the webview's own copy race ours and sometimes paste the word from the last
+  right-click.
+- Reconnect is easy to find: a dropped session shows a "Disconnected — press
+  Enter or Reconnect" bar, pressing Enter in it reconnects, and the tab's
+  reconnect button is always visible instead of hover-only.
+- "Reset all settings" moved out of the Settings header (next to the close X,
+  easy to hit by mistake) to the bottom of Settings → Backup, with a clear
+  description of what it clears.
 - Pop-out windows no longer freeze the app on Windows.
 - Serial writes no longer block a runtime worker until every byte has left the
   port (pastes at 9600 baud stalled echo and other sessions).

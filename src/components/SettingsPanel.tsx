@@ -407,22 +407,6 @@ export default function SettingsPanel() {
           <h2 className="text-lg font-semibold text-[var(--text-primary)]">Settings</h2>
           <div className="flex items-center gap-2">
             <button
-              onClick={async () => {
-                const ok = await askConfirm({
-                  title: 'Reset all settings?',
-                  message:
-                    'This clears every saved Central account, AI references, and all tool toggles back to defaults. This cannot be undone.',
-                  confirmLabel: 'Reset',
-                  danger: true,
-                });
-                if (ok) settings.resetToDefaults();
-              }}
-              className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs bg-[var(--bg-tertiary)] hover:bg-[var(--border)] text-[var(--text-secondary)] rounded-lg transition-colors"
-            >
-              <RotateCcw size={12} />
-              Reset
-            </button>
-            <button
               onClick={() => setShowSettings(false)}
               className="p-1.5 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
             >
@@ -1008,6 +992,39 @@ export default function SettingsPanel() {
                 POSTed only on new-violation transitions ({'{'}event, count, violations{'}'}). Empty octets / failures are logged and skipped.
               </p>
             </div>
+          </section>
+
+          <div className="border-t border-[var(--bg-tertiary)]" />
+
+          {/* Reset lives here, next to Export, instead of in the Settings
+              header beside the close X — where it was easy to hit by mistake
+              and read like an app "reset". */}
+          <section id="set-reset">
+            <h3 className="text-sm font-semibold text-[var(--accent-danger)] mb-2">
+              Reset Settings
+            </h3>
+            <p className="text-xs text-[var(--text-muted)] mb-3">
+              Puts every setting back to its default: theme and terminal options,
+              custom device profiles, AI agents and providers, and Central / Mist
+              accounts. Saved sessions, snippets, the vault and open tabs are not
+              touched. Export a backup first if you might want them back.
+            </p>
+            <button
+              onClick={async () => {
+                const ok = await askConfirm({
+                  title: 'Reset all settings to defaults?',
+                  message:
+                    'Theme and terminal options, custom device profiles, AI agents and providers, and Central / Mist accounts all go back to defaults. Saved sessions and the vault are kept. This cannot be undone.',
+                  confirmLabel: 'Reset settings',
+                  danger: true,
+                });
+                if (ok) settings.resetToDefaults();
+              }}
+              className="flex items-center gap-1.5 px-3 h-8 rounded border border-[var(--accent-danger)] text-[var(--accent-danger)] hover:bg-[var(--bg-tertiary)] text-xs"
+            >
+              <RotateCcw size={13} />
+              Reset all settings…
+            </button>
           </section>
           </NavGroup>
 

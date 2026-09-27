@@ -13,6 +13,7 @@ import {
   TerminalSquare,
   X,
   Plus,
+  RefreshCw,
 } from 'lucide-react';
 
 import { useSessionStore } from './store/sessionStore';
@@ -112,6 +113,10 @@ function runStartupCommands(sessionId: string, startupCommands?: string) {
   }, 700);
 }
 
+// Set by App to its reconnect handler, so the module-level send handlers below
+// can offer SecureCRT-style "press Enter to reconnect" on a dropped session.
+let reconnectFromTerminal: ((sessionId: string) => void) | null = null;
+
 // One stable onSend per session id — the memoized per-session Terminal below
 // would otherwise be re-rendered by a fresh inline closure on every App render.
 const sessionSendHandlers = new Map<string, (data: string) => void>();
@@ -122,7 +127,12 @@ function sendHandlerFor(sessionId: string): (data: string) => void {
       const current = useSessionStore
         .getState()
         .sessions.find((session) => session.sessionId === sessionId);
-      if (!current?.connected) return;
+      if (!current?.connected) {
+        if (data === '\r' && current?.connectionStatus === 'disconnected') {
+          reconnectFromTerminal?.(sessionId);
+        }
+        return;
+      }
       invoke('send_data', { sessionId, data }).catch(console.error);
     };
     sessionSendHandlers.set(sessionId, handler);
@@ -1106,6 +1116,13 @@ function App() {
     [handleConnect]
   );
 
+  useEffect(() => {
+    reconnectFromTerminal = handleReconnect;
+    return () => {
+      reconnectFromTerminal = null;
+    };
+  }, [handleReconnect]);
+
   // One-click local shell — a "normal terminal" running the user's default shell.
   const openLocalShell = useCallback(() => {
     handleConnect({
@@ -1620,6 +1637,25 @@ function App() {
                             deviceType={s.config.deviceType}
                             onSend={sendHandlerFor(s.sessionId)}
                           />
+                          {/* A dropped session says so, with an obvious way back —
+                              the only reconnect controls used to be a hover-only
+                              tab icon and the status-bar text. */}
+                          {!s.connected && s.connectionStatus === 'disconnected' && (
+                            <div className="absolute top-2 left-1/2 -translate-x-1/2 z-10 flex items-center gap-2.5 pl-3 pr-1.5 py-1.5 rounded-lg border border-[var(--border-strong)] bg-[var(--bg-secondary)] shadow-xl text-xs text-[var(--text-secondary)]">
+                              <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent-danger)]" />
+                              <span>
+                                <span className="font-medium text-[var(--text-primary)]">Disconnected</span>
+                                {' '}— press Enter or
+                              </span>
+                              <button
+                                onClick={() => handleReconnect(s.sessionId)}
+                                className="btn-accent flex items-center gap-1.5 h-7 px-3 text-xs"
+                              >
+                                <RefreshCw size={12} />
+                                Reconnect
+                              </button>
+                            </div>
+                          )}
                         </div>
                       );
                     })}

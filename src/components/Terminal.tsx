@@ -245,6 +245,12 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
       allowProposedApi: true,
       allowTransparency: false,
       macOptionIsMeta: true,
+      // When a TUI turns on mouse reporting (vim, tmux, htop, omp, claude…),
+      // a plain drag goes to the app instead of selecting. Windows/Linux can
+      // force a selection with Shift+drag, but on macOS xterm only allows
+      // Option+drag — and only with this on (default off), so Mac users had
+      // NO way to select/copy text in those apps.
+      macOptionClickForcesSelection: true,
       // Only in 'menu' mode: word-select-then-menu is handy (right-click a word
       // → Copy), but in paste/copyPaste modes the implicit selection would turn
       // every right-click paste into a word copy instead.
@@ -449,6 +455,12 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
           (event.metaKey || (!isMac && event.ctrlKey && !event.altKey))) ||
           (event.key === 'Insert' && event.ctrlKey && !event.shiftKey && !event.altKey))
       ) {
+        // We own this copy. Without preventDefault the webview ALSO ran its
+        // native copy (macOS Edit ▸ Copy key equivalent / WebView2 Ctrl+C)
+        // after we cleared the selection below — on the xterm helper
+        // textarea, which still holds the word from the last right-click.
+        // Two clipboard writes then raced, and the stale word sometimes won.
+        event.preventDefault();
         copySelection();
         // Clear the selection after copying — getSelection() already captured
         // it synchronously, so the async clipboard write is unaffected — and

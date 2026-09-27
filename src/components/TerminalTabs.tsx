@@ -179,7 +179,9 @@ export default function TerminalTabs({ onPopOut, onReconnect, onDisconnect, onMa
                     e.stopPropagation();
                     onReconnect?.(session.sessionId);
                   }}
-                  className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-[var(--border-strong)] transition-all flex-shrink-0"
+                  // Always visible (not hover-only like the other tab tools):
+                  // a dropped session's way back must not be hidden.
+                  className="p-0.5 rounded text-[var(--accent-warning)] hover:bg-[var(--border-strong)] transition-all flex-shrink-0"
                   title="Reconnect"
                 >
                   <RefreshCw size={12} />
