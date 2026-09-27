@@ -9,7 +9,6 @@ import {
   Globe,
   Sparkles,
   FileCode,
-  Radio,
   TerminalSquare,
   X,
   Plus,
@@ -35,6 +34,7 @@ import {
   sshCredentialKey,
 } from './utils/connect';
 import { getTerminalActionAdapter } from './utils/terminalActions';
+import { isMultiSendTarget } from './utils/multiSend';
 import Toaster from './components/Toaster';
 import DialogHost from './components/DialogHost';
 
@@ -57,6 +57,7 @@ import IntentPanel from './components/IntentPanel';
 import HelpPanel from './components/HelpPanel';
 import VaultUnlock from './components/VaultUnlock';
 import BulkRunner from './components/BulkRunner';
+import MultiSendBar from './components/MultiSendBar';
 import SftpBrowser from './components/SftpBrowser';
 import DeviceMapper from './components/DeviceMapper';
 
@@ -174,6 +175,7 @@ function App() {
   const toggleAiAssistant = useSessionStore((s) => s.toggleAiAssistant);
   const toggleConfigEditor = useSessionStore((s) => s.toggleConfigEditor);
   const broadcastMode = useSessionStore((s) => s.broadcastMode);
+  const multiSendTargets = useSessionStore((s) => s.multiSendTargets);
   const toggleBroadcast = useSessionStore((s) => s.toggleBroadcast);
   const splitView = useSessionStore((s) => s.splitView);
   const splitPanes = useSessionStore((s) => s.splitPanes);
@@ -396,8 +398,6 @@ function App() {
     return () => window.removeEventListener('beforeunload', preventSessionReload);
   }, []);
 
-  const [broadcastInput, setBroadcastInput] = useState('');
-
   // Split-view column widths (fractions summing to 1, one per pane). Dragging
   // the divider between pane i and i+1 trades width between just those two.
   const [paneRatios, setPaneRatios] = useState<number[]>([1]);
@@ -429,9 +429,6 @@ function App() {
     window.addEventListener('mousemove', move);
     window.addEventListener('mouseup', up);
   };
-  // Multi-send targeting: send to 'all' connected sessions, or a chosen 'selected' subset.
-  const [targetMode, setTargetMode] = useState<'all' | 'selected'>('all');
-  const [selectedTargets, setSelectedTargets] = useState<Set<string>>(new Set());
 
   // Detect macOS desktop build so the title bar can clear the native traffic
   // lights (window uses an overlay title bar). In the browser dev preview there
@@ -442,29 +439,6 @@ function App() {
     typeof window !== 'undefined' &&
     '__TAURI_IPC__' in window;
 
-  // Multi-send: run a command on several sessions at once — all connected, or a
-  // selected subset.
-  const sendBroadcast = useCallback(() => {
-    const cmd = broadcastInput;
-    if (!cmd.trim()) return;
-    const connected = sessions.filter((s) => s.connected);
-    const targets =
-      targetMode === 'all' ? connected : connected.filter((s) => selectedTargets.has(s.sessionId));
-    if (targets.length === 0) {
-      notify.warning(
-        'Nothing to send',
-        targetMode === 'selected'
-          ? 'No target sessions are selected (or none are connected).'
-          : 'No sessions are currently connected.'
-      );
-      return;
-    }
-    targets.forEach((s) =>
-      invoke('send_data', { sessionId: s.sessionId, data: cmd + '\r' }).catch(() => {})
-    );
-    notify.success('Multi-send', `Sent to ${targets.length} session${targets.length > 1 ? 's' : ''}.`);
-    setBroadcastInput('');
-  }, [broadcastInput, sessions, targetMode, selectedTargets]);
 
   // Load saved sessions from backend on mount
   useEffect(() => {
@@ -1403,104 +1377,8 @@ function App() {
             onMapDevice={setMappingSessionId}
           />
 
-          {/* Multi-send bar — run one command on all connected sessions or a subset */}
-          {broadcastMode && (() => {
-            const connected = sessions.filter((s) => s.connected);
-            const isTarget = (id: string) => targetMode === 'all' || selectedTargets.has(id);
-            const targetCount =
-              targetMode === 'all' ? connected.length : connected.filter((s) => selectedTargets.has(s.sessionId)).length;
-            const toggleTarget = (id: string) =>
-              setSelectedTargets((prev) => {
-                const next = new Set(prev);
-                if (next.has(id)) next.delete(id);
-                else next.add(id);
-                return next;
-              });
-            // First switch to "Selected" starts from all-checked, so you deselect rather
-            // than build the list from nothing.
-            const switchMode = (m: 'all' | 'selected') => {
-              if (m === 'selected' && selectedTargets.size === 0) {
-                setSelectedTargets(new Set(connected.map((s) => s.sessionId)));
-              }
-              setTargetMode(m);
-            };
-            return (
-              <div className="flex flex-wrap items-center gap-2 px-3 py-1.5 bg-[var(--accent-2-soft)] border-b border-[var(--accent-2)]/40">
-                <Radio size={12} className="text-[var(--accent-2)] flex-shrink-0" />
-                <span className="text-[10px] text-[var(--accent-2)] uppercase font-semibold tracking-wide flex-shrink-0">
-                  Multi-send
-                </span>
-                {/* All / Selected toggle */}
-                <div className="flex items-center rounded-md overflow-hidden border border-[var(--border)] flex-shrink-0">
-                  {(['all', 'selected'] as const).map((m) => (
-                    <button
-                      key={m}
-                      onClick={() => switchMode(m)}
-                      className={`px-2 py-0.5 text-[10px] capitalize transition-colors ${
-                        targetMode === m
-                          ? 'bg-[var(--accent-2)] text-white'
-                          : 'text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]'
-                      }`}
-                    >
-                      {m}
-                    </button>
-                  ))}
-                </div>
-                {/* Target chips */}
-                {connected.length === 0 ? (
-                  <span className="text-[10px] text-[var(--text-muted)]">No connected sessions</span>
-                ) : (
-                  <div className="flex flex-wrap items-center gap-1">
-                    {connected.map((s) => {
-                      const on = isTarget(s.sessionId);
-                      const label = s.config.name || s.config.host || 'session';
-                      return (
-                        <button
-                          key={s.sessionId}
-                          onClick={() => targetMode === 'selected' && toggleTarget(s.sessionId)}
-                          disabled={targetMode === 'all'}
-                          title={
-                            targetMode === 'selected'
-                              ? on
-                                ? 'Click to exclude'
-                                : 'Click to include'
-                              : 'All connected sessions'
-                          }
-                          className={`px-1.5 py-0.5 rounded text-[10px] border transition-colors ${
-                            on
-                              ? 'bg-[var(--accent-2-soft)] border-[var(--accent-2)] text-[var(--accent-2)]'
-                              : 'bg-[var(--bg-primary)] border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--text-secondary)]'
-                          } ${targetMode === 'all' ? 'cursor-default' : 'cursor-pointer'}`}
-                        >
-                          {on ? '✓ ' : ''}
-                          {label}
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
-                <input
-                  value={broadcastInput}
-                  onChange={(e) => setBroadcastInput(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      e.preventDefault();
-                      sendBroadcast();
-                    }
-                  }}
-                  placeholder={`Command to send to ${targetCount} session${targetCount === 1 ? '' : 's'}…`}
-                  className="flex-1 min-w-[140px] h-7 px-2 bg-[var(--bg-primary)] border border-[var(--border)] rounded text-xs text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent-2)]"
-                />
-                <button
-                  onClick={sendBroadcast}
-                  disabled={targetCount === 0}
-                  className="px-2.5 py-1 text-xs bg-[var(--accent-2)] hover:brightness-110 disabled:opacity-40 text-white rounded transition-colors flex-shrink-0"
-                >
-                  Send to {targetCount}
-                </button>
-              </div>
-            );
-          })()}
+          {/* Multi-send bar — type once into the chosen sessions (see MultiSendBar) */}
+          {broadcastMode && <MultiSendBar />}
 
           {/* Terminal Container + Side Panels */}
           <div className="flex flex-1 overflow-hidden">
@@ -1631,7 +1509,17 @@ function App() {
                           }
                         : { position: 'absolute', inset: 0 };
                       return (
-                        <div key={s.sessionId} style={style}>
+                        <div
+                          key={s.sessionId}
+                          style={style}
+                          // Outline every terminal the multi-send bar will type
+                          // into, so a stray target is visible before Enter.
+                          className={
+                            broadcastMode && isMultiSendTarget(s, multiSendTargets)
+                              ? 'outline outline-2 -outline-offset-2 outline-[var(--accent-2)]'
+                              : undefined
+                          }
+                        >
                           <MemoTerminal
                             sessionId={s.sessionId}
                             deviceType={s.config.deviceType}
