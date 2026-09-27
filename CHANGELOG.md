@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Idle SSH tabs no longer drop to "Reconnecting…" every 5 minutes. The wedge
+  watchdog treated a silent prompt as a dead link (keepalive replies never
+  reach the terminal); it now sends an SSH-level ping first and only
+  reconnects when the ping goes unanswered, so busy devices (a long Junos
+  `commit`, `write memory`) are no longer cut off either. Its forced
+  disconnect is also time-bounded.
+- A first SSH connect is bounded (60s), so a device that never finishes the
+  login can't leave a tab stuck on "connecting" with no way to retry.
+- New sessions open at the terminal's real size instead of 80x24 (devices
+  paged every 24 lines and wrapped at 80 columns until the window was
+  resized) — SSH, telnet and local shells.
+- Several sessions at once: parked "waiting for vault unlock" connects are
+  queued instead of overwriting each other (which stranded tabs on
+  "connecting"); password prompts queue instead of swapping hosts mid-typing;
+  one tab's failed login no longer tears down another tab's successful one;
+  Quick Connect no longer shows "Connecting…" for the next session while a
+  slow one is still connecting.
+- SSH no longer sends a guaranteed-to-fail empty-password login before asking
+  for the password (each counted toward TACACS/RADIUS lockout).
+- Unreachable hosts, host-key mismatches, timeouts and telnet errors now show
+  the real error instead of opening the password dialog.
+- Copy: selecting text in a panel (AI chat, API responses) and pressing
+  Ctrl/Cmd+C copies it again instead of sending ^C to the device; clicking an
+  IP / MAC / interface no longer silently replaces the clipboard (smart links
+  now copy on Ctrl/Cmd+click); copy-on-select also works when the drag ends
+  outside the terminal.
+- Pop-out windows no longer freeze the app on Windows.
+- Serial writes no longer block a runtime worker until every byte has left the
+  port (pastes at 9600 baud stalled echo and other sessions).
+- The "error" / "warning" search chips work (they used an invalid regex); the
+  SFTP browser follows the active session; the AI assistant targets the active
+  device instead of silently falling back to another one; the REC indicator
+  can't show the previous tab's state.
+
 ## [1.4.2] - 2026-08-26
 
 ### Added
