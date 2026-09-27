@@ -206,6 +206,12 @@ pub struct ConnectionConfigRequest {
     /// dropped by serde otherwise). `alias` keeps the snake_case form accepted.
     #[serde(default, rename = "keyPath", alias = "key_path")]
     pub key_path: Option<String>,
+    /// Shared login assignment (saved hosts only; `connect` never reads it —
+    /// the frontend resolves the login to a password before connecting).
+    #[serde(default)]
+    pub login_profile_id: Option<String>,
+    #[serde(default)]
+    pub jump_login_profile_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1119,6 +1125,8 @@ async fn save_session(
         jump_port: config.jump_port,
         jump_username: config.jump_username,
         key_path: config.key_path,
+        login_profile_id: config.login_profile_id.filter(|l| !l.is_empty()),
+        jump_login_profile_id: config.jump_login_profile_id.filter(|l| !l.is_empty()),
     };
 
     let mut store = state.session_store.lock().await;
@@ -1160,16 +1168,30 @@ async fn set_session_tags(
     store.set_tags(&id, tags).map_err(|e| e.to_string())
 }
 
+/// `login_profile_id`: omitted = unchanged, "" = no default login.
 #[tauri::command]
 async fn update_folder(
     id: String,
     name: Option<String>,
     expanded: Option<bool>,
+    login_profile_id: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let mut store = state.session_store.lock().await;
     store
-        .update_folder(&id, name.as_deref(), expanded)
+        .update_folder(&id, name.as_deref(), expanded, login_profile_id.as_deref())
+        .map_err(|e| e.to_string())
+}
+
+/// A shared login was deleted: drop it from every folder and saved host.
+#[tauri::command]
+async fn clear_login_profile(
+    profile_id: String,
+    state: State<'_, AppState>,
+) -> Result<usize, String> {
+    let mut store = state.session_store.lock().await;
+    store
+        .clear_login_profile(&profile_id)
         .map_err(|e| e.to_string())
 }
 
@@ -2624,6 +2646,7 @@ fn main() {
             rename_session,
             set_session_tags,
             update_folder,
+            clear_login_profile,
             delete_folder,
             create_folder,
             move_session,

@@ -2,11 +2,15 @@ import { describe, it, expect } from 'vitest';
 import {
   buildConnectPayload,
   isAuthFailure,
+  jumpCredentialKey,
   needsPasswordPrompt,
-  resolveSshPassword,
+  resolveJumpLogin,
+  resolveSshLogin,
   sshCredentialKey,
+  VaultCredentialSource,
 } from './connect';
-import { ConnectionConfig } from '../types';
+import { loginSecretKey, PER_HOST_PASSWORD } from './logins';
+import { ConnectionConfig, LoginProfile } from '../types';
 
 const BEHAVIOR = { keepAliveInterval: 30, autoReconnect: true };
 
@@ -181,28 +185,230 @@ describe('buildConnectPayload', () => {
   });
 });
 
-describe('resolveSshPassword', () => {
+/** An in-memory vault: `entries` by key, plus lock state. Counts reads. */
+function fakeVault(
+  entries: Record<string, string>,
+  state: { unlocked?: boolean; initialized?: boolean } = {},
+) {
+  const reads: string[] = [];
+  const vault: VaultCredentialSource & { reads: string[]; unlocked: boolean } = {
+    reads,
+    unlocked: state.unlocked ?? true,
+    isUnlocked: async () => vault.unlocked,
+    isInitialized: async () => state.initialized ?? true,
+    retrieve: async (key: string) => {
+      reads.push(key);
+      return entries[key] ?? null;
+    },
+  };
+  return vault;
+}
+
+const TACACS: LoginProfile = { id: 'login-tacacs', name: 'TACACS admin', username: 'jdoe' };
+const LAB: LoginProfile = { id: 'login-lab', name: 'Lab', username: 'labadmin' };
+const PROFILES = [TACACS, LAB];
+
+describe('resolveSshLogin', () => {
   it('rechecks the backend after unlock and resumes with the saved password', async () => {
-    let unlocked = false;
-    let retrieveCalls = 0;
-    const vault = {
-      isUnlocked: async () => unlocked,
-      isInitialized: async () => true,
-      retrieve: async (key: string) => {
-        retrieveCalls += 1;
-        expect(key).toBe(sshCredentialKey(baseConfig));
-        return 'saved-password';
-      },
-    };
+    const vault = fakeVault({ [sshCredentialKey(baseConfig)]: 'saved-password' }, { unlocked: false });
+    const ctx = { profiles: [] };
 
-    const locked = await resolveSshPassword({ ...baseConfig, authType: 'password' }, vault);
-    expect(locked).toEqual({ password: undefined, requiresVaultUnlock: true });
-    expect(retrieveCalls).toBe(0);
+    const locked = await resolveSshLogin(baseConfig, ctx, vault);
+    expect(locked.requiresVaultUnlock).toBe(true);
+    expect(locked.password).toBeUndefined();
+    expect(vault.reads).toEqual([]);
 
-    unlocked = true;
-    const resumed = await resolveSshPassword({ ...baseConfig, authType: 'password' }, vault);
-    expect(resumed).toEqual({ password: 'saved-password', requiresVaultUnlock: false });
-    expect(retrieveCalls).toBe(1);
+    vault.unlocked = true;
+    const resumed = await resolveSshLogin(baseConfig, ctx, vault);
+    expect(resumed).toMatchObject({
+      password: 'saved-password',
+      username: 'admin',
+      source: 'host',
+      requiresVaultUnlock: false,
+    });
+    expect(vault.reads).toEqual([sshCredentialKey(baseConfig)]);
+  });
+
+  it('uses the folder default login, filling in a blank username', async () => {
+    const vault = fakeVault({ [loginSecretKey(TACACS.id)]: 'rotated-pw' });
+    const host = { ...baseConfig, username: '' };
+    const r = await resolveSshLogin(host, { profiles: PROFILES, folderLoginProfileId: TACACS.id }, vault);
+    expect(r).toMatchObject({
+      password: 'rotated-pw',
+      username: 'jdoe',
+      login: TACACS,
+      source: 'login',
+      requiresVaultUnlock: false,
+    });
+  });
+
+  it("keeps the host's own username over the login's", async () => {
+    const vault = fakeVault({ [loginSecretKey(TACACS.id)]: 'rotated-pw' });
+    const r = await resolveSshLogin(baseConfig, { profiles: PROFILES, folderLoginProfileId: TACACS.id }, vault);
+    expect(r.username).toBe('admin');
+    expect(r.password).toBe('rotated-pw');
+  });
+
+  it("prefers the host's own login over its folder's", async () => {
+    const vault = fakeVault({
+      [loginSecretKey(TACACS.id)]: 'tacacs-pw',
+      [loginSecretKey(LAB.id)]: 'lab-pw',
+    });
+    const r = await resolveSshLogin(
+      { ...baseConfig, username: undefined, loginProfileId: LAB.id },
+      { profiles: PROFILES, folderLoginProfileId: TACACS.id },
+      vault,
+    );
+    expect(r).toMatchObject({ password: 'lab-pw', username: 'labadmin', login: LAB });
+  });
+
+  it('an inline password beats every saved one', async () => {
+    const vault = fakeVault({ [loginSecretKey(TACACS.id)]: 'tacacs-pw' }, { unlocked: false });
+    const r = await resolveSshLogin(
+      { ...baseConfig, password: 'typed' },
+      { profiles: PROFILES, folderLoginProfileId: TACACS.id },
+      vault,
+    );
+    expect(r).toMatchObject({ password: 'typed', source: 'inline', requiresVaultUnlock: false });
+    expect(vault.reads).toEqual([]);
+  });
+
+  it('"per-host password" ignores the folder login and reads the host key', async () => {
+    const vault = fakeVault({
+      [loginSecretKey(TACACS.id)]: 'tacacs-pw',
+      [sshCredentialKey(baseConfig)]: 'own-pw',
+    });
+    const r = await resolveSshLogin(
+      { ...baseConfig, loginProfileId: PER_HOST_PASSWORD },
+      { profiles: PROFILES, folderLoginProfileId: TACACS.id },
+      vault,
+    );
+    expect(r).toMatchObject({ password: 'own-pw', source: 'host', login: undefined });
+    expect(vault.reads).toEqual([sshCredentialKey(baseConfig)]);
+  });
+
+  it("falls back to the per-host password when the login has none saved — never to another login's", async () => {
+    const vault = fakeVault({
+      [loginSecretKey(TACACS.id)]: 'tacacs-pw',
+      [sshCredentialKey({ ...baseConfig, username: 'labadmin' })]: 'own-pw',
+    });
+    const r = await resolveSshLogin(
+      { ...baseConfig, username: '', loginProfileId: LAB.id },
+      { profiles: PROFILES, folderLoginProfileId: TACACS.id },
+      vault,
+    );
+    // Keyed by the username actually sent, and still reports the login so
+    // the dialog can offer to save the password to it.
+    expect(r).toMatchObject({ password: 'own-pw', username: 'labadmin', login: LAB, source: 'host' });
+    expect(vault.reads).not.toContain(loginSecretKey(TACACS.id));
+  });
+
+  it('reports the login even when nothing is saved, so the dialog can offer to save it', async () => {
+    const r = await resolveSshLogin(
+      { ...baseConfig, username: '' },
+      { profiles: PROFILES, folderLoginProfileId: TACACS.id },
+      fakeVault({}),
+    );
+    expect(r).toMatchObject({ password: undefined, username: 'jdoe', login: TACACS, source: undefined });
+  });
+
+  it('a locked vault with a login asks to unlock and still names the login', async () => {
+    const r = await resolveSshLogin(
+      { ...baseConfig, username: '' },
+      { profiles: PROFILES, folderLoginProfileId: TACACS.id },
+      fakeVault({}, { unlocked: false }),
+    );
+    expect(r).toMatchObject({ requiresVaultUnlock: true, username: 'jdoe', login: TACACS });
+    // No vault yet at all: nothing to unlock, just ask for the password.
+    const fresh = await resolveSshLogin(
+      baseConfig,
+      { profiles: PROFILES, folderLoginProfileId: TACACS.id },
+      fakeVault({}, { unlocked: false, initialized: false }),
+    );
+    expect(fresh.requiresVaultUnlock).toBe(false);
+  });
+
+  it('treats a deleted login as unset (falls back to the folder)', async () => {
+    const vault = fakeVault({ [loginSecretKey(TACACS.id)]: 'tacacs-pw' });
+    const r = await resolveSshLogin(
+      { ...baseConfig, loginProfileId: 'login-deleted' },
+      { profiles: PROFILES, folderLoginProfileId: TACACS.id },
+      vault,
+    );
+    expect(r.login).toBe(TACACS);
+  });
+
+  it('leaves key, agent and non-SSH logins alone', async () => {
+    const vault = fakeVault({ [loginSecretKey(TACACS.id)]: 'tacacs-pw' });
+    const ctx = { profiles: PROFILES, folderLoginProfileId: TACACS.id };
+    for (const cfg of [
+      { ...baseConfig, username: '', authType: 'key' as const },
+      { ...baseConfig, username: '', authType: 'agent' as const },
+      { ...baseConfig, username: '', protocol: 'telnet' as const },
+    ]) {
+      const r = await resolveSshLogin(cfg, ctx, vault);
+      expect(r).toEqual({ password: undefined, username: '', requiresVaultUnlock: false });
+    }
+    expect(vault.reads).toEqual([]);
+  });
+});
+
+describe('resolveJumpLogin', () => {
+  const viaBastion: ConnectionConfig = {
+    ...baseConfig,
+    jumpHost: 'bastion.corp',
+    jumpPort: 22,
+    jumpUsername: 'ops',
+  };
+
+  it('uses a shared login for the bastion, filling in a blank jump user', async () => {
+    const vault = fakeVault({ [loginSecretKey(TACACS.id)]: 'tacacs-pw' });
+    const r = await resolveJumpLogin(
+      { ...viaBastion, jumpUsername: '', jumpLoginProfileId: TACACS.id },
+      PROFILES,
+      vault,
+    );
+    expect(r).toMatchObject({ password: 'tacacs-pw', username: 'jdoe', login: TACACS, requiresVaultUnlock: false });
+  });
+
+  it("reads the jump host's own saved password when set to per-host", async () => {
+    const vault = fakeVault({ [jumpCredentialKey(viaBastion)]: 'bastion-pw' });
+    const r = await resolveJumpLogin({ ...viaBastion, jumpLoginProfileId: PER_HOST_PASSWORD }, PROFILES, vault);
+    expect(r).toMatchObject({ password: 'bastion-pw', username: 'ops', requiresVaultUnlock: false });
+    expect(jumpCredentialKey(viaBastion)).toBe('cred:bastion.corp:22:ops');
+  });
+
+  it('a typed jump password wins; with no saved one the vault is never touched', async () => {
+    const vault = fakeVault({}, { unlocked: false });
+    const typed = await resolveJumpLogin(
+      { ...viaBastion, jumpPassword: 'typed', jumpLoginProfileId: TACACS.id },
+      PROFILES,
+      vault,
+    );
+    expect(typed).toMatchObject({ password: 'typed', requiresVaultUnlock: false });
+    // Key / agent bastion (nothing chosen): no unlock prompt, no password.
+    const keyOnly = await resolveJumpLogin(viaBastion, PROFILES, vault);
+    expect(keyOnly).toEqual({ username: 'ops', requiresVaultUnlock: false });
+    expect(vault.reads).toEqual([]);
+  });
+
+  it('asks to unlock the vault when the bastion password is saved there', async () => {
+    const vault = fakeVault({}, { unlocked: false });
+    for (const choice of [PER_HOST_PASSWORD, TACACS.id]) {
+      const r = await resolveJumpLogin({ ...viaBastion, jumpLoginProfileId: choice }, PROFILES, vault);
+      expect(r.requiresVaultUnlock).toBe(true);
+    }
+  });
+
+  it('does nothing without a jump host', async () => {
+    const r = await resolveJumpLogin({ ...baseConfig, jumpLoginProfileId: TACACS.id }, PROFILES, fakeVault({}));
+    expect(r).toEqual({ password: undefined, username: undefined, requiresVaultUnlock: false });
+  });
+
+  it("keys a jump host's password by the device user when the jump user is blank", () => {
+    expect(jumpCredentialKey({ jumpHost: 'b', jumpPort: undefined, jumpUsername: ' ', username: 'admin' })).toBe(
+      'cred:b:22:admin',
+    );
   });
 });
 
@@ -220,6 +426,16 @@ describe('isAuthFailure', () => {
       "Could not read SSH private key file '/tmp/id': No such file or directory",
     ]) {
       expect(isAuthFailure(err), err).toBe(true);
+    }
+  });
+
+  it("doesn't blame the device password for a refused jump host", () => {
+    for (const err of [
+      'Auth Error: Jump host authentication failed (tried password, key, and agent)',
+      'SSH Error: Jump host auth failed: Disconnected',
+      "Auth Error: The jump host asked for a second login step (MFA / one-time code). Jump hosts that need MFA aren't supported yet",
+    ]) {
+      expect(isAuthFailure(err), err).toBe(false);
     }
   });
 

@@ -16,7 +16,7 @@ import {
   RefreshCw,
 } from 'lucide-react';
 
-import { CONNECTION_FIELDS, useSessionStore } from './store/sessionStore';
+import { CONNECTION_FIELDS, useSessionStore, PromptLogin } from './store/sessionStore';
 import { useSettingsStore } from './store/settingsStore';
 import { useDialogStore } from './store/dialogStore';
 import { loadSecrets, persistSecrets } from './utils/secretVault';
@@ -33,9 +33,14 @@ import {
   type ConnectOutcome,
   isAuthFailure,
   needsPasswordPrompt,
-  resolveSshPassword,
+  resolveJumpLogin,
+  resolveSshLogin,
   sshCredentialKey,
+  VaultCredentialSource,
 } from './utils/connect';
+import { loginChoiceFor, loginSecretKey, PER_HOST_PASSWORD, savedHostOf } from './utils/logins';
+import { backendVault, flushDeferredVaultWrites, saveToVault } from './utils/vaultAccess';
+import { saveSessionPayload } from './utils/deviceProfiles';
 import { getTerminalActionAdapter } from './utils/terminalActions';
 import { isMultiSendTarget } from './utils/multiSend';
 import { openTerminalSearch, sendSearchCommand } from './utils/terminalSearch';
@@ -62,7 +67,7 @@ import TerminalTabs from './components/TerminalTabs';
 import Sidebar from './components/Sidebar';
 import StatusBar from './components/StatusBar';
 import QuickConnect from './components/QuickConnect';
-import SshAuthDialog, { AuthCredentials } from './components/SshAuthDialog';
+import SshAuthDialog, { AuthCredentials, AuthSaveChoice } from './components/SshAuthDialog';
 import SettingsPanel from './components/SettingsPanel';
 import SearchOverlay from './components/SearchOverlay';
 import ApiExplorer from './components/ApiExplorer';
@@ -146,6 +151,45 @@ function runStartupCommands(sessionId: string, startupCommands?: string) {
       setTimeout(() => invoke('send_data', { sessionId, data: c + '\r' }).catch(() => {}), i * 250)
     );
   }, 700);
+}
+
+// The vault as seen after "Skip" on the unlock prompt: nothing saved can be
+// read, and nothing asks to unlock again — connect as if there were no vault.
+const skippedVault: VaultCredentialSource = {
+  isUnlocked: async () => false,
+  isInitialized: async () => false,
+  retrieve: async () => null,
+};
+
+// After a login typed into the password dialog fails, what the next prompt
+// says about the host's shared login: its password was refused (typed for the
+// login) or the host's own password was (the user chose "just this host").
+function nextPromptLogin(
+  login: PromptLogin | undefined,
+  creds: AuthCredentials,
+  save: AuthSaveChoice
+): PromptLogin | undefined {
+  if (!login) return undefined;
+  const typedForLogin =
+    creds.authType === 'password' && (save === 'login' || login.reason === 'locked');
+  return { ...login, reason: typedForLogin ? 'rejected' : 'hostPassword' };
+}
+
+// Apply a change to a tab and write it back to the saved host it came from:
+// its sidebar item and sessions.json, under the SAVED host's id (a tab's own
+// id is its session id — see savedHostOf). Only the tab for an unsaved connect.
+function persistSavedHost(tab: Pick<ConnectionConfig, 'id' | 'savedId'>, patch: Partial<ConnectionConfig>) {
+  const st = useSessionStore.getState();
+  st.updateSessionConfig(tab.id, patch);
+  const saved = savedHostOf(st.folders, tab);
+  if (!saved) return;
+  const updated = { ...saved.host, ...patch };
+  // The sidebar item plus the host's other tabs (a live one keeps its
+  // connection fields — see updateSavedHost).
+  st.updateSavedHost(saved.host.id, patch);
+  invoke('save_session', { config: saveSessionPayload(updated), folderId: saved.folder.id }).catch((err) =>
+    notify.warning(`Could not update the saved host ${updated.name}`, String(err))
+  );
 }
 
 // Set by App to its reconnect handler, so the module-level send handlers below
@@ -234,18 +278,9 @@ function App() {
   const panelRowRef = useRef<HTMLDivElement>(null);
   useSidePanelFit(panelRowRef);
 
-  // Credential save deferred until the vault is unlocked.
-  const pendingCredSave = useRef<{ key: string; value: string } | null>(null);
   const connectingIdsRef = useRef<Set<string>>(new Set());
   const [workspaceLoaded, setWorkspaceLoaded] = useState(false);
   const [mappingSessionId, setMappingSessionId] = useState<string | null>(null);
-
-  const flushPendingCredSave = useCallback(() => {
-    const pending = pendingCredSave.current;
-    if (!pending) return;
-    pendingCredSave.current = null;
-    invoke('vault_store', { key: pending.key, value: pending.value }).catch(() => {});
-  }, []);
 
   // Connects parked waiting for the vault unlock prompt: kept in a ref so the
   // unlock completion can resume them (see handleConnect's locked-vault
@@ -269,10 +304,20 @@ function App() {
   const showAuthDialog = useSessionStore((s) => s.showAuthDialog);
 
   const promptForAuth = useCallback(
-    (config: ConnectionConfig, error?: string) => {
+    (config: ConnectionConfig, error?: string, login?: PromptLogin) => {
       // Shown inside the dialog with an attempt count — the error toast sits
       // behind the modal, so a wrong password used to look like nothing happened.
-      if (error) useSessionStore.getState().recordAuthError(config.id, error);
+      // A refused shared login is named, since it affects every host using it.
+      if (error) {
+        useSessionStore
+          .getState()
+          .recordAuthError(
+            config.id,
+            error,
+            login?.reason === 'rejected' ? { id: login.id, name: login.name } : undefined
+          );
+      }
+      useSessionStore.getState().setAuthLogin(config.id, login ?? null);
       const st = useSessionStore.getState();
       if (st.showAuthDialog && st.pendingConnection && st.pendingConnection.id !== config.id) {
         if (!authQueueRef.current.some((c) => c.id === config.id)) {
@@ -506,13 +551,14 @@ function App() {
 
   // Load saved sessions from backend on mount
   useEffect(() => {
-    invoke<Array<{ id: string; name: string; items: Array<{ id: string; name: string; protocol: string; host?: string; port?: number; username?: string; authType?: string; keyPath?: string; deviceType: string; deviceProfileId?: string; serialPort?: string; baudRate?: number; dataBits?: number; parity?: string; stopBits?: number; startupCommands?: string; tags?: string[]; command?: string; args?: string[]; cwd?: string; jumpHost?: string; jumpPort?: number; jumpUsername?: string }>; expanded: boolean }>>('list_folders')
+    invoke<Array<{ id: string; name: string; items: Array<{ id: string; name: string; protocol: string; host?: string; port?: number; username?: string; authType?: string; keyPath?: string; deviceType: string; deviceProfileId?: string; serialPort?: string; baudRate?: number; dataBits?: number; parity?: string; stopBits?: number; startupCommands?: string; tags?: string[]; command?: string; args?: string[]; cwd?: string; jumpHost?: string; jumpPort?: number; jumpUsername?: string; loginProfileId?: string; jumpLoginProfileId?: string }>; expanded: boolean; loginProfileId?: string }>>('list_folders')
       .then((folders) => {
         setFolders(
           folders.map((f) => ({
             id: f.id,
             name: f.name,
             expanded: f.expanded,
+            loginProfileId: f.loginProfileId,
             items: f.items.map((s) => ({
               id: s.id,
               name: s.name,
@@ -539,6 +585,9 @@ function App() {
               jumpHost: s.jumpHost,
               jumpPort: s.jumpPort,
               jumpUsername: s.jumpUsername,
+              // Shared login assignments (ids only; passwords are in the vault).
+              loginProfileId: s.loginProfileId,
+              jumpLoginProfileId: s.jumpLoginProfileId,
             })),
           }))
         );
@@ -1004,7 +1053,10 @@ function App() {
   // vault prompt — report 'needs-login' instead, so one device waiting on a
   // login can't hold up a job running across many.
   const handleConnect = useCallback(
-    async (config: ConnectionConfig, opts: { interactive?: boolean } = {}): Promise<ConnectOutcome> => {
+    async (
+      config: ConnectionConfig,
+      opts: { interactive?: boolean; skipVault?: boolean } = {}
+    ): Promise<ConnectOutcome> => {
       const interactive = opts.interactive !== false;
       const sessionId = config.id || generateId();
       const fullConfig = { ...config, id: sessionId };
@@ -1053,14 +1105,35 @@ function App() {
       // value can still be stale immediately after startup or vault_unlock;
       // querying the cheap atomic status commands makes the resumed connect use
       // the saved password instead of reopening the SSH authentication dialog.
-      const { password, requiresVaultUnlock } = await resolveSshPassword(fullConfig, {
-        isUnlocked: () => invoke<boolean>('vault_is_unlocked').catch(() => false),
-        isInitialized: () => invoke<boolean>('vault_is_initialized').catch(() => false),
-        retrieve: (key) =>
-          invoke<string | null>('vault_retrieve', { key }).catch(() => null),
-      });
+      // A saved host's shared login comes from the host, else its folder —
+      // both read from the sidebar, which a stale tab copy can't override.
+      const profiles = useSettingsStore.getState().loginProfiles ?? [];
+      const { loginProfileId, folderLoginProfileId } = loginChoiceFor(
+        useSessionStore.getState().folders,
+        fullConfig
+      );
+      const vault = opts?.skipVault ? skippedVault : backendVault;
+      const [target, jump] = await Promise.all([
+        resolveSshLogin(
+          { ...fullConfig, loginProfileId },
+          { profiles, folderLoginProfileId },
+          vault
+        ),
+        resolveJumpLogin(fullConfig, profiles, vault),
+      ]);
+      const password = target.password;
+      // Who we log in as (a shared login fills in a blank username). Kept off
+      // the tab's own config, so a later change to the login still applies on
+      // Reconnect; secrets never go on it at all.
+      const connectConfig: ConnectionConfig = {
+        ...fullConfig,
+        username: target.username,
+        jumpUsername: jump.username,
+      };
+      const loginPrompt = (reason: PromptLogin['reason']): PromptLogin | undefined =>
+        target.login ? { id: target.login.id, name: target.login.name, reason } : undefined;
 
-      if (requiresVaultUnlock) {
+      if (target.requiresVaultUnlock || jump.requiresVaultUnlock) {
         connectingIdsRef.current.delete(sessionId);
         if (!interactive) {
           useSessionStore.getState().updateSessionConnection(sessionId, false, 'disconnected');
@@ -1089,7 +1162,7 @@ function App() {
         if (!interactive) {
           return { status: 'needs-login', reason: 'No saved password — log in to it once (its tab), then run again.' };
         }
-        promptForAuth(fullConfig);
+        promptForAuth(connectConfig, undefined, loginPrompt(opts.skipVault ? 'locked' : 'missing'));
         return { status: 'in-progress', sessionId };
       }
 
@@ -1112,10 +1185,20 @@ function App() {
             : { status: 'failed', reason: error };
         }
         if (authFailed) {
-          promptForAuth(fullConfig, error);
+          // Only a refused SAVED login password is that login's fault.
+          promptForAuth(
+            connectConfig,
+            error,
+            loginPrompt(target.source === 'login' ? 'rejected' : 'missing')
+          );
           return { status: 'needs-login', reason: error };
         }
-        notify.error(`Could not connect to ${fullConfig.name || fullConfig.host || fullConfig.protocol}`, error);
+        notify.error(
+          `Could not connect to ${fullConfig.name || fullConfig.host || fullConfig.protocol}`,
+          jump.login && /jump host/i.test(error)
+            ? `${error} (jump host login: ${jump.login.name})`
+            : error
+        );
         return { status: 'failed', reason: error };
       };
 
@@ -1123,7 +1206,7 @@ function App() {
         const settingsState = useSettingsStore.getState();
         const result = await invoke<ConnectInvokeResult>('connect', {
           config: buildConnectPayload(
-            fullConfig,
+            { ...connectConfig, jumpPassword: jump.password },
             { password },
             {
               keepAliveInterval: settingsState.keepAliveInterval,
@@ -1145,11 +1228,13 @@ function App() {
             return { status: 'failed', reason: 'The tab was closed.' };
           }
           useSessionStore.getState().updateSessionConnection(sessionId, true);
-          recordRecent(fullConfig);
+          // With the username actually used, so an ad-hoc recent reconnects
+          // as the same user even when a shared login supplied it.
+          recordRecent(connectConfig);
           const where =
             fullConfig.protocol === 'local'
               ? fullConfig.command || 'local shell'
-              : `${fullConfig.username ? fullConfig.username + '@' : ''}${fullConfig.host || fullConfig.serialPort || ''}`;
+              : `${connectConfig.username ? connectConfig.username + '@' : ''}${fullConfig.host || fullConfig.serialPort || ''}`;
           // Background tabs only; several landing together share one card.
           if (!isSessionOnScreen(sessionId)) {
             notify.success('Connected', fullConfig.name || where, { group: 'connected' });
@@ -1179,11 +1264,13 @@ function App() {
   // Vault unlocked: flush any deferred credential SAVE, then resume the parked
   // connect. handleConnect rechecks the backend's live status before retrieving
   // the saved password, so this is safe before React renders vaultUnlocked=true.
-  const resumeVaultConnect = useCallback(() => {
-    flushPendingCredSave();
+  const resumeVaultConnect = useCallback(async () => {
     const parked = pendingVaultConnectsRef.current;
     pendingVaultConnectsRef.current = [];
     syncVaultWaiting();
+    // Saves made while locked (a login's new password, say) land first, so
+    // the resumed connects read them rather than the old value.
+    await flushDeferredVaultWrites();
     for (const cfg of parked) {
       // handleConnect parked this AFTER registering the tab (status
       // 'connecting', id in connectingIdsRef, cleared when it parked) —
@@ -1191,7 +1278,7 @@ function App() {
       useSessionStore.getState().updateSessionConnection(cfg.id, false, 'disconnected');
       void handleConnect(cfg);
     }
-  }, [flushPendingCredSave, handleConnect, syncVaultWaiting]);
+  }, [handleConnect, syncVaultWaiting]);
 
   // Vault prompt dismissed: drop the parked connects and un-stick their tabs.
   const cancelVaultConnect = useCallback(() => {
@@ -1204,17 +1291,19 @@ function App() {
   }, [syncVaultWaiting]);
 
   // Vault prompt skipped: a locked vault can't say whether it even holds a
-  // password for these hosts, so ask for the device password instead of
-  // dropping the connects (the auth queue takes them one at a time).
+  // password for these hosts, so connect without it — password hosts get the
+  // password dialog (the auth queue takes them one at a time, naming their
+  // shared login), and a key-auth host parked only for its jump host's saved
+  // password goes ahead with the bastion's key / agent.
   const skipVaultConnect = useCallback(() => {
     const parked = pendingVaultConnectsRef.current;
     pendingVaultConnectsRef.current = [];
     syncVaultWaiting();
     for (const cfg of parked) {
       useSessionStore.getState().updateSessionConnection(cfg.id, false, 'disconnected');
-      promptForAuth(cfg);
+      void handleConnect(cfg, { skipVault: true });
     }
-  }, [promptForAuth, syncVaultWaiting]);
+  }, [handleConnect, syncVaultWaiting]);
 
   const handleDisconnect = useCallback(async (sessionId: string) => {
     const session = useSessionStore.getState().sessions.find((s) => s.sessionId === sessionId);
@@ -1373,10 +1462,12 @@ function App() {
   }, [handleReconnect]);
 
   const handleAuthenticate = useCallback(
-    async (creds: AuthCredentials, saveCredential: boolean) => {
+    async (creds: AuthCredentials, save: AuthSaveChoice) => {
       const prompted = useSessionStore.getState().pendingConnection;
       if (!prompted) return;
       if (connectingIdsRef.current.has(prompted.id)) return;
+      // The shared login this prompt was about (the next prompt replaces it).
+      const login = useSessionStore.getState().authLogins[prompted.id];
       // The dialog's Username wins: a login sent with a blank or wrong user
       // fails whatever the password. Keep it on the tab so Reconnect and the
       // next prompt reuse it; the vault key below follows it too.
@@ -1390,12 +1481,19 @@ function App() {
       try {
         useSessionStore.getState().updateSessionConnection(pending.id, false, 'connecting');
         const settingsState = useSettingsStore.getState();
+        // The bastion's password is looked up again rather than carried on
+        // the prompt, so no secret sits in the pending-connection state.
+        const jump = await resolveJumpLogin(
+          pending,
+          settingsState.loginProfiles ?? [],
+          backendVault
+        );
         const result = await invoke<ConnectInvokeResult>('connect', {
           // Same builder as the direct-connect path, so the auth retry keeps the
           // serial line settings (data_bits/parity/stop_bits) and local-shell
           // launch details (command/args/cwd) it used to drop.
           config: buildConnectPayload(
-            pending,
+            { ...pending, jumpUsername: jump.username, jumpPassword: jump.password },
             {
               password: creds.password,
               privateKey: creds.privateKey,
@@ -1436,22 +1534,42 @@ function App() {
           // types the password into the dialog). Previously they were skipped.
           runStartupCommands(pending.id, pending.startupCommands);
 
-          // Save the password to the vault if requested (passwords only).
-          if (saveCredential && creds.authType === 'password' && creds.password) {
-            const key = sshCredentialKey(pending);
-            if (vaultUnlocked) {
-              invoke('vault_store', { key, value: creds.password }).catch(() => {});
-            } else {
-              // Defer the store until the user unlocks the vault.
-              pendingCredSave.current = { key, value: creds.password };
-              setShowVaultUnlock(true);
+          // A username fixed in the dialog belongs to the saved host too,
+          // not just this tab — or the next connect fails the same way. Saved
+          // only now that it worked, so a mistyped name can't overwrite it.
+          const hostPatch: Partial<ConnectionConfig> = pending !== prompted ? { username } : {};
+
+          // Save the password if asked (passwords only; never before it worked).
+          const password = creds.authType === 'password' ? creds.password : undefined;
+          let vaultSave: Promise<'saved' | 'deferred'> | null = null;
+          if (password && save === 'login' && login) {
+            // Rotated shared password: one save updates every host using it.
+            vaultSave = saveToVault(loginSecretKey(login.id), password);
+            void vaultSave.then((r) => {
+              if (r === 'saved') notify.success('Login updated', `New password saved for "${login.name}".`);
+            });
+          } else if (password && save === 'host') {
+            vaultSave = saveToVault(sshCredentialKey(pending), password);
+            // A per-host password is only read when no shared login applies,
+            // so remembering one for this host takes it off the login — and
+            // keeps the username it just logged in with (maybe the login's).
+            if (login) {
+              hostPatch.loginProfileId = PER_HOST_PASSWORD;
+              hostPatch.username = username;
             }
           }
+          if (Object.keys(hostPatch).length > 0) persistSavedHost(pending, hostPatch);
+          void vaultSave?.then((r) => {
+            if (r === 'deferred') {
+              notify.info('Unlock the vault to save the password', 'It is kept until you unlock.');
+              setShowVaultUnlock(true);
+            }
+          });
         } else {
           useSessionStore.getState().updateSessionConnection(pending.id, false, 'disconnected');
           const error = result.error || 'The device rejected the supplied credentials.';
           notify.error('Authentication failed', error);
-          promptForAuth(pending, error);
+          promptForAuth(pending, error, nextPromptLogin(login, creds, save));
         }
       } catch (err) {
         console.error('Auth connection error:', err);
@@ -1463,7 +1581,7 @@ function App() {
         useSessionStore.getState().updateSessionConnection(pending.id, false, 'disconnected');
         if (isAuthFailure(error)) {
           notify.error('Authentication failed', error);
-          promptForAuth(pending, error);
+          promptForAuth(pending, error, nextPromptLogin(login, creds, save));
         } else {
           // Unreachable / timed out / host key: re-asking for the password
           // can't help — show why, and leave the tab's Reconnect button.
@@ -1473,7 +1591,7 @@ function App() {
         connectingIdsRef.current.delete(pending.id);
       }
     },
-    [promptForAuth, vaultUnlocked, setShowVaultUnlock, recordRecent]
+    [promptForAuth, setShowVaultUnlock, recordRecent]
   );
 
   return (

@@ -54,6 +54,15 @@ pub struct StoredSession {
     /// sessions.json never holds key material.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key_path: Option<String>,
+    /// Shared login (credential profile) id for this host. Unset = use the
+    /// folder's default login; "none" = this host keeps its own per-host
+    /// password. Only the id is stored — the password lives in the vault.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub login_profile_id: Option<String>,
+    /// Shared login id for the jump host, or "none" for a per-jump-host
+    /// password saved in the vault. Unset = key / ssh-agent only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jump_login_profile_id: Option<String>,
 }
 
 /// A folder containing sessions
@@ -64,6 +73,10 @@ pub struct SessionFolder {
     pub name: String,
     pub items: Vec<StoredSession>,
     pub expanded: bool,
+    /// Default shared login for every host in this folder that doesn't pick
+    /// its own. Serde default so sessions.json files from before logins load.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub login_profile_id: Option<String>,
 }
 
 /// Persistent session storage
@@ -105,6 +118,7 @@ impl SessionStore {
                     name: "Sessions".to_string(),
                     items: vec![],
                     expanded: true,
+                    login_profile_id: None,
                 }],
                 sessions: vec![],
             };
@@ -152,6 +166,7 @@ impl SessionStore {
             name,
             items: vec![],
             expanded: true,
+            login_profile_id: None,
         })?;
         Ok(id)
     }
@@ -263,12 +278,14 @@ impl SessionStore {
         self.save(&data)
     }
 
-    /// Update a folder's name and/or expanded state.
+    /// Update a folder's name, expanded state and/or default login. For the
+    /// login, `None` leaves it alone and `Some("")` clears it.
     pub fn update_folder(
         &mut self,
         id: &str,
         name: Option<&str>,
         expanded: Option<bool>,
+        login_profile_id: Option<&str>,
     ) -> Result<(), AppError> {
         let mut data = self.load()?;
         for folder in &mut data.folders {
@@ -279,9 +296,44 @@ impl SessionStore {
                 if let Some(e) = expanded {
                     folder.expanded = e;
                 }
+                if let Some(login) = login_profile_id {
+                    folder.login_profile_id = Some(login.to_string()).filter(|l| !l.is_empty());
+                }
             }
         }
         self.save(&data)
+    }
+
+    /// Forget a deleted shared login everywhere it was assigned (folder
+    /// defaults, host overrides, jump hosts) in one write, so those hosts fall
+    /// back to their folder / per-host password instead of pointing at nothing.
+    /// Returns how many references were cleared.
+    pub fn clear_login_profile(&mut self, profile_id: &str) -> Result<usize, AppError> {
+        fn clear(slot: &mut Option<String>, profile_id: &str) -> usize {
+            if slot.as_deref() == Some(profile_id) {
+                *slot = None;
+                1
+            } else {
+                0
+            }
+        }
+        let mut data = self.load()?;
+        let mut cleared = 0;
+        for folder in &mut data.folders {
+            cleared += clear(&mut folder.login_profile_id, profile_id);
+            for s in &mut folder.items {
+                cleared += clear(&mut s.login_profile_id, profile_id);
+                cleared += clear(&mut s.jump_login_profile_id, profile_id);
+            }
+        }
+        for s in &mut data.sessions {
+            cleared += clear(&mut s.login_profile_id, profile_id);
+            cleared += clear(&mut s.jump_login_profile_id, profile_id);
+        }
+        if cleared > 0 {
+            self.save(&data)?;
+        }
+        Ok(cleared)
     }
 
     /// Remove a folder and everything in it.
@@ -339,6 +391,8 @@ mod tests {
             jump_port: None,
             jump_username: None,
             key_path: None,
+            login_profile_id: None,
+            jump_login_profile_id: None,
         }
     }
 
@@ -406,7 +460,115 @@ mod tests {
         let data = store.load().unwrap();
         let names: Vec<&str> = data.folders.iter().map(|f| f.name.as_str()).collect();
         assert_eq!(names, ["Sessions", "Site A", "Site B", "Site C"]);
+        std::fs::remove_dir_all(dir).ok();
+    }
 
+    #[test]
+    fn sessions_json_from_before_logins_still_loads() {
+        let dir = temp_dir();
+        // A pre-logins file: no loginProfileId / jumpLoginProfileId anywhere.
+        std::fs::write(
+            dir.join("sessions.json"),
+            r#"{"version":"1.0","folders":[{"id":"default","name":"Sessions","expanded":true,
+               "items":[{"id":"s1","name":"core","protocol":"ssh","host":"10.0.0.1","port":22,
+               "username":"admin","authType":"password","deviceType":"aruba-cx",
+               "folderId":"default","tags":[],"notes":null,"serialPort":null,"baudRate":null,
+               "jumpHost":"bastion","jumpUsername":"ops"}]}]}"#,
+        )
+        .unwrap();
+        let mut store = SessionStore::new(dir.clone()).unwrap();
+        let data = store.load().unwrap();
+        assert_eq!(data.folders[0].login_profile_id, None);
+        let host = &data.folders[0].items[0];
+        assert_eq!(host.jump_host.as_deref(), Some("bastion"));
+        assert_eq!(host.login_profile_id, None);
+        assert_eq!(host.jump_login_profile_id, None);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn login_ids_persist_and_unset_ones_stay_out_of_the_file() {
+        let dir = temp_dir();
+        let mut store = SessionStore::new(dir.clone()).unwrap();
+        let mut host = mock_session("s1", "core");
+        host.login_profile_id = Some("login-tacacs".to_string());
+        host.jump_login_profile_id = Some("none".to_string());
+        store.add_session("default", host).unwrap();
+        store
+            .add_session("default", mock_session("s2", "edge"))
+            .unwrap();
+
+        // A fresh store reads the file, not the cache.
+        let data = SessionStore::new(dir.clone()).unwrap().load().unwrap();
+        let items = &data.folders[0].items;
+        assert_eq!(items[0].login_profile_id.as_deref(), Some("login-tacacs"));
+        assert_eq!(items[0].jump_login_profile_id.as_deref(), Some("none"));
+        assert_eq!(items[1].login_profile_id, None);
+
+        // Unset ids are omitted, so files stay readable by older builds.
+        let raw = std::fs::read_to_string(dir.join("sessions.json")).unwrap();
+        assert_eq!(raw.matches("\"loginProfileId\"").count(), 1);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn update_folder_sets_and_clears_the_default_login() {
+        let dir = temp_dir();
+        let mut store = SessionStore::new(dir.clone()).unwrap();
+        store
+            .update_folder("default", None, None, Some("login-tacacs"))
+            .unwrap();
+        assert_eq!(
+            store.load().unwrap().folders[0].login_profile_id.as_deref(),
+            Some("login-tacacs")
+        );
+
+        // Renaming / collapsing without a login leaves it alone...
+        store
+            .update_folder("default", Some("Core"), Some(false), None)
+            .unwrap();
+        let folder = &store.load().unwrap().folders[0];
+        assert_eq!(folder.name, "Core");
+        assert_eq!(folder.login_profile_id.as_deref(), Some("login-tacacs"));
+
+        // ...and an empty id clears it.
+        store
+            .update_folder("default", None, None, Some(""))
+            .unwrap();
+        assert_eq!(store.load().unwrap().folders[0].login_profile_id, None);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn clear_login_profile_forgets_every_reference_to_it() {
+        let dir = temp_dir();
+        let mut store = SessionStore::new(dir.clone()).unwrap();
+        store
+            .update_folder("default", None, None, Some("login-a"))
+            .unwrap();
+        let mut uses_a = mock_session("s1", "core");
+        uses_a.login_profile_id = Some("login-a".to_string());
+        uses_a.jump_login_profile_id = Some("login-a".to_string());
+        let mut uses_b = mock_session("s2", "edge");
+        uses_b.login_profile_id = Some("login-b".to_string());
+        let mut per_host = mock_session("s3", "lab");
+        per_host.login_profile_id = Some("none".to_string());
+        for s in [uses_a, uses_b, per_host] {
+            store.add_session("default", s).unwrap();
+        }
+
+        assert_eq!(store.clear_login_profile("login-a").unwrap(), 3);
+        let data = SessionStore::new(dir.clone()).unwrap().load().unwrap();
+        let folder = &data.folders[0];
+        assert_eq!(folder.login_profile_id, None);
+        assert_eq!(folder.items[0].login_profile_id, None);
+        assert_eq!(folder.items[0].jump_login_profile_id, None);
+        // Other logins and explicit per-host choices are untouched.
+        assert_eq!(folder.items[1].login_profile_id.as_deref(), Some("login-b"));
+        assert_eq!(folder.items[2].login_profile_id.as_deref(), Some("none"));
+
+        // Nothing left to clear: no rewrite, zero reported.
+        assert_eq!(store.clear_login_profile("login-a").unwrap(), 0);
         std::fs::remove_dir_all(dir).ok();
     }
 
@@ -420,6 +582,7 @@ mod tests {
             name: "Folder 2".to_string(),
             items: vec![],
             expanded: true,
+            login_profile_id: None,
         };
         store.add_folder(f2).unwrap();
         

@@ -54,6 +54,9 @@ import { Intent, evaluateAll, summarize } from '../utils/intent';
 import { savedHostId } from '../utils/tabs';
 import { useResizablePanel } from '../hooks/useResizablePanel';
 import { useSidePanelWidth } from '../store/sidePanelStore';
+import { resolveSshLogin } from '../utils/connect';
+import { loginChoiceFor } from '../utils/logins';
+import { backendVault } from '../utils/vaultAccess';
 
 // ─── Anthropic API types (local) ───
 
@@ -275,19 +278,30 @@ interface BuiltinTool {
 }
 
 // Best-effort login to a device REST API using the SSH session's credentials
-// (inline password, else a saved vault credential). `loginCmd` is the platform
-// login command (api_login / aos8_login / aoss_login). Returns true on success.
+// (inline password, the host's shared login, else its saved vault password —
+// the same resolver the SSH connect uses). `loginCmd` is the platform login
+// command (api_login / aos8_login / aoss_login). Returns true on success.
 async function tryDeviceLogin(session: Session, loginCmd: string): Promise<boolean> {
   const host = session.config.host;
   if (!host) return false;
-  const username = session.config.username || 'admin';
-  let password = session.config.password;
-  if (!password) {
-    const key = `cred:${host}:${session.config.port ?? 22}:${username}`;
-    password = await invoke<string | null>('vault_retrieve', { key })
-      .then((v) => v ?? undefined)
-      .catch(() => undefined);
-  }
+  const { loginProfileId, folderLoginProfileId } = loginChoiceFor(
+    useSessionStore.getState().folders,
+    session.config
+  );
+  const resolved = await resolveSshLogin(
+    // REST logins are always username + password, even for a key-auth SSH session.
+    {
+      ...session.config,
+      protocol: 'ssh',
+      authType: 'password',
+      username: session.config.username || undefined,
+      loginProfileId,
+    },
+    { profiles: useSettingsStore.getState().loginProfiles ?? [], folderLoginProfileId },
+    backendVault
+  );
+  const username = resolved.username || 'admin';
+  const password = resolved.password;
   if (!password) return false;
   try {
     await invoke(loginCmd, {
