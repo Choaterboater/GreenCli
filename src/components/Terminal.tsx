@@ -14,11 +14,20 @@ import { askConfirm } from '../store/dialogStore';
 import { useTheme } from '../hooks/useTheme';
 import { DeviceType } from '../types';
 import { ArubaHighlighter, AnsiProcessor } from '../syntax';
-import { registerSearchAdapter, unregisterSearchAdapter, createSearchAdapter } from '../utils/terminalSearch';
+import {
+  registerSearchAdapter,
+  unregisterSearchAdapter,
+  createSearchAdapter,
+  openTerminalSearch,
+} from '../utils/terminalSearch';
 import { captureOnConnect } from '../utils/configArchive';
 import { copyText, readClipboardText } from '../utils/clipboard';
 import { registerTerminalActionAdapter, unregisterTerminalActionAdapter } from '../utils/terminalActions';
 import { countPasteLines, useTerminalToolsStore } from '../store/terminalToolsStore';
+import { isAppChord, shortcutLabel } from '../utils/shortcuts';
+import { bufferToText, scrollbackFileName } from '../utils/scrollback';
+import { isTauri, browserSave, tauriWriteText } from '../utils/fileSystem';
+import { save as saveDialog } from '@tauri-apps/api/dialog';
 import { appWindow } from '@tauri-apps/api/window';
 import 'xterm/css/xterm.css';
 
@@ -37,6 +46,15 @@ interface CtxMenuState {
   y: number;
   hasSelection: boolean;
 }
+
+type CtxAction =
+  | 'copy'
+  | 'paste'
+  | 'copyPaste'
+  | 'findSelection'
+  | 'selectAll'
+  | 'saveScrollback'
+  | 'clear';
 
 interface TerminalProps {
   sessionId: string;
@@ -71,7 +89,14 @@ const SEMANTIC_LINK_PATTERNS: Array<{ kind: string; regex: RegExp; capture?: num
 
 function sessionLabel(sessionId: string): string {
   const session = useSessionStore.getState().sessions.find((s) => s.sessionId === sessionId);
-  return session?.config.name || session?.config.host || session?.config.serialPort || 'Session';
+  if (session) return session.config.name || session.config.host || session.config.serialPort || 'Session';
+  // Pop-out windows have no session list; the main window hands the name
+  // over in localStorage (see popOutSession in App.tsx).
+  try {
+    return JSON.parse(localStorage.getItem(`popout-meta-${sessionId}`) || '{}').name || 'Session';
+  } catch {
+    return 'Session';
+  }
 }
 
 function semanticLinksForLine(term: XTerm, bufferLineNumber: number): ILink[] | undefined {
@@ -172,15 +197,10 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
   // keyboard selection is in progress.
   const selAnchorRef = useRef<number | null>(null);
   const selFocusRef = useRef<number | null>(null);
-  // Right-click context menu (Copy / Paste / Select All / Clear); null = closed.
+  // Right-click context menu (Copy / Paste / Find / Save / …); null = closed.
   const [ctxMenu, setCtxMenu] = useState<CtxMenuState | null>(null);
   // Menu actions bound to the live xterm instance by the init effect below.
-  const ctxActionsRef = useRef<{
-    copy: () => void;
-    paste: () => void;
-    selectAll: () => void;
-    clear: () => void;
-  } | null>(null);
+  const ctxActionsRef = useRef<Record<CtxAction, () => void> | null>(null);
 
   // Short audible blip, reusing the shared AudioContext.
   const beep = () => {
@@ -217,6 +237,7 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
   const cursorBlink = useSettingsStore((s) => s.cursorBlink);
   const scrollback = useSettingsStore((s) => s.scrollback);
   const rightClickBehavior = useSettingsStore((s) => s.rightClickBehavior);
+  const macOptionIsMeta = useSettingsStore((s) => s.macOptionIsMeta);
   const updateSessionConnection = useSessionStore((s) => s.updateSessionConnection);
 
   useEffect(() => {
@@ -244,7 +265,9 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
       scrollback,
       allowProposedApi: true,
       allowTransparency: false,
-      macOptionIsMeta: true,
+      // macOS: Option as Meta (Esc prefix) by default; off lets non-US
+      // layouts type | [ ] { } @ \ ~ with Option. Applied live below too.
+      macOptionIsMeta: useSettingsStore.getState().macOptionIsMeta,
       // When a TUI turns on mouse reporting (vim, tmux, htop, omp, claude…),
       // a plain drag goes to the app instead of selecting. Windows/Linux can
       // force a selection with Shift+drag, but on macOS xterm only allows
@@ -440,6 +463,18 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
     term.attachCustomKeyEventHandler((event) => {
       if (event.type !== 'keydown') return true;
 
+      // ── App chords ─────────────────────────────────────────────────────
+      // Tab switching (Ctrl+Tab, Ctrl+PgUp/PgDn, ⌘1–9 / Alt+1–9, ⌘⇧[ ]),
+      // the Windows/Linux Ctrl+Shift app shortcuts (Find, New connection,
+      // palette, close tab, panels) and F3 while Find is open belong to the
+      // app. Returning false sends nothing to the PTY — before, Ctrl+Tab
+      // reached the device as a Tab (a completion) and Ctrl+Shift+W as ^W —
+      // and the keydown bubbles on to App's window-level handler. Checked
+      // before the alternate-buffer bailout so it works inside TUIs too.
+      if (isAppChord(event, { searchOpen: useSessionStore.getState().showSearch })) {
+        return false;
+      }
+
       // ── Copy/paste chords ──────────────────────────────────────────────
       // Handled BEFORE the alternate-buffer bailout so copy/paste also works
       // inside full-screen TUIs (vim, htop, claude) — like every normal
@@ -581,7 +616,7 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
     // ── Right-click ──────────────────────────────────────────────────────
     // The webview's native menu is suppressed app-wide (main.tsx), so the
     // terminal provides its own, like a real terminal app. Behavior is a
-    // setting: 'menu' shows Copy/Paste/Select All/Clear, 'paste' pastes
+    // setting: 'menu' shows the context menu (Copy/Paste/Find/Save/…), 'paste' pastes
     // immediately (PuTTY), 'copyPaste' copies the selection if there is one
     // and pastes otherwise (Windows Terminal).
     const handleContextMenu = (e: MouseEvent) => {
@@ -632,15 +667,62 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
     };
     containerRef.current.addEventListener('mousedown', handleMiddleClickPaste);
 
+    // Save the whole scrollback (the normal buffer — a running TUI's
+    // alternate screen holds no history) to a text file the user picks.
+    const saveScrollback = async () => {
+      const text = bufferToText(term.buffer.normal);
+      if (!text) {
+        notify.info('Nothing to save', 'This terminal has no output yet.');
+        return;
+      }
+      const fileName = scrollbackFileName(sessionLabel(sessionId));
+      try {
+        if (!isTauri) {
+          browserSave(text, fileName);
+          return;
+        }
+        const path = await saveDialog({
+          title: 'Save scrollback',
+          defaultPath: fileName,
+          filters: [{ name: 'Text', extensions: ['txt', 'log'] }],
+        });
+        if (!path) return;
+        await tauriWriteText(path, text);
+        notify.success('Scrollback saved', path);
+      } catch (err) {
+        notify.error('Could not save scrollback', String(err));
+      }
+    };
+
     ctxActionsRef.current = {
       copy: () => {
         copySelection();
         term.focus();
       },
       paste: () => pasteFromClipboard(),
+      // Copy the selection AND type it at the prompt (re-run a command or
+      // reuse an address from the output) — through the paste guard, like
+      // any other paste.
+      copyPaste: () => {
+        const text = copySelection();
+        term.clearSelection();
+        if (text) guardedPaste(text);
+      },
+      // Search the first selected line as literal text.
+      findSelection: () => {
+        const needle = term
+          .getSelection()
+          .split(/\r?\n/)
+          .map((l) => l.trim())
+          .find(Boolean);
+        if (needle) openTerminalSearch(needle.slice(0, 200));
+      },
       selectAll: () => {
         term.selectAll();
         term.focus();
+      },
+      saveScrollback: () => {
+        void saveScrollback();
       },
       clear: () => {
         term.clear();
@@ -1166,6 +1248,7 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
     term.options.scrollback = scrollback;
     term.options.theme = terminalTheme;
     term.options.rightClickSelectsWord = rightClickBehavior === 'menu';
+    term.options.macOptionIsMeta = macOptionIsMeta;
 
     // Only fit() when actually visible. A hidden (display:none) background tab, or
     // the main-window copy of a popped-out session, has a zero-size box — but
@@ -1186,10 +1269,27 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
     scrollback,
     terminalTheme,
     rightClickBehavior,
+    macOptionIsMeta,
   ]);
 
+  // Esc closes the context menu. Capture phase on the window runs before
+  // xterm's own listener on its textarea, so the Esc never reaches the device
+  // (it used to go to the shell while the menu stayed open).
+  useEffect(() => {
+    if (!ctxMenu) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      e.stopPropagation();
+      setCtxMenu(null);
+      terminalRef.current?.focus();
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [ctxMenu]);
+
   const closeCtxMenu = () => setCtxMenu(null);
-  const runCtxAction = (action: 'copy' | 'paste' | 'selectAll' | 'clear') => {
+  const runCtxAction = (action: CtxAction) => {
     setCtxMenu(null);
     ctxActionsRef.current?.[action]();
   };
@@ -1219,10 +1319,11 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
             }}
           />
           <div
-            className="fixed z-50 min-w-[180px] py-1 rounded-md border border-[var(--border-strong)] bg-[var(--bg-secondary)] shadow-xl"
+            role="menu"
+            className="fixed z-50 min-w-[200px] py-1 rounded-md border border-[var(--border-strong)] bg-[var(--bg-secondary)] shadow-xl"
             style={{
-              left: Math.min(ctxMenu.x, Math.max(0, window.innerWidth - 190)),
-              top: Math.min(ctxMenu.y, Math.max(0, window.innerHeight - 150)),
+              left: Math.min(ctxMenu.x, Math.max(0, window.innerWidth - 210)),
+              top: Math.min(ctxMenu.y, Math.max(0, window.innerHeight - 250)),
             }}
           >
             <button
@@ -1231,17 +1332,34 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
               onClick={() => runCtxAction('copy')}
             >
               <span>Copy</span>
-              <span className={menuHintClass}>{isMac ? '⌘C' : 'Ctrl+Shift+C'}</span>
+              <span className={menuHintClass}>{shortcutLabel('copy')}</span>
             </button>
             <button className={menuItemClass} onClick={() => runCtxAction('paste')}>
               <span>Paste</span>
-              <span className={menuHintClass}>
-                {isMac ? '⌘V' : isWindows ? 'Ctrl+V' : 'Ctrl+Shift+V'}
-              </span>
+              <span className={menuHintClass}>{shortcutLabel('paste')}</span>
+            </button>
+            <button
+              className={menuItemClass}
+              disabled={!ctxMenu.hasSelection}
+              onClick={() => runCtxAction('copyPaste')}
+              title="Copy the selection and paste it at the prompt"
+            >
+              <span>Copy &amp; Paste</span>
+            </button>
+            <button
+              className={menuItemClass}
+              disabled={!ctxMenu.hasSelection}
+              onClick={() => runCtxAction('findSelection')}
+            >
+              <span>Find Selection</span>
             </button>
             <div className="my-1 border-t border-[var(--border-strong)]" />
             <button className={menuItemClass} onClick={() => runCtxAction('selectAll')}>
               <span>Select All</span>
+              <span className={menuHintClass}>{shortcutLabel('selectAll')}</span>
+            </button>
+            <button className={menuItemClass} onClick={() => runCtxAction('saveScrollback')}>
+              <span>Save Scrollback…</span>
             </button>
             <button className={menuItemClass} onClick={() => runCtxAction('clear')}>
               <span>Clear Buffer</span>

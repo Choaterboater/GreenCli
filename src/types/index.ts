@@ -122,6 +122,11 @@ export interface TerminalSettings {
   middleClickPaste: boolean;
   /** Right-click in the terminal: show a context menu, paste directly (PuTTY), or copy-selection-else-paste (Windows Terminal). */
   rightClickBehavior: 'menu' | 'paste' | 'copyPaste';
+  /** Ask before closing a tab whose session is still connected (tab X, Cmd+W / Ctrl+Shift+W, Close All). */
+  confirmCloseConnected: boolean;
+  /** macOS only: Option acts as Meta (Esc prefix — readline Option+B/F word jumps). Turn off
+   *  so Option types the layout's characters instead (| [ ] { } @ \ ~ on many non-US keyboards). */
+  macOptionIsMeta: boolean;
   smartTerminalLinks: boolean;
   terminalActivityNotifications: boolean;
   terminalSilenceNotifications: boolean;
@@ -307,6 +312,8 @@ export const DEFAULT_SETTINGS: TerminalSettings = {
   copyOnSelect: false,
   middleClickPaste: false,
   rightClickBehavior: 'menu',
+  confirmCloseConnected: true,
+  macOptionIsMeta: true,
   smartTerminalLinks: true,
   terminalActivityNotifications: true,
   terminalSilenceNotifications: false,

@@ -16,6 +16,7 @@ import CentralSettings from './CentralSettings';
 import { generateId } from '../utils';
 import { BackupImportMode, createGreenCliBackup, GreenCliBackup, importGreenCliBackup } from '../utils/backup';
 import { sanitizeStandaloneImportedProfiles } from '../utils/deviceProfiles';
+import { isMac } from '../utils/shortcuts';
 
 // Curated best-practices the AI should apply, distilled from Juniper Validated
 // Designs (JVDs). Appended to the references field on request.
@@ -107,6 +108,7 @@ export default function SettingsPanel() {
     bell: useSettingsStore((s) => s.bell),
     captureOnConnect: useSettingsStore((s) => s.captureOnConnect),
     colorScheme: useSettingsStore((s) => s.colorScheme),
+    confirmCloseConnected: useSettingsStore((s) => s.confirmCloseConnected),
     copyOnSelect: useSettingsStore((s) => s.copyOnSelect),
     cursorBlink: useSettingsStore((s) => s.cursorBlink),
     cursorStyle: useSettingsStore((s) => s.cursorStyle),
@@ -118,6 +120,7 @@ export default function SettingsPanel() {
     intentWebhookUrl: useSettingsStore((s) => s.intentWebhookUrl),
     keepAliveInterval: useSettingsStore((s) => s.keepAliveInterval),
     localCliCommand: useSettingsStore((s) => s.localCliCommand),
+    macOptionIsMeta: useSettingsStore((s) => s.macOptionIsMeta),
     middleClickPaste: useSettingsStore((s) => s.middleClickPaste),
     mistBaseUrl: useSettingsStore((s) => s.mistBaseUrl),
     mistToken: useSettingsStore((s) => s.mistToken),
@@ -661,6 +664,22 @@ export default function SettingsPanel() {
                   value: settings.terminalSilenceNotifications,
                   onChange: (value: boolean) => settings.updateSettings({ terminalSilenceNotifications: value }),
                 },
+                {
+                  label: 'Confirm Before Closing a Connected Tab',
+                  value: settings.confirmCloseConnected,
+                  onChange: (value: boolean) => settings.updateSettings({ confirmCloseConnected: value }),
+                },
+                // macOS only: Option-as-Meta blocks typing | [ ] { } @ \ ~
+                // with Option on many non-US keyboards.
+                ...(isMac
+                  ? [
+                      {
+                        label: 'Option Key as Meta (turn off to type [ ] { } | @ with Option)',
+                        value: settings.macOptionIsMeta,
+                        onChange: (value: boolean) => settings.updateSettings({ macOptionIsMeta: value }),
+                      },
+                    ]
+                  : []),
               ].map(({ label, value, onChange }) => (
                 <label
                   key={label}

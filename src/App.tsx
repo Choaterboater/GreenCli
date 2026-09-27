@@ -36,6 +36,20 @@ import {
 } from './utils/connect';
 import { getTerminalActionAdapter } from './utils/terminalActions';
 import { isMultiSendTarget } from './utils/multiSend';
+import { openTerminalSearch, sendSearchCommand } from './utils/terminalSearch';
+import { closeSessions } from './utils/closeSessions';
+import { MAX_PANES } from './utils/splitPanes';
+import {
+  findStep,
+  isFindChord,
+  isPcNewConnectionChord,
+  isPcPaletteChord,
+  resolveTabSwitch,
+  shortcutLabel,
+  tabSwitchIntent,
+  withShortcut,
+} from './utils/shortcuts';
+import { appWindow } from '@tauri-apps/api/window';
 import Toaster from './components/Toaster';
 import DialogHost from './components/DialogHost';
 
@@ -180,7 +194,6 @@ function App() {
   const showAiAssistant = useSessionStore((s) => s.showAiAssistant);
   const showConfigEditor = useSessionStore((s) => s.showConfigEditor);
   const setShowSettings = useSessionStore((s) => s.setShowSettings);
-  const setShowSearch = useSessionStore((s) => s.setShowSearch);
   const addSession = useSessionStore((s) => s.addSession);
   const removeSession = useSessionStore((s) => s.removeSession);
   const setPendingConnection = useSessionStore((s) => s.setPendingConnection);
@@ -289,10 +302,13 @@ function App() {
     setTimeout(() => window.dispatchEvent(new Event('resize')), 60);
 
   // When the visible terminal changes (tab switch / split toggle), refit it — the
-  // one that was hidden had its fit skipped while it had zero size.
+  // one that was hidden had its fit skipped while it had zero size. Keyed on
+  // what is SHOWN: moving focus between split panes changes the active
+  // session but not the layout, so it doesn't refit every pane.
+  const visibleLayout = splitView ? splitPanes.join('|') : activeSessionId;
   useEffect(() => {
     refitTerminals();
-  }, [activeSessionId, splitView, splitPanes, poppedSessions]);
+  }, [visibleLayout, splitView, poppedSessions]);
 
   // Pop a session out into its own OS window. The main-window terminal stays
   // mounted but hidden (scrollback survives); only the pop-out fits the PTY, so
@@ -304,7 +320,13 @@ function App() {
     try {
       localStorage.setItem(
         `popout-meta-${sessionId}`,
-        JSON.stringify({ deviceType: s.config.deviceType, name: s.config.name }),
+        JSON.stringify({
+          deviceType: s.config.deviceType,
+          name: s.config.name || s.config.host || s.config.serialPort,
+          // Starting state for the pop-out's status header; live changes
+          // arrive via connection_status events.
+          status: s.connectionStatus ?? (s.connected ? 'connected' : 'disconnected'),
+        }),
       );
     } catch {
       /* meta is best-effort; pop-out falls back to generic highlighting */
@@ -638,30 +660,30 @@ function App() {
 
   const activeSession = sessions.find((s) => s.sessionId === activeSessionId);
 
-  // Split view panes: the active session is always pane 1; splitPanes holds
-  // panes 2..N. Popped-out sessions never render here (they live in their own
-  // window) and the active session can't double up in a side pane.
-  const paneSessions = [
-    ...(activeSession && !poppedSessions.includes(activeSession.sessionId)
-      ? [activeSession]
-      : []),
-    ...splitPanes
-      .map((id) => sessions.find((s) => s.sessionId === id))
-      .filter(
-        (s): s is NonNullable<typeof s> =>
-          !!s &&
-          s.sessionId !== activeSessionId &&
-          !poppedSessions.includes(s.sessionId),
-      ),
-  ];
+  // Split view panes: splitPanes lists every pane's session in column order,
+  // and the FOCUSED pane is the active session (sessionStore). Popped-out
+  // sessions never render here (they live in their own window).
+  const paneSessions = splitView
+    ? splitPanes
+        .map((id) => sessions.find((s) => s.sessionId === id))
+        .filter(
+          (s): s is NonNullable<typeof s> => !!s && !poppedSessions.includes(s.sessionId),
+        )
+    : [];
   const canSplit = splitView && paneSessions.length >= 2;
-  // Sessions that could still be added/selected into a pane.
-  const paneCandidates = sessions.filter(
-    (s) => !poppedSessions.includes(s.sessionId) && s.sessionId !== activeSessionId,
-  );
+  // Sessions that could be picked into a pane.
+  const paneCandidates = sessions.filter((s) => !poppedSessions.includes(s.sessionId));
   const unusedPaneCandidates = paneCandidates.filter(
     (s) => !splitPanes.includes(s.sessionId),
   );
+
+  // Clicking into a pane makes its session the active one — so Close, Find,
+  // snippets, logging and file drop all act on the pane you are working in,
+  // not always the first column. The columns themselves never move.
+  const focusPane = (sessionId: string) => {
+    const st = useSessionStore.getState();
+    if (st.splitView && st.activeSessionId !== sessionId) st.setActiveSession(sessionId);
+  };
 
   // Reset column widths to equal whenever the pane count changes.
   const paneCount = canSplit ? paneSessions.length : 1;
@@ -696,6 +718,7 @@ function App() {
         !!target &&
         (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable);
       const shellCtrl = e.ctrlKey && !e.metaKey && inEditable;
+      const inTerminal = !!target && !!target.closest?.('.xterm');
 
       // F1: Help & documentation
       if (e.key === 'F1') {
@@ -703,13 +726,16 @@ function App() {
         const s = useSessionStore.getState();
         s.setShowHelp(!s.showHelp);
       }
-      // Ctrl+K: Command Palette
-      if ((e.ctrlKey || e.metaKey) && e.key === 'k' && !shellCtrl) {
+      // Command palette: Cmd+K (macOS) / Ctrl+K outside the terminal, and
+      // Ctrl+Shift+P on Windows/Linux — which also works from inside a
+      // session (Terminal.tsx hands it to us instead of the device).
+      if (((e.ctrlKey || e.metaKey) && e.key === 'k' && !shellCtrl) || isPcPaletteChord(e)) {
         e.preventDefault();
         useSessionStore.getState().setShowCommandPalette(true);
       }
-      // Ctrl+T: Quick Connect
-      if ((e.ctrlKey || e.metaKey) && e.key === 't' && !shellCtrl) {
+      // Quick Connect: Cmd+T / Ctrl+T outside the terminal; Ctrl+Shift+T on
+      // Windows/Linux from anywhere.
+      if (((e.ctrlKey || e.metaKey) && e.key === 't' && !shellCtrl) || isPcNewConnectionChord(e)) {
         e.preventDefault();
         useSessionStore.getState().setShowQuickConnect(true);
       }
@@ -734,46 +760,49 @@ function App() {
         // convention) close the tab even from inside the terminal — like
         // normal terminal apps — but never while typing in some other field.
         const closeChord = e.metaKey || (e.ctrlKey && e.shiftKey);
-        const inTerminal = !!target && !!target.closest?.('.xterm');
         if (!closeChord && inEditable) return;
         if (closeChord && inEditable && !inTerminal) return;
         e.preventDefault();
+        // In split view the active session is the focused pane. A connected
+        // session asks first (closeSessions / confirmCloseConnected).
         if (!st.poppedSessions.includes(activeId)) {
-          invoke('disconnect', { sessionId: activeId }).catch(() => {});
-          st.removeSession(activeId);
+          void closeSessions([activeId]);
         }
       }
-      // Ctrl+1..9: jump to tab N. Popped-out sessions live in their own window —
-      // activating one here blanks the whole terminal area, so skip them.
-      if ((e.ctrlKey || e.metaKey) && /^[1-9]$/.test(e.key)) {
+      // Tab switching: Ctrl+Tab / Ctrl+Shift+Tab, Ctrl+PgDn / Ctrl+PgUp,
+      // ⌘⇧] / ⌘⇧[ (macOS), and tab N with ⌘1–9 (macOS) / Alt+1–9
+      // (Windows/Linux — Ctrl+digit stays with the device). Popped-out
+      // sessions live in their own window, so they are skipped.
+      const tabIntent = tabSwitchIntent(e);
+      if (tabIntent) {
         const st = useSessionStore.getState();
-        const idx = parseInt(e.key, 10) - 1;
-        if (st.sessions[idx] && !st.poppedSessions.includes(st.sessions[idx].sessionId)) {
-          e.preventDefault();
-          st.setActiveSession(st.sessions[idx].sessionId);
+        const next = resolveTabSwitch(
+          tabIntent,
+          st.sessions.map((s) => s.sessionId),
+          st.poppedSessions,
+          st.activeSessionId,
+        );
+        if (next || (tabIntent.kind !== 'jump' && st.sessions.length > 1)) e.preventDefault();
+        if (next) {
+          st.setActiveSession(next);
+          // Switched from inside a terminal: take the keyboard along, or
+          // typing keeps going to the pane / hidden tab we just left.
+          if (inTerminal) setTimeout(() => getTerminalActionAdapter(next)?.focus(), 0);
         }
       }
-      // Ctrl+Tab: cycle to the next tab still living in this window (popped-out
-      // sessions render in their own window, so cycle past them).
-      const tabSessions = useSessionStore.getState().sessions;
-      if (e.ctrlKey && e.key === 'Tab' && tabSessions.length > 1) {
+      // Find: Cmd+F (macOS) / Ctrl+F outside the terminal, and Ctrl+Shift+F on
+      // Windows/Linux from anywhere. Pressed while Find is already open it
+      // puts the cursor back in the Find box with the query selected.
+      if (((e.ctrlKey || e.metaKey) && e.key === 'f' && !shellCtrl) || isFindChord(e)) {
         e.preventDefault();
-        const st = useSessionStore.getState();
-        const popped = st.poppedSessions;
-        const cur = tabSessions.findIndex((s) => s.sessionId === st.activeSessionId);
-        for (let step = 1; step <= tabSessions.length; step++) {
-          const next = tabSessions[(cur + step) % tabSessions.length];
-          if (popped.includes(next.sessionId)) continue;
-          if (next.sessionId !== st.activeSessionId) {
-            st.setActiveSession(next.sessionId);
-          }
-          break;
-        }
+        openTerminalSearch();
       }
-      // Ctrl+F: Search
-      if ((e.ctrlKey || e.metaKey) && e.key === 'f' && !shellCtrl) {
+      // Find next / previous while Find is open: F3 / Shift+F3, and Cmd+G /
+      // Cmd+Shift+G on macOS — from the Find box or the terminal.
+      const step = findStep(e);
+      if (step && useSessionStore.getState().showSearch) {
         e.preventDefault();
-        useSessionStore.getState().setShowSearch(true);
+        sendSearchCommand({ type: step });
       }
       // Ctrl+,: Settings
       if ((e.ctrlKey || e.metaKey) && e.key === ',') {
@@ -836,7 +865,20 @@ function App() {
     const restoreActiveTermFocus = (e: KeyboardEvent) => {
       const st = useSessionStore.getState();
       if (st.showSearch || st.showCommandPalette) return;
+      // Never pull focus out from under a modal: with a dialog button (or a
+      // non-input spot in Settings / Quick Connect / Help …) focused, the key
+      // went to the device behind the modal — Enter on "Cancel" reached the
+      // switch instead of cancelling.
+      if (
+        st.showSettings || st.showQuickConnect || st.showAuthDialog ||
+        st.showVaultUnlock || st.showHelp || st.showSftp || st.showBulkRunner ||
+        st.showTunnels || st.showIntent || st.showArchive ||
+        useDialogStore.getState().current != null
+      ) {
+        return;
+      }
       const target = e.target as HTMLElement | null;
+      if (target?.closest?.('[aria-modal="true"], [role="dialog"], .modal-backdrop')) return;
       if (
         target &&
         (target.tagName === 'INPUT' ||
@@ -1199,6 +1241,37 @@ function App() {
     [handleConnect, openLocalShell]
   );
 
+  // A pop-out window's Reconnect button (or Enter on its dropped session)
+  // asks this window to reconnect — the connect flow (vault, password
+  // prompt, startup commands) lives here. The session stays in its pop-out
+  // (setActiveSession ignores popped-out sessions). If the reconnect then
+  // needs the user — password dialog or vault unlock — bring this window
+  // forward, or the prompt would sit unseen behind the pop-out.
+  useEffect(() => {
+    const un = listen<string>('popout_reconnect', (e) => {
+      const sessionId = e.payload;
+      if (!sessionId) return;
+      handleReconnect(sessionId);
+      const needsUser = (s: ReturnType<typeof useSessionStore.getState>) =>
+        s.showAuthDialog || s.showVaultUnlock;
+      if (needsUser(useSessionStore.getState())) {
+        appWindow.setFocus().catch(() => {});
+        return;
+      }
+      const stop = useSessionStore.subscribe((s) => {
+        if (!needsUser(s)) return;
+        clearTimeout(timer);
+        stop();
+        appWindow.setFocus().catch(() => {});
+      });
+      // Only the reconnect just requested — stop watching after a minute.
+      const timer = setTimeout(stop, 60_000);
+    });
+    return () => {
+      un.then((f) => f());
+    };
+  }, [handleReconnect]);
+
   const handleAuthenticate = useCallback(
     async (creds: AuthCredentials, saveCredential: boolean) => {
       const prompted = useSessionStore.getState().pendingConnection;
@@ -1345,7 +1418,7 @@ function App() {
             <button
               onClick={() => useSessionStore.getState().toggleSidebar()}
               className="no-drag p-1.5 rounded-md hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
-              title="Show sidebar (Ctrl+B)"
+              title={withShortcut('Show sidebar', 'sidebar')}
             >
               <PanelLeft size={15} />
             </button>
@@ -1369,15 +1442,15 @@ function App() {
         {/* Center: panel segmented control */}
         <div className="flex items-center gap-2 no-drag">
           <div className="segmented">
-            <button data-active={showConfigEditor} onClick={toggleConfigEditor} title="Config Editor (Ctrl+Shift+E)">
+            <button data-active={showConfigEditor} onClick={toggleConfigEditor} title={withShortcut('Config Editor', 'editor')}>
               <FileCode size={13} style={showConfigEditor ? { color: 'var(--accent-2)' } : undefined} />
               <span>Editor</span>
             </button>
-            <button data-active={showApiExplorer} onClick={toggleApiExplorer} title="API Explorer (Ctrl+Shift+A)">
+            <button data-active={showApiExplorer} onClick={toggleApiExplorer} title={withShortcut('API Explorer', 'api')}>
               <Globe size={13} style={showApiExplorer ? { color: 'var(--accent-info)' } : undefined} />
               <span>API</span>
             </button>
-            <button data-active={showAiAssistant} onClick={toggleAiAssistant} title="AI Assistant (Ctrl+Shift+I)">
+            <button data-active={showAiAssistant} onClick={toggleAiAssistant} title={withShortcut('AI Assistant', 'ai')}>
               <Sparkles size={13} style={showAiAssistant ? { color: 'var(--vendor-mist)' } : undefined} />
               <span>AI</span>
             </button>
@@ -1389,30 +1462,30 @@ function App() {
           <button
             onClick={() => useSessionStore.getState().setShowQuickConnect(true)}
             className="btn-accent flex items-center gap-1.5 h-8 px-3 text-[12px]"
-            title="New connection (Ctrl+T)"
+            title={withShortcut('New connection', 'quickConnect')}
           >
             <Plug size={13} />
             <span>Connect</span>
           </button>
           <div className="w-px h-5 bg-[var(--border)] mx-1" />
           <button
-            onClick={() => setShowSearch(true)}
+            onClick={() => openTerminalSearch()}
             className="p-2 rounded-md text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] transition-colors"
-            title="Search (Ctrl+F)"
+            title={withShortcut('Find in terminal', 'find')}
           >
             <Search size={16} />
           </button>
           <button
             onClick={() => useSessionStore.getState().setShowCommandPalette(true)}
             className="p-2 rounded-md text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] transition-colors"
-            title="Command palette (Ctrl+K)"
+            title={withShortcut('Command palette', 'commandPalette')}
           >
             <Command size={16} />
           </button>
           <button
             onClick={() => setShowSettings(true)}
             className="p-2 rounded-md text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] transition-colors"
-            title="Settings (Ctrl+,)"
+            title={withShortcut('Settings', 'settings')}
           >
             <Settings size={16} />
           </button>
@@ -1455,57 +1528,73 @@ function App() {
                 {activeSession ? (
                   // Every session's terminal stays MOUNTED — we only show/hide it via
                   // CSS — so switching tabs preserves each terminal's screen + scrollback
-                  // (and avoids disposing an xterm mid-render). Active = left/full,
-                  // secondary = right half in split, the rest are display:none.
+                  // (and avoids disposing an xterm mid-render). Single view shows the
+                  // active one; split view shows each pane's session in its column.
+                  // The rest are display:none.
                   <div className="h-full w-full relative">
                     {canSplit && (
                       <>
-                        {/* Pane headers — pane 1 is the active session; panes
-                            2..N carry a session picker, a close button, and the
-                            last pane an add-pane button (max 4 columns). */}
+                        {/* Pane headers — every pane carries a session picker
+                            and a close button, the last one an add-pane button
+                            (max 4 columns). The focused pane (the active
+                            session) gets the accent bar. */}
                         {paneSessions.map((p, i) => {
                           const accent = vendorColor(p.config.deviceType);
+                          const focused = p.sessionId === activeSessionId;
                           return (
                             <div
                               key={`pane-h-${p.sessionId}`}
-                              className="absolute top-0 z-10 flex items-center gap-2 h-7 px-2.5 bg-[var(--bg-secondary)] border-b border-[var(--border)]"
+                              onMouseDown={(e) => {
+                                focusPane(p.sessionId);
+                                // Clicks on the header's bare area also hand the
+                                // keyboard to that pane's terminal.
+                                if (!(e.target as HTMLElement).closest('select, button')) {
+                                  e.preventDefault();
+                                  getTerminalActionAdapter(p.sessionId)?.focus();
+                                }
+                              }}
+                              className={`absolute top-0 z-10 flex items-center gap-2 h-7 px-2.5 border-b transition-colors ${
+                                focused
+                                  ? 'bg-[var(--bg-primary)] border-[var(--accent)]'
+                                  : 'bg-[var(--bg-secondary)] border-[var(--border)]'
+                              }`}
                               style={{
                                 left: `${paneOffset(i) * 100}%`,
                                 width: `${ratioAt(i) * 100}%`,
+                                boxShadow: focused ? 'inset 0 2px 0 var(--accent)' : undefined,
                               }}
                             >
                               <span
                                 className="vendor-dot flex-shrink-0"
                                 style={{ background: accent, color: accent }}
                               />
-                              {i === 0 ? (
-                                <span className="flex-1 min-w-0 text-[11px] font-medium text-[var(--text-primary)] truncate">
-                                  {p.config.name || p.config.host || 'Session'}
-                                </span>
-                              ) : (
-                                <select
-                                  value={p.sessionId}
-                                  onChange={(e) => {
-                                    setSplitPaneAt(i - 1, e.target.value);
-                                    refitTerminals();
-                                  }}
-                                  className="flex-1 min-w-0 text-[11px] bg-transparent border-0 text-[var(--text-primary)] focus:outline-none cursor-pointer"
-                                >
-                                  {paneCandidates
-                                    .filter(
-                                      (c) =>
-                                        c.sessionId === p.sessionId ||
-                                        !splitPanes.includes(c.sessionId),
-                                    )
-                                    .map((c) => (
-                                      <option key={c.sessionId} value={c.sessionId}>
-                                        {c.config.name || c.config.host || 'Session'}
-                                      </option>
-                                    ))}
-                                </select>
-                              )}
+                              <select
+                                value={p.sessionId}
+                                onChange={(e) => {
+                                  setSplitPaneAt(splitPanes.indexOf(p.sessionId), e.target.value);
+                                  refitTerminals();
+                                }}
+                                title={focused ? 'Focused pane — shortcuts and tools act on this session' : 'Session shown in this pane'}
+                                className={`flex-1 min-w-0 text-[11px] bg-transparent border-0 focus:outline-none cursor-pointer ${
+                                  focused
+                                    ? 'font-medium text-[var(--text-primary)]'
+                                    : 'text-[var(--text-secondary)]'
+                                }`}
+                              >
+                                {paneCandidates
+                                  .filter(
+                                    (c) =>
+                                      c.sessionId === p.sessionId ||
+                                      !splitPanes.includes(c.sessionId),
+                                  )
+                                  .map((c) => (
+                                    <option key={c.sessionId} value={c.sessionId}>
+                                      {c.config.name || c.config.host || 'Session'}
+                                    </option>
+                                  ))}
+                              </select>
                               {i === paneSessions.length - 1 &&
-                                paneSessions.length < 4 &&
+                                paneSessions.length < MAX_PANES &&
                                 unusedPaneCandidates.length > 0 && (
                                   <button
                                     onClick={addSplitPane}
@@ -1515,18 +1604,16 @@ function App() {
                                     <Plus size={12} />
                                   </button>
                                 )}
-                              {i > 0 && (
-                                <button
-                                  onClick={() => {
-                                    removeSplitPane(p.sessionId);
-                                    refitTerminals();
-                                  }}
-                                  className="p-0.5 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors flex-shrink-0"
-                                  title="Close pane"
-                                >
-                                  <X size={12} />
-                                </button>
-                              )}
+                              <button
+                                onClick={() => {
+                                  removeSplitPane(p.sessionId);
+                                  refitTerminals();
+                                }}
+                                className="p-0.5 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors flex-shrink-0"
+                                title="Close pane (the session stays open as a tab)"
+                              >
+                                <X size={12} />
+                              </button>
                             </div>
                           );
                         })}
@@ -1568,9 +1655,12 @@ function App() {
                           }
                         : { position: 'absolute', inset: 0 };
                       return (
+                        // Focus landing in a pane's terminal (click, or the
+                        // keyboard) makes that pane the focused one.
                         <div
                           key={s.sessionId}
                           style={style}
+                          onFocus={paneIdx >= 0 ? () => focusPane(s.sessionId) : undefined}
                           // Outline every terminal the multi-send bar will type
                           // into, so a stray target is visible before Enter.
                           className={
@@ -1723,12 +1813,13 @@ function App() {
                     {/* Shortcut hints */}
                     <div className="mt-8 flex flex-wrap items-center justify-center gap-x-5 gap-y-2 max-w-md text-[11px] text-[var(--text-muted)]">
                       {([
-                        ['Ctrl+T', 'Connect'],
-                        ['Ctrl+K', 'Commands'],
-                        ['Ctrl+F', 'Search'],
-                        ['Ctrl+Shift+E', 'Editor'],
-                        ['Ctrl+Shift+A', 'API'],
-                        ['Ctrl+Shift+I', 'AI'],
+                        [shortcutLabel('quickConnect'), 'Connect'],
+                        [shortcutLabel('commandPalette'), 'Commands'],
+                        [shortcutLabel('find'), 'Find'],
+                        [shortcutLabel('editor'), 'Editor'],
+                        [shortcutLabel('api'), 'API'],
+                        [shortcutLabel('ai'), 'AI'],
+                        [shortcutLabel('help'), 'Help'],
                       ] as [string, string][]).map(([k, label]) => (
                         <span key={k} className="flex items-center gap-1.5">
                           <kbd className="px-1.5 py-0.5 rounded bg-[var(--bg-tertiary)] border border-[var(--border)] text-[var(--text-secondary)] font-mono text-[10px]">

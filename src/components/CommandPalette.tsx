@@ -29,6 +29,9 @@ import {
 } from 'lucide-react';
 import { useSessionStore } from '../store/sessionStore';
 import { getTerminalActionAdapter } from '../utils/terminalActions';
+import { openTerminalSearch } from '../utils/terminalSearch';
+import { closeSessions } from '../utils/closeSessions';
+import { shortcutLabel } from '../utils/shortcuts';
 import { useSettingsStore } from '../store/settingsStore';
 import { useRecentStore, timeAgo, RecentConnection } from '../store/recentStore';
 import { ConnectionConfig } from '../types';
@@ -75,11 +78,11 @@ export default function CommandPalette({ onConnect, onLocalShell, onConnectRecen
 
   const actions: PaletteAction[] = useMemo(() => {
     const a: PaletteAction[] = [
-      { id: 'quick-connect', label: 'Quick Connect', hint: 'Ctrl+T', icon: <Plug size={14} />, run: () => useSessionStore.getState().setShowQuickConnect(true) },
+      { id: 'quick-connect', label: 'Quick Connect', hint: shortcutLabel('quickConnect'), icon: <Plug size={14} />, run: () => useSessionStore.getState().setShowQuickConnect(true) },
       { id: 'local-shell', label: 'New Local Shell', keywords: 'terminal cli claude kimi', icon: <TerminalSquare size={14} />, run: onLocalShell },
-      { id: 'toggle-editor', label: 'Toggle Config Editor', hint: 'Ctrl+Shift+E', icon: <FileCode size={14} />, run: () => useSessionStore.getState().toggleConfigEditor() },
-      { id: 'toggle-api', label: 'Toggle API Explorer', hint: 'Ctrl+Shift+A', icon: <Globe size={14} />, run: () => useSessionStore.getState().toggleApiExplorer() },
-      { id: 'toggle-ai', label: 'Toggle AI Assistant', hint: 'Ctrl+Shift+I', icon: <Sparkles size={14} />, run: () => useSessionStore.getState().toggleAiAssistant() },
+      { id: 'toggle-editor', label: 'Toggle Config Editor', hint: shortcutLabel('editor'), icon: <FileCode size={14} />, run: () => useSessionStore.getState().toggleConfigEditor() },
+      { id: 'toggle-api', label: 'Toggle API Explorer', hint: shortcutLabel('api'), icon: <Globe size={14} />, run: () => useSessionStore.getState().toggleApiExplorer() },
+      { id: 'toggle-ai', label: 'Toggle AI Assistant', hint: shortcutLabel('ai'), icon: <Sparkles size={14} />, run: () => useSessionStore.getState().toggleAiAssistant() },
       { id: 'toggle-broadcast', label: 'Toggle Multi-send', keywords: 'send all multiple sessions broadcast subset', icon: <Radio size={14} />, run: () => useSessionStore.getState().toggleBroadcast() },
       { id: 'bulk-runner', label: 'Bulk Command Runner', keywords: 'run all devices batch collect csv', icon: <Radio size={14} />, run: () => useSessionStore.getState().setShowBulkRunner(true) },
       { id: 'sftp', label: 'SFTP File Transfer', keywords: 'sftp upload download file transfer scp', icon: <HardDrive size={14} />, run: () => useSessionStore.getState().setShowSftp(true) },
@@ -126,12 +129,11 @@ export default function CommandPalette({ onConnect, onLocalShell, onConnectRecen
         keywords: 'close all tabs disconnect everything',
         icon: <X size={14} className="text-[#ff7b72]" />,
         run: () => {
-          sessions.forEach((s) => {
-            if (!poppedSessions.includes(s.sessionId)) {
-              invoke('disconnect', { sessionId: s.sessionId }).catch(() => {});
-              useSessionStore.getState().removeSession(s.sessionId);
-            }
-          });
+          // Popped-out sessions keep running in their own windows. One
+          // question covers every still-connected session (confirmCloseConnected).
+          void closeSessions(
+            sessions.filter((s) => !poppedSessions.includes(s.sessionId)).map((s) => s.sessionId),
+          );
         },
       },
       {
@@ -144,13 +146,13 @@ export default function CommandPalette({ onConnect, onLocalShell, onConnectRecen
           setTimeout(() => window.dispatchEvent(new Event('resize')), 60);
         },
       },
-      { id: 'toggle-sidebar', label: 'Toggle Sidebar', hint: 'Ctrl+B', icon: <PanelLeft size={14} />, run: () => useSessionStore.getState().toggleSidebar() },
+      { id: 'toggle-sidebar', label: 'Toggle Sidebar', hint: shortcutLabel('sidebar'), icon: <PanelLeft size={14} />, run: () => useSessionStore.getState().toggleSidebar() },
       // Zoom the terminal + config-editor font — same persisted setting as the
       // Ctrl+= / Ctrl+- / Ctrl+0 bindings (W2-11).
       {
         id: 'zoom-in',
         label: 'Increase font size (terminal + editor)',
-        hint: 'Ctrl+=',
+        hint: shortcutLabel('zoomIn'),
         keywords: 'zoom bigger larger font size',
         icon: <ZoomIn size={14} />,
         run: () =>
@@ -159,7 +161,7 @@ export default function CommandPalette({ onConnect, onLocalShell, onConnectRecen
       {
         id: 'zoom-out',
         label: 'Decrease font size (terminal + editor)',
-        hint: 'Ctrl+-',
+        hint: shortcutLabel('zoomOut'),
         keywords: 'zoom smaller font size',
         icon: <ZoomOut size={14} />,
         run: () => useSettingsStore.getState().setFontSize(Math.max(8, useSettingsStore.getState().fontSize - 1)),
@@ -167,14 +169,14 @@ export default function CommandPalette({ onConnect, onLocalShell, onConnectRecen
       {
         id: 'zoom-reset',
         label: 'Reset font size (terminal + editor)',
-        hint: 'Ctrl+0',
+        hint: shortcutLabel('zoomReset'),
         keywords: 'zoom reset default font size',
         icon: <RotateCcw size={14} />,
         run: () => useSettingsStore.getState().setFontSize(14),
       },
-      { id: 'search', label: 'Search in Terminal', hint: 'Ctrl+F', icon: <Search size={14} />, run: () => useSessionStore.getState().setShowSearch(true) },
-      { id: 'settings', label: 'Open Settings', hint: 'Ctrl+,', icon: <SettingsIcon size={14} />, run: () => useSessionStore.getState().setShowSettings(true) },
-      { id: 'help', label: 'Help & Documentation', hint: 'F1', keywords: 'help docs guide setup how to configure', icon: <HelpCircle size={14} />, run: () => useSessionStore.getState().setShowHelp(true) },
+      { id: 'search', label: 'Find in Terminal', hint: shortcutLabel('find'), keywords: 'search', icon: <Search size={14} />, run: () => openTerminalSearch() },
+      { id: 'settings', label: 'Open Settings', hint: shortcutLabel('settings'), icon: <SettingsIcon size={14} />, run: () => useSessionStore.getState().setShowSettings(true) },
+      { id: 'help', label: 'Help & Documentation', hint: shortcutLabel('help'), keywords: 'help docs guide setup how to configure', icon: <HelpCircle size={14} />, run: () => useSessionStore.getState().setShowHelp(true) },
       {
         id: 'vault',
         label: vaultUnlocked ? 'Lock credential vault' : 'Unlock credential vault',
@@ -250,11 +252,10 @@ export default function CommandPalette({ onConnect, onLocalShell, onConnectRecen
       a.push({
         id: 'close-tab',
         label: 'Close Current Tab',
-        hint: 'Ctrl+W',
+        hint: shortcutLabel('closeTab'),
         icon: <X size={14} className="text-[#ff7b72]" />,
         run: () => {
-          invoke('disconnect', { sessionId: activeSessionId }).catch(() => {});
-          useSessionStore.getState().removeSession(activeSessionId);
+          void closeSessions([activeSessionId]);
         },
       });
     }

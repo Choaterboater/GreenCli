@@ -1,5 +1,12 @@
 import { create } from 'zustand';
 import { ConnectionConfig, Session, SessionFolder } from '../types';
+import {
+  MAX_PANES,
+  placeInFocusedPane,
+  removeFromPanes,
+  setPaneAt,
+  settleSplit,
+} from '../utils/splitPanes';
 
 /** Why the last login for a session was rejected. Shown inside the password
  *  dialog, because the error toast sits behind the modal. */
@@ -44,8 +51,9 @@ interface SessionState {
   multiSendTargets: { mode: 'all' | 'selected'; ids: string[] };
   showCommandPalette: boolean;
   splitView: boolean;
-  /** Sessions shown alongside the active one in split view (pane 2..N, max 3
-   *  extras → 4 columns). The active session is always pane 1. */
+  /** Split view: every pane's session in column order (max 4). The focused
+   *  pane is activeSessionId — clicking a pane focuses it without reordering
+   *  the columns, so session actions follow the pane you're working in. */
   splitPanes: string[];
   /** Sessions currently popped out into their own OS window — hidden in the
    *  main window (terminal stays mounted so scrollback survives pop-in). */
@@ -180,23 +188,35 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
           },
         ],
         activeSessionId: sessionId,
+        // In split view the new session opens in the focused pane.
+        splitPanes: state.splitView
+          ? placeInFocusedPane(state.splitPanes, state.activeSessionId, sessionId)
+          : state.splitPanes,
       };
     }),
 
   removeSession: (sessionId) =>
     set((state) => {
       const filtered = state.sessions.filter((s) => s.sessionId !== sessionId);
-      const splitPanes = state.splitPanes.filter((id) => id !== sessionId);
+      // Closing the focused pane's session hands focus to its neighbouring
+      // pane rather than some unrelated tab; fewer than two panes left
+      // empties the layout (settleSplit), which exits split view below.
+      const pane = removeFromPanes(state.splitPanes, state.activeSessionId, sessionId);
+      const splitPanes = state.splitPanes.includes(sessionId)
+        ? settleSplit(pane.panes, state.splitView).splitPanes
+        : state.splitPanes;
       // Promote a session that actually renders in this window — a popped-out
       // one lives in its own OS window and would leave the tab area blank.
       const inWindow = filtered.filter((s) => !state.poppedSessions.includes(s.sessionId));
       const nextActive =
         state.activeSessionId === sessionId
-          ? (inWindow.length > 0
-              ? inWindow[inWindow.length - 1].sessionId
-              : filtered.length > 0
-                ? filtered[filtered.length - 1].sessionId
-                : null)
+          ? (pane.focus && pane.focus !== sessionId
+              ? pane.focus
+              : inWindow.length > 0
+                ? inWindow[inWindow.length - 1].sessionId
+                : filtered.length > 0
+                  ? filtered[filtered.length - 1].sessionId
+                  : null)
           : state.activeSessionId;
       return {
         sessions: filtered,
@@ -214,13 +234,24 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
     }),
 
   setActiveSession: (sessionId) =>
-    set((state) => ({
-      activeSessionId: sessionId,
-      // Viewing a session clears its activity dot.
-      unseenOutput: sessionId
-        ? state.unseenOutput.filter((id) => id !== sessionId)
-        : state.unseenOutput,
-    })),
+    set((state) => {
+      // A popped-out session lives in its own window — making it active here
+      // would blank the terminal area (e.g. a reconnect requested from its
+      // pop-out). The tab strip / palette focus its window instead.
+      if (sessionId && state.poppedSessions.includes(sessionId)) return state;
+      return {
+        activeSessionId: sessionId,
+        // Split view: focus the session's pane, or show it in the focused pane.
+        splitPanes:
+          state.splitView && sessionId
+            ? placeInFocusedPane(state.splitPanes, state.activeSessionId, sessionId)
+            : state.splitPanes,
+        // Viewing a session clears its activity dot.
+        unseenOutput: sessionId
+          ? state.unseenOutput.filter((id) => id !== sessionId)
+          : state.unseenOutput,
+      };
+    }),
 
   updateSessionConfig: (sessionId, updates) =>
     set((state) => ({
@@ -321,19 +352,22 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
   toggleSplitView: () =>
     set((state) => {
       if (state.splitView) return { splitView: false, splitPanes: [] };
-      // When enabling, seed pane 2 with another open session — skipping
-      // popped-out ones (they render in their own window, so picking one
-      // here would leave the pane blank).
+      // When enabling, the active session is the first (focused) column and
+      // the second is seeded with another open session — skipping popped-out
+      // ones (they render in their own window, so the pane would be blank).
+      const active =
+        state.activeSessionId && !state.poppedSessions.includes(state.activeSessionId)
+          ? state.activeSessionId
+          : null;
       const next = state.sessions.find(
-        (s) =>
-          s.sessionId !== state.activeSessionId &&
-          !state.poppedSessions.includes(s.sessionId),
+        (s) => s.sessionId !== active && !state.poppedSessions.includes(s.sessionId),
       );
-      return { splitView: true, splitPanes: next ? [next.sessionId] : [] };
+      const splitPanes = [active, next?.sessionId].filter((id): id is string => !!id);
+      return { splitView: true, splitPanes };
     }),
   addSplitPane: () =>
     set((state) => {
-      if (!state.splitView || state.splitPanes.length >= 3) return state;
+      if (!state.splitView || state.splitPanes.length >= MAX_PANES) return state;
       const used = new Set([state.activeSessionId, ...state.splitPanes]);
       const next = state.sessions.find(
         (s) => !used.has(s.sessionId) && !state.poppedSessions.includes(s.sessionId),
@@ -342,16 +376,18 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
     }),
   removeSplitPane: (sessionId) =>
     set((state) => {
-      const splitPanes = state.splitPanes.filter((id) => id !== sessionId);
-      // Removing the last extra pane exits split view.
-      return { splitPanes, splitView: splitPanes.length > 0 ? state.splitView : false };
+      // Closing a pane keeps its session open as a tab. With fewer than two
+      // panes left split view exits and the remaining pane fills the view.
+      const pane = removeFromPanes(state.splitPanes, state.activeSessionId, sessionId);
+      return {
+        ...settleSplit(pane.panes, state.splitView),
+        activeSessionId: pane.focus ?? state.activeSessionId,
+      };
     }),
   setSplitPaneAt: (index, sessionId) =>
     set((state) => {
-      if (index < 0 || index >= state.splitPanes.length) return state;
-      const splitPanes = [...state.splitPanes];
-      splitPanes[index] = sessionId;
-      return { splitPanes };
+      const pane = setPaneAt(state.splitPanes, state.activeSessionId, index, sessionId);
+      return { splitPanes: pane.panes, activeSessionId: pane.focus };
     }),
 
   markPoppedOut: (sessionId) =>
@@ -360,13 +396,20 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
       const remaining = state.sessions.filter(
         (s) => s.sessionId !== sessionId && !state.poppedSessions.includes(s.sessionId),
       );
+      // Don't leave a split pane pointing at a popped-out session. Popping out
+      // the focused pane hands focus to its neighbouring pane; fewer than two
+      // panes left empties the layout, which exits split view below.
+      const pane = removeFromPanes(state.splitPanes, state.activeSessionId, sessionId);
+      const splitPanes = state.splitPanes.includes(sessionId)
+        ? settleSplit(pane.panes, state.splitView).splitPanes
+        : state.splitPanes;
       // Hand the active tab to another visible session.
       const activeSessionId =
         state.activeSessionId === sessionId
-          ? remaining[remaining.length - 1]?.sessionId ?? null
+          ? (pane.focus && pane.focus !== sessionId
+              ? pane.focus
+              : remaining[remaining.length - 1]?.sessionId ?? null)
           : state.activeSessionId;
-      // Don't leave a split pane pointing at a popped-out session.
-      const splitPanes = state.splitPanes.filter((id) => id !== sessionId);
       return {
         poppedSessions: [...state.poppedSessions, sessionId],
         // A popped session's tab is never "viewed" here — clear (and stop
@@ -385,14 +428,20 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
       };
     }),
   restorePoppedOut: (sessionId) =>
-    set((state) => ({
-      poppedSessions: state.poppedSessions.filter((id) => id !== sessionId),
-      unseenOutput: state.unseenOutput.filter((id) => id !== sessionId),
-      // Bring the returning session to the front if it still exists.
-      activeSessionId: state.sessions.some((s) => s.sessionId === sessionId)
-        ? sessionId
-        : state.activeSessionId,
-    })),
+    set((state) => {
+      // Bring the returning session to the front (into the focused pane in
+      // split view) if it still exists.
+      const exists = state.sessions.some((s) => s.sessionId === sessionId);
+      return {
+        poppedSessions: state.poppedSessions.filter((id) => id !== sessionId),
+        unseenOutput: state.unseenOutput.filter((id) => id !== sessionId),
+        activeSessionId: exists ? sessionId : state.activeSessionId,
+        splitPanes:
+          exists && state.splitView
+            ? placeInFocusedPane(state.splitPanes, state.activeSessionId, sessionId)
+            : state.splitPanes,
+      };
+    }),
 
   setFolders: (folders) => set({ folders }),
 
