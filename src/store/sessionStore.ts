@@ -14,6 +14,20 @@ export interface AuthFailure {
   message: string;
   /** Failed logins in a row — repeated failures can lock TACACS/RADIUS accounts. */
   attempts: number;
+  /** Set when the rejected password was a shared login's, so the dialog can
+   *  say "Login 'TACACS admin' was rejected" rather than blame this host. */
+  login?: { id: string; name: string };
+}
+
+/** The shared login behind a password prompt, so the dialog can name it and
+ *  offer to update it once for every host that uses it. */
+export interface PromptLogin {
+  id: string;
+  name: string;
+  /** rejected: the device refused it. missing: it has no saved password yet.
+   *  locked: the vault stayed locked (Skip), so its password couldn't be read.
+   *  hostPassword: the last try used a password typed just for this host. */
+  reason: 'rejected' | 'missing' | 'locked' | 'hostPassword';
 }
 
 /** Quick Connect opened with something already filled in. */
@@ -39,6 +53,8 @@ interface SessionState {
   pendingConnection: ConnectionConfig | null;
   /** Last rejected login per session id (cleared on success / dismiss). */
   authErrors: Record<string, AuthFailure>;
+  /** Shared login behind each session's pending password prompt. */
+  authLogins: Record<string, PromptLogin>;
   showSettings: boolean;
   showSearch: boolean;
   showQuickConnect: boolean;
@@ -89,7 +105,8 @@ interface SessionState {
 
   setShowAuthDialog: (show: boolean) => void;
   setPendingConnection: (config: ConnectionConfig | null) => void;
-  recordAuthError: (sessionId: string, message: string) => void;
+  recordAuthError: (sessionId: string, message: string, login?: AuthFailure['login']) => void;
+  setAuthLogin: (sessionId: string, login: PromptLogin | null) => void;
   clearAuthError: (sessionId: string) => void;
   setShowSettings: (show: boolean) => void;
   setShowSearch: (show: boolean) => void;
@@ -146,6 +163,7 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
   showAuthDialog: false,
   pendingConnection: null,
   authErrors: {},
+  authLogins: {},
   showSettings: false,
   showSearch: false,
   showQuickConnect: false,
@@ -306,19 +324,34 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
 
   setShowAuthDialog: (show) => set({ showAuthDialog: show }),
   setPendingConnection: (config) => set({ pendingConnection: config }),
-  recordAuthError: (sessionId, message) =>
+  recordAuthError: (sessionId, message, login) =>
     set((state) => ({
       authErrors: {
         ...state.authErrors,
-        [sessionId]: { message, attempts: (state.authErrors[sessionId]?.attempts ?? 0) + 1 },
+        [sessionId]: {
+          message,
+          attempts: (state.authErrors[sessionId]?.attempts ?? 0) + 1,
+          login,
+        },
       },
     })),
+  setAuthLogin: (sessionId, login) =>
+    set((state) => {
+      if (!login && !(sessionId in state.authLogins)) return state;
+      const authLogins = { ...state.authLogins };
+      if (login) authLogins[sessionId] = login;
+      else delete authLogins[sessionId];
+      return { authLogins };
+    }),
+  // Ends the prompt's whole story: the failure count and its login context.
   clearAuthError: (sessionId) =>
     set((state) => {
-      if (!(sessionId in state.authErrors)) return state;
+      if (!(sessionId in state.authErrors) && !(sessionId in state.authLogins)) return state;
       const authErrors = { ...state.authErrors };
+      const authLogins = { ...state.authLogins };
       delete authErrors[sessionId];
-      return { authErrors };
+      delete authLogins[sessionId];
+      return { authErrors, authLogins };
     }),
   setShowSettings: (show) => set({ showSettings: show }),
   setShowSearch: (show) => set({ showSearch: show }),

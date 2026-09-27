@@ -129,6 +129,18 @@ function sanitizeImportedSettings(settings: Partial<TerminalSettings> | undefine
           };
         });
         continue;
+      } else if (key === 'loginProfiles') {
+        // Names and usernames only — a backup never carries login passwords,
+        // so imported logins ask for theirs on first use.
+        const logins = value as TerminalSettings['loginProfiles'];
+        logins.forEach((login, index) => {
+          if (!nonEmptyString(login?.id) || typeof login.name !== 'string' || typeof login.username !== 'string') {
+            throw new Error(`Invalid login at settings.loginProfiles[${index}]`);
+          }
+        });
+        rejectDuplicateIds(logins, 'login');
+        output.loginProfiles = logins.map(({ id, name, username }) => ({ id, name, username }));
+        continue;
       }
     } else if (isObject(defaultValue)) {
       if (!isObject(value)) throw new Error(`Backup setting "${key}" must be an object`);
@@ -223,7 +235,13 @@ function validateBackup(raw: GreenCliBackup): GreenCliBackup {
   rejectDuplicateIds(triggers, 'trigger');
   const allSessions: SessionFolder['items'] = [];
   folders.forEach((folder, index) => {
-    if (!nonEmptyString(folder?.id) || typeof folder.name !== 'string' || typeof folder.expanded !== 'boolean' || !Array.isArray(folder.items)) {
+    if (
+      !nonEmptyString(folder?.id) ||
+      typeof folder.name !== 'string' ||
+      typeof folder.expanded !== 'boolean' ||
+      !Array.isArray(folder.items) ||
+      !optionalString(folder.loginProfileId)
+    ) {
       throw new Error(`Invalid folder at index ${index}`);
     }
     folder.items.forEach((item, itemIndex) => {
@@ -247,6 +265,8 @@ function validateBackup(raw: GreenCliBackup): GreenCliBackup {
         !optionalString(item.jumpHost) ||
         !optionalIntInRange(item.jumpPort, 1, 65_535) ||
         !optionalString(item.jumpUsername) ||
+        !optionalString(item.loginProfileId) ||
+        !optionalString(item.jumpLoginProfileId) ||
         !optionalString(item.command) ||
         !optionalStringArray(item.args) ||
         !optionalString(item.cwd)
@@ -349,6 +369,9 @@ function mergedSettingsPatch(
     }
     if (incoming.aiAgents) {
       patch.aiAgents = mergeById(current.aiAgents ?? [], incoming.aiAgents);
+    }
+    if (incoming.loginProfiles) {
+      patch.loginProfiles = mergeById(current.loginProfiles ?? [], incoming.loginProfiles);
     }
     if (incoming.sessionAgents) {
       patch.sessionAgents = { ...(current.sessionAgents ?? {}), ...incoming.sessionAgents };
@@ -529,6 +552,9 @@ async function importFolders(folders: SessionFolder[], mode: BackupImportMode): 
         id: targetFolderId,
         name: folder.name,
         expanded: folder.expanded,
+        // A merge leaves an existing folder's default login alone when the
+        // backup has none ('' would clear it); a replace takes the backup's.
+        loginProfileId: folder.loginProfileId || (mode === 'replace' ? '' : undefined),
       });
     } catch (err) {
       warnings.push(`folder "${folder.name}": ${String(err)}`);

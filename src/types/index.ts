@@ -28,6 +28,8 @@ export const VENDOR_META: Record<Vendor, VendorMeta> = {
 
 export interface ConnectionConfig {
   id: string;
+  /** On a tab: the saved host it was opened from (the tab's own id is its session id). */
+  savedId?: string;
   name: string;
   protocol: Protocol;
   host?: string;
@@ -61,6 +63,23 @@ export interface ConnectionConfig {
   jumpPort?: number;
   jumpUsername?: string;
   jumpPassword?: string;
+  /** Shared login for this host: a LoginProfile id, PER_HOST_PASSWORD ('none')
+   *  to keep its own password, or unset to use the folder's default login. */
+  loginProfileId?: string;
+  /** Shared login for the jump host: a LoginProfile id, PER_HOST_PASSWORD for
+   *  a password saved in the vault for this jump host, or unset = key / agent. */
+  jumpLoginProfileId?: string;
+}
+
+/**
+ * A login shared by many devices (e.g. the TACACS account), set as a folder's
+ * default or on a host. Only this metadata is kept in settings — the password
+ * is in the vault (see loginSecretKey), so a 90-day rotation is one change.
+ */
+export interface LoginProfile {
+  id: string;
+  name: string;
+  username: string;
 }
 
 export interface Session {
@@ -76,6 +95,8 @@ export interface SessionFolder {
   name: string;
   items: ConnectionConfig[];
   expanded: boolean;
+  /** Default shared login for hosts in this folder that don't pick their own. */
+  loginProfileId?: string;
 }
 
 /**
@@ -193,6 +214,8 @@ export interface TerminalSettings {
   aiAgents: AiAgent[];
   /** Map of saved-session id → attached agent id. */
   sessionAgents: Record<string, string>;
+  /** Shared logins (names + usernames only; passwords live in the vault). */
+  loginProfiles: LoginProfile[];
 }
 
 export interface CentralAccount {
@@ -370,6 +393,7 @@ export const DEFAULT_SETTINGS: TerminalSettings = {
   centralAccounts: [],
   aiAgents: BUILTIN_AGENTS,
   sessionAgents: {},
+  loginProfiles: [],
 };
 
 export interface Token {
