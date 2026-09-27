@@ -11,6 +11,7 @@
 // window with your OS screenshot tool instead.
 //
 // Override the URL with SHOT_URL, e.g. SHOT_URL=http://localhost:5173 node scripts/...
+// and the browser with SHOT_CHROMIUM (path to a Chromium binary).
 
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -31,8 +32,21 @@ try {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-const browser = await chromium.launch();
-const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2 });
+// SHOT_CHROMIUM points at an already-installed Chromium when Playwright's own
+// download doesn't match (e.g. SHOT_CHROMIUM=/usr/bin/chromium).
+const browser = await chromium.launch(
+  process.env.SHOT_CHROMIUM ? { executablePath: process.env.SHOT_CHROMIUM } : {}
+);
+// Dark theme (the default look), and skip the one-time first-run Help popup so
+// each shot shows its own screen.
+const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2, colorScheme: 'dark' });
+await page.addInitScript(() => {
+  try {
+    localStorage.setItem('greencli-help-seen-v1', '1');
+  } catch {
+    /* private mode: Help may open on the first shot */
+  }
+});
 
 // Reload before every shot so each screenshot starts from a clean state (no panel
 // focus / lingering modal leaking between captures), then run an optional setup.
@@ -59,23 +73,26 @@ async function capture(name, setup) {
 }
 
 const press = (key) => async () => { await page.keyboard.press(key); };
-const clickTitle = (title) => async () => {
-  await page.locator(`[title="${title}"]`).first().click({ timeout: 3000 });
+const clickLabel = (label) => async () => {
+  await page.locator(`[aria-label="${label}"]`).first().click({ timeout: 3000 });
 };
-const openSettingsAndScroll = (text) => async () => {
+// Settings is split into groups (left rail); pick one, then scroll to a setting.
+const openSettings = (group, text) => async () => {
   await page.keyboard.press('Control+Comma');
   await sleep(500);
+  if (group) await page.getByRole('button', { name: group, exact: false }).first().click({ timeout: 2000 });
+  await sleep(300);
   if (text) await page.getByText(text, { exact: false }).first().scrollIntoViewIfNeeded({ timeout: 2000 });
 };
 
 await capture('01-home.png');
-await capture('02-quick-connect.png', press('Control+t'));
+await capture('02-quick-connect.png', press('Control+Shift+T'));
 await capture('03-ai-assistant.png', press('Control+Shift+I'));
 await capture('04-api-explorer.png', press('Control+Shift+A'));
-await capture('05-network-intent.png', clickTitle('Network intent / desired-state assurance'));
-await capture('06-settings.png', openSettingsAndScroll());
-await capture('07-settings-ai.png', openSettingsAndScroll('Assistant tools'));
-await capture('08-settings-device-rest.png', openSettingsAndScroll('Verify device TLS'));
+await capture('05-network-intent.png', clickLabel('Network Intent'));
+await capture('06-settings.png', openSettings());
+await capture('07-settings-ai.png', openSettings('AI & MCP', 'Assistant tools'));
+await capture('08-settings-device-rest.png', openSettings('Connections & Security', 'Verify device TLS'));
 await capture('09-help.png', press('F1'));
 
 await browser.close();

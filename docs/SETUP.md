@@ -171,7 +171,7 @@ their tools to the AI for **every** provider. Two transports:
   centralmcp's `run_http_router.sh`); one process can then serve multiple
   clients/machines instead of being spawned per launch.
 
-Settings → **AI + MCP → MCP Servers** (or header **Tools → MCP**) → *Add server*. Click **Paste config JSON instead**
+Settings → **AI & MCP → MCP Servers** (or the command palette: *MCP Servers*) → *Add server*. Click **Paste config JSON instead**
 to auto-fill from a setup wizard / Claude-Desktop-style snippet — either a
 bare `{"command": "...", "args": [...]}` / `{"url": "..."}` object, or the
 same wrapped in `{"mcpServers": {"name": {...}}}`. Otherwise, fill in by hand:

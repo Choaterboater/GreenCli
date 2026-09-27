@@ -657,7 +657,7 @@ export default function ApiExplorer() {
       {/* Mist hint */}
       {target === 'mist' && (
         <div className="px-3 py-2 border-b border-[var(--bg-tertiary)] bg-[var(--bg-secondary)] text-[10px] text-[var(--text-muted)]">
-          Uses the API token from <span className="text-[var(--text-secondary)]">Settings → Juniper Mist</span>. Replace
+          Uses the API token from <span className="text-[var(--text-secondary)]">Settings → Integrations → Juniper Mist</span>. Replace
           <code className="text-[var(--accent)] mx-1">{'{org_id}'}</code>/
           <code className="text-[var(--accent)] mx-1">{'{site_id}'}</code>in paths (run "Whoami" first to find them).
         </div>

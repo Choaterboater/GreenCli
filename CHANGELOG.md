@@ -9,14 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Change Jobs** (Tools / command palette): push one config block to many
+- **Change Jobs** (activity bar / command palette): push one config block to many
   devices picked by folder, tag, host or open tab, with `${var}` values per
   device from a CSV. A dry run shows exactly what each device gets; the job
   runs on one canary device and waits for your OK before the rest; it stops
   at the first device error, takes before/after config snapshots with a diff,
   and wraps changes in Junos `commit confirmed` / AOS-CX `checkpoint auto` so
   an unconfirmed change rolls itself back. Results grid with CSV export.
-- **Shared logins** (Settings → Logins): one saved login (e.g. your TACACS
+- **Shared logins** (Settings → Connections & Security): one saved login (e.g. your TACACS
   account) used by many hosts — set it as a folder's default, override per
   host. Changing its password once updates every device that uses it. Jump
   hosts can use a login or a vaulted password; jump auth gains
@@ -46,6 +46,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - "System" theme that follows macOS / Windows; Option-as-Meta setting on Mac;
   right-click Copy & Paste / Find selection / Save scrollback; pop-out
   windows get a header with status, Reconnect, Find and Dock.
+
+### Changed
+
+- **New layout.** An activity bar down the left side replaces the Tools menu:
+  one click opens Sessions, Editor, API, AI, Bulk Runner, Change Jobs, Config
+  Archive, Network Intent, SSH Tunnels, SFTP or Import Hosts, with Help and
+  Settings at the bottom. Hover shows the name and shortcut; small badges show
+  dropped sessions, failed intents, busy AI/API and unsaved editor changes.
+- **One side panel** holds Editor, API and AI as tabs. Switching tabs or
+  closing the panel keeps your work (unsaved editor text, a half-built API
+  request, the chat). It can be maximized; Ctrl/⌘+Shift+E/A/I switch to a
+  tab or close it. Editor, API and AI can no longer be open side by side.
+- **Simpler title bar**: the brand, a "Search or run a command…" field that
+  opens the command palette, and Connect. Split view, Multi-send and Snippets
+  moved to the right end of the tab strip.
+- **Settings** are grouped by task (Appearance · Terminal · Connections &
+  Security · Automation · AI & MCP · Integrations · Backup & Reset) and have a
+  search box; Help and Settings share one window style.
+- Network Intent's header no longer wraps its buttons onto two lines.
+- Documentation screenshots show the new layout and name.
 
 ### Fixed
 
