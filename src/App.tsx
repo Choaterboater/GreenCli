@@ -20,6 +20,7 @@ import { useSettingsStore } from './store/settingsStore';
 import { useDialogStore } from './store/dialogStore';
 import { loadSecrets, persistSecrets } from './utils/secretVault';
 import { useTheme } from './hooks/useTheme';
+import { useSidePanelFit } from './hooks/useSidePanelFit';
 import { ConnectionConfig, Protocol, DeviceType, vendorColor } from './types';
 import { generateId, shellQuote } from './utils';
 import { listen } from '@tauri-apps/api/event';
@@ -194,6 +195,11 @@ function App() {
 
   const recents = useRecentStore((s) => s.recents);
   const clearRecents = useRecentStore((s) => s.clearRecents);
+
+  // The terminal + side panels row. Opening panels shrinks (or closes) them so
+  // the terminal keeps a usable width — see useSidePanelFit.
+  const panelRowRef = useRef<HTMLDivElement>(null);
+  useSidePanelFit(panelRowRef);
 
   // Credential save deferred until the vault is unlocked.
   const pendingCredSave = useRef<{ key: string; value: string } | null>(null);
@@ -1434,7 +1440,7 @@ function App() {
           })()}
 
           {/* Terminal Container + Side Panels */}
-          <div className="flex flex-1 overflow-hidden">
+          <div ref={panelRowRef} className="flex flex-1 overflow-hidden">
             {/* Terminal — hidden with no sessions + editor open, so the editor fills
                 the area and works as a standalone text editor. */}
             <div className={`flex-1 flex flex-col min-w-0 ${!activeSession && showConfigEditor ? 'hidden' : ''}`}>
@@ -1723,8 +1729,10 @@ function App() {
                 survive closing the panel. Monaco re-lays out on unhide. */}
             <ConfigEditor />
 
-            {/* API Explorer Panel */}
-            {showApiExplorer && <ApiExplorer />}
+            {/* API Explorer Panel — always mounted too (it renders nothing
+                while closed): a panel closed to make room for another must
+                not throw away a half-built request. */}
+            <ApiExplorer />
 
             {/* AI Assistant Panel — always mounted for the same reason: closing
                 the panel must not destroy the chat history. */}
