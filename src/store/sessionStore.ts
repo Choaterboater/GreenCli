@@ -7,6 +7,7 @@ import {
   setPaneAt,
   settleSplit,
 } from '../utils/splitPanes';
+import type { ImportSource } from '../utils/importHosts';
 
 /** Why the last login for a session was rejected. Shown inside the password
  *  dialog, because the error toast sits behind the modal. */
@@ -70,6 +71,9 @@ interface SessionState {
   showHelp: boolean;
   /** Config Editor archive panel (lifted so Tools / palette can open it). */
   showArchive: boolean;
+  /** Import hosts dialog, and the source tab it opens on. */
+  showImportHosts: boolean;
+  importHostsSource: ImportSource;
   /** When opening Settings via a Help deep-link, the section id to scroll to + flash. */
   settingsFocus: string | null;
 
@@ -106,6 +110,8 @@ interface SessionState {
   setShowIntent: (show: boolean) => void;
   setShowHelp: (show: boolean) => void;
   setShowArchive: (show: boolean) => void;
+  openImportHosts: (source?: ImportSource) => void;
+  setShowImportHosts: (show: boolean) => void;
   setSettingsFocus: (id: string | null) => void;
   showConfigEditor: boolean;
   setShowConfigEditor: (show: boolean) => void;
@@ -168,6 +174,8 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
   showIntent: false,
   showHelp: false,
   showArchive: false,
+  showImportHosts: false,
+  importHostsSource: 'csv',
   settingsFocus: null,
 
   addSession: (config, sessionId) =>
@@ -340,6 +348,10 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
   setShowIntent: (show) => set({ showIntent: show }),
   setShowHelp: (show) => set({ showHelp: show }),
   setShowArchive: (show) => set({ showArchive: show }),
+  // No source = the tab used last time (it stays in the store).
+  openImportHosts: (source) =>
+    set((state) => ({ showImportHosts: true, importHostsSource: source ?? state.importHostsSource })),
+  setShowImportHosts: (show) => set({ showImportHosts: show }),
   setSettingsFocus: (id) => set({ settingsFocus: id }),
   setShowConfigEditor: (show) => set({ showConfigEditor: show }),
   toggleConfigEditor: () => set((state) => ({ showConfigEditor: !state.showConfigEditor })),

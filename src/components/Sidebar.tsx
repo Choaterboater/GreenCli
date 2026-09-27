@@ -23,7 +23,6 @@ import {
   Settings2,
   Pencil,
   Download,
-  Loader2,
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/tauri';
 import { useSessionStore } from '../store/sessionStore';
@@ -34,7 +33,6 @@ import { fuzzyMatch } from '../utils';
 import { askPrompt, askConfirm } from '../store/dialogStore';
 import { notify } from '../store/toastStore';
 import { hostSummary } from '../utils/hosts';
-import { importSshHosts, importSummary, scanSshConfig } from '../utils/sshImport';
 
 const LUCIDE: Record<string, typeof Monitor> = {
   Network,
@@ -67,6 +65,7 @@ export default function Sidebar({ onConnect }: SidebarProps) {
   const removeSessionFromFolder = useSessionStore((s) => s.removeSessionFromFolder);
   const moveSessionToFolder = useSessionStore((s) => s.moveSessionToFolder);
   const openQuickConnect = useSessionStore((s) => s.openQuickConnect);
+  const openImportHosts = useSessionStore((s) => s.openImportHosts);
   const aiAgents = useSettingsStore((s) => s.aiAgents) ?? [];
   const sessionAgents = useSettingsStore((s) => s.sessionAgents) ?? {};
   const setSessionAgent = useSettingsStore((s) => s.setSessionAgent);
@@ -93,7 +92,6 @@ export default function Sidebar({ onConnect }: SidebarProps) {
   const [agentMenu, setAgentMenu] = useState<{ x: number; y: number; sessionId: string } | null>(null);
   // Folder currently hovered while dragging a session (for the drop highlight).
   const [dragOverFolder, setDragOverFolder] = useState<string | null>(null);
-  const [importing, setImporting] = useState(false);
 
   // Move a saved session into another folder (drag-and-drop) + persist.
   const handleMoveSession = (sessionId: string, fromFolderId: string, toFolderId: string) => {
@@ -126,24 +124,6 @@ export default function Sidebar({ onConnect }: SidebarProps) {
       e.preventDefault();
       e.stopPropagation();
       setQuery('');
-    }
-  };
-
-  // One-click import for an empty sidebar (Settings keeps the pick-and-choose
-  // version). Already-saved hosts are skipped inside importSshHosts.
-  const importFromSshConfig = async () => {
-    setImporting(true);
-    try {
-      const hosts = await scanSshConfig();
-      if (hosts.length === 0) {
-        notify.info('No hosts found in ~/.ssh/config');
-        return;
-      }
-      notify.success('Imported from SSH config', importSummary(await importSshHosts(hosts)));
-    } catch (e) {
-      notify.error('Could not read ~/.ssh/config', String(e));
-    } finally {
-      setImporting(false);
     }
   };
 
@@ -305,6 +285,13 @@ export default function Sidebar({ onConnect }: SidebarProps) {
           Sessions
         </span>
         <div className="flex items-center gap-0.5">
+          <button
+            onClick={() => openImportHosts()}
+            className="p-1.5 rounded-md hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
+            title="Import hosts… (CSV, SecureCRT, Aruba Central, Juniper Mist, ~/.ssh/config)"
+          >
+            <Download size={15} />
+          </button>
           <button
             onClick={handleAddFolder}
             className="p-1.5 rounded-md hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
@@ -544,14 +531,16 @@ export default function Sidebar({ onConnect }: SidebarProps) {
                 Add a host
               </button>
               <button
-                onClick={() => void importFromSshConfig()}
-                disabled={importing}
-                className="flex items-center justify-center gap-1.5 h-8 text-[12px] rounded-md bg-[var(--bg-tertiary)] hover:bg-[var(--border-strong)] text-[var(--text-primary)] transition-colors disabled:opacity-50"
+                onClick={() => openImportHosts()}
+                className="flex items-center justify-center gap-1.5 h-8 text-[12px] rounded-md bg-[var(--bg-tertiary)] hover:bg-[var(--border-strong)] text-[var(--text-primary)] transition-colors"
               >
-                {importing ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
-                Import ~/.ssh/config
+                <Download size={13} />
+                Import hosts…
               </button>
             </div>
+            <p className="mt-1.5 text-[10px] text-[var(--text-muted)]">
+              From a CSV file, SecureCRT, Aruba Central, Juniper Mist or ~/.ssh/config.
+            </p>
           </div>
         )}
       </div>

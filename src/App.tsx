@@ -70,6 +70,7 @@ import CommandPalette from './components/CommandPalette';
 import TunnelsManager from './components/TunnelsManager';
 import IntentPanel from './components/IntentPanel';
 import HelpPanel from './components/HelpPanel';
+import ImportHosts from './components/ImportHosts';
 import VaultUnlock from './components/VaultUnlock';
 import BulkRunner from './components/BulkRunner';
 import MultiSendBar from './components/MultiSendBar';
@@ -751,7 +752,7 @@ function App() {
         const overlayOpen =
           st.showSettings || st.showQuickConnect || st.showAuthDialog ||
           st.showCommandPalette || st.showHelp || st.showVaultUnlock ||
-          st.showSftp || st.showSearch || st.showConfigEditor ||
+          st.showSftp || st.showSearch || st.showConfigEditor || st.showImportHosts ||
           st.showApiExplorer || st.showAiAssistant ||
           useDialogStore.getState().current != null;
         if (overlayOpen) return; // let the overlay keep focus; don't kill the live session
@@ -872,7 +873,7 @@ function App() {
       if (
         st.showSettings || st.showQuickConnect || st.showAuthDialog ||
         st.showVaultUnlock || st.showHelp || st.showSftp || st.showBulkRunner ||
-        st.showTunnels || st.showIntent || st.showArchive ||
+        st.showTunnels || st.showIntent || st.showArchive || st.showImportHosts ||
         useDialogStore.getState().current != null
       ) {
         return;
@@ -1878,6 +1879,7 @@ function App() {
       <TunnelsManager />
       <IntentPanel />
       <HelpPanel />
+      <ImportHosts />
       <QuickConnect onConnect={handleConnect} />
       <SshAuthDialog onAuthenticate={handleAuthenticate} />
       <DeviceMapper sessionId={mappingSessionId} onClose={() => setMappingSessionId(null)} />
