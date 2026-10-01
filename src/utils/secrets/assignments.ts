@@ -1,6 +1,6 @@
-// Copied from casper src/secrets/assignments.ts @ 073055e. Do not edit here: change Casper, re-copy.
+// Copied from casper src/secrets/assignments.ts @ 406a3f7. Do not edit here: change Casper, re-copy.
 // ---- casper source below ----
-import { KIND_ORDER, keepLiterally, type SecretKind } from "./patterns";
+import { KIND_ORDER, keepLiterally, replaceSpans, windowedSpans, type SecretKind } from "./patterns";
 import { SECRET_MARKER, snakeKey, type ScrubTextResult } from "./scrub";
 
 /**
@@ -111,12 +111,8 @@ function applySpans(line: string, spans: Span[], kinds: Set<SecretKind>): { line
     if (last && span.start < last.end) { last.end = Math.max(last.end, span.end); continue; }
     merged.push({ ...span });
   }
-  let next = line;
-  for (const span of merged.reverse()) {
-    next = next.slice(0, span.start) + SECRET_MARKER + next.slice(span.end);
-    kinds.add(span.kind);
-  }
-  return { line: next, hidden: merged.length };
+  for (const span of merged) kinds.add(span.kind);
+  return { line: replaceSpans(line, merged, SECRET_MARKER), hidden: merged.length };
 }
 
 /**
@@ -131,7 +127,7 @@ export function scrubAssignments(text: string, strict: boolean): ScrubTextResult
   let hidden = 0;
   for (let index = 0; index < lines.length; index++) {
     const line = lines[index]!;
-    const spans = assignmentSpans(line, strict);
+    const spans = windowedSpans(line, (part) => assignmentSpans(part, strict));
     if (!spans.length) continue;
     const result = applySpans(line, spans, kinds);
     lines[index] = result.line;
@@ -153,16 +149,19 @@ export function scrubExactValues(text: string, values: readonly string[]): Scrub
   return { text: out, hidden, kinds: hidden ? ["key"] : [] };
 }
 
-/** The password in an address such as postgres://admin:PASSWORD@db:5432/app. */
-const URL_PASSWORD = /\b([a-z][a-z0-9+.-]*:\/\/[^\s/@:'"]+:)([^\s/@'"]+)@/gi;
+/**
+ * The password in an address such as postgres://admin:PASSWORD@db:5432/app. The match starts at "://" and a lookbehind
+ * checks the scheme before it: starting at the scheme re-read a long run of letters and dashes from every letter.
+ */
+const URL_PASSWORD = /:\/\/(?<=\b[a-z][a-z0-9+.-]*:\/\/)([^\s/@:'"]+:)([^\s/@'"]+)@/gi;
 
 /** Hide the password part of every user:password@ address, in any output. */
 export function scrubUrlPasswords(text: string): ScrubTextResult {
   let hidden = 0;
-  const out = text.replace(URL_PASSWORD, (whole, head: string, password: string) => {
+  const out = text.replace(URL_PASSWORD, (whole, user: string, password: string) => {
     if (keepLiterally(password) || /^\$\{?\w+\}?$/.test(password) || password.includes(SECRET_MARKER)) return whole;
     hidden++;
-    return `${head}${SECRET_MARKER}@`;
+    return `://${user}${SECRET_MARKER}@`;
   });
   return { text: hidden ? out : text, hidden, kinds: hidden ? ["password"] : [] };
 }

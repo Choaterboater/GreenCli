@@ -1,9 +1,9 @@
-// Copied from casper src/secrets/scrub.ts @ 073055e. Do not edit here: change Casper, re-copy.
+// Copied from casper src/secrets/scrub.ts @ 406a3f7. Do not edit here: change Casper, re-copy.
 // Left out here: the node:path import and the file-read rules (CODE_EXTENSIONS … shouldScrubRead).
 // ---- casper source below ----
 import {
   AUTH_SERVER_BLOCK, CONFIG_ANCHORS, JUNOS_SNMP_BLOCK, KIND_ORDER, KIND_WORDS, PEM_BEGIN, PEM_END, SECRET_RULES,
-  keepLiterally, type SecretKind, type SecretRule,
+  keepLiterally, replaceSpans, windowedSpans, type SecretKind, type SecretRule,
 } from "./patterns";
 
 /** What the AI sees in place of a secret value. */
@@ -101,15 +101,11 @@ export function scrubText(text: string): ScrubTextResult {
       else if (char === "}") depth = Math.max(0, depth - 1);
     }
     if (snmpDepth !== undefined && depth <= snmpDepth && !JUNOS_SNMP_BLOCK.test(line)) snmpDepth = undefined;
-    const spans = mergeSpans(ruleSpans(line, rules));
+    const spans = mergeSpans(windowedSpans(line, (part) => ruleSpans(part, rules)));
     if (!spans.length) continue;
-    let next = line;
-    for (const span of [...spans].reverse()) {
-      next = next.slice(0, span.start) + SECRET_MARKER + next.slice(span.end);
-      kinds.add(span.kind);
-      hidden++;
-    }
-    lines[index] = next + (carriage ? "\r" : "");
+    for (const span of spans) kinds.add(span.kind);
+    hidden += spans.length;
+    lines[index] = replaceSpans(line, spans, SECRET_MARKER) + (carriage ? "\r" : "");
   }
   return { text: hidden ? lines.join("\n") : text, hidden, kinds: orderKinds(kinds) };
 }
@@ -121,7 +117,7 @@ export function looksLikeDeviceConfig(text: string): boolean {
   const strict = SECRET_RULES.filter((entry) => entry.strict && !entry.block);
   for (const line of text.split("\n")) {
     if (PEM_BEGIN.test(line)) return true;
-    if (ruleSpans(line, strict).length) return true;
+    if (windowedSpans(line, (part) => ruleSpans(part, strict)).length) return true;
   }
   return false;
 }

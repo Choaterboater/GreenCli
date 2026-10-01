@@ -24,9 +24,9 @@ function splitPagerPrompts(text: string): string {
   return text.replace(PAGER_PROMPT, '$&\n');
 }
 
-/** Longer lines are hidden whole. Some rules slow down with the square of a
- *  line's length (200 KB of "tokentoken…" takes seconds), and device output
- *  never has lines this long. */
+/** Longer lines are hidden whole: device output never has lines this long,
+ *  so one is a blob, not config. (The copied rules check long lines in 4 KB
+ *  windows, but every check still runs on the UI thread.) */
 export const MAX_LINE_CHARS = 8192;
 
 function hideLongLines(text: string): ScrubTextResult {
