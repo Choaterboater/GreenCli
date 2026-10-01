@@ -277,7 +277,7 @@ export const HELP_TOPICS: HelpTopic[] = [
     title: 'Tunnels, SFTP & tools',
     icon: Waypoints,
     summary: 'Port forwarding, file transfer, triggers, config editor, bulk runner.',
-    keywords: ['tunnel', 'forward', 'socks', 'sftp', 'file', 'upload', 'download', 'trigger', 'bulk', 'editor'],
+    keywords: ['tunnel', 'forward', 'socks', 'sftp', 'file', 'upload', 'download', 'trigger', 'bulk', 'editor', 'problems', 'snippet', 'f8', 'diff', 'compare', 'comment'],
     blocks: [
       {
         kind: 'bullets',
@@ -286,6 +286,15 @@ export const HELP_TOPICS: HelpTopic[] = [
           '**SFTP**: browse/upload/download; uploads confirm before overwriting a remote file.',
           '**Output triggers** (Settings): toast/beep on a keyword/regex in any terminal.',
           '**Bulk Runner**: run one command across many sessions; export CSV.',
+        ],
+      },
+      {
+        kind: 'bullets',
+        items: [
+          '**Config Editor problems**: risky lines, blanks to fill in, terminal junk and a Junos edit with no commit are underlined and counted in the toolbar. Click the count for the list; **F8** jumps to the next one. A line the switch rejected shows in red.',
+          '**Config Editor smarts**: **Ctrl+/** comments a line (`!` Aruba, `#` Junos); a double-click picks `1/1/5` or `ge-0/0/0.100` whole.',
+          '**Snippets**: type `cx-access`, `junos-trunk`, … at the start of a line, or pick from *Snippets*; **Tab** moves to the next blank.',
+          '**Diff**: compare the editor with the running-config you pulled, or with a file.',
         ],
       },
     ],

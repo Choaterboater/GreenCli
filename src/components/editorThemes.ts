@@ -20,6 +20,8 @@ export const defineEditorThemes: BeforeMount = (monaco) => {
       { token: 'number.float', foreground: '98c379' },
       { token: 'type', foreground: 'e5c07b' },
       { token: 'string', foreground: 'abb2bf' },
+      // Template blanks and hidden-secret markers that still need a value.
+      { token: 'variable', foreground: 'f0a83c', fontStyle: 'bold' },
     ],
     colors: {
       'editor.background': '#0d1117',
@@ -46,6 +48,7 @@ export const defineEditorThemes: BeforeMount = (monaco) => {
       { token: 'number.float', foreground: '1a7f37' },
       { token: 'type', foreground: '9a6700' },
       { token: 'string', foreground: '57606a' },
+      { token: 'variable', foreground: '9a3412', fontStyle: 'bold' },
     ],
     colors: {
       'editor.background': '#ffffff',

@@ -263,8 +263,19 @@ live compliance:
   session. Stopping a tunnel (or disconnecting the session) tears down its connections.
 - **SFTP**: browse/upload/download/mkdir/rename/delete on an SSH session. Uploads
   confirm before overwriting an existing remote file; dropped files confirm the target.
-- **Config Editor**: Monaco editor with per-vendor templates; *Pull* running-config and
+- **Config Editor**: Monaco (the VS Code editor) with per-vendor templates; *Pull* running-config and
   *Send to terminal*. It prompts before discarding unsaved edits.
+  - **Problems**: risky lines ("reboots the switch"), blanks still to fill in (`${vlan_id}`,
+    `<replace-me>`, a hidden-secret marker), terminal junk from a captured log, and a Junos edit
+    with no commit are underlined, marked in the scrollbar, and counted in the toolbar. Click
+    the count for the list; **F8** / **Shift+F8** steps through them. A line the switch rejected
+    on Send shows in red with the switch's own words. Comment lines are never flagged.
+  - **Aruba and Junos smarts**: **Ctrl+/** comments a line (`!` for Aruba, `#` for Junos);
+    a double-click picks `1/1/5` or `ge-0/0/0.100` whole; the block you're in stays on top as
+    you scroll.
+  - **Snippets**: pick one from *Snippets*, or type its name at the start of a line
+    (`cx-access`, `junos-trunk`, …). **Tab** moves to the next blank.
+  - **Diff**: compare with a running-config you pulled (kept per device) or with a file.
 - **Bulk Runner**: run one command across many sessions; export CSV (each row labelled
   with the command that produced it; a no-response is flagged, not shown as success).
 

@@ -1,7 +1,8 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { X, Crown, History, GitCompare, RefreshCw, FileText } from 'lucide-react';
 import { DiffEditor } from '@monaco-editor/react';
-import { defineEditorThemes } from './editorThemes';
+import { setupMonaco } from '../editor/setup';
+import { detectConfigLanguage } from '../editor/networkLanguages';
 import { useSessionStore } from '../store/sessionStore';
 import { useSettingsStore } from '../store/settingsStore';
 import { useTheme } from '../hooks/useTheme';
@@ -47,6 +48,11 @@ export default function ConfigArchive({ onOpenSnapshot, onClose }: ConfigArchive
   const [diffTarget, setDiffTarget] = useState<DiffTarget>('none');
   const [diffOriginal, setDiffOriginal] = useState('');
   const [diffModified, setDiffModified] = useState('');
+  // Color the diff as the device config it is (it used to be plain text).
+  const diffLanguage = useMemo(
+    () => detectConfigLanguage(diffModified || diffOriginal) ?? 'plaintext',
+    [diffModified, diffOriginal]
+  );
   const [diffLabel, setDiffLabel] = useState('');
 
   // Follow the active session's device (the panel is opened from the editor).
@@ -260,9 +266,9 @@ export default function ConfigArchive({ onOpenSnapshot, onClose }: ConfigArchive
                 <DiffEditor
                   original={diffOriginal}
                   modified={diffModified}
-                  language="plaintext"
+                  language={diffLanguage}
                   theme={editorTheme}
-                  beforeMount={defineEditorThemes}
+                  beforeMount={setupMonaco}
                   options={{
                     readOnly: true,
                     fontSize,
