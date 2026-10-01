@@ -35,6 +35,7 @@ import { openTerminalSearch, sendSearchCommand } from './utils/terminalSearch';
 import { closeSessions } from './utils/closeSessions';
 import { savedHostId, tabConfigForOpen, tabLabel } from './utils/tabs';
 import { MAX_PANES } from './utils/splitPanes';
+import { isTextEntry } from './utils/textEntry';
 import {
   findStep,
   isFindChord,
@@ -768,9 +769,7 @@ function App() {
       // Ctrl belongs to the shell; the Cmd variants (macOS) never reach the
       // PTY and stay app shortcuts everywhere.
       const target = e.target as HTMLElement | null;
-      const inEditable =
-        !!target &&
-        (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable);
+      const inEditable = isTextEntry(target);
       const shellCtrl = e.ctrlKey && !e.metaKey && inEditable;
       const inTerminal = !!target && !!target.closest?.('.xterm');
       // macOS: a Ctrl chord typed in the terminal was already sent to the
@@ -945,14 +944,8 @@ function App() {
       }
       const target = e.target as HTMLElement | null;
       if (target?.closest?.('[aria-modal="true"], [role="dialog"], .modal-backdrop')) return;
-      if (
-        target &&
-        (target.tagName === 'INPUT' ||
-          target.tagName === 'TEXTAREA' ||
-          target.isContentEditable)
-      ) {
-        return;
-      }
+      // A text field, or the Config Editor (Monaco may type into a plain div).
+      if (isTextEntry(target)) return;
       // Text selected in a panel (AI chat, API responses, Bulk Runner output,
       // help) lives in a non-focusable element, so focus is on body. Pulling
       // focus into xterm's textarea on the Ctrl/Cmd keydown dropped that
