@@ -1,4 +1,4 @@
-// Copied from casper src/secrets/patterns.ts @ 81438ae. Do not edit here: change Casper, re-copy.
+// Copied from casper src/secrets/patterns.ts @ ad678b6. Do not edit here: change Casper, re-copy.
 // ---- casper source below ----
 /**
  * Line rules for secrets in network device configuration (Aruba AOS-CX,

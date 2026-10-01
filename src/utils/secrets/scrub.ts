@@ -1,4 +1,4 @@
-// Copied from casper src/secrets/scrub.ts @ 81438ae. Do not edit here: change Casper, re-copy.
+// Copied from casper src/secrets/scrub.ts @ ad678b6. Do not edit here: change Casper, re-copy.
 // Left out here: the node:path import and the file-read rules (CODE_EXTENSIONS … shouldScrubRead).
 // ---- casper source below ----
 import {
