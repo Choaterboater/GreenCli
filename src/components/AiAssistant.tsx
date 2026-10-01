@@ -36,6 +36,7 @@ import {
   Terminal,
   AlertCircle,
   CheckCircle2,
+  EyeOff,
   Square,
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/tauri';
@@ -53,6 +54,15 @@ import {
   normalizeLineBreaks,
 } from '../utils/aiGating';
 import { pickAiSession } from '../utils/aiSession';
+import { hiddenSecretGate } from '../utils/secrets/gate';
+import {
+  prepareToolResult,
+  rawErr,
+  rawJson,
+  rawOk,
+  rawTerminal,
+  type RawToolOutcome,
+} from '../utils/secrets/forAi';
 import { Intent, evaluateAll, summarize } from '../utils/intent';
 import { savedHostId } from '../utils/tabs';
 import { useSidePanelStore } from '../store/sidePanelStore';
@@ -93,6 +103,8 @@ interface ToolExecution {
   args: Record<string, unknown>;
   result: string;
   isError?: boolean;
+  /** "2 secrets hidden before the AI saw this …", or why output was withheld. */
+  note?: string;
 }
 
 interface DisplayMessage extends ChatMessage {
@@ -158,7 +170,8 @@ ${references && references.trim()
 - Send commands one at a time and interpret each result before the next
 - For configuration changes, always confirm with the user before executing — ask "Shall I apply this?" This applies to EVERY tool that can write or change state, not just send_terminal_command — including MCP tools. Some MCP servers name their write/destructive tool explicitly (e.g. a router-pattern server exposing invoke_read_tool for reads and a separate invoke_tool for writes) — treat that naming as a hard signal, not a suggestion, and always confirm before using the write path.
 - Format configs in code blocks for easy copying to the Config Editor panel
-- You can execute show/diagnostic commands freely; be cautious with config changes`;
+- You can execute show/diagnostic commands freely; be cautious with config changes
+- GreenCLI hides device secrets (passwords, hashes, keys, SNMP communities, private keys) before you see any tool output: each value shows as \`<secret hidden>\`, and a whole line as \`<line hidden: secret>\`. Never put either marker in a command, REST body or tool argument: GreenCLI refuses the call, because it would write the marker over the real secret. To change a line that holds a hidden secret, leave that line alone or ask the user to make the change. If a result says its output is not shown, the tool ran but GreenCLI could not check the output for secrets on this system`;
 
 // ─── Prebuilt prompts ───
 
@@ -171,7 +184,8 @@ const PREBUILT_PROMPTS = [
       'SNMP (no v1/v2c public/private community, prefer v3), ' +
       'spanning-tree protections (bpdu-guard/root-guard/loop-protect on edge ports, admin-edge), ' +
       'unused/shutdown ports parked in an isolated VLAN, native-VLAN hygiene on trunks, ' +
-      'NTP + timezone, syslog/logging configured, password/secret strength, ' +
+      'NTP + timezone, syslog/logging configured, how passwords and secrets are stored ' +
+      '(values arrive hidden, so judge by type: plaintext vs hashed or ciphertext, Cisco type 7 vs type 8/9, SNMP v1/v2c vs v3), ' +
       'and any default/unsecured services. Report findings as a prioritized list ' +
       '(Critical / Warning / Info), each with the offending config line and the recommended fix command.',
   },
@@ -342,24 +356,22 @@ function mcpSafeName(server: string, tool: string): string {
 
 // ─── Execute a tool ───
 
-// Cap a tool result and mark when it was truncated, so the model knows data was
-// cut rather than treating a sliced (now-invalid) JSON document as complete.
-function capToolResult(s: string, max = 12000): string {
-  return s.length > max ? `${s.slice(0, max)}\n…(truncated ${s.length - max} more chars)` : s;
-}
-
 /** A tool call's outcome: the text fed back to the model, plus whether it was a
- * failure — so the UI can stop painting errors with a green success check. */
+ * failure — so the UI can stop painting errors with a green success check —
+ * and a note when secrets were hidden or the output was withheld. */
 interface ToolOutcome {
   text: string;
   isError: boolean;
+  note?: string;
 }
-const toolOk = (text: string): ToolOutcome => ({ text, isError: false });
-const toolErr = (text: string): ToolOutcome => ({ text, isError: true });
 
 // Write-confirmation gate for AI-issued device actions lives in
 // src/utils/aiGating.ts (imported above) so it is unit-testable.
 
+/** Every tool result leaves through here: a call that sends a hidden-secret
+ *  marker back is refused before any dialog or device contact, and every
+ *  result (errors too) has its secrets hidden, then is capped, before the
+ *  model sees it (src/utils/secrets/forAi.ts). */
 async function executeTool(
   name: string,
   args: Record<string, unknown>,
@@ -367,6 +379,19 @@ async function executeTool(
   mcpResolve?: McpResolve,
   shouldCancel?: () => boolean
 ): Promise<ToolOutcome> {
+  const refusal = hiddenSecretGate(args);
+  if (refusal) return { text: refusal, isError: true };
+  return prepareToolResult(await executeToolRaw(name, args, activeSession, mcpResolve, shouldCancel));
+}
+
+/** Runs one tool and returns its raw, uncapped output. Only executeTool may call this. */
+async function executeToolRaw(
+  name: string,
+  args: Record<string, unknown>,
+  activeSession: Session | undefined,
+  mcpResolve?: McpResolve,
+  shouldCancel?: () => boolean
+): Promise<RawToolOutcome> {
   // Re-resolve the live session: a multi-step run can outlast the user switching
   // tabs or the device disconnecting, and the value captured at send time would
   // otherwise keep targeting a stale/dead session id.
@@ -375,8 +400,8 @@ async function executeTool(
       useSessionStore.getState().sessions.find((s) => s.sessionId === activeSession!.sessionId) ??
       activeSession;
   }
-  // Route MCP tools to the connected server. Cap the result like every builtin
-  // tool — a 145-tool cloud server can return megabytes of JSON.
+  // Route MCP tools to the connected server. executeTool caps the result like
+  // every builtin tool — a 145-tool cloud server can return megabytes of JSON.
   const mcp = mcpResolve?.get(name);
   if (mcp) {
     if (aiMcpLooksWrite(mcp.tool)) {
@@ -386,18 +411,18 @@ async function executeTool(
         confirmLabel: 'Run tool',
         danger: true,
       });
-      if (!ok) return toolErr('User declined to run this MCP tool.');
+      if (!ok) return rawErr('User declined to run this MCP tool.');
     }
     try {
-      return toolOk(capToolResult(await invoke<string>('mcp_call', { server: mcp.server, tool: mcp.tool, args })));
+      return rawJson(await invoke<string>('mcp_call', { server: mcp.server, tool: mcp.tool, args }));
     } catch (e) {
-      return toolErr(`MCP tool ${mcp.server}/${mcp.tool} failed: ${e}`);
+      return rawErr(`MCP tool ${mcp.server}/${mcp.tool} failed: ${e}`);
     }
   }
   // Aruba AOS-CX on-box REST (no Central). Auto-logs-in with the SSH creds.
   if (name === 'aruba_cx_rest') {
     const host = activeSession?.config.host;
-    if (!host) return toolErr('Error: the active session has no host to query.');
+    if (!host) return rawErr('Error: the active session has no host to query.');
     const method = (args.method as string) || 'GET';
     const path = (args.path as string) || '';
     const body = (args.body as string) || undefined;
@@ -408,46 +433,46 @@ async function executeTool(
         confirmLabel: 'Run request',
         danger: method.toUpperCase() === 'DELETE',
       });
-      if (!ok) return toolErr('User declined this write request.');
+      if (!ok) return rawErr('User declined this write request.');
     }
     const doReq = () => invoke('api_request', { host, method, path, body });
     try {
-      return toolOk(capToolResult(JSON.stringify(await doReq(), null, 2)));
+      return rawJson(await doReq());
     } catch (e) {
       // Probably not logged into the REST API yet — try once with SSH creds.
       if (activeSession && (await tryDeviceLogin(activeSession, 'api_login'))) {
         try {
-          return toolOk(capToolResult(JSON.stringify(await doReq(), null, 2)));
+          return rawJson(await doReq());
         } catch (e2) {
-          return toolErr(`Aruba CX REST error: ${e2}`);
+          return rawErr(`Aruba CX REST error: ${e2}`);
         }
       }
-      return toolErr(`Could not reach the switch REST API on ${host} (${e}). It may need REST enabled (\`https-server rest access-mode read-write\`) or a login in the API panel.`);
+      return rawErr(`Could not reach the switch REST API on ${host} (${e}). It may need REST enabled (\`https-server rest access-mode read-write\`) or a login in the API panel.`);
     }
   }
   // ArubaOS 8 controller/conductor — show command as JSON (no Central).
   if (name === 'aruba_aos8_show') {
     const host = activeSession?.config.host;
-    if (!host) return toolErr('Error: the active session has no host to query.');
+    if (!host) return rawErr('Error: the active session has no host to query.');
     const command = (args.command as string) || '';
     const doReq = () => invoke('aos8_show', { host, command });
     try {
-      return toolOk(capToolResult(JSON.stringify(await doReq(), null, 2)));
+      return rawJson(await doReq());
     } catch (e) {
       if (activeSession && (await tryDeviceLogin(activeSession, 'aos8_login'))) {
         try {
-          return toolOk(capToolResult(JSON.stringify(await doReq(), null, 2)));
+          return rawJson(await doReq());
         } catch (e2) {
-          return toolErr(`AOS-8 REST error: ${e2}`);
+          return rawErr(`AOS-8 REST error: ${e2}`);
         }
       }
-      return toolErr(`Could not reach the AOS-8 controller API on ${host}:4343 (${e}).`);
+      return rawErr(`Could not reach the AOS-8 controller API on ${host}:4343 (${e}).`);
     }
   }
   // Aruba AOS-S switch on-box REST (no Central).
   if (name === 'aruba_aoss_rest') {
     const host = activeSession?.config.host;
-    if (!host) return toolErr('Error: the active session has no host to query.');
+    if (!host) return rawErr('Error: the active session has no host to query.');
     const method = (args.method as string) || 'GET';
     const path = (args.path as string) || '';
     const body = (args.body as string) || undefined;
@@ -458,33 +483,33 @@ async function executeTool(
         confirmLabel: 'Run request',
         danger: method.toUpperCase() === 'DELETE',
       });
-      if (!ok) return toolErr('User declined this write request.');
+      if (!ok) return rawErr('User declined this write request.');
     }
     const doReq = () => invoke('aoss_request', { host, method, path, body });
     try {
-      return toolOk(capToolResult(JSON.stringify(await doReq(), null, 2)));
+      return rawJson(await doReq());
     } catch (e) {
       if (activeSession && (await tryDeviceLogin(activeSession, 'aoss_login'))) {
         try {
-          return toolOk(capToolResult(JSON.stringify(await doReq(), null, 2)));
+          return rawJson(await doReq());
         } catch (e2) {
-          return toolErr(`AOS-S REST error: ${e2}`);
+          return rawErr(`AOS-S REST error: ${e2}`);
         }
       }
-      return toolErr(`Could not reach the AOS-S REST API on ${host} (${e}). It may need \`rest-interface\` enabled.`);
+      return rawErr(`Could not reach the AOS-S REST API on ${host} (${e}). It may need \`rest-interface\` enabled.`);
     }
   }
   // Evaluate desired-state intents against the live network.
   if (name === 'evaluate_network_intents') {
     try {
       const intents = await invoke<Intent[]>('intent_list');
-      if (!intents.length) return toolErr('No network intents are defined yet (add them in the Intent panel — the Target icon).');
+      if (!intents.length) return rawErr('No network intents are defined yet (add them in the Intent panel — the Target icon).');
       const sessions = useSessionStore.getState().sessions;
       const updated = await evaluateAll(intents, sessions, shouldCancel);
-      if (shouldCancel?.()) return toolErr('Intent evaluation cancelled.');
-      return toolOk(summarize(updated));
+      if (shouldCancel?.()) return rawErr('Intent evaluation cancelled.');
+      return rawOk(summarize(updated));
     } catch (e) {
-      return toolErr(`Intent evaluation failed: ${e}`);
+      return rawErr(`Intent evaluation failed: ${e}`);
     }
   }
   if (name === 'send_terminal_command') {
@@ -492,7 +517,7 @@ async function executeTool(
     // A dialog can't show a backspace or Ctrl-Z, and the device acts on them,
     // so the line the user approves may not be the line that runs: refuse.
     if (CONTROL_CHARS.test(raw)) {
-      return toolErr(
+      return rawErr(
         'Not run: the command contains control characters (such as backspace, Tab, Ctrl-Z or ESC). ' +
           'The device would act on them, so GreenCLI only sends plain text lines.'
       );
@@ -500,10 +525,10 @@ async function executeTool(
     // Every line break as \n, so the confirm dialog shows each line the device runs.
     const command = normalizeLineBreaks(raw);
     if (!activeSession) {
-      return toolErr('Error: No active terminal session. Please connect to a device first.');
+      return rawErr('Error: No active terminal session. Please connect to a device first.');
     }
     if (!activeSession.connected) {
-      return toolErr('Error: Terminal session exists but device is not connected.');
+      return rawErr('Error: Terminal session exists but device is not connected.');
     }
     if (aiIsWriteCommand(command)) {
       const ok = await askConfirm({
@@ -512,22 +537,17 @@ async function executeTool(
         confirmLabel: 'Run command',
         danger: AI_DANGER_CMD.test(command),
       });
-      if (!ok) return toolErr('User declined to run this command.');
+      if (!ok) return rawErr('User declined to run this command.');
     }
     try {
       const { output: cleaned, truncated } = await sendAndCapture(activeSession.sessionId, command);
-      if (!cleaned) {
-        const empty = `Command \`${command}\` sent — no output captured (may be interactive, paged, or still running).`;
-        return toolOk(truncated ? `[capture may be truncated]\n${empty}` : empty);
-      }
-      // Cap to keep token usage sane; keep the tail (most relevant).
-      const body = cleaned.length > 12000 ? '…(truncated)…\n' + cleaned.slice(-12000) : cleaned;
-      return toolOk(truncated ? `[capture may be truncated]\n${body}` : body);
+      // executeTool keeps the tail (most relevant) when it caps this.
+      return rawTerminal(cleaned, command, truncated);
     } catch (e) {
-      return toolErr(`Failed to run command: ${e}`);
+      return rawErr(`Failed to run command: ${e}`);
     }
   }
-  return toolErr(`Unknown tool: ${name}`);
+  return rawErr(`Unknown tool: ${name}`);
 }
 
 // ─── Streaming (token-by-token via Tauri events) ───
@@ -774,7 +794,7 @@ async function callAnthropicWithTools(
     for (const tu of round.toolUses) {
       if (shouldCancel()) throw new Error('cancelled');
       const outcome = await executeTool(tu.name, tu.input, activeSession, mcpResolve, shouldCancel);
-      onToolCall({ name: tu.name, args: tu.input, result: outcome.text, isError: outcome.isError });
+      onToolCall({ name: tu.name, args: tu.input, result: outcome.text, isError: outcome.isError, note: outcome.note });
       toolResults.push({
         type: 'tool_result',
         tool_use_id: tu.id,
@@ -894,7 +914,7 @@ async function callOpenAiCompatWithTools(
         /* ignore malformed args */
       }
       const outcome = await executeTool(tc.name, args, activeSession, mcpResolve, shouldCancel);
-      onToolCall({ name: tc.name, args, result: outcome.text, isError: outcome.isError });
+      onToolCall({ name: tc.name, args, result: outcome.text, isError: outcome.isError, note: outcome.note });
       messages.push({ role: 'tool', tool_call_id: tc.id, content: outcome.text });
     }
   }
@@ -1028,6 +1048,11 @@ const MessageItem = memo(function MessageItem({ msg }: { msg: DisplayMessage }) 
                     <code className="text-[10px] text-[var(--accent-info)] font-mono flex-1 truncate">
                       {(te.args.command as string) || te.name}
                     </code>
+                    {te.note && (
+                      <span title={te.note} aria-label={te.note} className="flex-shrink-0 flex">
+                        <EyeOff size={9} className="text-[var(--text-muted)]" />
+                      </span>
+                    )}
                     {te.isError ? (
                       <AlertCircle size={9} className="text-[var(--accent-danger)] flex-shrink-0" />
                     ) : (
@@ -1041,6 +1066,12 @@ const MessageItem = memo(function MessageItem({ msg }: { msg: DisplayMessage }) 
                   </button>
                   {open && (
                     <div className="px-2.5 py-2 bg-[var(--bg-primary)] border-t border-[var(--border)] max-h-64 overflow-auto">
+                      {te.note && (
+                        <p className="mb-1.5 flex items-center gap-1 text-[10px] text-[var(--text-muted)]">
+                          <EyeOff size={9} className="flex-shrink-0" />
+                          {te.note}
+                        </p>
+                      )}
                       <pre className="text-[10px] text-[var(--text-secondary)] font-mono whitespace-pre-wrap break-words">{te.result}</pre>
                     </div>
                   )}
