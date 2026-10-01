@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.1] - 2026-10-01
+
+### Security
+- **Typing in the Config Editor could go to the device.** GreenCLI hands keys pressed outside a text
+  field back to the terminal. In a Chromium WebView (WebView2, so the Windows app), the editor takes
+  typed text in a plain element instead of a text field, so with a session connected every key went
+  to that session: typing a line and Enter in the editor ran it on the switch, and the editor stayed
+  empty. Keys typed in the editor now stay in the editor, and editor shortcuts (Ctrl+F, Ctrl+K, …)
+  are the editor's again.
+
 ## [1.6.0] - 2026-10-01
 
 ### Added
