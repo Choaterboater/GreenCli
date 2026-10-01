@@ -1,6 +1,6 @@
-// Copied from casper src/secrets/prose.ts @ 073055e. Do not edit here: change Casper, re-copy.
+// Copied from casper src/secrets/prose.ts @ 406a3f7. Do not edit here: change Casper, re-copy.
 // ---- casper source below ----
-import { keepLiterally, KIND_ORDER, type SecretKind } from "./patterns";
+import { keepLiterally, KIND_ORDER, replaceSpans, windowedSpans, type SecretKind } from "./patterns";
 import { SECRET_MARKER, type ScrubTextResult } from "./scrub";
 
 /**
@@ -82,10 +82,31 @@ const RULES: ProseRule[] = [
   // is the secret).
   { re: new RegExp(String.raw`(?:\b(?:tokens?|secrets?|api[ _-]?keys?)\b(?!\s+ids?\b)|![\w.-]+)[^\n]{0,80}?(?<![\w-])(${UUID})(?![\w-])`, "gid"), group: 1, kind: "key", accept: () => true },
   { re: /\bPVEAPIToken\s*=\s*[^\s'"=]+=([^\s'"]+)/gid, group: 1, kind: "key", accept: (value) => anyValue(value) },
-  // token=<uuid or long hex>, api_secret: <uuid> (not token_id, which names a token).
-  { re: new RegExp(String.raw`\b(?![\w-]*token[-_]?id\b)[\w-]*(?:token|secret|apikey|api_key|api-key)[\w-]*["']?\s*[=:]\s*["']?(${UUID}|[0-9a-fA-F]{32,})\b`, "gid"),
-    group: 1, kind: "key", accept: () => true },
+  // token=<uuid or long hex>, api_secret: <uuid> (not token_id, which names a token). The regex takes the whole name,
+  // starting where the name starts, and tokenName() checks it, so a long name is read once, not from every letter.
+  // The name is taken whole, with no backing up into it (a match needs all of it); the value is only looked at, not
+  // taken, so a name tokenName() turns down does not hide the next name from the search.
+  { re: new RegExp(String.raw`(?<![\w-])(?=([\w-]+))\1(?=["']?\s*[=:]\s*["']?(${UUID}|[0-9a-fA-F]{32,})\b)`, "gid"),
+    group: 2, kind: "key", accept: (_value, match) => tokenName(match[1]!) },
 ];
+
+const TOKEN_ID = /token[-_]?id\b/gi;
+const TOKEN_WORD = /token|secret|apikey|api_key|api-key/i;
+
+/**
+ * Whether the name before token=<uuid> marks a secret. The rule used to start at any word start inside the name and
+ * skip a start that had token_id after it, so a name counts when, from its first word start after the last
+ * token_id, it still holds token, secret or api key.
+ */
+function tokenName(name: string): boolean {
+  let from = 0;
+  for (const match of name.matchAll(TOKEN_ID)) from = match.index + 1;
+  for (let at = from; at < name.length; at++) {
+    const word = /\w/.test(name[at]!);
+    if (word !== (at > 0 && /\w/.test(name[at - 1]!))) return TOKEN_WORD.test(name.slice(at));
+  }
+  return false;
+}
 
 /** Table headers whose column holds secrets. */
 const SECRET_HEADER = /^(?:passwords?|passwd|pass|pw|pwd|secrets?|tokens?|api ?keys?|api ?tokens?|psk|pre-shared keys?|credentials?|creds|passphrases?|keys?|community)$/i;
@@ -105,6 +126,28 @@ function cells(line: string): Array<{ start: number; end: number; text: string }
   return out;
 }
 
+/** The rule hits in one line (or one window of a long line). */
+function ruleSpans(line: string): Span[] {
+  const spans: Span[] = [];
+  for (const rule of RULES) {
+    rule.re.lastIndex = 0;
+    for (let match = rule.re.exec(line); match; match = rule.re.exec(line)) {
+      const value = match[rule.group];
+      const at = match.indices?.[rule.group];
+      if (!value || !at || value.includes(SECRET_MARKER) || keepLiterally(value)) continue;
+      if (!rule.accept(value, match)) continue;
+      let start = at[0];
+      let end = at[1];
+      if (/^(['"]).+\1$/s.test(value)) { start++; end--; }
+      // Trailing sentence punctuation is not part of the value.
+      const trail = /[.,;:)\]]+$/.exec(value);
+      if (trail && trail[0].length < value.length && !/^['"]/.test(value)) end -= trail[0].length;
+      spans.push({ start, end, kind: rule.kind });
+    }
+  }
+  return spans;
+}
+
 /** Hide the prose, table and token forms above. */
 export function scrubProseSecrets(text: string): ScrubTextResult {
   const lines = text.split("\n");
@@ -114,23 +157,7 @@ export function scrubProseSecrets(text: string): ScrubTextResult {
   let columns: number[] | undefined;
   for (let index = 0; index < lines.length; index++) {
     const line = lines[index]!;
-    const spans: Span[] = [];
-    for (const rule of RULES) {
-      rule.re.lastIndex = 0;
-      for (let match = rule.re.exec(line); match; match = rule.re.exec(line)) {
-        const value = match[rule.group];
-        const at = match.indices?.[rule.group];
-        if (!value || !at || value.includes(SECRET_MARKER) || keepLiterally(value)) continue;
-        if (!rule.accept(value, match)) continue;
-        let start = at[0];
-        let end = at[1];
-        if (/^(['"]).+\1$/s.test(value)) { start++; end--; }
-        // Trailing sentence punctuation is not part of the value.
-        const trail = /[.,;:)\]]+$/.exec(value);
-        if (trail && trail[0].length < value.length && !/^['"]/.test(value)) end -= trail[0].length;
-        spans.push({ start, end, kind: rule.kind });
-      }
-    }
+    const spans: Span[] = windowedSpans(line, ruleSpans);
     if (TABLE_ROW.test(line)) {
       const row = cells(line);
       if (/^[\s|│┃:\-─═╞╪╡├┼┤+]+$/.test(line)) { /* a separator row */ }
@@ -164,9 +191,8 @@ export function scrubProseSecrets(text: string): ScrubTextResult {
       if (last && span.start < last.end) { last.end = Math.max(last.end, span.end); continue; }
       merged.push({ ...span });
     }
-    let next = line;
-    for (const span of merged.reverse()) { next = next.slice(0, span.start) + SECRET_MARKER + next.slice(span.end); kinds.add(span.kind); }
-    lines[index] = next;
+    for (const span of merged) kinds.add(span.kind);
+    lines[index] = replaceSpans(line, merged, SECRET_MARKER);
     hidden += merged.length;
   }
   return { text: hidden ? lines.join("\n") : text, hidden, kinds: KIND_ORDER.filter((kind) => kinds.has(kind)) };

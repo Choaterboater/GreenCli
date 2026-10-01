@@ -1,4 +1,4 @@
-// Copied from casper src/secrets/patterns.ts @ 073055e. Do not edit here: change Casper, re-copy.
+// Copied from casper src/secrets/patterns.ts @ 406a3f7. Do not edit here: change Casper, re-copy.
 // ---- casper source below ----
 /**
  * Line rules for secrets in network device configuration (Aruba AOS-CX,
@@ -100,6 +100,62 @@ export const SECRET_RULES: readonly SecretRule[] = [
   rule("generic-hash", "generic", "hash",
     String.raw`\b(?:password|secret|hash|passwd)\b[^\n]*?(\$(?:1|5|6|8|y|2[aby]?)\$[^\s";'{}]+)`),
 ];
+
+/** Lines up to this length are checked whole, exactly as written. */
+export const LONG_LINE = 4096;
+/** How far the windows of a longer line overlap: a match up to this long always fits inside one window. */
+export const WINDOW_OVERLAP = 512;
+
+/**
+ * Run `find` on a line and return its spans. A line longer than LONG_LINE (minified code, one-line JSON) is checked
+ * in windows of LONG_LINE characters that overlap by WINDOW_OVERLAP, because some rules take time that grows with
+ * the square of the text they read: a 500 KB minified file took seconds. Every match up to WINDOW_OVERLAP long lies
+ * wholly inside one window, and a window's edges only add matches (they look like the start or end of the text).
+ * A value that runs into a window's end may go on, so it is checked again from just before it (see valueEnd).
+ */
+export function windowedSpans<T extends { start: number; end: number }>(line: string, find: (text: string) => T[]): T[] {
+  if (line.length <= LONG_LINE) return find(line);
+  const spans: T[] = [];
+  const step = LONG_LINE - WINDOW_OVERLAP;
+  for (let offset = 0; ; offset += step) {
+    const end = Math.min(line.length, offset + LONG_LINE);
+    for (const span of find(line.slice(offset, end))) {
+      const start = offset + span.start;
+      const cut = offset + span.end >= end && end < line.length;
+      spans.push({ ...span, start, end: cut ? valueEnd(line, find, start) : offset + span.end });
+    }
+    if (end === line.length) return spans;
+  }
+}
+
+/**
+ * Where a value that ran into a window's end really ends: `find` runs again on a window that starts WINDOW_OVERLAP
+ * before the value, so the words before it are there too. If that window can't settle it (the value runs into its end
+ * as well, or the match isn't found again), the rest of the line is hidden.
+ */
+function valueEnd<T extends { start: number; end: number }>(line: string, find: (text: string) => T[], start: number): number {
+  const from = Math.max(0, start - WINDOW_OVERLAP);
+  const end = Math.min(line.length, from + LONG_LINE);
+  let stop: number | undefined;
+  for (const span of find(line.slice(from, end))) {
+    if (from + span.start > start || from + span.end <= start) continue;
+    if (from + span.end >= end && end < line.length) return line.length;
+    stop = Math.max(stop ?? 0, from + span.end);
+  }
+  return stop ?? line.length;
+}
+
+/** The line with each span (sorted, not overlapping) replaced by `marker`, built in one pass: replacing them one at a
+ * time copied a long line once per secret. */
+export function replaceSpans(line: string, spans: readonly { start: number; end: number }[], marker: string): string {
+  let out = "";
+  let at = 0;
+  for (const span of spans) {
+    out += line.slice(at, span.start) + marker;
+    at = span.end;
+  }
+  return out + line.slice(at);
+}
 
 /** Values that must pass through unchanged and are never counted. */
 export function keepLiterally(value: string): boolean {
