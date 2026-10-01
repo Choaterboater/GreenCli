@@ -16,50 +16,67 @@ const E = '(?![\\w-])';
 // An optional `do ` prefix (exec command run from config mode).
 const DO = '^\\s*(?:do\\s+)?';
 
-const DANGEROUS_PATTERNS: RegExp[] = [
+// Each pattern with what it does to the device, in plain words, for the
+// editor's squiggles and the Send dialog.
+const DANGER_RULES: Array<{ re: RegExp; reason: string }> = [
   // Wipe / factory-reset / reboot.
-  new RegExp(`${DO}erase${E}`, 'i'),
-  new RegExp(`${DO}write\\s+erase${E}`, 'i'),
-  new RegExp(`${T}zeroize${E}`, 'i'),
+  { re: new RegExp(`${DO}erase${E}`, 'i'), reason: 'erases the config or storage' },
+  { re: new RegExp(`${DO}write\\s+erase${E}`, 'i'), reason: 'erases the saved config' },
+  { re: new RegExp(`${T}zeroize${E}`, 'i'), reason: 'wipes the device back to factory state' },
   // `reload cancel` just cancels a scheduled reload.
-  new RegExp(`${DO}reload${E}(?!\\s+cancel)`, 'i'),
-  new RegExp(`${DO}(?:request\\s+system\\s+)?(?:reboot|halt|power-off)${E}`, 'i'),
+  { re: new RegExp(`${DO}reload${E}(?!\\s+cancel)`, 'i'), reason: 'reboots the switch' },
+  {
+    re: new RegExp(`${DO}(?:request\\s+system\\s+)?(?:reboot|halt|power-off)${E}`, 'i'),
+    reason: 'reboots or powers off the device',
+  },
   // AOS-CX reboots with `boot system`.
-  new RegExp(`${DO}boot\\s+system${E}`, 'i'),
+  { re: new RegExp(`${DO}boot\\s+system${E}`, 'i'), reason: 'reboots the switch' },
   // Junos: a bare `delete` wipes the whole candidate config; `load override`
   // / `load factory-default` replace it.
-  /^\s*delete\s*$/i,
-  /^\s*delete\s+configuration\b/i,
-  /^\s*load\s+(?:override|factory-default)\b/i,
+  { re: /^\s*delete\s*$/i, reason: 'deletes the whole candidate config' },
+  { re: /^\s*delete\s+configuration\b/i, reason: 'deletes the whole candidate config' },
+  { re: /^\s*load\s+(?:override|factory-default)\b/i, reason: 'replaces the whole config' },
   // Deleting the whole system hierarchy, or the parts that carry management
   // access (SSH, logins, root password). Other `delete system …` is routine.
-  /^\s*delete\s+system(?:\s*$|\s+(?:services|login|root-authentication)\b)/i,
+  {
+    re: /^\s*delete\s+system(?:\s*$|\s+(?:services|login|root-authentication)\b)/i,
+    reason: 'removes management access (SSH, logins or the root password)',
+  },
   // Taking something down. `shutdown` counts only when the line isn't a
   // `no …` negation: `no shutdown` (and `no ip ospf shutdown`) bring things
   // UP, and flagging them buried the real warnings.
-  new RegExp(`^(?!\\s*no\\s).*${T}shutdown${E}`, 'i'),
+  { re: new RegExp(`^(?!\\s*no\\s).*${T}shutdown${E}`, 'i'), reason: 'shuts it down' },
   // Junos equivalents of shutdown.
-  /^\s*set\s+interfaces\s+\S+(?:\s+unit\s+\S+)?\s+disable\s*$/i,
-  /^\s*deactivate\s+interfaces\b/i,
+  { re: /^\s*set\s+interfaces\s+\S+(?:\s+unit\s+\S+)?\s+disable\s*$/i, reason: 'disables the interface' },
+  { re: /^\s*deactivate\s+interfaces\b/i, reason: 'deactivates interfaces' },
   // Removing interfaces, VLANs, or a whole routing process.
-  /^\s*no\s+interface\b/i,
-  /^\s*no\s+vlan\s+\d/i,
-  /^\s*no\s+router\s+\S+/i,
+  { re: /^\s*no\s+interface\b/i, reason: 'removes the interface' },
+  { re: /^\s*no\s+vlan\s+\d/i, reason: 'removes the VLAN' },
+  { re: /^\s*no\s+router\s+\S+/i, reason: 'removes the routing process' },
   // Overwriting a config from elsewhere. `copy running-config startup-config`
   // is the normal SAVE step, so it is NOT flagged — same as Junos `commit`,
   // the required apply step: flagging those trained people to ignore the
   // warning entirely.
-  /^\s*copy\s+(?!run(?:ning-config)?\b)(?:\S+\s+){1,3}(?:start(?:up-config)?|run(?:ning-config)?)\b/i,
+  {
+    re: /^\s*copy\s+(?!run(?:ning-config)?\b)(?:\S+\s+){1,3}(?:start(?:up-config)?|run(?:ning-config)?)\b/i,
+    reason: 'overwrites the config from another copy',
+  },
 ];
 
 // Free text (descriptions, names, banners) can say anything — `description
 // shutdown after cutover` is not a shutdown. Blank it out before matching.
 const FREE_TEXT = /(^|[^\w-])(description|name|alias|banner(?:\s+\S+)?)(?![\w-])\s+.*$/i;
 
+/** What a dangerous config line does, in plain words ("reboots the switch"),
+ *  or undefined when the line is not dangerous. */
+export function dangerReason(line: string): string | undefined {
+  const cmd = line.replace(/"[^"]*"|'[^']*'/g, '""').replace(FREE_TEXT, '$1$2');
+  return DANGER_RULES.find((rule) => rule.re.test(cmd))?.reason;
+}
+
 /** True when a config line would erase, reboot, shut down, or remove something. */
 export function isDangerousLine(line: string): boolean {
-  const cmd = line.replace(/"[^"]*"|'[^']*'/g, '""').replace(FREE_TEXT, '$1$2');
-  return DANGEROUS_PATTERNS.some((p) => p.test(cmd));
+  return dangerReason(line) !== undefined;
 }
 
 // ─── Lines to send ───

@@ -446,3 +446,9 @@ input[type='checkbox'] { accent-color: var(--accent); }
     scroll-behavior: auto !important;
   }
 }
+
+/* Monaco's F8 problem peek titles itself with the model's file name; editor
+   tabs use an internal id as the model name, so hide it and keep "1 of 3 problems". */
+.monaco-editor .peekview-widget .peekview-title .filename {
+  display: none;
+}
