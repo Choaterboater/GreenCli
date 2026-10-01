@@ -436,6 +436,8 @@ export interface Grammar {
     number: RegExp;
   };
   promptPattern: RegExp;
+  /** A whole-line comment (`! …` Aruba, `# …` Junos). None for generic output, where `# ` is a root shell prompt. */
+  lineComment?: RegExp;
 }
 
 export interface TerminalTheme {
@@ -476,7 +478,8 @@ export const DARK_TERMINAL_THEME: TerminalTheme = {
   magenta: '#d2a8ff',
   cyan: '#56d4dd',
   white: '#c9d1d9',
-  brightBlack: '#484f58',
+  // Dim gray for comments and device "faint" text; #484f58 was ≈2.3:1 on the background.
+  brightBlack: '#6e7681',
   brightRed: '#ffa198',
   brightGreen: '#56d364',
   brightYellow: '#e3b341',

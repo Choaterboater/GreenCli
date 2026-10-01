@@ -23,6 +23,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   start of a line (or pick from *Snippets*), then Tab from blank to blank.
 - **Diff → compare with what you pulled.** The Diff button is now a menu: the running-config you
   pulled from each device, or a file. Opening a file no longer replaces what you pulled.
+- **Right-click → Open in Editor** in a session: the selected text opens in a new Config Editor tab
+  in the device's language (trailing spaces and blank edges trimmed), and the Editor panel opens.
+
+### Fixed
+- **SSH session colors follow the theme.** The syntax highlighter used fixed 256-colors tuned for
+  one background, so on white some were hard to read (ports/IPs ≈ 2.6:1) and in dark the prompt and
+  comments were dim. It now uses the terminal theme's own colors: light/dark and any color scheme
+  (Dracula, Nord, …) apply, text already on screen re-colors when you switch, and every color meets
+  the AA contrast bar on GreenCLI's backgrounds (comments, meant to be dim, at least 4:1). The dark
+  theme's gray is lighter (#6e7681) for the same reason.
+- **Comment lines are dimmed** in sessions: `!` lines on Aruba and `#` / `/* */` lines on Junos. The
+  comment color existed but nothing used it.
 
 ### Security
 - **The AI no longer sees device secrets.** Every AI tool result (terminal output, device REST,
