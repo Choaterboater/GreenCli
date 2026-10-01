@@ -100,6 +100,12 @@ green-cli/
 
 ## Quick Start
 
+### Runs on
+
+- **macOS 13.3 (Ventura) or newer.** Older macOS versions lack features the app needs to hide device secrets from the AI.
+- **Windows 10/11** with the WebView2 runtime.
+- **Linux** with a recent WebKitGTK. On an old WebKitGTK, the AI panel withholds device output instead of sending it unchecked.
+
 ### Prerequisites
 
 - [Node.js](https://nodejs.org/) 18+ and npm
@@ -192,6 +198,7 @@ The syntax highlighter supports **232 commands**, **288 subcommands**, and **144
 - Password-protected credential vault
 - **Device REST TLS verification on by default** (opt out only for self-signed lab gear)
 - **TOFU SSH host-key pinning**, with a warning when a known host offers an unseen host-key algorithm
+- **Device secrets hidden from the AI**: passwords, keys, SNMP communities and private keys in tool output reach the model as `<secret hidden>`
 - SSH private keys held in zeroized memory (wiped on drop)
 
 ## License

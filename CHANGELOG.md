@@ -21,6 +21,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Comment lines are dimmed** in sessions: `!` lines on Aruba and `#` / `/* */` lines on Junos. The
   comment color existed but nothing used it.
 
+### Security
+- **The AI no longer sees device secrets.** Every AI tool result (terminal output, device REST,
+  MCP results, intent summaries and error text) goes through one secret filter before the model
+  sees it. Passwords, hashes, RADIUS/TACACS keys, SNMP communities and SNMPv3 pass phrases,
+  Wi-Fi and VPN keys, and private keys show as `<secret hidden>`, and the tool row gets an
+  "N secrets hidden" note. The rules come from Casper (`src/utils/secrets/`, copied, with a check
+  that the copies still match). Secrets are hidden first and the result is capped after, so a cut
+  can't drop a `BEGIN PRIVATE KEY` or `snmp {` line and leak what follows it. A page the AI gets by
+  pressing Space at `--More--` is checked as if it starts inside a block.
+- A tool call that sends `<secret hidden>` back (a command, REST body or MCP argument) is refused
+  before any dialog or device contact: it would write the marker over the real secret.
+- If the filter can't run on a system (an old Linux WebKitGTK), the AI gets "output not shown"
+  instead of unchecked output.
+
+### Changed
+- macOS 13.3 (Ventura) or newer is required: the secret filter needs regex features older macOS
+  WebKit lacks. The TypeScript target and lib move to ES2022.
+- The best-practices audit judges password storage by type (plaintext vs hashed, Cisco type 7 vs
+  8/9), since values now arrive hidden. A well-known default SNMP community (public/private) is
+  still reported, without showing which one.
+
 ## [1.5.1] - 2026-10-01
 
 ### Security
