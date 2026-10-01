@@ -1,6 +1,5 @@
 import { useState, useRef, useEffect, useCallback, useMemo, useDeferredValue } from 'react';
 import Editor, { DiffEditor, OnMount } from '@monaco-editor/react';
-import { defineEditorThemes } from './editorThemes';
 import ConfigArchive from './ConfigArchive';
 import { copyText } from '../utils/clipboard';
 import type { editor as MonacoEditor } from 'monaco-editor';
@@ -23,6 +22,8 @@ import {
   Plus,
   RefreshCw,
   Square,
+  XCircle,
+  Info,
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/tauri';
 import { useSessionStore } from '../store/sessionStore';
@@ -33,7 +34,11 @@ import { useSidePanelStore } from '../store/sidePanelStore';
 import { askConfirm, askPrompt } from '../store/dialogStore';
 import { generateId } from '../utils';
 import { profileForSession } from '../utils/deviceProfiles';
-import { ArubaHighlighter } from '../syntax';
+import { setupMonaco } from '../editor/setup';
+import { detectConfigLanguage, wordSeparatorsFor } from '../editor/networkLanguages';
+import { CONFIG_SNIPPETS, toMonacoSnippet } from '../editor/snippets';
+import { MAX_PROBLEMS, buildProblems, problemSummary, rejectedLineProblem, type ConfigProblem } from '../utils/configProblems';
+import { timeAgo } from '../store/recentStore';
 import { useTheme } from '../hooks/useTheme';
 import { isTauri, tauriOpen, tauriSave, tauriReadText, tauriWriteText, browserOpen, browserSave } from '../utils/fileSystem';
 import {
@@ -156,15 +161,6 @@ function detectLanguage(filePath: string): string {
 }
 
 // ─── Language list for picker ───
-
-// Same vendor detection the terminal uses, so pasting a device config into a
-// blank editor lights up with CLI-style colors without picking a language.
-const DEVICE_DETECTOR = ArubaHighlighter.forDeviceType('generic');
-function detectConfigLanguage(text: string): string | null {
-  if (text.length < 40) return null;
-  const detected = DEVICE_DETECTOR.detectDeviceType(text.slice(0, 16_000));
-  return detected === 'generic' ? null : detected;
-}
 
 const LANGUAGE_LIST = [
   { id: 'aruba-cx',         label: 'Aruba CX' },
@@ -420,44 +416,6 @@ set protocols evpn extended-vni-list all
 `,
 };
 
-const ARUBA_KEYWORDS = [
-  // Aruba AOS-CX / AOS-S
-  'show', 'configure', 'interface', 'vlan', 'router', 'ip', 'aaa',
-  'ntp', 'snmp', 'logging', 'spanning-tree', 'lacp', 'bgp', 'ospf',
-  'no', 'shutdown', 'description', 'access', 'trunk', 'native',
-  'allowed', 'remote-as', 'neighbor', 'area', 'network', 'exit',
-  'write', 'copy', 'ping', 'traceroute', 'end', 'hostname', 'username',
-  'password', 'enable', 'disable', 'default', 'address-family',
-  'unicast', 'activate', 'route-map', 'prefix-list', 'permit', 'deny',
-  // Juniper Junos (set-style + hierarchy)
-  'set', 'delete', 'commit', 'rollback', 'family', 'ethernet-switching',
-  'interface-mode', 'members', 'vlan-id', 'vlans', 'protocols',
-  'routing-options', 'autonomous-system', 'group', 'peer-as', 'unit',
-  'inet', 'native-vlan-id', 'irb', 'p2p',
-];
-
-const EDITOR_SNIPPETS: Record<string, string> = {
-  'Common: hostname': 'hostname ${hostname}\n',
-  'Common: syslog + NTP': `logging \${syslog_server}
-ntp server \${ntp_server}
-`,
-  'AOS-CX: access port': `interface \${interface}
-    description \${description}
-    no shutdown
-    vlan access \${vlan_id}
-`,
-  'AOS-S: access port': `vlan \${vlan_id}
-   name "\${vlan_name}"
-   untagged \${port}
-   exit
-`,
-  'Junos: access port': `set vlans \${vlan_name} vlan-id \${vlan_id}
-set interfaces \${interface} unit 0 family ethernet-switching interface-mode access
-set interfaces \${interface} unit 0 family ethernet-switching vlan members \${vlan_name}
-`,
-  'Junos/Mist: commit confirmed': 'commit confirmed 5 comment "GreenCLI change"\n',
-};
-
 // ─── Pull menu (per device type) ───
 
 // Per-vendor paging control + running-config command. AOS-CX/AOS-S use
@@ -552,21 +510,6 @@ function buildOutline(text: string): OutlineItem[] {
     }
   });
   return items.slice(0, 100);
-}
-
-function buildDiagnostics(text: string, language: string): string[] {
-  const diagnostics: string[] = [];
-  if (hasAnsi(text)) diagnostics.push('Terminal escape/control codes found.');
-  const lines = text.split('\n').map((line) => line.trim()).filter(Boolean);
-  const risky = lines.filter(isDangerousLine);
-  if (risky.length) diagnostics.push(`${risky.length} risky command${risky.length === 1 ? '' : 's'} detected.`);
-  if (/juniper|mist/.test(language) && lines.some((line) => /^(set|delete|replace)\b/i.test(line)) && !lines.some((line) => /^commit\b/i.test(line))) {
-    diagnostics.push('Junos-style edits do not include a commit line.');
-  }
-  if (/\$\{[^}]+\}|<replace-me>|<[^>\n]{2,}>/.test(text)) {
-    diagnostics.push('Template placeholders still need values.');
-  }
-  return diagnostics;
 }
 
 // ─── Component ───
@@ -672,6 +615,8 @@ export default function ConfigEditor() {
   const [showOutline, setShowOutline] = useState(false);
   const [showLangPicker, setShowLangPicker] = useState(false);
   const [showPullMenu, setShowPullMenu] = useState(false);
+  const [showProblems, setShowProblems] = useState(false);
+  const [showCompareMenu, setShowCompareMenu] = useState(false);
   const [langSearch, setLangSearch] = useState('');
 
   const [sending, setSending] = useState(false);
@@ -705,6 +650,9 @@ export default function ConfigEditor() {
 
   const editorRef = useRef<MonacoEditor.IStandaloneCodeEditor | null>(null);
   const monacoRef = useRef<typeof import('monaco-editor') | null>(null);
+  // Bumped on every editor mount (the editor remounts after a Diff), so the
+  // problem markers are put back on the new editor's model.
+  const [editorEpoch, setEditorEpoch] = useState(0);
   const saveFileRef = useRef<(forcePicker?: boolean) => Promise<void>>();
   const openFileRef = useRef<() => Promise<void>>();
 
@@ -735,13 +683,57 @@ export default function ConfigEditor() {
   );
 
   const activeSession = sessions.find((s) => s.sessionId === activeSessionId);
-  // Recompute the outline/diagnostics against a DEFERRED copy of the content so the
-  // full-buffer reparse (buildOutline/buildDiagnostics scan every line) runs at low
+  // Recompute the outline/problems against a DEFERRED copy of the content so the
+  // full-buffer reparse (buildOutline/buildProblems scan every line) runs at low
   // priority instead of on the keystroke path. Monaco's value={content} below still
   // updates synchronously, so typing stays responsive on multi-thousand-line configs.
   const deferredContent = useDeferredValue(content);
   const outlineItems = useMemo(() => buildOutline(deferredContent), [deferredContent]);
-  const diagnostics = useMemo(() => buildDiagnostics(deferredContent, language), [deferredContent, language]);
+  const baseProblems = useMemo(() => buildProblems(deferredContent, language), [deferredContent, language]);
+  // The line the switch rejected on the last Send joins the list (red), quoting the switch.
+  const problems = useMemo(() => {
+    if (!sendReport || sendReport.bufferId !== active.id) return baseProblems;
+    const rejected = rejectedLineProblem(deferredContent, sendReport.lineNumber, sendReport.deviceText);
+    if (!rejected) return baseProblems;
+    return [rejected, ...baseProblems].sort((a, b) => a.lineNumber - b.lineNumber || a.startColumn - b.startColumn);
+  }, [baseProblems, sendReport, active.id, deferredContent]);
+  const problemCounts = useMemo(
+    () => ({
+      error: problems.filter((p) => p.severity === 'error').length,
+      warning: problems.filter((p) => p.severity === 'warning').length,
+      info: problems.filter((p) => p.severity === 'info').length,
+    }),
+    [problems]
+  );
+
+  // Problems as Monaco markers: squiggles, hover text, scrollbar marks, and
+  // F8 / Shift+F8 to step through them. Skipped while the deferred copy lags
+  // the editor (mid-typing or just after a tab switch) so markers are never
+  // computed from another buffer's text; Monaco moves the old ones with edits.
+  useEffect(() => {
+    const monaco = monacoRef.current;
+    const model = editorRef.current?.getModel();
+    if (!monaco || !model || diffMode || deferredContent !== content) return;
+    const severity = {
+      error: monaco.MarkerSeverity.Error,
+      warning: monaco.MarkerSeverity.Warning,
+      info: monaco.MarkerSeverity.Info,
+    };
+    monaco.editor.setModelMarkers(
+      model,
+      'greencli-config',
+      problems.map((p) => ({
+        startLineNumber: p.lineNumber,
+        endLineNumber: p.lineNumber,
+        startColumn: p.startColumn,
+        endColumn: Math.max(p.endColumn, p.startColumn + 1),
+        severity: severity[p.severity],
+        message: p.message,
+        source: 'GreenCLI',
+        code: p.code,
+      }))
+    );
+  }, [problems, editorEpoch, diffMode, deferredContent, content]);
 
   useEffect(() => { contentRef.current = content; }, [content]);
 
@@ -891,31 +883,39 @@ export default function ConfigEditor() {
     showStatus('Stripped terminal escapes');
   }, []);
 
-  const insertSnippet = useCallback((name: string) => {
-    const snippet = EDITOR_SNIPPETS[name];
+  // Insert a snippet from the menu. Through Monaco's snippet controller its
+  // blanks become Tab stops (Tab to the next, Esc when done), like typing its prefix.
+  const insertSnippet = useCallback((label: string) => {
+    const snippet = CONFIG_SNIPPETS.find((item) => item.label === label);
+    setShowSnippets(false);
     if (!snippet) return;
     const editor = editorRef.current;
-    if (!editor) {
-      setContent((prev) => `${prev}${prev.endsWith('\n') ? '' : '\n'}${snippet}`);
+    if (!editor || !editor.getModel()) {
+      setContent((prev) => `${prev}${prev.endsWith('\n') || !prev ? '' : '\n'}${snippet.body}`);
       setIsDirty(true);
       return;
     }
-    const model = editor.getModel();
-    if (!model) return;
-    const selection = editor.getSelection();
-    editor.executeEdits('greencli-snippet', [
-      {
-        range: selection ?? model.getFullModelRange(),
-        text: snippet,
-        forceMoveMarkers: true,
-      },
-    ]);
+    const controller = editor.getContribution('snippetController2') as unknown as { insert(template: string): void } | null;
     editor.focus();
-    const next = editor.getValue();
-    setContent(next);
-    setIsDirty(true);
-    setShowSnippets(false);
-    showStatus(`Inserted ${name}`);
+    if (controller) controller.insert(toMonacoSnippet(snippet.body));
+    else editor.trigger('greencli-snippet', 'type', { text: snippet.body });
+    showStatus(`Inserted ${label} — Tab moves to the next blank`);
+  }, []);
+
+  // Select a problem's text and show it (from the problem list).
+  const jumpToProblem = useCallback((problem: ConfigProblem) => {
+    const editor = editorRef.current;
+    const model = editor?.getModel();
+    setShowProblems(false);
+    if (!editor || !model || problem.lineNumber > model.getLineCount()) return;
+    editor.revealLineInCenter(problem.lineNumber);
+    editor.setSelection({
+      startLineNumber: problem.lineNumber,
+      startColumn: problem.startColumn,
+      endLineNumber: problem.lineNumber,
+      endColumn: problem.endColumn,
+    });
+    editor.focus();
   }, []);
 
   const jumpToOutlineItem = useCallback((item: OutlineItem) => {
@@ -993,8 +993,6 @@ export default function ConfigEditor() {
         const device = deviceKey(activeSession.config);
         baselinesRef.current.set(device, baseline);
         lastBaselineRef.current = baseline;
-        setDiffOriginal(out);
-        setDiffSource({ label: `running-config from ${baseline.label}`, device });
         showStatus(
           truncated
             ? 'Running-config pulled; baseline may be truncated'
@@ -1021,8 +1019,20 @@ export default function ConfigEditor() {
     await pullCommand(cmd, cmd);
   }, [pullCommand]);
 
+  // Diff the editor against a running-config pulled earlier (kept per device).
+  const compareWithPulled = useCallback((device: string) => {
+    setShowCompareMenu(false);
+    const baseline = baselinesRef.current.get(device);
+    if (!baseline) return;
+    setDiffOriginal(baseline.text);
+    setDiffSource({ label: `running-config from ${baseline.label}, pulled ${timeAgo(baseline.pulledAt)}`, device });
+    setDiffMode(true);
+    showStatus('Diff: left = what you pulled, right = editor');
+  }, []);
+
   // Open a baseline file and diff it against the current editor content.
   const openDiffAgainst = useCallback(async () => {
+    setShowCompareMenu(false);
     try {
       let text: string | null = null;
       let name = '';
@@ -1096,29 +1106,9 @@ export default function ConfigEditor() {
     editorRef.current = ed;
     monacoRef.current = monaco;
 
-    // Register network config languages. They share the same first-pass tokenizer;
-    // profile-specific keywords/templates drive the safer workflows around it.
-    const networkLanguageIds = ['aruba-cx', 'aruba-aos-s', 'aruba-ap', 'aruba-controller', 'juniper-junos', 'mist', 'generic'];
-    networkLanguageIds.forEach((id) => monaco.languages.register({ id }));
-    const networkTokenizer = {
-      keywords: ARUBA_KEYWORDS,
-      tokenizer: {
-        root: [
-          [/^!.*$/, 'comment'],
-          [/\b(?:\d{1,3}\.){3}\d{1,3}(?:\/\d{1,2})?\b/, 'number.float'],
-          [/\b\d+\/\d+\/\d+\b/, 'type'],
-          [/\bvlan\s+\d+\b/, 'keyword'],
-          [/\b\d+\b/, 'number'],
-          [
-            /\b(?:show|configure|interface|vlan|router|ip|aaa|ntp|snmp|bgp|ospf|no|shutdown|description|access|trunk|native|allowed|exit|write|ping|end|hostname|username|password|enable|disable|neighbor|area|network|route-map|prefix-list|permit|deny|address-family|unicast|activate)\b/,
-            'keyword',
-          ],
-          [/".*?"/, 'string'],
-          [/'.*?'/, 'string'],
-        ],
-      },
-    } as Parameters<typeof monaco.languages.setMonarchTokensProvider>[1];
-    networkLanguageIds.forEach((id) => monaco.languages.setMonarchTokensProvider(id, networkTokenizer));
+    // Device languages, themes and snippets are registered once in
+    // setupMonaco (beforeMount) — this runs again after every Diff toggle.
+    setEditorEpoch((n) => n + 1);
 
     // Keybindings
     ed.addAction({
@@ -1163,6 +1153,8 @@ export default function ConfigEditor() {
 
     const target = activeSession.config.name || activeSession.config.host || 'device';
     const risky = lines.filter(isDangerousLine);
+    // From the live text, not the deferred copy the toolbar uses: a blank typed a moment ago still counts.
+    const unfilled = buildProblems(content, language).filter((p) => p.severity === 'error');
     const diffSummary = describeSendBaseline(
       content,
       target,
@@ -1180,12 +1172,13 @@ export default function ConfigEditor() {
       const ok = await askConfirm({
         title: `Send ${lines.length} line${lines.length === 1 ? '' : 's'} to ${target}?`,
         message:
+          `${unfilled.length ? `${unfilled.length} line${unfilled.length === 1 ? ' still has a blank' : 's still have blanks'} or a hidden-secret marker (see the problem list): the switch would get that text as it is.\n\n` : ''}` +
           `${risky.length ? `Potentially dangerous lines detected: ${risky.slice(0, 5).join(' | ')}\n\n` : ''}` +
           `${diffSummary}\n\n` +
           `Sending stops at the first error the device reports.\n\n` +
           `Preview:\n${preview}${lines.length > 12 ? '\n…' : ''}`,
         confirmLabel: 'Send',
-        danger: risky.length > 0,
+        danger: risky.length > 0 || unfilled.length > 0,
       });
       if (!ok) return;
 
@@ -1556,16 +1549,21 @@ export default function ConfigEditor() {
           {showSnippets && (
             <>
               <div className="fixed inset-0 z-20" onClick={() => setShowSnippets(false)} />
-              <div className="absolute top-full left-0 mt-1 z-30 min-w-[220px] bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg shadow-xl py-1">
-                {Object.keys(EDITOR_SNIPPETS).map((name) => (
+              <div className="absolute top-full left-0 mt-1 z-30 min-w-[260px] bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg shadow-xl py-1">
+                {CONFIG_SNIPPETS.map((snippet) => (
                   <button
-                    key={name}
-                    onClick={() => insertSnippet(name)}
-                    className="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] text-left"
+                    key={snippet.label}
+                    onClick={() => insertSnippet(snippet.label)}
+                    className="grid grid-cols-[1fr_auto] gap-3 w-full px-3 py-1.5 text-xs text-left hover:bg-[var(--bg-tertiary)]"
+                    title={snippet.description}
                   >
-                    {name}
+                    <span className="text-[var(--text-primary)]">{snippet.label}</span>
+                    <code className="text-[10px] text-[var(--text-muted)]">{snippet.prefix}</code>
                   </button>
                 ))}
+                <p className="px-3 pt-1.5 mt-1 border-t border-[var(--border)] text-[10px] text-[var(--text-muted)]">
+                  Or type the word on the right at the start of a line. Tab moves to the next blank.
+                </p>
               </div>
             </>
           )}
@@ -1656,17 +1654,71 @@ export default function ConfigEditor() {
           )}
         </div>
 
-        {/* Diff against a baseline file */}
-        <button
-          onClick={() => (diffMode ? setDiffMode(false) : openDiffAgainst())}
-          className={`flex items-center gap-1.5 px-2 py-1 text-xs rounded transition-colors ${
-            diffMode ? 'text-[var(--accent)] bg-[var(--accent-soft)]' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
-          }`}
-          title="Compare the editor against a file"
-        >
-          <GitCompare size={12} />
-          {diffMode ? 'Exit Diff' : 'Diff'}
-        </button>
+        {/* Compare: with a running-config you pulled (kept per device) or a file.
+            Picking a file no longer replaces what you pulled. */}
+        <div className="relative">
+          <button
+            onClick={() => {
+              if (diffMode) {
+                setDiffMode(false);
+                return;
+              }
+              setShowCompareMenu(!showCompareMenu);
+            }}
+            className={`flex items-center gap-1.5 px-2 py-1 text-xs rounded transition-colors ${
+              diffMode ? 'text-[var(--accent)] bg-[var(--accent-soft)]' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
+            }`}
+            title="Compare the editor with what you pulled, or with a file"
+          >
+            <GitCompare size={12} />
+            {diffMode ? 'Exit Diff' : 'Diff'}
+            {!diffMode && <ChevronDown size={10} />}
+          </button>
+          {showCompareMenu && !diffMode && (
+            <>
+              <div className="fixed inset-0 z-20" onClick={() => setShowCompareMenu(false)} />
+              <div className="absolute top-full left-0 mt-1 z-30 w-72 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg shadow-xl py-1">
+                {(() => {
+                  const activeDevice = activeSession ? deviceKey(activeSession.config) : null;
+                  const pulled = [...baselinesRef.current.entries()].sort(
+                    ([a], [b]) => Number(b === activeDevice) - Number(a === activeDevice)
+                  );
+                  if (!pulled.length) {
+                    return (
+                      <p className="px-3 py-1.5 text-xs text-[var(--text-muted)]">
+                        Nothing pulled yet. Pull the running-config to compare with it.
+                      </p>
+                    );
+                  }
+                  return pulled.map(([device, baseline]) => (
+                    <button
+                      key={device}
+                      onClick={() => compareWithPulled(device)}
+                      className="block w-full px-3 py-1.5 text-left hover:bg-[var(--bg-tertiary)]"
+                    >
+                      <span className="block text-xs text-[var(--text-primary)] truncate">
+                        Running-config from {baseline.label}
+                        {device === activeDevice ? ' (this session)' : ''}
+                      </span>
+                      <span className="block text-[10px] text-[var(--text-muted)]">
+                        pulled {timeAgo(baseline.pulledAt)}
+                        {baseline.truncated ? ' · may be cut off' : ''}
+                      </span>
+                    </button>
+                  ));
+                })()}
+                <div className="my-1 border-t border-[var(--border)]" />
+                <button
+                  onClick={openDiffAgainst}
+                  className="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] text-left"
+                >
+                  <FolderOpen size={12} />
+                  A file…
+                </button>
+              </div>
+            </>
+          )}
+        </div>
 
         {/* Config archive history + golden diff */}
         <button
@@ -1682,14 +1734,65 @@ export default function ConfigEditor() {
 
         <div className="flex-1" />
 
-        {diagnostics.length > 0 && (
-          <span
-            className="flex items-center gap-1 text-[10px] text-[var(--accent-warning)] mr-1"
-            title={diagnostics.join('\n')}
-          >
-            <AlertTriangle size={11} />
-            {diagnostics.length}
-          </span>
+        {/* Problems: counts by kind; opens a list that jumps to each one. F8 steps through them in the editor. */}
+        {problems.length > 0 && (
+          <div className="relative mr-1">
+            <button
+              onClick={() => setShowProblems(!showProblems)}
+              className="flex items-center gap-2 px-1.5 py-0.5 text-[10px] rounded hover:bg-[var(--bg-tertiary)]"
+              title={`${problemSummary(problems)} — click for the list, F8 for the next one`}
+              aria-label={`Problems: ${problemSummary(problems)}`}
+            >
+              {problemCounts.error > 0 && (
+                <span className="flex items-center gap-0.5 text-[var(--accent-danger)]">
+                  <XCircle size={11} />
+                  {problemCounts.error}
+                </span>
+              )}
+              {problemCounts.warning > 0 && (
+                <span className="flex items-center gap-0.5 text-[var(--accent-warning)]">
+                  <AlertTriangle size={11} />
+                  {problemCounts.warning}
+                </span>
+              )}
+              {problemCounts.info > 0 && (
+                <span className="flex items-center gap-0.5 text-[var(--accent-info)]">
+                  <Info size={11} />
+                  {problemCounts.info}
+                </span>
+              )}
+            </button>
+            {showProblems && (
+              <>
+                <div className="fixed inset-0 z-20" onClick={() => setShowProblems(false)} />
+                <div className="absolute top-full right-0 mt-1 z-30 w-[26rem] max-w-[80vw] bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg shadow-xl py-1">
+                  <div className="max-h-72 overflow-y-auto">
+                    {problems.map((problem, index) => (
+                      <button
+                        key={`${problem.lineNumber}-${problem.startColumn}-${problem.code}-${index}`}
+                        onClick={() => jumpToProblem(problem)}
+                        disabled={diffMode}
+                        className="grid grid-cols-[1rem_2.75rem_1fr] items-start gap-1 w-full px-3 py-1.5 text-xs text-left hover:bg-[var(--bg-tertiary)] disabled:hover:bg-transparent"
+                      >
+                        {problem.severity === 'error' ? (
+                          <XCircle size={12} className="mt-0.5 text-[var(--accent-danger)]" />
+                        ) : problem.severity === 'warning' ? (
+                          <AlertTriangle size={12} className="mt-0.5 text-[var(--accent-warning)]" />
+                        ) : (
+                          <Info size={12} className="mt-0.5 text-[var(--accent-info)]" />
+                        )}
+                        <span className="text-[var(--text-muted)]">L{problem.lineNumber}</span>
+                        <span className="text-[var(--text-primary)]">{problem.message}</span>
+                      </button>
+                    ))}
+                  </div>
+                  <p className="px-3 pt-1.5 mt-1 border-t border-[var(--border)] text-[10px] text-[var(--text-muted)]">
+                    {baseProblems.length >= MAX_PROBLEMS ? `Showing the first ${MAX_PROBLEMS}. ` : ''}F8 next · Shift+F8 previous
+                  </p>
+                </div>
+              </>
+            )}
+          </div>
         )}
         {statusMsg && <span className="text-[10px] text-[var(--text-secondary)] mr-1">{statusMsg}</span>}
 
@@ -1785,7 +1888,7 @@ export default function ConfigEditor() {
             modified={content}
             language={language}
             theme={editorTheme}
-            beforeMount={defineEditorThemes}
+            beforeMount={setupMonaco}
             options={{
               readOnly: true,
               fontSize: fontSize,
@@ -1811,7 +1914,7 @@ export default function ConfigEditor() {
             // Language auto-detect runs from a debounced effect (see above) so it
             // isn't re-scanned on every keystroke.
           }}
-          beforeMount={defineEditorThemes}
+          beforeMount={setupMonaco}
           onMount={handleEditorMount}
           options={{
             // Follow the persisted terminal font size (W2-11): Ctrl+= / Ctrl+-
@@ -1831,10 +1934,14 @@ export default function ConfigEditor() {
             cursorBlinking: 'smooth',
             smoothScrolling: true,
             padding: { top: 12, bottom: 12 },
-            overviewRulerLanes: 0,
+            // Problem marks in the scrollbar, like VS Code.
             hideCursorInOverviewRuler: true,
             renderWhitespace: 'none',
             folding: true,
+            // A double-click picks 1/1/5 or ge-0/0/0.100 whole in device configs.
+            wordSeparators: wordSeparatorsFor(language),
+            // The block you're in (interface 1/1/1, vlan 10, a Junos { }) stays on top as you scroll.
+            stickyScroll: { enabled: true, defaultModel: 'indentationModel' },
             lineNumbersMinChars: 3,
             contextmenu: true,
             quickSuggestions: true,
