@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { MAX_PROBLEMS, buildProblems, problemSummary, rejectedLineProblem } from './configProblems';
+import { MAX_PROBLEMS, buildProblems, problemSummary, rejectedLineProblem, sendProblemNote } from './configProblems';
 
 describe('buildProblems', () => {
   it('underlines a risky line with what it does, from its first word to its end', () => {
@@ -97,5 +97,31 @@ describe('problemSummary', () => {
     const problems = buildProblems('reload\nshutdown\nvlan ${id}\nset vlans a vlan-id 1', 'juniper-junos');
     expect(problemSummary(problems)).toBe('1 error, 2 warnings, 1 tip');
     expect(problemSummary([])).toBe('');
+  });
+});
+
+describe('sendProblemNote', () => {
+  it('counts, then lists errors first with their lines', () => {
+    const problems = buildProblems('reload\nvlan ${id}\nset vlans a vlan-id 1', 'juniper-junos');
+    expect(sendProblemNote(problems)).toBe(
+      [
+        '1 error, 1 warning, 1 tip:',
+        'Error, line 2: Fill in ${id} before sending: the switch would get this text as it is.',
+        'Warning, line 1: Risky: this reboots the switch. Check it before you send.',
+        'Tip, line 3: Junos changes do nothing until a commit. Add "commit confirmed 5" so the box rolls back if you lose access.',
+      ].join('\n')
+    );
+  });
+
+  it('shows the first few and points to the panel for the rest', () => {
+    const problems = buildProblems(Array.from({ length: 8 }, () => 'reload').join('\n'), 'aruba-cx');
+    const note = sendProblemNote(problems, 3).split('\n');
+    expect(note).toHaveLength(5);
+    expect(note[0]).toBe('8 warnings:');
+    expect(note[4]).toBe('…and 5 more in the Problems panel.');
+  });
+
+  it('is empty with nothing to report', () => {
+    expect(sendProblemNote([])).toBe('');
   });
 });

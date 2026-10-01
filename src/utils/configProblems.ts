@@ -145,6 +145,27 @@ export function rejectedLineProblem(text: string, lineNumber: number, deviceText
   };
 }
 
+const SEVERITY_ORDER: Record<ProblemSeverity, number> = { error: 0, warning: 1, info: 2 };
+const SEVERITY_WORD: Record<ProblemSeverity, string> = { error: 'Error', warning: 'Warning', info: 'Tip' };
+
+/**
+ * The problem part of the Send dialog: the count, then the first few, errors
+ * first, each with its line. Empty when there are none.
+ */
+export function sendProblemNote(problems: readonly ConfigProblem[], max = 5): string {
+  if (!problems.length) return '';
+  const ordered = [...problems].sort(
+    (a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity] || a.lineNumber - b.lineNumber
+  );
+  const shown = ordered.slice(0, max).map((p) => `${SEVERITY_WORD[p.severity]}, line ${p.lineNumber}: ${p.message}`);
+  const more = ordered.length - shown.length;
+  return [
+    `${problemSummary(problems)}:`,
+    ...shown,
+    ...(more > 0 ? [`…and ${more} more in the Problems panel.`] : []),
+  ].join('\n');
+}
+
 /** "1 error, 3 warnings, 1 tip" — empty when there are none. */
 export function problemSummary(problems: readonly ConfigProblem[]): string {
   const count = (severity: ProblemSeverity) => problems.filter((p) => p.severity === severity).length;
