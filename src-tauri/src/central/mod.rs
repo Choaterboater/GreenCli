@@ -57,9 +57,9 @@ async fn token_request(
         .form(&params)
         .send()
         .await
-        .map_err(|e| format!("{}: {}", url, e))?;
+        .map_err(|e| format!("{}: {}", url, e.without_url()))?;
     let status = resp.status();
-    let text = resp.text().await.map_err(|e| format!("{}: {}", url, e))?;
+    let text = resp.text().await.map_err(|e| format!("{}: {}", url, e.without_url()))?;
     if !status.is_success() {
         return Err(format!(
             "{}: HTTP {}: {}",

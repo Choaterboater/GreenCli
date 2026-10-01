@@ -54,6 +54,6 @@ impl From<serde_json::Error> for AppError {
 
 impl From<reqwest::Error> for AppError {
     fn from(err: reqwest::Error) -> Self {
-        AppError::ApiError(err.to_string())
+        AppError::ApiError(err.without_url().to_string())
     }
 }

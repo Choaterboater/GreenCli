@@ -36,6 +36,10 @@ const SECRET_SETTING_KEYS = new Set<keyof TerminalSettings>([
   'centralClientSecret',
   'centralToken',
   'mistToken',
+  // Slack/Teams incoming-webhook URLs work as bearer tokens. A backup must not
+  // carry one, and importing one would send every drift alert to whoever
+  // wrote the file. Secret keys are skipped on export AND on import.
+  'intentWebhookUrl',
 ]);
 
 const UNSAFE_IMPORT_SETTING_KEYS = new Set<keyof TerminalSettings>([

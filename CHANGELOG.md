@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.1] - 2026-10-01
+
+### Security
+
+- **AI terminal commands can't hide extra lines.** A command the AI sends is now
+  split on every line break the device treats as Enter, a bare carriage return
+  included. Before, `show version` followed by `\r` and config lines passed as
+  a read and ran with no prompt. Commands with control characters (backspace,
+  Tab, Ctrl-Z, ESC) are refused, because the device acts on them and the line
+  you approve may not be the line that runs. The Bulk Runner, multi-send bar
+  and Change Job checks use the same line rules.
+- **The AI never types into a local tab.** With no device connected, the AI's
+  terminal tool used to fall back to the active local tab: a shell, or a
+  Claude/Kimi/Copilot CLI. It now only uses device sessions (SSH, Telnet,
+  Serial) and says so when none is connected.
+- **The AI's REST tools stay on the device.** `aruba_cx_rest` and
+  `aruba_aoss_rest` refuse absolute URLs and anything that isn't a path
+  starting with `/`, enforced in the backend. The API Explorer still accepts
+  a full URL you type.
+- **HTTP error messages no longer include the URL.** The AOS-8 session token
+  (`UIDARUBA`) rides in the query string, so a failed request could put it in
+  an error the AI reads. Device, Central and MCP errors now leave the URL out.
+- **The intent webhook URL is treated as a secret.** Slack/Teams webhook URLs
+  work as passwords: they are left out of backups, a backup can no longer set
+  one, and logs name only the host. The plain-http loopback check no longer
+  accepts host names that merely start with `127.`.
+- **Files that can hold secrets are owner-only on macOS and Linux.** Saved
+  sessions (startup commands), the MCP server list, intents and the config
+  archive are written `0600` in folders only you can open, and files an
+  older version wrote readable by other local users are fixed at startup.
+
+### Fixed
+
+- An intent's case-sensitive setting is kept when the intent is saved.
+
+### CI
+
+- Releases run the full test and lint workflow before building installers.
+- CI runs the production-bundle smoke test and a Windows compile check.
+
 ## [1.5.0] - 2026-09-27
 
 ### Added
