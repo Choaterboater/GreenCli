@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Config Editor problems, like VS Code.** Risky lines ("reboots the switch", "removes the VLAN"),
+  blanks still to fill in (`${vlan_id}`, `<replace-me>`, a hidden-secret marker), terminal junk
+  from a captured log, and a Junos edit with no commit are underlined, marked in the scrollbar,
+  and counted in the toolbar ("1 error, 2 warnings"). Click the count for a list that jumps to
+  each one; F8 / Shift+F8 step through them. Comment lines, which are never sent, are never
+  flagged. The line the switch rejected on Send shows in red with the switch's own words, and the
+  Send dialog warns when a blank or marker is still in the text.
+- **The editor knows Aruba and Junos.** Ctrl+/ comments a line (`!` for Aruba, `#` and `/* */`
+  for Junos); a double-click picks `1/1/5`, `ge-0/0/0.100` or `10.1.1.1/24` whole; brackets
+  match; blanks show in bold amber; the keyword list colors the text (it was never hooked up);
+  the block you're in stays on top as you scroll. The archive's diff uses the device's colors too.
+- **Snippets you Tab through.** Type `cx-access`, `cx-trunk`, `cx-lag`, `junos-trunk`, … at the
+  start of a line (or pick from *Snippets*), then Tab from blank to blank.
+- **Diff → compare with what you pulled.** The Diff button is now a menu: the running-config you
+  pulled from each device, or a file. Opening a file no longer replaces what you pulled.
+
 ### Security
 - **The AI no longer sees device secrets.** Every AI tool result (terminal output, device REST,
   MCP results, intent summaries and error text) goes through one secret filter before the model

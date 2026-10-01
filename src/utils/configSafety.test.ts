@@ -4,6 +4,7 @@ vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn() }));
 vi.mock('@tauri-apps/api/tauri', () => ({ invoke: vi.fn() }));
 
 import {
+  dangerReason,
   isDangerousLine,
   prepareSendLines,
   hasDeviceError,
@@ -77,6 +78,38 @@ describe('isDangerousLine', () => {
     expect(isDangerousLine('no vlan access 20')).toBe(false);
     expect(isDangerousLine('no router bgp 65001')).toBe(true);
     expect(isDangerousLine('vlan access 20')).toBe(false);
+  });
+});
+
+describe('dangerReason', () => {
+  it('says what each kind of risky line does, in plain words', () => {
+    for (const [line, reason] of [
+      ['erase startup-config', 'erases the config or storage'],
+      ['write erase', 'erases the saved config'],
+      ['request system zeroize', 'wipes the device back to factory state'],
+      ['do reload', 'reboots the switch'],
+      ['request system reboot', 'reboots or powers off the device'],
+      ['boot system primary', 'reboots the switch'],
+      ['delete', 'deletes the whole candidate config'],
+      ['load override terminal', 'replaces the whole config'],
+      ['delete system services ssh', 'removes management access (SSH, logins or the root password)'],
+      ['shutdown', 'shuts it down'],
+      ['set interfaces ge-0/0/1 disable', 'disables the interface'],
+      ['deactivate interfaces ge-0/0/1', 'deactivates interfaces'],
+      ['no interface 1/1/1', 'removes the interface'],
+      ['no vlan 10', 'removes the VLAN'],
+      ['no router ospf', 'removes the routing process'],
+      ['copy tftp://10.0.0.5/cfg startup-config', 'overwrites the config from another copy'],
+    ] as const) {
+      expect([line, dangerReason(line)]).toEqual([line, reason]);
+    }
+  });
+
+  it('is undefined exactly when isDangerousLine is false', () => {
+    for (const line of ['no shutdown', 'reload cancel', 'copy running-config startup-config', 'commit', 'description shutdown after cutover', 'show version']) {
+      expect([line, dangerReason(line)]).toEqual([line, undefined]);
+      expect(isDangerousLine(line)).toBe(false);
+    }
   });
 });
 
