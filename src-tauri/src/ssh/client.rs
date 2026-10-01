@@ -790,6 +790,10 @@ impl SshConnection {
     }
 }
 
+// Clippy 1.99 flags the `#[must_use]` that async_trait (0.1.89) puts on each
+// generated method, whose boxed-future return type is already must_use. The
+// code is ours to keep; the lint is about the macro's output.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait Connection: Send + Sync {
     async fn connect(&mut self) -> Result<ConnectResponse, AppError>;
