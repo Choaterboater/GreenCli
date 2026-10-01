@@ -22,6 +22,10 @@ feature overview see the top-level [`README.md`](../README.md); for the work log
 | [Rust](https://rustup.rs/) stable, **1.85+** (MSRV; russh 0.63 requirement) | Build the Tauri/Rust backend |
 | Tauri OS build tools | Native webview + bundling — see [Tauri prerequisites](https://tauri.app/v1/guides/getting-started/prerequisites) |
 
+**The app runs on** macOS 13.3 (Ventura) or newer, Windows 10/11, and Linux with a recent WebKitGTK. The
+secret filter that protects the AI panel needs regex features older macOS WebKit lacks; on an old Linux
+WebKitGTK the AI panel withholds device output rather than send it unchecked.
+
 **Per-OS Tauri deps (summary — follow the link above for specifics):**
 - **macOS**: Xcode Command Line Tools (`xcode-select --install`).
 - **Windows**: Microsoft C++ Build Tools + the WebView2 runtime.
@@ -157,6 +161,28 @@ Open the AI panel from the title bar. Settings → **AI + MCP → AI Assistant**
 
 Responses stream token-by-token for every provider; **Stop** actually aborts the
 backend request (the provider stops generating), not just the UI.
+
+### Secrets hidden from the AI
+
+Every tool result goes through a secret filter before the AI sees it: terminal output, device
+REST, MCP results, intent summaries and error text. Passwords, hashes, RADIUS/TACACS keys, SNMP
+communities and SNMPv3 pass phrases, Wi-Fi and VPN keys, and private keys show as
+`<secret hidden>` (a whole line as `<line hidden: secret>`). The tool row in the chat shows an
+eye-off icon with "N secrets hidden before the AI saw this". The AI still sees what kind of line
+it is (`password ciphertext <secret hidden>`), so audits still work.
+
+- The AI can't send a marker back: a command, REST body or MCP argument with `<secret hidden>`
+  in it is refused, because it would write the marker over the real secret. To change such a
+  line, edit it yourself.
+- Known limits: it hides known formats (Aruba AOS-CX / AOS-S / AOS 8, Junos, Cisco, plus
+  `KEY=VALUE`, `user:password@` and common note styles). An unknown format can still get
+  through. Text you type into the chat yourself is sent as you typed it.
+- Lines longer than 8 KB are hidden whole (device output never has lines that long).
+- The filter needs regex lookbehind. On a system without it (an old Linux WebKitGTK), the AI
+  gets "output not shown" instead of unchecked output.
+- The rules are shared with Casper: `src/utils/secrets/` holds copies of Casper's
+  `src/secrets` files. To update them after a Casper change, with Casper checked out next to
+  this repo: `CASPER_SYNC_WRITE=1 npx vitest run src/utils/secrets/casperSync.test.ts`.
 
 ---
 
@@ -311,6 +337,7 @@ live compliance:
 - SSH uses **TOFU** host-key pinning (`known_hosts.json`); a changed key is rejected.
 - No secrets in `localStorage`; no telemetry / outbound calls except the providers and
   devices you configure.
+- Device secrets in AI tool output are hidden before the AI sees them (§5).
 - Device REST TLS verification defaults to **on** for new installs (§8); disabling it
   shows an interception warning in Settings.
 
