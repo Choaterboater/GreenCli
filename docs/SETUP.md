@@ -294,8 +294,14 @@ live compliance:
   - **Problems**: risky lines ("reboots the switch"), blanks still to fill in (`${vlan_id}`,
     `<replace-me>`, a hidden-secret marker), terminal junk from a captured log, and a Junos edit
     with no commit are underlined, marked in the scrollbar, and counted in the toolbar. Click
-    the count for the list; **F8** / **Shift+F8** steps through them. A line the switch rejected
-    on Send shows in red with the switch's own words. Comment lines are never flagged.
+    the count (or press **Ctrl+Shift+M**) for the **Problems panel** under the editor: every
+    problem with its line, filterable by kind; a click selects it. **F8** / **Shift+F8** steps
+    through them. A line the switch rejected on Send shows in red with the switch's own words.
+    Comment lines are never flagged. The Send dialog lists them too ("1 error, 2 warnings").
+  - **Status line** under the editor: where Send goes (the terminal tab's name), that device's
+    CLI, **CONFIG MODE** when its prompt shows it, and how long ago you pulled its
+    running-config. A tab for another vendor (a Junos tab with an Aruba CX session) gets a red
+    warning, and the Send dialog says it too.
   - **Aruba and Junos smarts**: **Ctrl+/** comments a line (`!` for Aruba, `#` for Junos);
     a double-click picks `1/1/5` or `ge-0/0/0.100` whole; the block you're in stays on top as
     you scroll.
@@ -325,6 +331,7 @@ live compliance:
 | `Ctrl+Shift+A` | Toggle API Explorer |
 | `Ctrl+Shift+I` | Toggle AI Assistant |
 | `Ctrl+Shift+E` | Toggle Config Editor |
+| `Ctrl+Shift+M` | Config Editor: show or hide the Problems panel |
 | `Ctrl+=` / `Ctrl+-` | Zoom terminal font in / out |
 | `Ctrl+0` | Reset terminal font size |
 
