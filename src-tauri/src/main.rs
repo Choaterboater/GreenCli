@@ -9,6 +9,7 @@ mod error;
 mod intent;
 mod local;
 mod mcp;
+mod private_fs;
 mod securecrt;
 mod serial;
 mod session;
@@ -1795,13 +1796,12 @@ async fn intent_webhook_notify(url: String, payload: serde_json::Value) -> Resul
     // them cleartext. HTTPS only, except loopback targets (local alert bridges
     // like a localhost relay). Unlike delivery failures below, a policy
     // rejection IS returned so a misconfigured webhook is visible to the user.
-    let parsed = reqwest::Url::parse(&url).map_err(|e| format!("Invalid webhook URL: {}", e))?;
-    let host = parsed.host_str().unwrap_or_default();
-    let is_loopback = host.eq_ignore_ascii_case("localhost")
-        || host == "::1"
-        || host.starts_with("127.");
-    if parsed.scheme() != "https" && !is_loopback {
-        log::warn!("intent webhook rejected (non-HTTPS, non-loopback): {url}");
+    // The URL itself is a secret (Slack/Teams webhooks work as bearer tokens),
+    // so errors and logs name only its host.
+    let parsed = reqwest::Url::parse(&url).map_err(|_| "Invalid webhook URL".to_string())?;
+    let host = parsed.host_str().unwrap_or_default().to_string();
+    if parsed.scheme() != "https" && !api::is_loopback_host(&parsed) {
+        log::warn!("intent webhook to {host} rejected (non-HTTPS, non-loopback)");
         return Err(
             "Webhook URL must use https:// (plain http:// is only allowed for loopback hosts)"
                 .to_string(),
@@ -1811,14 +1811,14 @@ async fn intent_webhook_notify(url: String, payload: serde_json::Value) -> Resul
         .timeout(std::time::Duration::from_secs(10))
         .build()
         .map_err(|e| e.to_string())?;
-    match client.post(&url).json(&payload).send().await {
+    match client.post(parsed).json(&payload).send().await {
         Ok(resp) if resp.status().is_success() => Ok(()),
         Ok(resp) => {
-            log::warn!("intent webhook {url} returned HTTP {}", resp.status());
+            log::warn!("intent webhook to {host} returned HTTP {}", resp.status());
             Ok(())
         }
         Err(e) => {
-            log::warn!("intent webhook {url} failed: {e}");
+            log::warn!("intent webhook to {host} failed: {}", e.without_url());
             Ok(())
         }
     }
@@ -2018,8 +2018,14 @@ async fn api_request(
     method: String,
     path: String,
     body: Option<String>,
+    allow_absolute: Option<bool>,
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
+    // Only the API Explorer may pass an absolute URL; the AI's REST tool and
+    // any other caller get a path on this device.
+    if !allow_absolute.unwrap_or(false) {
+        api::require_device_path(&path)?;
+    }
     let client = {
         let clients = state.api_clients.lock().await;
         clients.get(&host).cloned()
@@ -2113,8 +2119,13 @@ async fn aoss_request(
     method: String,
     path: String,
     body: Option<String>,
+    allow_absolute: Option<bool>,
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
+    // Only the API Explorer may pass an absolute URL (see api_request).
+    if !allow_absolute.unwrap_or(false) {
+        api::require_device_path(&path)?;
+    }
     let client = {
         let clients = state.aoss_clients.lock().await;
         clients.get(&host).cloned()
@@ -2583,6 +2594,11 @@ fn main() {
                 .path_resolver()
                 .app_data_dir()
                 .expect("Failed to get app data dir");
+            // Saved sessions, intents, MCP servers and archived configs can hold
+            // secrets: keep the folder this user's only, and fix files an older
+            // version wrote world-readable.
+            let _ = private_fs::private_dir(&app_dir);
+            private_fs::tighten_app_dir(&app_dir);
             let state = AppState::new(app_dir)?;
             app.manage(state);
 

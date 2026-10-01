@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { aiIsWriteCommand, aiMcpLooksWrite } from './aiGating';
+import { aiIsWriteCommand, aiMcpLooksWrite, CONTROL_CHARS, normalizeLineBreaks } from './aiGating';
 
 describe('aiIsWriteCommand', () => {
   it('flags obvious writes', () => {
@@ -37,6 +37,33 @@ describe('aiIsWriteCommand', () => {
     expect(aiIsWriteCommand('show version\ncommit')).toBe(true);
     expect(aiIsWriteCommand('show version\nshow vlan')).toBe(false);
     expect(aiIsWriteCommand('\n\nshow version\n')).toBe(false);
+  });
+
+  it('splits on a bare \\r too (the device treats it as Enter)', () => {
+    expect(aiIsWriteCommand('show version\rconfigure terminal\rinterface 1/1/1\rshutdown')).toBe(true);
+    expect(aiIsWriteCommand('show version\r\nreload')).toBe(true);
+    expect(aiIsWriteCommand('show version\rshow vlan')).toBe(false);
+  });
+
+  it('treats control characters as a write (backspace, Ctrl-U, Ctrl-Z, Tab, ESC)', () => {
+    expect(aiIsWriteCommand('show\b\b\b\bconf t')).toBe(true);
+    expect(aiIsWriteCommand('show version\x15configure')).toBe(true);
+    expect(aiIsWriteCommand('show vlan\x1a')).toBe(true);
+    expect(aiIsWriteCommand('sh\tconf')).toBe(true);
+    expect(aiIsWriteCommand('show \x1b[A')).toBe(true);
+  });
+});
+
+describe('CONTROL_CHARS', () => {
+  it('ignores line breaks and printable text', () => {
+    expect(CONTROL_CHARS.test('show version\nshow vlan\r\n')).toBe(false);
+    expect(CONTROL_CHARS.test('show interface 1/1/1 | include "up"')).toBe(false);
+  });
+});
+
+describe('normalizeLineBreaks', () => {
+  it('turns every line break into \\n so the dialog shows each line', () => {
+    expect(normalizeLineBreaks('a\rb\r\nc\nd')).toBe('a\nb\nc\nd');
   });
 });
 

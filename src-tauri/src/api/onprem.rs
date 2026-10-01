@@ -55,14 +55,18 @@ impl Aos8Client {
             .form(&[("username", username), ("password", password)])
             .send()
             .await
-            .map_err(|e| AppError::ApiError(format!("AOS-8 login request failed: {}", e)))?;
+            .map_err(|e| {
+                AppError::ApiError(format!("AOS-8 login request failed: {}", e.without_url()))
+            })?;
         // Check the HTTP status BEFORE parsing — a 401/403/503 often returns an HTML
         // error page, which would otherwise surface as a confusing "parse failed".
         let status = resp.status();
         let text = resp
             .text()
             .await
-            .map_err(|e| AppError::ApiError(format!("AOS-8 login read failed: {}", e)))?;
+            .map_err(|e| {
+                AppError::ApiError(format!("AOS-8 login read failed: {}", e.without_url()))
+            })?;
         if !status.is_success() {
             let snippet: String = text.chars().take(200).collect();
             return Err(AppError::AuthError(format!(
@@ -105,7 +109,7 @@ impl Aos8Client {
             .get(&url)
             .send()
             .await
-            .map_err(|e| AppError::ApiError(e.to_string()))?;
+            .map_err(|e| AppError::ApiError(e.without_url().to_string()))?;
         Ok((resp.status().as_u16(), resp.text().await.unwrap_or_default()))
     }
 
@@ -146,7 +150,7 @@ impl Aos8Client {
                 rb = rb.header("Content-Type", "application/json").body(b.to_string());
             }
         }
-        let resp = rb.send().await.map_err(|e| AppError::ApiError(e.to_string()))?;
+        let resp = rb.send().await.map_err(|e| AppError::ApiError(e.without_url().to_string()))?;
         Ok((resp.status().as_u16(), resp.text().await.unwrap_or_default()))
     }
 }
@@ -175,7 +179,9 @@ impl AossClient {
             .json(&serde_json::json!({ "userName": username, "password": password }))
             .send()
             .await
-            .map_err(|e| AppError::ApiError(format!("AOS-S login request failed: {}", e)))?;
+            .map_err(|e| {
+                AppError::ApiError(format!("AOS-S login request failed: {}", e.without_url()))
+            })?;
         if resp.status().is_success() {
             Ok(())
         } else {
@@ -209,7 +215,7 @@ impl AossClient {
                 rb = rb.header("Content-Type", "application/json").body(b.to_string());
             }
         }
-        let resp = rb.send().await.map_err(|e| AppError::ApiError(e.to_string()))?;
+        let resp = rb.send().await.map_err(|e| AppError::ApiError(e.without_url().to_string()))?;
         Ok((resp.status().as_u16(), resp.text().await.unwrap_or_default()))
     }
 }
@@ -269,7 +275,7 @@ impl MistClient {
                 rb = rb.header("Content-Type", "application/json").body(b.to_string());
             }
         }
-        let resp = rb.send().await.map_err(|e| AppError::ApiError(e.to_string()))?;
+        let resp = rb.send().await.map_err(|e| AppError::ApiError(e.without_url().to_string()))?;
         Ok((resp.status().as_u16(), resp.text().await.unwrap_or_default()))
     }
 }
@@ -349,7 +355,7 @@ impl JunosClient {
                 rb = rb.header("Content-Type", "application/xml").body(b.to_string());
             }
         }
-        let resp = rb.send().await.map_err(|e| AppError::ApiError(e.to_string()))?;
+        let resp = rb.send().await.map_err(|e| AppError::ApiError(e.without_url().to_string()))?;
         Ok((resp.status().as_u16(), resp.text().await.unwrap_or_default()))
     }
 }

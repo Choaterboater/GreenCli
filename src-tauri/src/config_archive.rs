@@ -128,16 +128,14 @@ impl ConfigArchiveStore {
         let _ = fs::copy(&self.index_path, &backup);
     }
 
-    /// Atomic write: serialize to a sibling temp file then rename over the
-    /// target (rename is atomic on the same filesystem).
+    /// Atomic, owner-only write (snapshots are raw running-configs, secrets
+    /// included): a sibling temp file renamed over the target, inside a folder
+    /// only this user can open.
     fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), AppError> {
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).map_err(AppError::from)?;
+            crate::private_fs::private_dir(parent)?;
         }
-        let tmp = path.with_extension("json.tmp");
-        fs::write(&tmp, bytes).map_err(AppError::from)?;
-        fs::rename(&tmp, path).map_err(AppError::from)?;
-        Ok(())
+        crate::private_fs::write_private_atomic(path, bytes)
     }
 
     /// Append a snapshot for `device`. Dedupes an EXACT repeat of the most

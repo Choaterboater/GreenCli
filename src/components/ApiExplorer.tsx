@@ -394,6 +394,8 @@ export default function ApiExplorer() {
                   method,
                   path: endpointPath,
                   body,
+                  // You typed this URL yourself; the AI's REST tools never pass this.
+                  allowAbsolute: true,
                 });
               }
               if (kind === 'junos') {
@@ -414,6 +416,8 @@ export default function ApiExplorer() {
                 method,
                 path: reqPath,
                 body,
+                // You typed this URL yourself; the AI's REST tools never pass this.
+                allowAbsolute: true,
               });
             })();
 

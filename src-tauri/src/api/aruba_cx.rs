@@ -121,7 +121,7 @@ impl ArubaCxClient {
             .form(&params)
             .send()
             .await
-            .map_err(|e| AppError::ApiError(format!("Login request failed: {}", e)))?;
+            .map_err(|e| AppError::ApiError(format!("Login request failed: {}", e.without_url())))?;
 
         if response.status().is_success() {
             // REST v10.04+ returns a CSRF token in the login response header;
@@ -280,7 +280,9 @@ impl ArubaCxClient {
         let text = response
             .text()
             .await
-            .map_err(|e| AppError::ApiError(format!("Failed to read CLI response: {}", e)))?;
+            .map_err(|e| {
+                AppError::ApiError(format!("Failed to read CLI response: {}", e.without_url()))
+            })?;
 
         Ok(text)
     }
@@ -335,7 +337,7 @@ impl ArubaCxClient {
         let response = builder
             .send()
             .await
-            .map_err(|e| AppError::ApiError(format!("Request failed: {}", e)))?;
+            .map_err(|e| AppError::ApiError(format!("Request failed: {}", e.without_url())))?;
         let status = response.status().as_u16();
         let text = response.text().await.unwrap_or_default();
         Ok((status, text))
@@ -371,7 +373,7 @@ impl ArubaCxClient {
             .client
             .execute(request)
             .await
-            .map_err(|e| AppError::ApiError(format!("Request failed: {}", e)))?;
+            .map_err(|e| AppError::ApiError(format!("Request failed: {}", e.without_url())))?;
 
         if response.status().is_success() {
             Ok(response)

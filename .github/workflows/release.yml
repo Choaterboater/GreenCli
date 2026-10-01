@@ -21,7 +21,12 @@ permissions:
   contents: write
 
 jobs:
+  # The full test/lint gate (ci.yml) must pass before any installer is built.
+  ci:
+    uses: ./.github/workflows/ci.yml
+
   build:
+    needs: ci
     strategy:
       fail-fast: false
       matrix:
