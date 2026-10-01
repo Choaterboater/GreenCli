@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-10-01
+
 ### Added
 - **Config Editor problems, like VS Code.** Risky lines ("reboots the switch", "removes the VLAN"),
   blanks still to fill in (`${vlan_id}`, `<replace-me>`, a hidden-secret marker), terminal junk
