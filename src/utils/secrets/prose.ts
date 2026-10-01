@@ -1,4 +1,4 @@
-// Copied from casper src/secrets/prose.ts @ 81438ae. Do not edit here: change Casper, re-copy.
+// Copied from casper src/secrets/prose.ts @ ad678b6. Do not edit here: change Casper, re-copy.
 // ---- casper source below ----
 import { keepLiterally, KIND_ORDER, replaceSpans, windowedSpans, type SecretKind } from "./patterns";
 import { SECRET_MARKER, type ScrubTextResult } from "./scrub";
