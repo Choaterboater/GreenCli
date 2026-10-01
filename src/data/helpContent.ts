@@ -168,7 +168,7 @@ export const HELP_TOPICS: HelpTopic[] = [
     title: 'AI assistant',
     icon: Bot,
     summary: 'Provider-neutral assistant (Anthropic, OpenRouter, Moonshot, Ollama, Local CLI).',
-    keywords: ['ai', 'assistant', 'claude', 'anthropic', 'openrouter', 'moonshot', 'kimi', 'ollama', 'llm', 'model', 'api key', 'tools'],
+    keywords: ['ai', 'assistant', 'claude', 'anthropic', 'openrouter', 'moonshot', 'kimi', 'ollama', 'llm', 'model', 'api key', 'tools', 'secrets', 'hidden', 'redact'],
     blocks: [
       { kind: 'p', text: 'Settings → **AI Assistant**. The assistant works with any provider — keys are stored owner-only outside the webview, never in the browser.' },
       {
@@ -180,6 +180,10 @@ export const HELP_TOPICS: HelpTopic[] = [
         ],
       },
       { kind: 'note', text: 'Responses stream token-by-token; **Stop** actually aborts the provider request, not just the UI.' },
+      {
+        kind: 'note',
+        text: 'Device secrets (passwords, keys, SNMP communities, private keys) are hidden before the AI sees any tool output: they show as `<secret hidden>`, and the tool row shows how many were hidden. The AI can’t send the marker back to a device. Text you type into the chat is sent as you typed it.',
+      },
     ],
     action: { label: 'Set up AI provider', id: 'open-settings', focus: 'ai' },
   },
