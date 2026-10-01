@@ -347,7 +347,7 @@ export const HELP_TOPICS: HelpTopic[] = [
     icon: TerminalSquare,
     summary: 'Copy & paste, selecting, right-click, paste guard, logging, split view, pop-out, tabs, reconnect.',
     keywords: [
-      'terminal', 'copy', 'paste', 'select', 'selection', 'mouse', 'right-click', 'context menu', 'paste guard',
+      'terminal', 'copy', 'paste', 'select', 'selection', 'mouse', 'right-click', 'context menu', 'paste guard', 'open in editor', 'colors',
       'log', 'logging', 'record', 'drop', 'file', 'path', 'split', 'pane', 'pop-out', 'window', 'tab', 'reconnect',
       'scrollback', 'save', 'option', 'alt', 'meta', 'rename', 'duplicate', 'config mode', 'configure', 'prompt', 'hostname',
     ],
@@ -361,7 +361,7 @@ export const HELP_TOPICS: HelpTopic[] = [
             : '**Selecting inside full-screen apps** (vim, tmux, htop, AI CLIs): when the app uses the mouse a plain drag goes to the app — hold `Shift` while dragging to select text anyway.',
           '**Keyboard selection**: `Shift+Arrow`, `Shift+Home` / `Shift+End` extend a selection from the cursor; `Esc` clears it (at the normal prompt — full-screen apps keep those keys).',
           `**Copy an address**: \`${MOD}\`-click an IP address, MAC address, interface name or path in the output to copy it (Settings → Terminal → Smart Links).`,
-          '**Right-click** opens a menu: Copy, Paste, **Copy & Paste** (types the selection at the prompt), **Find Selection**, Select All, **Save Scrollback…** (the whole buffer to a text file) and Clear. `Esc` closes it. Settings → Terminal → **Right-Click in Terminal** can make it paste straight away (PuTTY) or copy-if-selected-else-paste (Windows Terminal).',
+          '**Right-click** opens a menu: Copy, Paste, **Copy & Paste** (types the selection at the prompt), **Find Selection**, **Open in Editor** (the selection in a new Config Editor tab, in the device\'s language), Select All, **Save Scrollback…** (the whole buffer to a text file) and Clear. `Esc` closes it. Settings → Terminal → **Right-Click in Terminal** can make it paste straight away (PuTTY) or copy-if-selected-else-paste (Windows Terminal).',
           '**Paste guard**: pasting two or more lines asks first, because every line runs as a command on the device. Change the threshold or turn it off in Settings → Terminal.',
           '**Logging**: click **Log** in the status bar to record the session to a file (it shows **REC** while recording). Click again to stop.',
           '**Drop a file** on the window to type its path at the cursor (quoted when needed) — handy for `scp`, `copy` or AI CLIs. While the SFTP browser is open a drop uploads instead.',
