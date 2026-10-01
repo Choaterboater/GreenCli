@@ -302,6 +302,8 @@ live compliance:
   - **Snippets**: pick one from *Snippets*, or type its name at the start of a line
     (`cx-access`, `junos-trunk`, …). **Tab** moves to the next blank.
   - **Diff**: compare with a running-config you pulled (kept per device) or with a file.
+  - **From a session**: select text, right-click → **Open in Editor**. It opens in a new tab
+    in the device's language.
 - **Bulk Runner**: run one command across many sessions; export CSV (each row labelled
   with the command that produced it; a no-response is flagged, not shown as success).
 

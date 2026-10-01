@@ -178,7 +178,8 @@ The syntax highlighter supports **232 commands**, **288 subcommands**, and **144
 
 - **Prompt detection** - Identifies device type from CLI prompt patterns
 - **Auto-detection** - Scans terminal buffer to automatically identify connected device type
-- **256-color ANSI** - Injects color codes for vibrant terminal display
+- **Theme colors** - Uses the terminal theme's own colors, so highlighting follows light/dark and any color scheme, and re-colors when you switch
+- **Comment lines** - `!` lines (Aruba) and `#` / `/* */` lines (Junos) show dimmed
 - **Longest-match-first** - Correctly handles multi-word commands like `no shutdown`
 - **Value highlighting** - Colors IP addresses, MAC addresses, VLAN IDs, and interface names
 

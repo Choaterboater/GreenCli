@@ -28,6 +28,8 @@ import { isAppChord, resolveTabSwitch, shortcutLabel, tabSwitchIntent } from '..
 import { bufferToText, scrollbackFileName } from '../utils/scrollback';
 import { detectDevicePrompt } from '../utils/devicePrompt';
 import { tabLabel } from '../utils/tabs';
+import { draftFromSelection } from '../utils/editorDraft';
+import { useEditorInbox } from '../store/editorInboxStore';
 import { isTauri, browserSave, tauriWriteText } from '../utils/fileSystem';
 import { save as saveDialog } from '@tauri-apps/api/dialog';
 import { appWindow } from '@tauri-apps/api/window';
@@ -47,6 +49,8 @@ interface CtxMenuState {
   x: number;
   y: number;
   hasSelection: boolean;
+  /** The Config Editor lives in the main window; a popped-out session has none. */
+  canOpenEditor: boolean;
 }
 
 type CtxAction =
@@ -54,6 +58,7 @@ type CtxAction =
   | 'paste'
   | 'copyPaste'
   | 'findSelection'
+  | 'openInEditor'
   | 'selectAll'
   | 'saveScrollback'
   | 'clear';
@@ -645,7 +650,12 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
         }
         return;
       }
-      setCtxMenu({ x: e.clientX, y: e.clientY, hasSelection: term.hasSelection() });
+      setCtxMenu({
+        x: e.clientX,
+        y: e.clientY,
+        hasSelection: term.hasSelection(),
+        canOpenEditor: useSessionStore.getState().sessions.some((s) => s.sessionId === sessionId),
+      });
     };
     containerRef.current.addEventListener('contextmenu', handleContextMenu);
 
@@ -726,6 +736,19 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
           .map((l) => l.trim())
           .find(Boolean);
         if (needle) openTerminalSearch(needle.slice(0, 200));
+      },
+      // Open the selection in a new Config Editor tab, in the session's device
+      // language (or the one detected from its output).
+      openInEditor: () => {
+        const draft = draftFromSelection(
+          term.getSelection(),
+          sessionLabel(sessionId),
+          deviceTypeRef.current === 'generic' ? autoDetectedRef.current : deviceTypeRef.current
+        );
+        term.clearSelection();
+        if (!draft) return;
+        useEditorInbox.getState().send(draft);
+        useSessionStore.getState().setShowConfigEditor(true);
       },
       selectAll: () => {
         term.selectAll();
@@ -1372,6 +1395,18 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
               onClick={() => runCtxAction('findSelection')}
             >
               <span>Find Selection</span>
+            </button>
+            <button
+              className={menuItemClass}
+              disabled={!ctxMenu.hasSelection || !ctxMenu.canOpenEditor}
+              onClick={() => runCtxAction('openInEditor')}
+              title={
+                ctxMenu.canOpenEditor
+                  ? 'Open the selection in a new Config Editor tab'
+                  : 'The editor is in the main window'
+              }
+            >
+              <span>Open in Editor</span>
             </button>
             <div className="my-1 border-t border-[var(--border-strong)]" />
             <button className={menuItemClass} onClick={() => runCtxAction('selectAll')}>

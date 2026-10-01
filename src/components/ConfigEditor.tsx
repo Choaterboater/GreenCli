@@ -28,6 +28,7 @@ import {
 import { invoke } from '@tauri-apps/api/tauri';
 import { useSessionStore } from '../store/sessionStore';
 import { useSettingsStore } from '../store/settingsStore';
+import { useEditorInbox } from '../store/editorInboxStore';
 import { sleep, stripAnsi as stripAnsiUtil, hasAnsi, sendAndCapture } from '../utils/terminal';
 import { useSidePanelStore } from '../store/sidePanelStore';
 import { askConfirm, askPrompt } from '../store/dialogStore';
@@ -761,6 +762,16 @@ export default function ConfigEditor() {
     setActiveId(next.id);
     return next;
   }, []);
+
+  // Text handed over from elsewhere (a session's right-click "Open in Editor")
+  // opens in new tabs. dirty: the text exists nowhere else, so closing it asks.
+  const inbox = useEditorInbox((s) => s.pending);
+  useEffect(() => {
+    if (!inbox.length) return;
+    for (const draft of useEditorInbox.getState().take()) {
+      openInNewTab({ ...draft, filePath: null, dirty: true, langExplicit: false });
+    }
+  }, [inbox, openInNewTab]);
 
   const newTab = useCallback(() => {
     openInNewTab({

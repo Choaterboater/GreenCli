@@ -4,17 +4,22 @@ import { arubaApGrammar } from './grammar-aruba-ap';
 import { arubaCtrlGrammar } from './grammar-aruba-ctrl';
 import { junosGrammar } from './grammar-junos';
 
-// ─── ANSI Color Map (256-color, Solarized-inspired muted palette) ───
-const ANSI_COLORS: Record<string, string> = {
-  'token-cmd-keyword':    '\x1b[38;5;167m',  // Muted coral — commands (show, config, interface)
-  'token-cmd-subcommand': '\x1b[38;5;67m',   // Slate blue  — subcommands (vlan, trunk, access)
-  'token-cmd-value':      '\x1b[38;5;72m',   // Soft teal   — IP addresses, numbers, interfaces
-  'token-cmd-string':     '\x1b[38;5;136m',  // Golden      — quoted strings
-  'token-cmd-comment':    '\x1b[38;5;241m',  // Dark gray   — remarks
-  'token-cmd-prompt':     '\x1b[38;5;61m',   // Muted violet — device prompt
-  'token-cmd-operator':   '\x1b[38;5;167m',  // Muted coral — | > < operators
-  'token-cmd-flag':       '\x1b[38;5;61m',   // Muted violet — --help flags
-  'token-default':        '\x1b[0m',          // Reset
+// ─── ANSI Color Map ───
+// The terminal's own 16 colors, NOT fixed 256-color codes: xterm takes these
+// from the current terminal theme, so highlighting follows light/dark and any
+// scheme the user picks (Dracula, Nord, …), and text already on screen
+// re-colors when the theme switches. The fixed 256-colors this replaced were
+// tuned for one background and hard to read on the other (teal on white ≈ 2.6:1).
+export const ANSI_COLORS: Record<string, string> = {
+  'token-cmd-keyword':    '\x1b[31m',  // red      — commands (show, config, interface)
+  'token-cmd-subcommand': '\x1b[34m',  // blue     — subcommands (vlan, trunk, access)
+  'token-cmd-value':      '\x1b[36m',  // cyan     — IP addresses, numbers, interfaces
+  'token-cmd-string':     '\x1b[33m',  // yellow   — quoted strings
+  'token-cmd-comment':    '\x1b[90m',  // dim gray — ! and # comment lines
+  'token-cmd-prompt':     '\x1b[35m',  // magenta  — device prompt
+  'token-cmd-operator':   '\x1b[31m',  // red      — | > < operators
+  'token-cmd-flag':       '\x1b[35m',  // magenta  — --help flags
+  'token-default':        '\x1b[0m',   // Reset
 };
 
 const ANSI_RESET = '\x1b[0m';
@@ -132,6 +137,11 @@ export class ArubaHighlighter {
   // ─── Token Processing ───
 
   processLine(line: string, isPrompt: boolean = false): Token[] {
+    // A whole comment line from the device (`! …` in an Aruba config, `# …` or
+    // `/* … */` in Junos) is one dim token. Never on a prompt line.
+    if (this.grammar.lineComment?.test(line) && !this.matchPrompt(line, 0)) {
+      return [{ text: line, className: 'token-cmd-comment', startPos: 0, endPos: line.length }];
+    }
     const tokens: Token[] = [];
     let pos = 0;
     let promptProcessed = false;

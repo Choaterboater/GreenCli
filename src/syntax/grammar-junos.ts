@@ -59,4 +59,5 @@ export const junosGrammar: Grammar = {
   },
   // Junos prompts: user@host>  (operational)  user@host#  (config edit)
   promptPattern: /^(?:\{[^}]*\}\s*)?[\w.-]+@[\w.-]+[>#]\s?|^\[edit[^\]]*\]\s?/,
+  lineComment: /^\s*(?:#|\/\*)/,
 };

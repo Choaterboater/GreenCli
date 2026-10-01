@@ -61,4 +61,5 @@ export const arubaCtrlGrammar: Grammar = {
     number: /\b\d+\b/,
   },
   promptPattern: /^\(?(?:[A-Za-z][A-Za-z0-9-_\s]+\)\s*#\s?)/,
+  lineComment: /^\s*!/,
 };
