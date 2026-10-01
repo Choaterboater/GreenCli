@@ -264,7 +264,9 @@ live compliance:
 - **SFTP**: browse/upload/download/mkdir/rename/delete on an SSH session. Uploads
   confirm before overwriting an existing remote file; dropped files confirm the target.
 - **Config Editor**: Monaco editor with per-vendor templates; *Pull* running-config and
-  *Send to terminal*. It prompts before discarding unsaved edits.
+  *Send to terminal*. It prompts before discarding unsaved edits. To edit something you see
+  in a session, select it and right-click → **Open in Editor**: it opens in a new tab in the
+  device's language.
 - **Bulk Runner**: run one command across many sessions; export CSV (each row labelled
   with the command that produced it; a no-response is flagged, not shown as success).
 
