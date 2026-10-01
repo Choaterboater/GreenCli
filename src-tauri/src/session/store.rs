@@ -136,9 +136,8 @@ impl SessionStore {
         let json = serde_json::to_string_pretty(data).map_err(AppError::from)?;
         // Write-then-rename so a crash/power loss mid-write can't truncate the
         // whole saved-session store (rename is atomic on the same filesystem).
-        let tmp = self.store_path.with_extension("json.tmp");
-        fs::write(&tmp, json).map_err(AppError::from)?;
-        fs::rename(&tmp, &self.store_path).map_err(AppError::from)?;
+        // Owner-only: startup commands often carry enable passwords.
+        crate::private_fs::write_private_atomic(&self.store_path, json.as_bytes())?;
         self.cache = Some(data.clone());
         Ok(())
     }

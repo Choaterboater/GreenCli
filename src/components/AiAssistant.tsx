@@ -45,7 +45,14 @@ import { useSettingsStore } from '../store/settingsStore';
 import { askConfirm } from '../store/dialogStore';
 import { ChatMessage, Session, AiProvider, AI_PROVIDERS } from '../types';
 import { sleep, stripAnsi, sendAndCapture } from '../utils/terminal';
-import { aiIsWriteCommand, aiMcpLooksWrite, AI_DANGER_CMD } from '../utils/aiGating';
+import {
+  aiIsWriteCommand,
+  aiMcpLooksWrite,
+  AI_DANGER_CMD,
+  CONTROL_CHARS,
+  normalizeLineBreaks,
+} from '../utils/aiGating';
+import { pickAiSession } from '../utils/aiSession';
 import { Intent, evaluateAll, summarize } from '../utils/intent';
 import { savedHostId } from '../utils/tabs';
 import { useSidePanelStore } from '../store/sidePanelStore';
@@ -481,7 +488,17 @@ async function executeTool(
     }
   }
   if (name === 'send_terminal_command') {
-    const command = (args.command as string) || '';
+    const raw = (args.command as string) || '';
+    // A dialog can't show a backspace or Ctrl-Z, and the device acts on them,
+    // so the line the user approves may not be the line that runs: refuse.
+    if (CONTROL_CHARS.test(raw)) {
+      return toolErr(
+        'Not run: the command contains control characters (such as backspace, Tab, Ctrl-Z or ESC). ' +
+          'The device would act on them, so GreenCLI only sends plain text lines.'
+      );
+    }
+    // Every line break as \n, so the confirm dialog shows each line the device runs.
+    const command = normalizeLineBreaks(raw);
     if (!activeSession) {
       return toolErr('Error: No active terminal session. Please connect to a device first.');
     }
@@ -1121,23 +1138,9 @@ export default function AiAssistant() {
   // them every time (the data is already in-memory in the backend).
   const mcpToolsRef = useRef<McpToolDef[]>([]);
 
-  // For AI tool execution, prefer an SSH session over the active tab (which
-  // might be a local PTY like kimi/claude). Falls back to active if no SSH.
-  const activeSession = (() => {
-    const active = sessions.find((s) => s.sessionId === activeSessionId);
-    if (active && active.config.protocol !== 'local') {
-      // The active tab is a DEVICE: always target it, even while it is
-      // connecting/reconnecting/down. Falling back to "any connected session"
-      // here ran the AI's commands on a different device than the one on
-      // screen whenever the active tab blipped.
-      return active;
-    }
-    // Active tab is a local shell (kimi/claude PTY) — use a connected device.
-    const sshSession = sessions.find(
-      (s) => s.config.protocol !== 'local' && s.connected
-    );
-    return sshSession || active;
-  })();
+  // The device the AI's tools act on. Never a local tab (shell or AI CLI):
+  // see utils/aiSession.ts.
+  const activeSession = pickAiSession(sessions, activeSessionId);
 
   // Per-session AI agent: the persona attached to this session in the sidebar.
   // Its instructions extend the system prompt; its provider/model override the

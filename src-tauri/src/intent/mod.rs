@@ -19,6 +19,10 @@ pub struct Matcher {
     /// "contains" | "notContains" | "regex" | "regexAbsent"
     pub kind: String,
     pub value: String,
+    /// Regex matchers are case-insensitive unless this is true (see
+    /// src/utils/intent.ts). Kept here so a save doesn't silently drop it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub case_sensitive: Option<bool>,
 }
 
 /// Which devices an intent applies to.
@@ -113,7 +117,7 @@ impl IntentStore {
             Err(_) => {
                 // Preserve the unparseable bytes for recovery instead of dropping them.
                 let backup = self.path.with_extension("json.corrupt");
-                let _ = fs::write(&backup, &bytes);
+                let _ = crate::private_fs::write_private(&backup, &bytes);
                 Vec::new()
             }
         }
@@ -148,10 +152,8 @@ impl IntentStore {
         if let Some(parent) = self.path.parent() {
             let _ = fs::create_dir_all(parent);
         }
-        let tmp = self.path.with_extension("json.tmp");
-        fs::write(&tmp, serde_json::to_vec_pretty(intents)?).map_err(AppError::from)?;
-        fs::rename(&tmp, &self.path).map_err(AppError::from)?;
-        Ok(())
+        let bytes = serde_json::to_vec_pretty(intents)?;
+        crate::private_fs::write_private_atomic(&self.path, &bytes)
     }
 
     pub fn upsert(&self, intent: Intent) -> Result<(), AppError> {
@@ -186,5 +188,28 @@ impl IntentStore {
             i.last_result = Some(result);
         }
         self.save_locked(&all)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Matcher;
+
+    #[test]
+    fn matcher_keeps_case_sensitive_through_a_save() {
+        let m: Matcher =
+            serde_json::from_str(r#"{"kind":"regex","value":"Established","caseSensitive":true}"#)
+                .unwrap();
+        assert_eq!(m.case_sensitive, Some(true));
+        let out = serde_json::to_value(&m).unwrap();
+        assert_eq!(out["caseSensitive"], serde_json::json!(true));
+    }
+
+    #[test]
+    fn matcher_without_case_sensitive_stays_without_it() {
+        let m: Matcher = serde_json::from_str(r#"{"kind":"contains","value":"up"}"#).unwrap();
+        assert_eq!(m.case_sensitive, None);
+        let out = serde_json::to_value(&m).unwrap();
+        assert!(out.get("caseSensitive").is_none());
     }
 }

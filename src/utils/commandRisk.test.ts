@@ -58,7 +58,24 @@ describe('isRiskyCommand', () => {
   });
 });
 
+describe('isRiskyCommand with hidden line breaks or control characters', () => {
+  it('checks every line, a bare \\r included', () => {
+    expect(isRiskyCommand('show version\rreload')).toBe(true);
+    expect(isRiskyCommand('show version\nconfigure terminal')).toBe(true);
+    expect(isRiskyCommand('show version\rshow vlan')).toBe(false);
+  });
+
+  it('flags control characters the device would act on', () => {
+    expect(isRiskyCommand('show\b\b\b\breload')).toBe(true);
+    expect(isRiskyCommand('show vlan\x1a')).toBe(true);
+  });
+});
+
 describe('riskyLines', () => {
+  it('splits on a bare \\r', () => {
+    expect(riskyLines('show version\rreload')).toEqual(['reload']);
+  });
+
   it('returns only the risky lines, trimmed, in order', () => {
     expect(riskyLines('show version\n  reload \r\nshow vlan\nwrite memory')).toEqual([
       'reload',
