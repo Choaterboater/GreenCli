@@ -14,9 +14,25 @@ export const AI_DESTRUCTIVE_CMD =
   /\b(write|erase|delete|clear|reload|reboot|boot|commit|rollback|copy|format|factory-reset|factory-default|zeroize|request\s+system|install|upgrade)\b/i;
 export const AI_DANGER_CMD = /\b(erase|delete|reload|reboot|format|factory|write|zeroize|rollback)\b/i;
 
+// Every line break a device treats as Enter. A bare `\r` counts: the command
+// goes out with `\r` appended (utils/terminal.ts), so "show version\rconf t"
+// runs two commands, and splitting on `\r?\n` alone judged it as one read.
+export const LINE_BREAK = /\r\n|\r|\n/;
+// Control characters a device acts on mid-line: backspace and Ctrl-U erase
+// what the check saw ("show\b\b\b\bconf t"), Ctrl-Z / Ctrl-C leave or abort a
+// mode, Tab completes a word, ESC starts a key sequence. Only \r and \n are
+// left out, as line breaks. Nothing the AI types needs any of these.
+export const CONTROL_CHARS = /[\x00-\x09\x0b\x0c\x0e-\x1f\x7f-\x9f]/;
+
+/** One `\n` per line break, so a confirm dialog shows every line the device runs. */
+export function normalizeLineBreaks(cmd: string): string {
+  return cmd.split(LINE_BREAK).join('\n');
+}
+
 /** Heuristic: does this (possibly multi-line) command modify device state? */
 export function aiIsWriteCommand(cmd: string): boolean {
-  return cmd.split(/\r?\n/).some((line) => {
+  if (CONTROL_CHARS.test(cmd)) return true; // can't be judged line by line: confirm
+  return cmd.split(LINE_BREAK).some((line) => {
     const c = line.trim();
     if (!c) return false;
     if (AI_CONFIG_ENTER.test(c) || AI_DESTRUCTIVE_CMD.test(c)) return true;

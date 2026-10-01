@@ -133,10 +133,9 @@ impl McpConfigStore {
         // target (rename is atomic on the same filesystem), so a crash mid-write
         // can't truncate the server list and a concurrent reader never sees a
         // torn file (mirrors intent::IntentStore::save_locked).
-        let tmp = self.path.with_extension("json.tmp");
-        fs::write(&tmp, serde_json::to_vec_pretty(defs)?).map_err(AppError::from)?;
-        fs::rename(&tmp, &self.path).map_err(AppError::from)?;
-        Ok(())
+        // Owner-only: env vars and headers can hold literal tokens.
+        let bytes = serde_json::to_vec_pretty(defs)?;
+        crate::private_fs::write_private_atomic(&self.path, &bytes)
     }
 
     pub fn upsert(&self, def: McpServerDef) -> Result<(), AppError> {
@@ -531,8 +530,12 @@ async fn drain_sse(
         let chunk = match chunk {
             Ok(c) => c,
             Err(e) => {
-                return awaiting_id
-                    .map(|_| Err(AppError::ApiError(format!("MCP stream read error: {}", e))));
+                return awaiting_id.map(|_| {
+                    Err(AppError::ApiError(format!(
+                        "MCP stream read error: {}",
+                        e.without_url()
+                    )))
+                });
             }
         };
         buf.push_str(&String::from_utf8_lossy(&chunk));
@@ -1121,7 +1124,8 @@ impl McpCaller {
                                 }
                                 return Err(AppError::ApiError(format!(
                                     "MCP '{}': HTTP request failed: {}",
-                                    method, e
+                                    method,
+                                    e.without_url()
                                 )));
                             }
                         };
@@ -1194,7 +1198,11 @@ impl McpCaller {
                             })
                         } else {
                             let body: Value = resp.json().await.map_err(|e| {
-                                AppError::ApiError(format!("MCP '{}': response parse: {}", method, e))
+                                AppError::ApiError(format!(
+                                    "MCP '{}': response parse: {}",
+                                    method,
+                                    e.without_url()
+                                ))
                             })?;
                             extract_result_or_error(body)
                         };
@@ -1249,7 +1257,9 @@ impl McpCaller {
                 let resp = rb
                     .send()
                     .await
-                    .map_err(|e| AppError::ApiError(format!("MCP notify '{}': {}", method, e)))?;
+                    .map_err(|e| {
+                        AppError::ApiError(format!("MCP notify '{}': {}", method, e.without_url()))
+                    })?;
                 if !resp.status().is_success() {
                     return Err(AppError::ApiError(format!(
                         "MCP notify '{}': HTTP {}",

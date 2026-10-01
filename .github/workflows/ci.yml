@@ -6,6 +6,9 @@ on:
   push:
     branches: [main]
   pull_request:
+  # release.yml runs this whole workflow first, so a tag can't ship code that
+  # never passed it.
+  workflow_call:
 
 jobs:
   frontend:
@@ -30,6 +33,15 @@ jobs:
 
       - name: Unit tests
         run: npx vitest run
+
+      # The production bundle must actually mount: a chunk evaluation-order
+      # bug in the minified build shipped a white screen in v1.2.1, and only
+      # this check (scripts/prod-smoke.mjs) sees that class of failure.
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Production smoke test
+        run: npm run smoke
 
   rust:
     # Pinned to 22.04: ubuntu-latest (24.04/noble) dropped libwebkit2gtk-4.0-dev,
@@ -80,4 +92,36 @@ jobs:
 
       - name: Tests
         run: cargo test
+        working-directory: src-tauri
+
+  rust-windows:
+    # The Linux job never compiles the Windows side of #[cfg(unix)] code
+    # (file permissions, private_fs), which release.yml ships. Check only:
+    # it catches a Windows build break before a tag does.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      # generate_context!() needs ../dist at compile time (see the rust job).
+      - name: Build frontend bundle
+        run: |
+          npm ci
+          npm run build
+
+      - name: Cargo check
+        run: cargo check --all-targets
         working-directory: src-tauri
