@@ -35,7 +35,7 @@ export default function FolderPane({ listing, activePath, loading, onOpen, onPic
     });
 
   return (
-    <nav aria-label="Folder" className="flex flex-col w-56 flex-shrink-0 border-r border-[var(--bg-tertiary)] bg-[var(--bg-secondary)] min-h-0">
+    <nav aria-label="Folder" className="flex flex-col w-44 max-w-[40%] flex-shrink-0 border-r border-[var(--bg-tertiary)] bg-[var(--bg-secondary)] min-h-0">
       <div className="flex items-center gap-1 h-7 px-2 border-b border-[var(--bg-tertiary)] flex-shrink-0">
         <button
           onClick={onPickFolder}
@@ -77,12 +77,13 @@ export default function FolderPane({ listing, activePath, loading, onOpen, onPic
           const isOpen = row.isDir && (open.has(row.path) || !!filter.trim());
           return (
             <li key={row.path} role="treeitem" aria-expanded={row.isDir ? isOpen : undefined} aria-selected={row.path === activePath}>
+              {/* A file that can't open stays clickable: the click shows why in the status bar. */}
               <button
                 onClick={() => (row.isDir ? toggle(row.path) : onOpen(row))}
-                disabled={!!why}
+                aria-disabled={why ? true : undefined}
                 title={why ?? row.path}
                 style={{ paddingLeft: 8 + row.depth * 12 }}
-                className={`flex items-center gap-1 w-full pr-2 py-0.5 text-left truncate disabled:opacity-40 ${
+                className={`flex items-center gap-1 w-full pr-2 py-0.5 text-left truncate ${why ? 'opacity-50' : ''} ${
                   row.path === activePath
                     ? 'bg-[var(--accent-soft)] text-[var(--text-primary)]'
                     : 'text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)]'
