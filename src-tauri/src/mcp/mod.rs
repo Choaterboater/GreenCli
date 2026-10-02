@@ -6,4 +6,7 @@ pub mod labels;
 pub mod policy;
 pub mod presets;
 
-pub use client::{connect_server, run_call, McpManager, McpServerDef, McpToolInfo, McpWrites};
+pub use client::{
+    connect_server, rename_server, run_call, McpCreds, McpManager, McpServerDef, McpToolInfo,
+    McpWrites,
+};

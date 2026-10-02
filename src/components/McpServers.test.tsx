@@ -315,6 +315,83 @@ describe('McpServers writes switch', () => {
   });
 });
 
+describe('McpServers login save', () => {
+  it('shows a toast and keeps the form open when the login is not saved', async () => {
+    defs = [plainDef()];
+    status = [st()];
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === 'mcp_list_servers') return defs;
+      if (cmd === 'mcp_status') return status;
+      if (cmd === 'secret_store_status') return { kind: 'unavailable', leftoverFiles: [], movePending: false };
+      if (cmd === 'mcp_set_credentials') {
+        throw "Can't reach the system password store. Your keys are still there. Try again after you log in to the desktop.";
+      }
+      return null;
+    });
+    render(<McpServers />);
+    fireEvent.click(await screen.findByTitle('Edit'));
+    fireEvent.change(screen.getByPlaceholderText(/Paste the server's credentials file/), {
+      target: { value: 'client_id: x' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(toastTitles()).toContain('central login not saved'));
+    expect(toastTitles()).not.toContain('MCP server saved');
+    expect(screen.getByRole('button', { name: 'Save' })).toBeTruthy();
+    expect(screen.getByTestId('secret-store-line').textContent).toMatch(/^Can't reach the system password store/);
+  });
+
+  it('still clears the old approvals and says writes are off when only the login fails', async () => {
+    defs = [plainDef({ writes: 'on' })];
+    status = [st({ writes: 'on' })];
+    vi.mocked(invoke).mockImplementation(async (cmd: string, raw?: unknown) => {
+      if (cmd === 'mcp_list_servers') return defs;
+      if (cmd === 'mcp_status') return status;
+      if (cmd === 'mcp_rename_server') {
+        defs = [{ ...defs[0], name: 'central2' }];
+      }
+      if (cmd === 'mcp_save_server') {
+        const { def: saved } = raw as { def: McpServerDef };
+        defs = [{ ...saved, writes: 'off' }];
+      }
+      if (cmd === 'mcp_set_credentials') throw 'locked';
+      return null;
+    });
+    const approvals = useMcpApprovalStore.getState();
+    approvals.allow('central', 'show_config', 'f1');
+    approvals.allow('central2', 'show_config', 'f2');
+    render(<McpServers />);
+    fireEvent.click(await screen.findByTitle('Edit'));
+    fireEvent.change(screen.getByPlaceholderText('centralmcp'), { target: { value: 'central2' } });
+    fireEvent.change(screen.getByPlaceholderText(/Paste the server's credentials file/), {
+      target: { value: 'client_id: x' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(toastTitles()).toContain('central2 login not saved'));
+    expect(toastTitles()).toContain('central2 writes are off again');
+    expect(toastTitles()).not.toContain('MCP server saved');
+    expect(useMcpApprovalStore.getState().isAllowed('central', 'show_config', 'f1')).toBe(false);
+    expect(useMcpApprovalStore.getState().isAllowed('central2', 'show_config', 'f2')).toBe(false);
+    // The form stays open on the new name, so Save can try the login again.
+    expect(screen.getByRole('button', { name: 'Save' })).toBeTruthy();
+  });
+
+  it('says where the login is kept', async () => {
+    defs = [plainDef()];
+    status = [st()];
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === 'mcp_list_servers') return defs;
+      if (cmd === 'mcp_status') return status;
+      if (cmd === 'secret_store_status') return { kind: 'keychain', leftoverFiles: [], movePending: false };
+      return null;
+    });
+    render(<McpServers />);
+    fireEvent.click(await screen.findByTitle('Edit'));
+    await waitFor(() =>
+      expect(screen.getByTestId('secret-store-line').textContent).toMatch(/^Saved in macOS Keychain\. On connect/)
+    );
+  });
+});
+
 describe('McpServers form help', () => {
   it('warns about plain http to another computer, and explains the environment', async () => {
     defs = [];

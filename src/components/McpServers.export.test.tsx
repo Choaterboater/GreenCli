@@ -155,6 +155,26 @@ describe('McpServers export', () => {
     expect(screen.queryByRole('status')).toBeNull();
   });
 
+  it('stops with a message when a login can not be checked', async () => {
+    const unreachable =
+      "Can't reach the system password store. Your keys are still there. Try again after you log in to the desktop.";
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === 'mcp_list_servers') return SERVERS;
+      if (cmd === 'mcp_status') return [];
+      if (cmd === 'mcp_has_credentials') throw unreachable;
+      return undefined;
+    });
+    vi.mocked(tauriSave).mockResolvedValue('/Users/me/proj/.mcp.json');
+    render(<McpServers />);
+    await screen.findByText('central');
+    fireEvent.click(exportButton());
+    await waitFor(() =>
+      expect(notify.error).toHaveBeenCalledWith('Could not export', `Can't check the login for central. ${unreachable}`),
+    );
+    expect(tauriSave).not.toHaveBeenCalled();
+    expect(writes()).toEqual([]);
+  });
+
   it('opens no dialog when every server is left out', async () => {
     backend([{ ...SERVERS[0], name: 'sh', command: 'bash' }]);
     render(<McpServers />);

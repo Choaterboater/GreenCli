@@ -23,6 +23,8 @@ import { useMcpApprovalStore } from '../store/mcpApprovalStore';
 import type { McpExportPins, McpServerDef, McpStatus } from '../utils/mcpTypes';
 import { plainHttpWarning } from '../utils/urlSafety';
 import McpServerSafety from './McpServerSafety';
+import SecretStoreNote from './SecretStoreNote';
+import { keyCheckError, saveMcpLogin } from '../utils/secretStore';
 
 type McpTransport = McpServerDef['transport'];
 
@@ -319,27 +321,39 @@ export default function McpServers() {
         await invoke('mcp_rename_server', { from: editingName, to: def.name });
       }
       await invoke('mcp_save_server', { def });
+      // The config is saved: drop the old approvals and say if writes went
+      // off. Done here so a failed login save below can't skip it.
+      const configSaved = async () => {
+        clearAllowances(def.name);
+        if (editingName) clearAllowances(editingName);
+        if (writesWereOn) {
+          const saved = ((await invoke<McpServerDef[]>('mcp_list_servers').catch(() => [])) || []).find(
+            (s) => s.name === def.name
+          );
+          if (saved?.writes === 'off') {
+            notify.info(
+              `${def.name} writes are off again`,
+              "The server's command, folder or URL changed, so GreenCLI turned writes off."
+            );
+          }
+        }
+      };
       // Persist credentials content only when the user typed new content (so we
       // never wipe saved creds just because the field is blank on edit). Only
       // meaningful for stdio — Http servers aren't spawned by this app, so
       // there's no process to inject a credentials env var into.
       if (form.transport === 'stdio' && form.credsContent.trim()) {
-        await invoke('mcp_set_credentials', { name: def.name, content: form.credsContent });
-      }
-      clearAllowances(def.name);
-      if (editingName) clearAllowances(editingName);
-      notify.success('MCP server saved', def.name);
-      if (writesWereOn) {
-        const saved = ((await invoke<McpServerDef[]>('mcp_list_servers').catch(() => [])) || []).find(
-          (s) => s.name === def.name
-        );
-        if (saved?.writes === 'off') {
-          notify.info(
-            `${def.name} writes are off again`,
-            "The server's command, folder or URL changed, so GreenCLI turned writes off."
-          );
+        // The server is saved; only its login failed (a toast says why). Keep
+        // the form open on the saved name so Save can try again.
+        if (!(await saveMcpLogin(def.name, form.credsContent))) {
+          await configSaved();
+          setEditingName(def.name);
+          refresh();
+          return;
         }
       }
+      notify.success('MCP server saved', def.name);
+      await configSaved();
       setShowForm(false);
       setForm({ ...blankForm });
       setCredsSaved(false);
@@ -372,14 +386,25 @@ export default function McpServers() {
         notify.info('Nothing to export', 'Add a server first.');
         return;
       }
+      // A server's login must be known, or its file would leave out the login variable without a word.
       const withCredentials = new Set<string>();
+      let loginError: { name: string; text: string } | null = null;
       await Promise.all(
         defs
           .filter((d) => d.transport !== 'http')
           .map(async (d) => {
-            if (await invoke<boolean>('mcp_has_credentials', { name: d.name }).catch(() => false)) withCredentials.add(d.name);
+            try {
+              if (await invoke<boolean>('mcp_has_credentials', { name: d.name })) withCredentials.add(d.name);
+            } catch (e) {
+              loginError ??= { name: d.name, text: keyCheckError(e) };
+            }
           }),
       );
+      if (loginError) {
+        const { name, text } = loginError;
+        notify.error('Could not export', `Can't check the login for ${name}. ${text}`);
+        return;
+      }
       // The read-only settings GreenCLI adds while a server's writes are off go in the file too.
       const pinList = await invoke<Record<string, McpExportPins>>('mcp_export_pins').catch(() => ({}));
       const pins = new Map(Object.entries(pinList ?? {}));
@@ -757,10 +782,10 @@ export default function McpServers() {
                     {showCreds ? <EyeOff size={13} /> : <Eye size={13} />}
                   </button>
                 </div>
-                <p className="text-[10px] text-[var(--text-muted)]">
-                  Stored in the app data dir (outside the browser). On connect it's written to a file and the env var
-                  above is pointed at it — so you never keep a separate credentials file by hand.
-                </p>
+                <SecretStoreNote
+                  after="On connect it's written to a private file that the env var above points at. The file is deleted when the server stops."
+                  refreshKey={showForm}
+                />
               </div>
             </>
           )}

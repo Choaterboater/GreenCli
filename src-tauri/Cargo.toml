@@ -58,6 +58,16 @@ rsa-keys = []
 
 # [2.0 keys] keyring tables go below.
 #
+# AI keys and MCP logins live in the system password store (secret_store.rs).
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3", features = ["apple-native"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "3", features = ["windows-native"] }
+
+# The Secret Service over D-Bus (needs libdbus-1-dev and pkg-config to build).
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
 
 # [2.0 updater] updater dependency table goes below.
 #

@@ -14,6 +14,7 @@ mod local;
 mod mcp;
 mod private_fs;
 mod securecrt;
+mod secret_store;
 mod serial;
 mod session;
 mod session_log;
@@ -30,7 +31,7 @@ use api::{Aos8Client, ArubaCxClient, AossClient, JunosClient, MistClient};
 use central::CentralClient;
 use error::AppError;
 use local::{LocalConfig, LocalConnection};
-use mcp::{McpManager, McpServerDef, McpToolInfo, McpWrites};
+use mcp::{McpCreds, McpManager, McpServerDef, McpToolInfo, McpWrites};
 use serde::{Deserialize, Serialize};
 use serial::{client::SerialConfig, SerialConnection};
 use session::{SessionFolder, SessionManager, SessionStore, StoredSession};
@@ -99,7 +100,10 @@ struct AppState {
     /// Central client has interior mutability (config + token cache behind a
     /// std Mutex), so requests never hold an outer lock across an await.
     central: Arc<CentralClient>,
+    /// AI provider keys in the system password store (secret_store.rs).
     ai_keys: AiKeyStore,
+    /// The system password store (or the 1.9 key files when there is none).
+    secrets: Arc<secret_store::SecretStore>,
     /// Durable network-intent / desired-state store.
     intents: intent::IntentStore,
     /// Per-device versioned config snapshot history + golden baseline.
@@ -133,7 +137,10 @@ struct AppState {
 }
 
 impl AppState {
-    fn new(app_dir: std::path::PathBuf) -> Result<Self, AppError> {
+    fn new(
+        app_dir: std::path::PathBuf,
+        secrets: Arc<secret_store::SecretStore>,
+    ) -> Result<Self, AppError> {
         let vault_dir = app_dir.clone();
         let vault = CredentialVault::new(vault_dir)?;
         let vault_initialized = vault.is_initialized();
@@ -143,14 +150,18 @@ impl AppState {
             vault: Arc::new(Mutex::new(vault)),
             vault_unlocked: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             vault_initialized: Arc::new(std::sync::atomic::AtomicBool::new(vault_initialized)),
-            mcp_manager: Arc::new(AsyncMutex::new(McpManager::new(app_dir.clone()))),
+            mcp_manager: Arc::new(AsyncMutex::new(McpManager::new(
+                app_dir.clone(),
+                McpCreds::new(secrets.clone()),
+            ))),
             api_clients: Arc::new(AsyncMutex::new(HashMap::new())),
             aos8_clients: Arc::new(AsyncMutex::new(HashMap::new())),
             aoss_clients: Arc::new(AsyncMutex::new(HashMap::new())),
             mist: Arc::new(AsyncMutex::new(None)),
             junos_clients: Arc::new(AsyncMutex::new(HashMap::new())),
             central: Arc::new(CentralClient::new()?),
-            ai_keys: AiKeyStore::new(app_dir.clone()),
+            ai_keys: AiKeyStore::new(secrets.clone()),
+            secrets,
             intents: intent::IntentStore::new(app_dir.clone()),
             config_archive: config_archive::ConfigArchiveStore::new(app_dir.clone()),
             terminal_buffers: Arc::new(AsyncMutex::new(HashMap::new())),
@@ -1638,16 +1649,21 @@ async fn mcp_save_server(def: McpServerDef, state: State<'_, AppState>) -> Resul
     mgr.save_config(def).map_err(|e| e.to_string())
 }
 
-/// Rename a server, migrating its stored credentials, materialised creds file,
-/// and live connection to the new name (deleting + re-adding loses all three).
+/// Rename a server, moving its stored login and live connection to the new
+/// name (deleting + re-adding loses both). See mcp::rename_server.
 #[tauri::command]
 async fn mcp_rename_server(from: String, to: String, state: State<'_, AppState>) -> Result<(), String> {
-    let mut mgr = state.mcp_manager.lock().await;
-    mgr.rename_server(&from, &to).map_err(|e| e.to_string())
+    mcp::rename_server(&state.mcp_manager, &from, &to).await
 }
 
 #[tauri::command]
 async fn mcp_delete_server(name: String, state: State<'_, AppState>) -> Result<(), String> {
+    // Its stored login goes first, outside the lock. When the store can't be
+    // reached nothing is deleted, so the login isn't left behind for a later
+    // server of the same name.
+    let creds = McpCreds::new(state.secrets.clone());
+    let owned = name.clone();
+    secret_store::blocking(move || creds.delete(&owned)).await?;
     // Detach the live client + remove config under a brief lock, then shut the
     // client down OUTSIDE the lock so a slow process exit can't block the UI.
     let (client, res) = {
@@ -1770,14 +1786,17 @@ async fn mcp_set_credentials(
     content: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let mgr = state.mcp_manager.lock().await;
-    mgr.set_credentials(&name, &content).map_err(|e| e.to_string())
+    // The store call runs without the MCP lock (it can be slow or ask the user).
+    // A running server keeps the login file it started with until it stops.
+    let creds = McpCreds::new(state.secrets.clone());
+    let content = zeroize::Zeroizing::new(content);
+    secret_store::blocking(move || creds.set(&name, &content)).await
 }
 
 #[tauri::command]
 async fn mcp_has_credentials(name: String, state: State<'_, AppState>) -> Result<bool, String> {
-    let mgr = state.mcp_manager.lock().await;
-    Ok(mgr.has_credentials(&name))
+    let creds = McpCreds::new(state.secrets.clone());
+    secret_store::blocking(move || creds.has(&name)).await
 }
 
 // ─── SSH hosts / config import ───
@@ -2539,17 +2558,26 @@ async fn sftp_rename_cmd(
 
 // ─── AI Commands ───
 
+/// Save (or, when empty, delete) an AI provider key in the system password
+/// store. Off the async runtime: the store can be slow or ask the user.
 #[tauri::command]
-fn ai_set_key(provider: String, key: String, state: State<'_, AppState>) -> Result<(), String> {
-    state
-        .ai_keys
-        .set(&provider, &key)
-        .map_err(|e| e.to_string())
+async fn ai_set_key(provider: String, key: String, state: State<'_, AppState>) -> Result<(), String> {
+    let keys = state.ai_keys.clone();
+    let key = zeroize::Zeroizing::new(key);
+    secret_store::blocking(move || keys.set(&provider, &key)).await
 }
 
 #[tauri::command]
-fn ai_has_key(provider: String, state: State<'_, AppState>) -> Result<bool, String> {
-    Ok(state.ai_keys.has(&provider))
+async fn ai_has_key(provider: String, state: State<'_, AppState>) -> Result<bool, String> {
+    let keys = state.ai_keys.clone();
+    secret_store::blocking(move || keys.has(&provider)).await
+}
+
+/// Where AI keys and MCP logins are kept, for Settings.
+#[tauri::command]
+async fn secret_store_status(state: State<'_, AppState>) -> Result<secret_store::StoreStatus, String> {
+    let secrets = state.secrets.clone();
+    secret_store::blocking(move || Ok(secrets.status())).await
 }
 
 /// Proxy one AI provider request from Rust (keys never touch the webview).
@@ -2841,7 +2869,14 @@ fn main() {
             let _ = private_fs::private_dir(&app_dir);
             private_fs::tighten_app_dir(&app_dir);
             // [2.0 keys] Open the system password store and move old key files here.
-            let state = AppState::new(app_dir)?;
+            let secrets = Arc::new(secret_store::SecretStore::open(&app_dir, &app.config().identifier));
+            secrets.move_file(&app_dir.join(secret_store::AI_KEYS_FILE), secret_store::AI_KEY_PREFIX);
+            // Before the MCP auto-connect below, so servers find their logins.
+            secrets.move_file(&app_dir.join(secret_store::MCP_CREDS_FILE), secret_store::MCP_CREDS_PREFIX);
+            // Login files are only kept while their server runs: any left by a
+            // crash go before the auto-connect.
+            mcp::client::sweep_creds_dir(&app_dir);
+            let state = AppState::new(app_dir, secrets)?;
             app.manage(state);
 
             // The main window starts hidden (tauri.conf.json visible: false)
@@ -2947,6 +2982,7 @@ fn main() {
             ai_set_key,
             ai_has_key,
             // [2.0 keys] new commands below
+            secret_store_status,
             ai_chat,
             ai_cancel_stream,
             ai_cli,
@@ -3002,7 +3038,9 @@ fn main() {
 #[cfg(all(test, unix))]
 mod shutdown_tests {
     use super::*;
-    use mcp::client::tests::{fake_child_pid, fake_stdio_client};
+    use mcp::client::tests::{
+        fake_child_pid, fake_stdio_client, fake_stdio_client_with_creds, test_creds_file,
+    };
 
     /// `kill -0`: is there still a process (running or an unreaped zombie)?
     fn process_exists(pid: u32) -> bool {
@@ -3021,7 +3059,8 @@ mod shutdown_tests {
         let _serial = ai::CLI_RUNS_TEST_LOCK.lock().await;
         let dir = std::env::temp_dir().join(format!("greencli-shutdown-{}", rand::random::<u64>()));
         std::fs::create_dir_all(&dir).unwrap();
-        let mcp = AsyncMutex::new(McpManager::new(dir.clone()));
+        let secrets = Arc::new(secret_store::SecretStore::files(&dir));
+        let mcp = AsyncMutex::new(McpManager::new(dir.clone(), McpCreds::new(secrets)));
         let client = fake_stdio_client("fake");
         let pid = fake_child_pid(&client);
         assert!(process_exists(pid));
@@ -3035,6 +3074,23 @@ mod shutdown_tests {
         // The second run finds nothing to do.
         shutdown_children_inner(&mcp).await;
         assert!(mcp.lock().await.take_all_clients().is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn shutdown_deletes_the_login_files() {
+        let _serial = ai::CLI_RUNS_TEST_LOCK.lock().await;
+        let dir = std::env::temp_dir().join(format!("greencli-shutdown-{}", rand::random::<u64>()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let secrets = Arc::new(secret_store::SecretStore::files(&dir));
+        let mcp = AsyncMutex::new(McpManager::new(dir.clone(), McpCreds::new(secrets)));
+        let creds = test_creds_file(&dir, "central");
+        let path = creds.path().to_path_buf();
+        let client = fake_stdio_client_with_creds("central", creds);
+        assert!(mcp.lock().await.install_client("central".into(), client).is_none());
+        assert!(path.exists());
+        shutdown_children_inner(&mcp).await;
+        assert!(!path.exists());
         let _ = std::fs::remove_dir_all(dir);
     }
 }

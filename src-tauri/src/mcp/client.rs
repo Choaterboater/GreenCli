@@ -27,6 +27,7 @@ use super::presets::{
     PresetId,
 };
 use crate::error::AppError;
+use crate::secret_store::{self, SecretStore, MCP_CREDS_PREFIX};
 use futures::StreamExt;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{json, Value};
@@ -39,8 +40,9 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStdin, Command};
+use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::{mpsc, oneshot, Mutex};
+use zeroize::Zeroizing;
 
 fn default_true() -> bool {
     true
@@ -409,50 +411,236 @@ impl McpConfigStore {
 // ─── Credentials store ───
 //
 // Holds the contents of each server's credentials file (e.g. centralmcp's
-// `credentials.yaml`) kept in the app data dir, OUTSIDE the webview/localStorage.
-// On connect the content is written to a file and the server's credentials env
+// `credentials.yaml`) in the system password store under `mcp-creds:<name>`
+// (or, with no store, the 1.9 `mcp_creds.json`; see secret_store.rs). On
+// connect the content is written to a file and the server's credentials env
 // var (default `CREDS_PATH`) is pointed at it.
+//
+// Every call may block on the store, so commands run them in spawn_blocking
+// and never while holding the MCP manager lock.
 
-pub struct McpSecretStore {
-    path: PathBuf,
+#[derive(Clone)]
+pub struct McpCreds {
+    store: Arc<SecretStore>,
 }
 
-impl McpSecretStore {
-    pub fn new(app_dir: PathBuf) -> Self {
-        Self {
-            path: app_dir.join("mcp_creds.json"),
+impl McpCreds {
+    pub fn new(store: Arc<SecretStore>) -> Self {
+        Self { store }
+    }
+
+    fn account(name: &str) -> String {
+        format!("{}{}", MCP_CREDS_PREFIX, name)
+    }
+
+    /// Save the content; empty content deletes it.
+    pub fn set(&self, name: &str, content: &str) -> Result<(), String> {
+        self.store.set(&Self::account(name), content)
+    }
+
+    pub fn get(&self, name: &str) -> Result<Option<Zeroizing<String>>, String> {
+        self.store.get(&Self::account(name))
+    }
+
+    pub fn has(&self, name: &str) -> Result<bool, String> {
+        self.store.has(&Self::account(name))
+    }
+
+    pub fn delete(&self, name: &str) -> Result<(), String> {
+        self.store.delete(&Self::account(name))
+    }
+
+    /// Copy to a new name and check the copy (see SecretStore::copy).
+    pub fn copy(&self, from: &str, to: &str) -> Result<bool, String> {
+        self.store.copy(&Self::account(from), &Self::account(to))
+    }
+}
+
+/// The folder for login files, inside the app data folder.
+const CREDS_DIR: &str = "mcp_creds";
+/// Each running copy of GreenCLI keeps its login files in its own
+/// `mcp_creds/run-<id>/` folder, next to `run-<id>.lock`, which it holds
+/// locked while it runs. The startup sweep deletes only folders whose lock
+/// is free, so a second copy of the app never deletes the files of servers
+/// the first copy still runs.
+const RUN_PREFIX: &str = "run-";
+const LOCK_SUFFIX: &str = ".lock";
+/// Held while a run folder is made or the sweep runs, so the two never meet
+/// halfway.
+const SWEEP_LOCK: &str = ".sweep.lock";
+
+/// This process's run folder per app data folder, with its held lock.
+static RUN_DIRS: std::sync::Mutex<Vec<(PathBuf, PathBuf, fs::File)>> = std::sync::Mutex::new(Vec::new());
+
+fn open_lock(path: &std::path::Path, create_new: bool) -> std::io::Result<fs::File> {
+    let mut o = fs::OpenOptions::new();
+    o.read(true).write(true);
+    if create_new {
+        o.create_new(true);
+    } else {
+        o.create(true).truncate(false);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        o.mode(0o600);
+    }
+    o.open(path)
+}
+
+/// A lock path must be a plain file: a link there is refused, never followed.
+fn open_plain_lock(path: &std::path::Path) -> std::io::Result<fs::File> {
+    if let Ok(m) = fs::symlink_metadata(path) {
+        if !m.is_file() {
+            return Err(std::io::Error::other("not a plain file"));
         }
     }
+    open_lock(path, false)
+}
 
-    fn load(&self) -> HashMap<String, String> {
-        fs::read(&self.path)
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default()
-    }
+/// The sweep lock of `base` (`mcp_creds`), held until the file is dropped.
+fn hold_sweep_lock(base: &std::path::Path) -> std::io::Result<fs::File> {
+    let f = open_plain_lock(&base.join(SWEEP_LOCK))?;
+    f.lock()?;
+    Ok(f)
+}
 
-    fn save(&self, m: &HashMap<String, String>) -> Result<(), AppError> {
-        // Create with mode 0600 directly (no world-readable write-then-chmod window).
-        write_secret_file(&self.path, &serde_json::to_vec(m)?)
-    }
-
-    pub fn set(&self, name: &str, content: &str) -> Result<(), AppError> {
-        let mut m = self.load();
-        if content.is_empty() {
-            m.remove(name);
-        } else {
-            m.insert(name.to_string(), content.to_string());
+/// This process's own login folder in `app_dir`, made (with its lock) the
+/// first time it is needed.
+fn run_dir(app_dir: &std::path::Path) -> Result<PathBuf, AppError> {
+    let mut runs = RUN_DIRS.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(i) = runs.iter().position(|(a, _, _)| a == app_dir) {
+        if fs::symlink_metadata(&runs[i].1).map(|m| m.is_dir()).unwrap_or(false) {
+            return Ok(runs[i].1.clone());
         }
-        self.save(&m)
+        // Deleted under us: make a new one.
+        runs.remove(i);
+    }
+    let base = app_dir.join(CREDS_DIR);
+    crate::private_fs::private_dir(&base)?;
+    let _sweep = hold_sweep_lock(&base)?;
+    let id = format!("{}{:016x}", RUN_PREFIX, rand::random::<u64>());
+    let lock = open_lock(&base.join(format!("{}{}", id, LOCK_SUFFIX)), true)?;
+    lock.try_lock()
+        .map_err(|e| AppError::ApiError(format!("Couldn't lock the MCP login folder: {}", e)))?;
+    let dir = base.join(&id);
+    crate::private_fs::private_dir(&dir)?;
+    runs.push((app_dir.to_path_buf(), dir.clone(), lock));
+    Ok(dir)
+}
+
+/// The login file of one running stdio server. It exists only while that
+/// server runs: it is deleted when the server is shut down, when it exits by
+/// itself (the stdio reader sees EOF), when the connect fails, and by the
+/// startup sweep once this copy of the app is gone. Each connect writes a
+/// new file, so a reconnect never deletes the file the new server is using.
+pub struct CredsFile {
+    path: PathBuf,
+    removed: AtomicBool,
+}
+
+impl CredsFile {
+    /// Write `content` to a new owner-only file for server `name` in this
+    /// process's `<app_dir>/mcp_creds/run-<id>/` (the folders are owner-only too).
+    fn write(app_dir: &std::path::Path, name: &str, content: &[u8]) -> Result<Self, AppError> {
+        let dir = run_dir(app_dir)?;
+        let path = dir.join(format!("{}-{:016x}", sanitize_filename(name), rand::random::<u64>()));
+        let file = Self {
+            path,
+            removed: AtomicBool::new(false),
+        };
+        // On an error the guard is dropped, which deletes anything written.
+        crate::private_fs::write_key_file(&file.path, content)?;
+        Ok(file)
     }
 
-    pub fn get(&self, name: &str) -> Option<String> {
-        self.load().get(name).cloned()
+    pub fn path(&self) -> &std::path::Path {
+        &self.path
     }
 
-    pub fn has(&self, name: &str) -> bool {
-        self.load().get(name).map(|c| !c.is_empty()).unwrap_or(false)
+    /// Delete the file (once; later calls do nothing).
+    pub fn remove(&self) {
+        if !self.removed.swap(true, Ordering::Relaxed) {
+            let _ = fs::remove_file(&self.path);
+            let _ = fs::remove_file(crate::private_fs::key_file_tmp(&self.path));
+        }
     }
+}
+
+impl Drop for CredsFile {
+    fn drop(&mut self) {
+        self.remove();
+    }
+}
+
+/// Startup sweep, before any server connects: login files left by a crash
+/// or a forced quit are deleted. A run folder whose lock another running
+/// copy of GreenCLI holds is left alone. Links are deleted, never followed.
+pub fn sweep_creds_dir(app_dir: &std::path::Path) {
+    let base = app_dir.join(CREDS_DIR);
+    if !fs::symlink_metadata(&base).map(|m| m.is_dir()).unwrap_or(false) {
+        return;
+    }
+    let _sweep = match hold_sweep_lock(&base) {
+        Ok(f) => f,
+        Err(e) => {
+            log::warn!("Couldn't lock the MCP login folder, so it wasn't cleaned: {}", e);
+            return;
+        }
+    };
+    let Ok(entries) = fs::read_dir(&base) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        let Ok(kind) = entry.file_type() else {
+            continue;
+        };
+        if name == SWEEP_LOCK {
+            continue;
+        }
+        let run_lock = name
+            .strip_suffix(LOCK_SUFFIX)
+            .filter(|id| id.starts_with(RUN_PREFIX));
+        if let (Some(id), true) = (run_lock, kind.is_file()) {
+            let free = match open_plain_lock(&entry.path()) {
+                Ok(f) => f.try_lock().is_ok(),
+                Err(_) => false,
+            };
+            if free {
+                remove_run_dir(&base.join(id));
+                let _ = fs::remove_file(entry.path());
+            }
+        } else if kind.is_dir() && name.starts_with(RUN_PREFIX) {
+            // Its lock file is made first, so a folder without one is left over.
+            if fs::symlink_metadata(base.join(format!("{}{}", name, LOCK_SUFFIX))).is_err() {
+                remove_run_dir(&entry.path());
+            }
+        } else if kind.is_file() || kind.is_symlink() {
+            // A 1.9 or 2.0-beta login file straight in mcp_creds.
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+}
+
+/// Delete a run folder: plain files and links in it, then the folder. A link
+/// in place of the folder is deleted itself.
+fn remove_run_dir(dir: &std::path::Path) {
+    let Ok(meta) = fs::symlink_metadata(dir) else {
+        return;
+    };
+    if !meta.is_dir() {
+        let _ = fs::remove_file(dir);
+        return;
+    }
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            if entry.file_type().map(|t| t.is_file() || t.is_symlink()).unwrap_or(false) {
+                let _ = fs::remove_file(entry.path());
+            }
+        }
+    }
+    let _ = fs::remove_dir(dir);
 }
 
 // ─── Running client ───
@@ -549,6 +737,9 @@ pub struct McpClient {
     /// The server's access_check answer, run once per connection. None when
     /// the server has no usable access_check tool. Never sent to the AI.
     pub access: Arc<std::sync::Mutex<Option<AccessCheck>>>,
+    /// Stdio only: the login file this server was started with. Deleted at
+    /// shutdown (and by the reader at EOF).
+    creds_file: Option<Arc<CredsFile>>,
 }
 
 /// GUI apps inherit a minimal PATH; add the usual user/tool bin dirs so things
@@ -893,15 +1084,125 @@ fn spawn_refresher(
     })
 }
 
+// Reader task: dispatch responses to waiters; answer server-initiated
+// requests (ping keep-alives especially) instead of leaving them hanging.
+// A transient read error (e.g. a non-UTF8 banner byte) skips that line
+// rather than killing the whole connection; only EOF ends the loop.
+// At EOF the client is marked dead, waiters fail, and the server's login
+// file (if any) is deleted: it is only kept while the server runs.
+fn spawn_stdio_reader(
+    stdout: ChildStdout,
+    pending_r: Pending,
+    dead_r: Arc<AtomicBool>,
+    stdin_r: Arc<Mutex<ChildStdin>>,
+    tools_changed_tx: mpsc::UnboundedSender<()>,
+    creds_file: Option<Arc<CredsFile>>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut lines = BufReader::new(stdout).lines();
+        loop {
+            let line = match lines.next_line().await {
+                Ok(Some(l)) => l,
+                Ok(None) => break, // EOF — process closed stdout
+                // A non-UTF8 line is consumed, so skip it and keep reading. But a
+                // real I/O error (broken pipe / reset) does NOT advance the stream:
+                // returning the same error forever would busy-spin a core. Break.
+                Err(e) if e.kind() == std::io::ErrorKind::InvalidData => continue,
+                Err(_) => break,
+            };
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            let v: Value = match serde_json::from_str(line) {
+                Ok(v) => v,
+                Err(_) => continue, // skip any non-JSON banner/log lines
+            };
+            // A message carrying a `method` is a REQUEST/notification FROM the
+            // server (ping/sampling/roots/elicitation), not a response to us.
+            // Never match it against pending waiters — ids restart at 1 each
+            // reconnect so a server-request id can collide with one of ours.
+            // A server REQUEST (method + id) must be answered or a strict server
+            // can stall/tear down the session: reply to `ping`, politely refuse
+            // the rest. Notifications (no id) need no reply.
+            if let Some(method) = v.get("method").and_then(|m| m.as_str()) {
+                if method == "notifications/tools/list_changed" {
+                    let _ = tools_changed_tx.send(());
+                }
+                if let Some(req_id) = v.get("id") {
+                    let resp = if method == "ping" {
+                        json!({ "jsonrpc": "2.0", "id": req_id, "result": {} })
+                    } else {
+                        json!({
+                            "jsonrpc": "2.0",
+                            "id": req_id,
+                            "error": { "code": -32601, "message": format!("client does not support '{}'", method) }
+                        })
+                    };
+                    let line = format!("{}\n", resp);
+                    let mut w = stdin_r.lock().await;
+                    let _ = w.write_all(line.as_bytes()).await;
+                    let _ = w.flush().await;
+                }
+                continue;
+            }
+            // Accept integer / float / numeric-string ids (servers vary).
+            let id = v.get("id").and_then(|i| {
+                i.as_i64()
+                    .or_else(|| i.as_u64().map(|u| u as i64))
+                    .or_else(|| i.as_f64().map(|f| f as i64))
+                    .or_else(|| i.as_str().and_then(|s| s.parse::<i64>().ok()))
+            });
+            if let Some(id) = id {
+                if let Some(tx) = pending_r.lock().await.remove(&id) {
+                    // `error: null` with a valid `result` is a lenient
+                    // success, not an error — `get` yields Some(&Null) for a
+                    // present-but-null key, so filter null out here too.
+                    if let Some(err) = v.get("error").filter(|e| !e.is_null()) {
+                        let msg = err
+                            .get("message")
+                            .and_then(|m| m.as_str())
+                            .unwrap_or("MCP error")
+                            .to_string();
+                        let _ = tx.send(Err(msg));
+                    } else {
+                        let _ = tx.send(Ok(v.get("result").cloned().unwrap_or(Value::Null)));
+                    }
+                }
+            }
+        }
+        // Stream closed — mark the client dead FIRST (so new requests are
+        // refused with an actionable error and status()/all_tools() stop
+        // advertising it), then fail any outstanding requests.
+        dead_r.store(true, Ordering::Relaxed);
+        let mut p = pending_r.lock().await;
+        for (_, tx) in p.drain() {
+            let _ = tx.send(Err("MCP server process exited".into()));
+        }
+        drop(p);
+        if let Some(file) = creds_file {
+            file.remove();
+        }
+    })
+}
+
 impl McpClient {
-    pub async fn connect(def: &McpServerDef) -> Result<McpClient, AppError> {
+    /// Connect to a server. `creds_file` is the login file `def` points at
+    /// (stdio only); the client keeps it while the server runs.
+    pub async fn connect(
+        def: &McpServerDef,
+        creds_file: Option<Arc<CredsFile>>,
+    ) -> Result<McpClient, AppError> {
         match def.transport {
-            McpTransport::Stdio => Self::connect_stdio(def).await,
+            McpTransport::Stdio => Self::connect_stdio(def, creds_file).await,
             McpTransport::Http => Self::connect_http(def).await,
         }
     }
 
-    async fn connect_stdio(def: &McpServerDef) -> Result<McpClient, AppError> {
+    async fn connect_stdio(
+        def: &McpServerDef,
+        creds_file: Option<Arc<CredsFile>>,
+    ) -> Result<McpClient, AppError> {
         validate_stdio_command(&def.command)?;
         let mut cmd = Command::new(&def.command);
         cmd.args(&def.args);
@@ -967,12 +1268,8 @@ impl McpClient {
         }
 
         let pending: Pending = Arc::new(Mutex::new(HashMap::new()));
-        let pending_r = pending.clone();
         let dead = Arc::new(AtomicBool::new(false));
-        let dead_r = dead.clone();
-
         let stdin = Arc::new(Mutex::new(stdin));
-        let stdin_r = stdin.clone();
 
         // Signalled by the reader on `notifications/tools/list_changed`; the
         // refresher task (spawned below, after the initial tools/list) drains
@@ -980,95 +1277,15 @@ impl McpClient {
         // used by the Http variant, but present on both for a uniform struct)
         // — the reader's own clone is what actually closes the channel here.
         let (tools_changed_tx, tools_changed_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
-        let tools_changed_tx_reader = tools_changed_tx.clone();
 
-        // Reader task: dispatch responses to waiters; answer server-initiated
-        // requests (ping keep-alives especially) instead of leaving them hanging.
-        // A transient read error (e.g. a non-UTF8 banner byte) skips that line
-        // rather than killing the whole connection; only EOF ends the loop.
-        let reader = tokio::spawn(async move {
-            let tools_changed_tx = tools_changed_tx_reader;
-            let mut lines = BufReader::new(stdout).lines();
-            loop {
-                let line = match lines.next_line().await {
-                    Ok(Some(l)) => l,
-                    Ok(None) => break, // EOF — process closed stdout
-                    // A non-UTF8 line is consumed, so skip it and keep reading. But a
-                    // real I/O error (broken pipe / reset) does NOT advance the stream:
-                    // returning the same error forever would busy-spin a core. Break.
-                    Err(e) if e.kind() == std::io::ErrorKind::InvalidData => continue,
-                    Err(_) => break,
-                };
-                let line = line.trim();
-                if line.is_empty() {
-                    continue;
-                }
-                let v: Value = match serde_json::from_str(line) {
-                    Ok(v) => v,
-                    Err(_) => continue, // skip any non-JSON banner/log lines
-                };
-                // A message carrying a `method` is a REQUEST/notification FROM the
-                // server (ping/sampling/roots/elicitation), not a response to us.
-                // Never match it against pending waiters — ids restart at 1 each
-                // reconnect so a server-request id can collide with one of ours.
-                // A server REQUEST (method + id) must be answered or a strict server
-                // can stall/tear down the session: reply to `ping`, politely refuse
-                // the rest. Notifications (no id) need no reply.
-                if let Some(method) = v.get("method").and_then(|m| m.as_str()) {
-                    if method == "notifications/tools/list_changed" {
-                        let _ = tools_changed_tx.send(());
-                    }
-                    if let Some(req_id) = v.get("id") {
-                        let resp = if method == "ping" {
-                            json!({ "jsonrpc": "2.0", "id": req_id, "result": {} })
-                        } else {
-                            json!({
-                                "jsonrpc": "2.0",
-                                "id": req_id,
-                                "error": { "code": -32601, "message": format!("client does not support '{}'", method) }
-                            })
-                        };
-                        let line = format!("{}\n", resp);
-                        let mut w = stdin_r.lock().await;
-                        let _ = w.write_all(line.as_bytes()).await;
-                        let _ = w.flush().await;
-                    }
-                    continue;
-                }
-                // Accept integer / float / numeric-string ids (servers vary).
-                let id = v.get("id").and_then(|i| {
-                    i.as_i64()
-                        .or_else(|| i.as_u64().map(|u| u as i64))
-                        .or_else(|| i.as_f64().map(|f| f as i64))
-                        .or_else(|| i.as_str().and_then(|s| s.parse::<i64>().ok()))
-                });
-                if let Some(id) = id {
-                    if let Some(tx) = pending_r.lock().await.remove(&id) {
-                        // `error: null` with a valid `result` is a lenient
-                        // success, not an error — `get` yields Some(&Null) for a
-                        // present-but-null key, so filter null out here too.
-                        if let Some(err) = v.get("error").filter(|e| !e.is_null()) {
-                            let msg = err
-                                .get("message")
-                                .and_then(|m| m.as_str())
-                                .unwrap_or("MCP error")
-                                .to_string();
-                            let _ = tx.send(Err(msg));
-                        } else {
-                            let _ = tx.send(Ok(v.get("result").cloned().unwrap_or(Value::Null)));
-                        }
-                    }
-                }
-            }
-            // Stream closed — mark the client dead FIRST (so new requests are
-            // refused with an actionable error and status()/all_tools() stop
-            // advertising it), then fail any outstanding requests.
-            dead_r.store(true, Ordering::Relaxed);
-            let mut p = pending_r.lock().await;
-            for (_, tx) in p.drain() {
-                let _ = tx.send(Err("MCP server process exited".into()));
-            }
-        });
+        let reader = spawn_stdio_reader(
+            stdout,
+            pending.clone(),
+            dead.clone(),
+            stdin.clone(),
+            tools_changed_tx.clone(),
+            creds_file.clone(),
+        );
 
         let caller = McpCaller {
             server: Arc::from(def.name.as_str()),
@@ -1114,6 +1331,7 @@ impl McpClient {
 
         Ok(McpClient {
             child: Some(child),
+            creds_file,
             caller,
             tools,
             server_info,
@@ -1275,6 +1493,7 @@ impl McpClient {
 
         Ok(McpClient {
             child: None,
+            creds_file: None,
             caller,
             tools,
             server_info,
@@ -1323,6 +1542,10 @@ impl McpClient {
         if let Some(mut child) = self.child.take() {
             let _ = child.start_kill();
             let _ = child.wait().await;
+        }
+        // The server is gone: its login file goes too.
+        if let Some(file) = self.creds_file.take() {
+            file.remove();
         }
     }
 }
@@ -1750,7 +1973,7 @@ impl McpCaller {
 
 pub struct McpManager {
     store: McpConfigStore,
-    secrets: McpSecretStore,
+    creds: McpCreds,
     app_dir: PathBuf,
     clients: HashMap<String, McpClient>,
 }
@@ -1769,65 +1992,19 @@ fn sanitize_filename(name: &str) -> String {
     format!("{}_{:016x}", base, h.finish())
 }
 
-/// Lock down a secrets file to owner-only: 0600 on Unix; an owner-only DACL
-/// (via icacls — std has no ACL API) on Windows.
-#[cfg(unix)]
-fn restrict_perms(path: &std::path::Path) {
-    use std::os::unix::fs::PermissionsExt;
-    let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
-}
-#[cfg(windows)]
-fn restrict_perms(path: &std::path::Path) {
-    // Strip inheritance and grant full control to the current user only, so
-    // credential files aren't readable by other local accounts.
-    if let Ok(user) = std::env::var("USERNAME") {
-        let _ = std::process::Command::new("icacls")
-            .arg(path)
-            .args(["/inheritance:r", "/grant:r", &format!("{}:F", user)])
-            .output();
-    }
-}
-#[cfg(not(any(unix, windows)))]
-fn restrict_perms(_path: &std::path::Path) {}
-
-/// Write a secret file owner-only WITHOUT a world-readable window: on Unix create
-/// the file with mode 0600 directly, rather than fs::write (umask 0644) then chmod
-/// — which leaves the cleartext readable to other local users in between.
-fn write_secret_file(path: &std::path::Path, content: &[u8]) -> Result<(), AppError> {
-    #[cfg(unix)]
-    {
-        use std::io::Write;
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut f = fs::OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .write(true)
-            .mode(0o600)
-            .open(path)
-            .map_err(AppError::from)?;
-        f.write_all(content).map_err(AppError::from)?;
-    }
-    #[cfg(not(unix))]
-    {
-        // Create + lock down the (empty) file FIRST, then write the secret into
-        // the already-restricted file — the content never sits on disk under the
-        // parent directory's (potentially broad) ACL.
-        fs::write(path, b"").map_err(AppError::from)?;
-        restrict_perms(path);
-        fs::write(path, content).map_err(AppError::from)?;
-    }
-    restrict_perms(path); // also fixes perms if the file pre-existed
-    Ok(())
-}
-
 impl McpManager {
-    pub fn new(app_dir: PathBuf) -> Self {
+    pub fn new(app_dir: PathBuf, creds: McpCreds) -> Self {
         Self {
             store: McpConfigStore::new(app_dir.clone()),
-            secrets: McpSecretStore::new(app_dir.clone()),
+            creds,
             app_dir,
             clients: HashMap::new(),
         }
+    }
+
+    /// The credentials handle, to use AFTER the lock is released.
+    pub fn creds(&self) -> McpCreds {
+        self.creds.clone()
     }
 
     pub fn list_configs(&self) -> Vec<McpServerDef> {
@@ -1885,35 +2062,36 @@ impl McpManager {
         self.store.upsert(def)
     }
 
-    /// Rename a server, migrating everything keyed by name: config entry, stored
-    /// credentials, the materialised creds file, and any live client (so its
-    /// tools stay routable without a reconnect).
-    pub fn rename_server(&mut self, from: &str, to: &str) -> Result<(), AppError> {
-        if from == to {
-            return Ok(());
-        }
-        let mut all = self.store.load_checked()?;
+    /// Why `from` can't be renamed to `to`, checked before anything moves.
+    pub fn check_rename(&self, from: &str, to: &str) -> Result<(), AppError> {
+        let all = self.store.load_checked()?;
         if all.iter().any(|d| d.name == to) {
             return Err(AppError::ApiError(format!(
                 "An MCP server named '{}' already exists",
                 to
             )));
         }
-        let def = all
-            .iter_mut()
-            .find(|d| d.name == from)
-            .ok_or_else(|| AppError::ApiError(format!("No MCP server named '{}'", from)))?;
-        def.name = to.to_string();
-        self.store.save(&all)?;
-        // Move stored credentials to the new name (deleting the old entry used to
-        // silently drop them on rename).
-        if let Some(content) = self.secrets.get(from) {
-            self.secrets.set(to, &content)?;
-            self.secrets.set(from, "")?;
+        if !all.iter().any(|d| d.name == from) {
+            return Err(AppError::ApiError(format!("No MCP server named '{}'", from)));
         }
-        // The materialised creds file is keyed by name too; drop the old one (a
-        // fresh one is written under the new name on next connect).
-        let _ = fs::remove_file(self.app_dir.join("mcp_creds").join(sanitize_filename(from)));
+        Ok(())
+    }
+
+    /// Rename a server's config entry, the materialised creds file and any
+    /// live client (so its tools stay routable without a reconnect). The
+    /// stored credentials are moved by `rename_server` (the free function),
+    /// outside the lock.
+    pub fn rename_config(&mut self, from: &str, to: &str) -> Result<(), AppError> {
+        if from == to {
+            return Ok(());
+        }
+        self.check_rename(from, to)?;
+        let mut all = self.store.load_checked()?;
+        if let Some(def) = all.iter_mut().find(|d| d.name == from) {
+            def.name = to.to_string();
+        }
+        self.store.save(&all)?;
+        // A live client keeps its login file (deleted when it stops).
         if let Some(client) = self.clients.remove(from) {
             if let Ok(mut guard) = client.tools.lock() {
                 for t in guard.iter_mut() {
@@ -1925,37 +2103,24 @@ impl McpManager {
         Ok(())
     }
 
-    pub fn set_credentials(&self, name: &str, content: &str) -> Result<(), AppError> {
-        self.secrets.set(name, content)?;
-        if content.is_empty() {
-            // Clearing the stored secret must also delete the materialised
-            // cleartext file, or it lingers on disk until the server is removed.
-            let _ = fs::remove_file(self.app_dir.join("mcp_creds").join(sanitize_filename(name)));
-        }
-        Ok(())
-    }
-
-    pub fn has_credentials(&self, name: &str) -> bool {
-        self.secrets.has(name)
-    }
-
-    /// Remove a server's config + stored credentials. The caller must first
-    /// `take_client` and shut it down outside the lock.
+    /// Remove a server's config. The caller deletes its stored credentials
+    /// first (outside the lock), takes the client and shuts it down outside
+    /// the lock.
     pub fn remove_config_only(&self, name: &str) -> Result<(), AppError> {
-        let _ = self.secrets.set(name, "");
-        // Also delete the materialised cleartext creds file that resolve_connect_def
-        // wrote, so the secret doesn't linger on disk after the server is removed.
-        let creds_file = self.app_dir.join("mcp_creds").join(sanitize_filename(name));
-        let _ = fs::remove_file(&creds_file);
+        // Its login file goes with the client's shutdown.
         self.store.remove(name)
     }
 
-    /// Load a server def and materialise its managed credentials into a 0600
-    /// file, injecting the credentials env var. With writes off, a recognised
-    /// server also gets its preset's read-only pins. Cheap + non-blocking, so
-    /// it runs under the (brief) manager lock; the spawn/handshake happens
-    /// unlocked.
-    pub fn resolve_connect_def(&self, name: &str) -> Result<ResolvedDef, AppError> {
+    /// Load a server def and write its credentials (`creds`, read from the
+    /// store before the lock) to a new 0600 login file (`CredsFile`, kept only
+    /// while the server runs), injecting the credentials env var. With writes off, a recognised server also gets its preset's
+    /// read-only pins. Cheap + non-blocking, so it runs under the (brief)
+    /// manager lock; the spawn/handshake happens unlocked.
+    pub fn resolve_connect_def(
+        &self,
+        name: &str,
+        creds: Option<Zeroizing<String>>,
+    ) -> Result<ResolvedDef, AppError> {
         let mut def = self
             .store
             .load()
@@ -1964,23 +2129,12 @@ impl McpManager {
             .ok_or_else(|| AppError::ApiError(format!("No MCP server named '{}'", name)))?;
         // Meaningless for Http: there's no process the app spawns to inject an
         // env var into — the server was already started separately.
+        let mut creds_file = None;
         if def.transport == McpTransport::Stdio {
-            if let Some(content) = self.secrets.get(name) {
-                let dir = self.app_dir.join("mcp_creds");
-                std::fs::create_dir_all(&dir).map_err(AppError::from)?;
-                // The files inside are 0600, but the directory itself should not
-                // be world-traversable either (it reveals which servers have
-                // stored credentials).
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    let _ = std::fs::set_permissions(
-                        &dir,
-                        std::fs::Permissions::from_mode(0o700),
-                    );
-                }
-                let path = dir.join(sanitize_filename(name));
-                write_secret_file(&path, content.as_bytes())?;
+            if let Some(content) = creds.filter(|c| !c.is_empty()) {
+                let file = CredsFile::write(&self.app_dir, name, content.as_bytes())?;
+                let path = file.path().to_path_buf();
+                creds_file = Some(Arc::new(file));
                 let var = def
                     .credentials_env_var
                     .clone()
@@ -2001,6 +2155,7 @@ impl McpManager {
             def,
             pins,
             writes_on,
+            creds_file,
         })
     }
 
@@ -2182,6 +2337,9 @@ pub struct ResolvedDef {
     pub pins: PinPlan,
     /// The writes setting the connection starts with.
     pub writes_on: bool,
+    /// The login file the definition points at (stdio with a saved login).
+    /// Dropping it deletes the file, so a failed connect leaves none behind.
+    pub creds_file: Option<Arc<CredsFile>>,
 }
 
 /// The policy for one live client: its saved definition (None fails closed),
@@ -2222,10 +2380,21 @@ pub async fn connect_server(
     name: &str,
     web_refused: &(dyn Fn() -> Option<String> + Send + Sync),
 ) -> Result<usize, String> {
+    // The stored credentials are read with the lock released: the store can
+    // be slow or ask the user, and must not hold up every MCP command.
+    let creds = manager.lock().await.creds();
+    let owned = name.to_string();
+    let stored = secret_store::blocking(move || creds.get(&owned)).await;
     let resolved = {
         let mgr = manager.lock().await;
-        mgr.resolve_connect_def(name).map_err(|e| e.to_string())?
+        mgr.resolve_connect_def(name, stored.as_ref().ok().cloned().flatten())
+            .map_err(|e| e.to_string())?
     };
+    // Only a stdio server is given a credentials file, so only it needs the
+    // store. Starting it without its login would fail in a less clear way.
+    if resolved.def.transport == McpTransport::Stdio {
+        stored?;
+    }
     // Only an http server is a web server: a stdio server keeps a url the form
     // left behind, but GreenCLI starts it over pipes.
     let web = resolved.def.transport == McpTransport::Http;
@@ -2234,9 +2403,15 @@ pub async fn connect_server(
             return Err(why);
         }
     }
-    let mut client = McpClient::connect(&resolved.def)
+    let mut client = McpClient::connect(&resolved.def, resolved.creds_file.clone())
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| {
+            // Failed: the login file goes now, not when the reader sees EOF.
+            if let Some(file) = &resolved.creds_file {
+                file.remove();
+            }
+            e.to_string()
+        })?;
     client.pins = resolved.pins;
     client.connected_writes_on = resolved.writes_on;
     let installed = {
@@ -2261,6 +2436,46 @@ pub async fn connect_server(
         old.shutdown().await;
     }
     Ok(count)
+}
+
+/// The `mcp_rename_server` command without Tauri. The config is checked
+/// first; the stored credentials are copied to the new name and read back
+/// (outside the lock); then the config and live client are renamed under the
+/// lock; only then is the old entry deleted. A failure on the way leaves the
+/// old name with its credentials as it was.
+pub async fn rename_server(manager: &Mutex<McpManager>, from: &str, to: &str) -> Result<(), String> {
+    if from == to {
+        return Ok(());
+    }
+    let creds = {
+        let mgr = manager.lock().await;
+        mgr.check_rename(from, to).map_err(|e| e.to_string())?;
+        mgr.creds()
+    };
+    let (f, t, c) = (from.to_string(), to.to_string(), creds.clone());
+    let copied = secret_store::blocking(move || c.copy(&f, &t)).await?;
+    let renamed = {
+        let mut mgr = manager.lock().await;
+        mgr.rename_config(from, to).map_err(|e| e.to_string())
+    };
+    // Clean up the name the credentials no longer belong to: the old one
+    // after a rename, the new copy after a failed one.
+    let stale = match (&renamed, copied) {
+        (Ok(()), true) => Some(from.to_string()),
+        (Err(_), true) => Some(to.to_string()),
+        // Nothing moved: a login left under the new name by a server deleted
+        // long ago must not come back with this one.
+        (Ok(()), false) => Some(to.to_string()),
+        (Err(_), false) => None,
+    };
+    if let Some(stale) = stale {
+        let c = creds.clone();
+        let s2 = stale.clone();
+        if let Err(e) = secret_store::blocking(move || c.delete(&s2)).await {
+            log::warn!("Couldn't delete the MCP login saved as '{}': {}", stale, e);
+        }
+    }
+    renamed
 }
 
 /// The `mcp_call` command without Tauri: check the call under a brief lock
@@ -2310,6 +2525,18 @@ pub(crate) mod tests {
         p.push(format!("greencli-mcp-test-{}", rand::random::<u64>()));
         std::fs::create_dir_all(&p).unwrap();
         p
+    }
+
+    /// A manager on the 1.9 files in `dir` (no system password store).
+    fn manager(dir: PathBuf) -> McpManager {
+        let store = Arc::new(SecretStore::files(&dir));
+        McpManager::new(dir, McpCreds::new(store))
+    }
+
+    /// A manager on an in-memory password store.
+    fn mem_manager(mem: &Arc<crate::secret_store::mem::MemBackend>) -> McpManager {
+        let store = Arc::new(SecretStore::os_for_tests(mem.clone()));
+        McpManager::new(temp_dir(), McpCreds::new(store))
     }
 
     fn def(name: &str, command: &str, args: &[&str]) -> McpServerDef {
@@ -2369,6 +2596,7 @@ pub(crate) mod tests {
         };
         McpClient {
             child: None,
+            creds_file: None,
             caller,
             tools: Arc::new(std::sync::Mutex::new(tools)),
             server_info: Value::Null,
@@ -2401,6 +2629,37 @@ pub(crate) mod tests {
         };
         client.child = Some(child);
         client
+    }
+
+    /// A fake_stdio_client that runs with a login file, with the real stdio
+    /// reader on the child's stdout (so the child exiting is seen as EOF).
+    #[cfg(unix)]
+    pub(crate) fn fake_stdio_client_with_creds(server: &str, creds: Arc<CredsFile>) -> McpClient {
+        let mut client = fake_stdio_client(server);
+        let stdout = client
+            .child
+            .as_mut()
+            .and_then(|c| c.stdout.take())
+            .expect("piped stdout");
+        let ClientIo::Stdio { stdin } = client.caller.io.clone() else {
+            unreachable!("a stdio client");
+        };
+        client.reader = spawn_stdio_reader(
+            stdout,
+            client.caller.pending.clone(),
+            client.caller.dead.clone(),
+            stdin,
+            client.caller.tools_changed_tx.clone(),
+            Some(creds.clone()),
+        );
+        client.creds_file = Some(creds);
+        client
+    }
+
+    /// A login file for `name` in `app_dir`, as a connect writes it.
+    #[cfg(unix)]
+    pub(crate) fn test_creds_file(app_dir: &std::path::Path, name: &str) -> Arc<CredsFile> {
+        Arc::new(CredsFile::write(app_dir, name, b"client_secret: s3cr3t").unwrap())
     }
 
     /// The child process id of a fake_stdio_client.
@@ -2819,7 +3078,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn web_urls_cover_saved_and_live_web_servers_only() {
-        let mut mgr = McpManager::new(temp_dir());
+        let mut mgr = manager(temp_dir());
         let mut web = def("web", "", &[]);
         web.transport = McpTransport::Http;
         web.url = Some("https://mcp.example.com/mcp".into());
@@ -2862,10 +3121,10 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn all_tools_reports_the_map_key_after_a_rename() {
-        let mut mgr = McpManager::new(temp_dir());
+        let mut mgr = manager(temp_dir());
         mgr.save_config(def("old", "uvx", &["x"])).unwrap();
         mgr.install_client("old".into(), fake_client("old", vec![tool("old", "get_device")]));
-        mgr.rename_server("old", "new").unwrap();
+        mgr.rename_config("old", "new").unwrap();
         // A tools/list_changed refresh rebuilds the list with the name the
         // refresher was started with.
         if let Some(c) = mgr.clients.get("new") {
@@ -2883,7 +3142,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn a_client_without_a_definition_fails_closed() {
-        let mut mgr = McpManager::new(temp_dir());
+        let mut mgr = manager(temp_dir());
         let tools = vec![
             read_tool("ghost", "find_tool"),
             read_tool("ghost", "invoke_read_tool"),
@@ -2908,7 +3167,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn a_dead_client_offers_nothing() {
-        let mut mgr = McpManager::new(temp_dir());
+        let mut mgr = manager(temp_dir());
         mgr.save_config(def("s", "uvx", &[])).unwrap();
         let client = fake_client("s", vec![tool("s", "get_x")]);
         client.caller.dead.store(true, Ordering::Relaxed);
@@ -2920,7 +3179,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn listing_copies_the_opt_in_and_status_names_the_preset() {
-        let mut mgr = McpManager::new(temp_dir());
+        let mut mgr = manager(temp_dir());
         mgr.save_config(def("srx", "python3", &["jmcp.py"])).unwrap();
         mgr.set_show_opt_in("srx", true).unwrap();
         // Disconnected: matched by the definition.
@@ -2954,11 +3213,11 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn rename_keeps_every_field() {
-        let mut mgr = McpManager::new(temp_dir());
+        let mut mgr = manager(temp_dir());
         mgr.save_config(def("a", "python3", &["jmcp.py"])).unwrap();
         mgr.set_show_opt_in("a", true).unwrap();
         mgr.set_writes("a", McpWrites::On).unwrap();
-        mgr.rename_server("a", "b").unwrap();
+        mgr.rename_config("a", "b").unwrap();
         let all = mgr.list_configs();
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].name, "b");
@@ -2968,7 +3227,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn run_call_refuses_a_call_stopped_before_it_was_sent() {
-        let mut mgr = McpManager::new(temp_dir());
+        let mut mgr = manager(temp_dir());
         mgr.save_config(def("s", "uvx", &[])).unwrap();
         mgr.install_client("s".into(), fake_client("s", vec![tool("s", "get_x")]));
         let manager = Mutex::new(mgr);
@@ -3060,7 +3319,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn set_writes_refuses_on_for_a_read_only_login() {
-        let mut mgr = McpManager::new(temp_dir());
+        let mut mgr = manager(temp_dir());
         mgr.save_config(def("c", "uvx", &["x"])).unwrap();
         let client = fake_client("c", vec![read_tool("c", "get_x")]);
         *client.access.lock().unwrap() = Some(access("read-only"));
@@ -3074,7 +3333,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn writes_off_hides_and_refuses_at_once() {
-        let mut mgr = McpManager::new(temp_dir());
+        let mut mgr = manager(temp_dir());
         mgr.save_config(def("s", "uvx", &["x"])).unwrap();
         let tools = vec![read_tool("s", "get_device"), tool("s", "set_ssid"), tool("s", "execute_command")];
         mgr.install_client("s".into(), fake_client("s", tools));
@@ -3121,7 +3380,7 @@ pub(crate) mod tests {
                 {"name":"plain","command":"uvx","args":["x"],"writes":"on"}]"#,
         )
         .unwrap();
-        let mut mgr = McpManager::new(dir);
+        let mut mgr = manager(dir);
         let st = mgr.status();
         let legacy = &st[0];
         assert_eq!(legacy["writesSet"], false);
@@ -3143,7 +3402,7 @@ pub(crate) mod tests {
         assert!(plain["preset"].is_null());
 
         // Connected: what was applied, the login, and the hidden count.
-        let resolved = mgr.resolve_connect_def("legacy").unwrap();
+        let resolved = mgr.resolve_connect_def("legacy", None).unwrap();
         assert!(!resolved.writes_on);
         assert_eq!(resolved.def.env.get("CENTRALMCP_READONLY").map(String::as_str), Some("1"));
         let mut client = fake_client(
@@ -3165,7 +3424,7 @@ pub(crate) mod tests {
         assert_eq!(mgr.status()[0]["restartNeeded"], true);
         assert_eq!(mgr.status()[0]["hiddenToolCount"], 0);
         // A writes-on connect sends no pins.
-        let resolved = mgr.resolve_connect_def("legacy").unwrap();
+        let resolved = mgr.resolve_connect_def("legacy", None).unwrap();
         assert!(resolved.writes_on);
         assert_eq!(resolved.pins, PinPlan::None);
         assert!(!resolved.def.env.contains_key("CENTRALMCP_READONLY"));
@@ -3173,11 +3432,11 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn resolve_pins_override_the_users_own_value() {
-        let mut mgr = McpManager::new(temp_dir());
+        let mut mgr = manager(temp_dir());
         let mut d = def("c", "uv", &["run", "centralmcp"]);
         d.env.insert("centralmcp_readonly".into(), "0".into());
         mgr.save_config(d).unwrap();
-        let resolved = mgr.resolve_connect_def("c").unwrap();
+        let resolved = mgr.resolve_connect_def("c", None).unwrap();
         let keys: Vec<&String> = resolved
             .def
             .env
@@ -3188,5 +3447,265 @@ pub(crate) mod tests {
         assert_eq!(resolved.def.env["CENTRALMCP_READONLY"], "1");
         mgr.install_client("c".into(), fake_client("c", vec![]));
         assert!(mgr.clients.contains_key("c"));
+    }
+
+    // ─── Logins in the password store (K2) ───
+
+    #[tokio::test]
+    async fn rename_moves_the_login_only_after_the_copy_checks_out() {
+        use crate::secret_store::mem::MemBackend;
+        let mem = MemBackend::new();
+        let mgr = mem_manager(&mem);
+        mgr.save_config(def("a", "uvx", &["x"])).unwrap();
+        mgr.save_config(def("taken", "uvx", &["y"])).unwrap();
+        mgr.creds().set("a", "client_secret: s3cr3t").unwrap();
+        mgr.creds().set("taken", "other login").unwrap();
+        let manager = Mutex::new(mgr);
+
+        // A name that is taken: nothing moves.
+        assert!(rename_server(&manager, "a", "taken").await.is_err());
+        assert_eq!(mem.raw("mcp-creds:a").unwrap(), b"client_secret: s3cr3t");
+        assert_eq!(mem.raw("mcp-creds:taken").unwrap(), b"other login");
+
+        // The copy reads back wrong: the old name keeps its login and config.
+        mem.wrong_read.store(true, Ordering::Relaxed);
+        assert!(rename_server(&manager, "a", "b").await.is_err());
+        mem.wrong_read.store(false, Ordering::Relaxed);
+        assert_eq!(mem.raw("mcp-creds:a").unwrap(), b"client_secret: s3cr3t");
+        assert!(mem.raw("mcp-creds:b").is_none());
+        assert!(manager.lock().await.list_configs().iter().any(|d| d.name == "a"));
+
+        // A good rename: the new entry, then the old one deleted.
+        rename_server(&manager, "a", "b").await.unwrap();
+        assert_eq!(mem.raw("mcp-creds:b").unwrap(), b"client_secret: s3cr3t");
+        assert!(mem.raw("mcp-creds:a").is_none());
+        let names: Vec<String> = manager.lock().await.list_configs().into_iter().map(|d| d.name).collect();
+        assert_eq!(names, vec!["b".to_string(), "taken".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn rename_without_a_login_drops_an_old_login_left_under_the_new_name() {
+        use crate::secret_store::mem::MemBackend;
+        let mem = MemBackend::new();
+        let mgr = mem_manager(&mem);
+        mgr.save_config(def("a", "uvx", &["x"])).unwrap();
+        mgr.creds().set("b", "left from a server deleted long ago").unwrap();
+        let manager = Mutex::new(mgr);
+        rename_server(&manager, "a", "b").await.unwrap();
+        assert!(mem.accounts().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_10kb_login_survives_split_storage_connect_and_export() {
+        use crate::secret_store::mem::MemBackend;
+        let mem = MemBackend::new();
+        mem.max_blob.store(2560, Ordering::Relaxed);
+        let mgr = mem_manager(&mem);
+        mgr.save_config(def("central", "uvx", &["centralmcp"])).unwrap();
+        let yaml: String = (0..400)
+            .map(|i| format!("key_{:03}: value-{:012}\n", i, i * 7919))
+            .collect::<String>()[..10_240]
+            .to_string();
+        mgr.creds().set("central", &yaml).unwrap();
+        assert!(mem.raw("part4:mcp-creds:central").is_some());
+
+        // A fresh handle reads it back whole (export asks has()).
+        let fresh = McpCreds::new(Arc::new(SecretStore::os_for_tests(mem.clone())));
+        assert!(fresh.has("central").unwrap());
+        let stored = fresh.get("central").unwrap();
+        assert_eq!(stored.as_deref().map(String::as_str), Some(yaml.as_str()));
+
+        // Connect: the login file holds exactly the content.
+        let resolved = mgr.resolve_connect_def("central", stored).unwrap();
+        let path = resolved.def.env.get("CREDS_PATH").expect("creds path");
+        assert_eq!(std::fs::read_to_string(path).unwrap(), yaml);
+    }
+
+    #[tokio::test]
+    async fn a_slow_password_store_never_holds_the_mcp_lock() {
+        use crate::secret_store::mem::MemBackend;
+        let mem = MemBackend::new();
+        let mgr = mem_manager(&mem);
+        mgr.save_config(def("slow", "greencli-no-such-command", &[])).unwrap();
+        mem.get_delay_ms.store(2_000, Ordering::Relaxed);
+        let manager = Arc::new(Mutex::new(mgr));
+        let m2 = manager.clone();
+        let connecting = tokio::spawn(async move {
+            let none = || None;
+            connect_server(&m2, "slow", &none).await
+        });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let started = std::time::Instant::now();
+        let listed = manager.lock().await.list_configs();
+        let status = manager.lock().await.status();
+        assert!(started.elapsed() < Duration::from_millis(500), "{:?}", started.elapsed());
+        assert_eq!(listed.len(), 1);
+        assert_eq!(status.len(), 1);
+        // The connect still finishes (the command doesn't exist).
+        assert!(connecting.await.unwrap().is_err());
+    }
+
+    #[tokio::test]
+    async fn a_stdio_server_does_not_start_without_its_login_when_the_store_fails() {
+        use crate::secret_store::mem::MemBackend;
+        let mem = MemBackend::new();
+        let mgr = mem_manager(&mem);
+        mgr.save_config(def("central", "uvx", &["centralmcp"])).unwrap();
+        mem.fail_all.store(true, Ordering::Relaxed);
+        let manager = Mutex::new(mgr);
+        let none = || None;
+        let err = connect_server(&manager, "central", &none).await.unwrap_err();
+        assert_eq!(err, crate::secret_store::UNAVAILABLE);
+    }
+
+    // ─── The login file exists only while its server runs (K3) ───
+
+    /// Every login file in `dir`'s `mcp_creds`, in any run folder.
+    fn files_in(dir: &std::path::Path) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        for e in std::fs::read_dir(dir.join(CREDS_DIR)).into_iter().flatten().flatten() {
+            if e.file_type().unwrap().is_dir() {
+                out.extend(std::fs::read_dir(e.path()).unwrap().flatten().map(|f| f.path()));
+            } else if !e.file_name().to_string_lossy().ends_with(LOCK_SUFFIX) {
+                out.push(e.path());
+            }
+        }
+        out
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_login_file_is_private_and_goes_at_shutdown() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temp_dir();
+        let creds = test_creds_file(&dir, "central");
+        let path = creds.path().to_path_buf();
+        let client = fake_stdio_client_with_creds("central", creds);
+        assert_eq!(std::fs::read(&path).unwrap(), b"client_secret: s3cr3t");
+        let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&path), 0o600);
+        assert_eq!(mode(&dir.join(CREDS_DIR)), 0o700);
+        assert_eq!(mode(path.parent().unwrap()), 0o700);
+        client.shutdown().await;
+        assert!(!path.exists());
+        assert!(files_in(&dir).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_login_file_goes_when_the_server_exits_by_itself() {
+        let dir = temp_dir();
+        let creds = test_creds_file(&dir, "central");
+        let path = creds.path().to_path_buf();
+        let client = fake_stdio_client_with_creds("central", creds);
+        let pid = fake_child_pid(&client);
+        assert!(path.exists());
+        std::process::Command::new("kill")
+            .arg(pid.to_string())
+            .status()
+            .unwrap();
+        for _ in 0..100 {
+            if !path.exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(!path.exists(), "the reader didn't delete the login file at EOF");
+        assert!(client.is_dead());
+        // The client still holds the guard: dropping it later is fine.
+        client.shutdown().await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn after_a_reconnect_the_new_servers_file_stays() {
+        let dir = temp_dir();
+        let mut mgr = manager(dir.clone());
+        let first = test_creds_file(&dir, "central");
+        let first_path = first.path().to_path_buf();
+        assert!(mgr
+            .install_client("central".into(), fake_stdio_client_with_creds("central", first))
+            .is_none());
+        let second = test_creds_file(&dir, "central");
+        let second_path = second.path().to_path_buf();
+        assert_ne!(first_path, second_path);
+        let old = mgr
+            .install_client("central".into(), fake_stdio_client_with_creds("central", second))
+            .expect("the old client");
+        old.shutdown().await;
+        assert!(!first_path.exists());
+        assert!(second_path.exists());
+        for c in mgr.take_all_clients() {
+            c.shutdown().await;
+        }
+        assert!(files_in(&dir).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_failed_connect_leaves_no_login_file() {
+        use crate::secret_store::mem::MemBackend;
+        let mem = MemBackend::new();
+        let dir = temp_dir();
+        let store = Arc::new(SecretStore::os_for_tests(mem.clone()));
+        let mgr = McpManager::new(dir.clone(), McpCreds::new(store));
+        mgr.save_config(def("central", "greencli-no-such-command", &[])).unwrap();
+        mgr.creds().set("central", "client_secret: s3cr3t").unwrap();
+        let manager = Mutex::new(mgr);
+        let none = || None;
+        assert!(connect_server(&manager, "central", &none).await.is_err());
+        assert!(dir.join(CREDS_DIR).exists(), "the file was written first");
+        assert!(files_in(&dir).is_empty());
+    }
+
+    #[test]
+    fn the_startup_sweep_empties_the_login_folder() {
+        let dir = temp_dir();
+        let creds = dir.join(CREDS_DIR);
+        std::fs::create_dir_all(&creds).unwrap();
+        std::fs::write(creds.join("central_0123456789abcdef"), b"old 1.9 file").unwrap();
+        std::fs::write(creds.join("central_0123-ffffffffffffffff"), b"left by a crash").unwrap();
+        // A run folder of a copy of the app that is gone: its lock is free.
+        let dead = creds.join("run-00000000000000aa");
+        std::fs::create_dir_all(&dead).unwrap();
+        std::fs::write(dead.join("central-1"), b"left by a crash").unwrap();
+        std::fs::write(creds.join("run-00000000000000aa.lock"), b"").unwrap();
+        // A run folder with no lock file at all.
+        let orphan = creds.join("run-00000000000000bb");
+        std::fs::create_dir_all(&orphan).unwrap();
+        std::fs::write(orphan.join("central-2"), b"left over").unwrap();
+        let keep = temp_dir().join("outside.txt");
+        std::fs::write(&keep, b"not ours").unwrap();
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&keep, creds.join("link")).unwrap();
+            std::os::unix::fs::symlink(&keep, dead.join("link")).unwrap();
+        }
+        sweep_creds_dir(&dir);
+        let left: Vec<String> = std::fs::read_dir(&creds)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(left, vec![SWEEP_LOCK.to_string()]);
+        assert_eq!(std::fs::read(&keep).unwrap(), b"not ours");
+        // No folder: nothing to do.
+        sweep_creds_dir(&temp_dir());
+    }
+
+    #[test]
+    fn the_sweep_leaves_the_login_files_of_a_running_copy() {
+        let dir = temp_dir();
+        // This process is the running copy: it holds its run folder's lock.
+        let live = CredsFile::write(&dir, "central", b"client_secret: s3cr3t").unwrap();
+        std::fs::write(dir.join(CREDS_DIR).join("old-1.9-file"), b"x").unwrap();
+        sweep_creds_dir(&dir);
+        assert_eq!(std::fs::read(live.path()).unwrap(), b"client_secret: s3cr3t");
+        assert_eq!(files_in(&dir), vec![live.path().to_path_buf()]);
+        // A second login file goes in the same run folder.
+        let other = CredsFile::write(&dir, "other", b"token: x").unwrap();
+        assert_eq!(other.path().parent(), live.path().parent());
+        drop(other);
+        drop(live);
+        assert!(files_in(&dir).is_empty());
     }
 }
