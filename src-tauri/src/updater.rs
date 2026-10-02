@@ -658,8 +658,11 @@ fn take_stopped(stopped: &Mutex<Option<Vec<String>>>) -> Option<Vec<String>> {
     stopped.lock().unwrap_or_else(|p| p.into_inner()).take()
 }
 
-/// The app keeps running after a failed install: bring back the MCP
-/// servers the hook stopped, so the AI's tools don't silently vanish.
+/// The app keeps running when the installer couldn't start: bring back the
+/// MCP servers the hook stopped, so the AI's tools don't silently vanish.
+/// Once the installer starts the app has exited, so an error inside the
+/// installer leaves GreenCLI closed; opening it again reconnects the
+/// turned-on servers.
 fn reconnect_if_stopped(app: &AppHandle, stopped: &Mutex<Option<Vec<String>>>) {
     if let Some(names) = take_stopped(stopped) {
         log::info!("Update install failed after MCP servers stopped: reconnecting them");

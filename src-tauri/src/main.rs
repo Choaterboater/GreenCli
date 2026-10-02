@@ -3202,9 +3202,9 @@ mod shutdown_tests {
     }
 
     /// Windows update: the servers stop right before the installer starts,
-    /// and their login files go too. If the install then fails, the servers
-    /// that were stopped come back, each with its login read from the store
-    /// again (not an old file).
+    /// and their login files go too. If the installer then can't start, the
+    /// servers that were stopped come back, each with its login read from
+    /// the store again (not an old file).
     #[tokio::test]
     async fn an_update_stop_deletes_the_login_files_and_a_reconnect_reads_the_store() {
         let _serial = ai::CLI_RUNS_TEST_LOCK.lock().await;

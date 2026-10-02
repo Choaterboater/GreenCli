@@ -102,7 +102,11 @@ There is no Linux release build, so Linux gets no updates.
 - **Mac**: run GreenCLI from Applications. From the disk image (or straight from Downloads) it says
   "Move GreenCLI to Applications first." and offers no update.
 - **Windows**: close Claude Code and Casper before you update, because a greencli-mcp they run can
-  block the installer. MCP servers stop only when the installer starts, and come back if it fails.
+  block the installer. GreenCLI's MCP servers stop just before the installer starts, and come back
+  only if the installer can't start. Once it starts, GreenCLI has closed: if the installer then
+  shows "Error opening file for writing" (a greencli-mcp still in use), close Claude Code and
+  Casper and click **Retry**. After **Abort**, open GreenCLI again (it reconnects its turned-on MCP
+  servers), or run the installer from the Releases page.
 - 1.9 and older have no updater: install 2.0 by hand once.
 
 ### Releasing

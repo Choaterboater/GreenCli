@@ -19,7 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or Config Editor send is going.
 - Every update is checked against its signature before it can install. Each release build signs
   its own files, so there is no signing key to keep and no secret to set.
-- On Windows, MCP servers stop only when the installer starts, and come back if the install fails.
+- On Windows, MCP servers stop only when the installer starts. If the installer can't start, they
+  come back. If it starts and then shows "Error opening file for writing" (Claude Code or Casper
+  still runs greencli-mcp), close them and click **Retry**.
 - **greencli-mcp**: a read-only MCP server for Casper and Claude Code that ships next to the app.
   It has seven read tools: `access_check`, `list_devices`, `list_archive_devices`,
   `list_config_history`, `get_config`, `get_config_diff` and `list_intents`. `list_archive_devices`
