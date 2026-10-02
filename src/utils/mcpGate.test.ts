@@ -324,6 +324,47 @@ describe('writes off, read-only login and the Read-only Auditor', () => {
     expect(auditor(on(), reads).kind).toBe('ask');
   });
 
+  it('finds a batch router inside a pydantic model, a tool_calls list or a nested object', () => {
+    // FastMCP writes run_batch(request: BatchRequest) like this.
+    const fastmcp = {
+      type: 'object' as const,
+      properties: { request: { $ref: '#/$defs/BatchRequest' } },
+      $defs: {
+        BatchRequest: { type: 'object', properties: { calls: { type: 'array', items: { $ref: '#/$defs/Call' } } } },
+        Call: { type: 'object', properties: { name: { type: 'string' }, arguments: { type: 'object' } } },
+      },
+    };
+    const deleteCall = { request: { calls: [{ name: 'delete_vlan', arguments: {} }] } };
+    const batchTool = (extra: Partial<McpToolInfo> = {}) =>
+      tool('run_batch', { annotations: READ_ONLY, inputSchema: fastmcp, ...extra });
+    const plan = buildPlan({ server: 's', tool: 'run_batch', label: 'read', schema: fastmcp, arguments: deleteCall });
+    expect(plan.router).toBe(true);
+    expect(plan.routed.map((call) => call.name)).toEqual(['delete_vlan']);
+    expect(decide(batchTool({ writes: 'off' }), deleteCall)).toEqual(refused(writesOffText('srv')));
+    expect(auditor(batchTool({ writes: 'on' }), deleteCall)).toEqual(refused(AUDITOR_REFUSAL));
+    expect(asked(decide(batchTool({ writes: 'on' }), deleteCall)).label).toBe('destructive');
+    // No schema at all: the shapes in the call are enough.
+    for (const args of [
+      { tool_calls: [{ id: 'c1', type: 'function', function: { name: 'delete_vlan', arguments: '{}' } }] },
+      { batch: { calls: [{ name: 'delete_vlan' }] } },
+      { calls: [[{ name: 'delete_vlan', arguments: {} }]] },
+      deleteCall,
+    ]) {
+      expect(decide(off('helper', { annotations: READ_ONLY }), args)).toEqual(refused(writesOffText('srv')));
+      expect(auditor(tool('helper', { annotations: READ_ONLY, writes: 'on' }), args)).toEqual(refused(AUDITOR_REFUSAL));
+    }
+    // A map of calls the schema describes with additionalProperties.
+    const mapTool = off('helper', {
+      annotations: READ_ONLY,
+      inputSchema: {
+        type: 'object' as const,
+        properties: { ops: { type: 'object', additionalProperties: { $ref: '#/$defs/Call' } } },
+        $defs: fastmcp.$defs,
+      },
+    });
+    expect(decide(mapTool, { ops: { a: { name: 'delete_vlan' } } })).toEqual(refused(writesOffText('srv')));
+  });
+
   it('counts force="t" as the AI skipping a check (pydantic reads it as true)', () => {
     expect(decide(tool('list_sessions'), { force: 'true' }, true).kind).toBe('ask');
     expect(decide(tool('list_sessions'), { force: 't' }, true).kind).toBe('ask');

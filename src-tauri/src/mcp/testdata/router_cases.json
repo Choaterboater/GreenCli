@@ -552,7 +552,8 @@
       }
     },
     "routed": [
-      "invoke_tools_batch"
+      "invoke_tools_batch",
+      "delete_x"
     ],
     "unclear": true
   },
@@ -946,6 +947,378 @@
       ]
     },
     "routed": [],
+    "unclear": false
+  },
+  {
+    "tool": "run_batch",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "request": {
+          "$ref": "#/$defs/BatchRequest"
+        }
+      },
+      "required": [
+        "request"
+      ],
+      "$defs": {
+        "BatchRequest": {
+          "type": "object",
+          "properties": {
+            "calls": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Call"
+              }
+            }
+          }
+        },
+        "Call": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "arguments": {
+              "type": "object"
+            }
+          }
+        }
+      }
+    },
+    "args": {
+      "request": {
+        "calls": [
+          {
+            "name": "delete_vlan",
+            "arguments": {}
+          }
+        ]
+      }
+    },
+    "routed": [
+      "delete_vlan"
+    ],
+    "unclear": false
+  },
+  {
+    "tool": "run_batch",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "request": {
+          "$ref": "#/$defs/BatchRequest"
+        }
+      },
+      "required": [
+        "request"
+      ],
+      "$defs": {
+        "BatchRequest": {
+          "type": "object",
+          "properties": {
+            "calls": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Call"
+              }
+            }
+          }
+        },
+        "Call": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "arguments": {
+              "type": "object"
+            }
+          }
+        }
+      }
+    },
+    "args": {
+      "request": {
+        "calls": [
+          {
+            "name": "get_a",
+            "arguments": {}
+          },
+          {
+            "title": "x"
+          }
+        ]
+      }
+    },
+    "routed": [
+      "get_a"
+    ],
+    "unclear": true
+  },
+  {
+    "tool": "run_batch",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "request": {
+          "$ref": "#/$defs/BatchRequest"
+        }
+      },
+      "required": [
+        "request"
+      ],
+      "$defs": {
+        "BatchRequest": {
+          "type": "object",
+          "properties": {
+            "calls": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Call"
+              }
+            }
+          }
+        },
+        "Call": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "arguments": {
+              "type": "object"
+            }
+          }
+        }
+      }
+    },
+    "args": {
+      "request": {
+        "calls": []
+      }
+    },
+    "routed": [],
+    "unclear": true
+  },
+  {
+    "tool": "run_batch",
+    "args": {
+      "request": {
+        "calls": [
+          {
+            "name": "delete_vlan",
+            "arguments": {}
+          }
+        ]
+      }
+    },
+    "routed": [
+      "delete_vlan"
+    ],
+    "unclear": false
+  },
+  {
+    "tool": "chat_step",
+    "args": {
+      "tool_calls": [
+        {
+          "id": "c1",
+          "type": "function",
+          "function": {
+            "name": "delete_vlan",
+            "arguments": "{}"
+          }
+        }
+      ]
+    },
+    "routed": [
+      "delete_vlan"
+    ],
+    "unclear": false
+  },
+  {
+    "tool": "chat_step",
+    "args": {
+      "tool_calls": [
+        {
+          "function": {
+            "name": "helper",
+            "arguments": "{\"name\": \"delete_vlan\", \"args\": {}}"
+          },
+          "id": "c1"
+        }
+      ]
+    },
+    "routed": [
+      "helper"
+    ],
+    "unclear": true
+  },
+  {
+    "tool": "helper",
+    "args": {
+      "batch": {
+        "calls": [
+          {
+            "name": "delete_vlan"
+          }
+        ]
+      }
+    },
+    "routed": [
+      "delete_vlan"
+    ],
+    "unclear": false
+  },
+  {
+    "tool": "helper",
+    "args": {
+      "batch": {
+        "calls": [
+          {
+            "name": "get_a"
+          },
+          {
+            "op": "x"
+          }
+        ]
+      }
+    },
+    "routed": [
+      "get_a"
+    ],
+    "unclear": true
+  },
+  {
+    "tool": "helper",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "ops": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/Call"
+          }
+        }
+      },
+      "$defs": {
+        "Call": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "arguments": {
+              "type": "object"
+            }
+          }
+        }
+      }
+    },
+    "args": {
+      "ops": {
+        "a": {
+          "name": "delete_vlan"
+        }
+      }
+    },
+    "routed": [
+      "delete_vlan"
+    ],
+    "unclear": false
+  },
+  {
+    "tool": "helper",
+    "args": {
+      "calls": [
+        [
+          {
+            "name": "delete_vlan",
+            "arguments": {}
+          }
+        ]
+      ]
+    },
+    "routed": [
+      "delete_vlan"
+    ],
+    "unclear": false
+  },
+  {
+    "tool": "helper",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "pair": {
+          "type": "array",
+          "prefixItems": [
+            {
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/Call"
+            }
+          ]
+        }
+      },
+      "$defs": {
+        "Call": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "arguments": {
+              "type": "object"
+            }
+          }
+        }
+      }
+    },
+    "args": {
+      "pair": [
+        "x",
+        {
+          "name": "delete_vlan"
+        }
+      ]
+    },
+    "routed": [
+      "delete_vlan"
+    ],
+    "unclear": false
+  },
+  {
+    "tool": "get_device",
+    "args": {
+      "options": {
+        "items": [
+          1,
+          2
+        ],
+        "filter": {
+          "site": "x"
+        }
+      }
+    },
+    "routed": [],
+    "unclear": false
+  },
+  {
+    "tool": "call_tool",
+    "args": {
+      "name": "get_ports",
+      "arguments": {
+        "items": [
+          "a",
+          "b"
+        ]
+      }
+    },
+    "routed": [
+      "get_ports"
+    ],
     "unclear": false
   }
 ]

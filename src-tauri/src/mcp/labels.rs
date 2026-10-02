@@ -13,10 +13,13 @@
 //   run_tool. The shape is a tool-name key (name, tool, tool_name, toolName,
 //   tool_id, method, function) next to an arguments key (arguments, args,
 //   params, parameters, input), in its input schema (through $ref, anyOf,
-//   oneOf and allOf too) or in the call, at the top level, in an object one
-//   level down, or in a batch list (calls, requests, items, steps, or any
-//   list of such objects). Under calls, requests, items or steps an entry
-//   that only names a tool counts too.
+//   oneOf, allOf, properties, items, prefixItems and additionalProperties)
+//   or in the call, at any depth down to MAX_DEPTH: in an object, in a batch
+//   list (calls, requests, items, steps, or any list of such objects, also
+//   inside an object or another list), or in a list entry ({tool_calls:
+//   [{function: {name, arguments}}]}). Under calls, requests, items or steps
+//   an entry that only names a tool counts too. Every call found is judged
+//   and the strictest wins.
 // - Two arguments keys in one call ({args: {}, params: {...}}) make it
 //   unclear: the server may read either.
 // - Every key that may hold the routed tool's name counts, in any spelling.
@@ -36,6 +39,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use std::collections::HashSet;
 
 /// Least to most strict. The declaration order is the rank.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -489,86 +493,207 @@ fn schema_router_shaped(schema: &Value, root: &Value) -> bool {
     router_keys(schema_properties(schema, root).into_iter().map(|(k, _)| k))
 }
 
-/// The schema properties that are a router-shaped object (request: {method,
-/// params}) or a list of them (calls: [{name, arguments}]), also through
-/// $ref and anyOf/oneOf/allOf. Same as TS schemaRouterKeys.
-fn schema_router_keys(schema: &Value) -> Vec<&String> {
-    let mut keys: Vec<&String> = Vec::new();
-    for (key, property) in schema_properties(schema, schema) {
-        if keys.contains(&key) {
-            continue;
-        }
-        if schema_router_shaped(property, schema)
-            || schema_nodes(property, schema).into_iter().any(|node| {
-                node.get("items")
-                    .is_some_and(|items| schema_router_shaped(items, schema))
-            })
-        {
-            keys.push(key);
+fn any_schema_router_shaped(schemas: &[&Value], root: &Value) -> bool {
+    schemas
+        .iter()
+        .any(|schema| schema_router_shaped(schema, root))
+}
+
+/// The schemas for one key of an object: its property schema, or
+/// additionalProperties (a map). Same as TS propertySchemas.
+fn property_schemas<'s>(schemas: &[&'s Value], key: &str, root: &'s Value) -> Vec<&'s Value> {
+    let mut out = Vec::new();
+    for schema in schemas {
+        for node in schema_nodes(schema, root) {
+            match node
+                .get("properties")
+                .and_then(Value::as_object)
+                .and_then(|props| props.get(key))
+            {
+                Some(property) => out.push(property),
+                None => {
+                    if let Some(extra) = node.get("additionalProperties").filter(|v| v.is_object())
+                    {
+                        out.push(extra);
+                    }
+                }
+            }
         }
     }
-    keys
+    out
 }
 
-/// The lists in a router call that hold a batch of calls: calls, requests,
-/// items or steps, a list the schema says holds router-shaped objects, or any
-/// list with a router-shaped object in it. Same as TS batchLists.
-fn batch_lists<'a>(args: &'a Value, schema: &Value) -> Vec<&'a Vec<Value>> {
-    let Some(obj) = args.as_object() else {
-        return Vec::new();
+/// The schemas for one entry of a list: prefixItems, a tuple items list, or
+/// items. Same as TS itemSchemas.
+fn item_schemas<'s>(schemas: &[&'s Value], index: usize, root: &'s Value) -> Vec<&'s Value> {
+    let mut out = Vec::new();
+    for schema in schemas {
+        for node in schema_nodes(schema, root) {
+            if let Some(prefix) = node
+                .get("prefixItems")
+                .and_then(Value::as_array)
+                .and_then(|list| list.get(index))
+            {
+                out.push(prefix);
+            } else if let Some(tuple) = node.get("items").and_then(Value::as_array) {
+                if let Some(item) = tuple.get(index) {
+                    out.push(item);
+                }
+            } else if let Some(items) = node.get("items").filter(|v| v.is_object()) {
+                out.push(items);
+            }
+        }
+    }
+    out
+}
+
+/// The schemas one level down: properties, additionalProperties, items and
+/// prefixItems. Same as TS schemaChildren.
+fn schema_children<'s>(schema: &'s Value, root: &'s Value) -> Vec<&'s Value> {
+    let mut out = Vec::new();
+    for node in schema_nodes(schema, root) {
+        if let Some(props) = node.get("properties").and_then(Value::as_object) {
+            out.extend(props.values());
+        }
+        if let Some(extra) = node.get("additionalProperties").filter(|v| v.is_object()) {
+            out.push(extra);
+        }
+        match node.get("items") {
+            Some(Value::Array(list)) => out.extend(list.iter()),
+            Some(items @ Value::Object(_)) => out.push(items),
+            _ => {}
+        }
+        if let Some(prefix) = node.get("prefixItems").and_then(Value::as_array) {
+            out.extend(prefix.iter());
+        }
+    }
+    out
+}
+
+/// The schema has a router-shaped object anywhere down to MAX_DEPTH: at the
+/// top, in a property, in a list's items or a map's additionalProperties,
+/// also through $ref and anyOf/oneOf/allOf. FastMCP writes
+/// `run_batch(request: BatchRequest)` as request -> $ref BatchRequest ->
+/// calls -> items -> $ref Call {name, arguments}. Same as TS schemaHasRouter.
+fn schema_has_router(schema: &Value) -> bool {
+    fn visit(node: &Value, root: &Value, depth: usize, seen: &mut HashSet<*const Value>) -> bool {
+        if depth > MAX_DEPTH || !node.is_object() || !seen.insert(node as *const Value) {
+            return false;
+        }
+        schema_router_shaped(node, root)
+            || schema_children(node, root)
+                .into_iter()
+                .any(|child| visit(child, root, depth + 1, seen))
+    }
+    visit(schema, schema, 0, &mut HashSet::new())
+}
+
+/// What a search of a call's arguments found: router shapes, and every value
+/// that holds one call. Same as TS CallSearch.
+struct CallSearch<'a> {
+    shaped: bool,
+    sites: Vec<&'a Value>,
+}
+
+/// Every place in a call's arguments that holds one routed call, down to
+/// MAX_DEPTH: the arguments themselves when they name a tool; any object
+/// shaped like a router call, or that the schema says is one; and every
+/// entry of a batch list (a list with a router-shaped entry, a list under
+/// calls, requests, items or steps (at the top always, deeper when an entry
+/// names a tool), and a list inside a batch list). Every object is searched
+/// further down too. Same as TS searchCalls.
+fn search_calls<'a>(args: &'a Value, schema: &Value) -> CallSearch<'a> {
+    let mut found = CallSearch {
+        shaped: false,
+        sites: Vec::new(),
     };
-    let schema_keys = schema_router_keys(schema);
-    obj.iter()
-        .filter_map(|(key, value)| {
-            let list = value.as_array()?;
-            (BATCH_KEY_WORDS.contains(&key_word(key).as_str())
-                || schema_keys.contains(&key)
-                || list.iter().any(router_shaped))
-            .then_some(list)
-        })
-        .collect()
+    if let Some(obj) = args.as_object() {
+        found.shaped = router_keys(obj.keys());
+        if !inner_names(obj).is_empty() {
+            found.sites.push(args);
+        }
+        search_children(obj, &[schema], schema, true, 1, &mut found);
+    }
+    found
 }
 
-/// Objects in a router call that hold one call (request: {method, params}):
-/// router-shaped, or router-shaped by the schema. Same as TS nestedCalls.
-fn nested_calls<'a>(args: &'a Value, schema: &Value) -> Vec<&'a Value> {
-    let Some(obj) = args.as_object() else {
-        return Vec::new();
-    };
-    let schema_keys = schema_router_keys(schema);
-    obj.iter()
-        .filter(|(key, value)| {
-            value.is_object() && (router_shaped(value) || schema_keys.contains(key))
-        })
-        .map(|(_, value)| value)
-        .collect()
+fn search_children<'a>(
+    obj: &'a Map<String, Value>,
+    schemas: &[&Value],
+    root: &Value,
+    top: bool,
+    depth: usize,
+    found: &mut CallSearch<'a>,
+) {
+    if depth > MAX_DEPTH {
+        return;
+    }
+    for (key, child) in obj {
+        let child_schemas = property_schemas(schemas, key, root);
+        if let Some(list) = child.as_array() {
+            let batch_word = BATCH_KEY_WORDS.contains(&key_word(key).as_str());
+            let batch = batch_word && (top || list.iter().any(names_a_tool));
+            search_list(list, &child_schemas, root, batch, depth + 1, found);
+        } else {
+            search_entry(child, &child_schemas, root, false, depth + 1, found);
+        }
+    }
 }
 
-/// A router by its name, or by its shape: in the input schema (also through
-/// $ref, anyOf, oneOf and allOf) or in the call's arguments, at the top
-/// level, in an object one level down ({request: {method, params}}), or
-/// inside a list (a batch). A list under calls, requests, items or steps
-/// counts as a batch when an entry names a tool, even with no arguments key.
-/// Same as TS isRouter.
+/// A list: a batch when told so (a batch word, or a list inside a batch) or
+/// when an entry is router-shaped. Same as TS searchList.
+fn search_list<'a>(
+    list: &'a [Value],
+    schemas: &[&Value],
+    root: &Value,
+    batch: bool,
+    depth: usize,
+    found: &mut CallSearch<'a>,
+) {
+    if depth > MAX_DEPTH {
+        return;
+    }
+    let is_batch = batch || list.iter().any(router_shaped);
+    for (index, entry) in list.iter().enumerate() {
+        let entry_schemas = item_schemas(schemas, index, root);
+        if let Some(inner) = entry.as_array() {
+            search_list(inner, &entry_schemas, root, is_batch, depth + 1, found);
+        } else {
+            search_entry(entry, &entry_schemas, root, is_batch, depth + 1, found);
+        }
+    }
+}
+
+/// One value: it holds a call when it is router-shaped, the schema says it
+/// is one (and it is set), or it is a batch entry. Objects are searched
+/// further down. Same as TS searchEntry.
+fn search_entry<'a>(
+    value: &'a Value,
+    schemas: &[&Value],
+    root: &Value,
+    in_batch: bool,
+    depth: usize,
+    found: &mut CallSearch<'a>,
+) {
+    let by_shape =
+        router_shaped(value) || (!value.is_null() && any_schema_router_shaped(schemas, root));
+    if in_batch || by_shape {
+        if by_shape || names_a_tool(value) {
+            found.shaped = true;
+        }
+        found.sites.push(value);
+    }
+    if let Some(obj) = value.as_object() {
+        search_children(obj, schemas, root, false, depth, found);
+    }
+}
+
+/// A router by its name, or by its shape anywhere down to MAX_DEPTH: in the
+/// input schema (also through $ref, anyOf, oneOf and allOf, properties,
+/// items and additionalProperties) or in the call's arguments (see
+/// search_calls). Same as TS isRouter.
 pub fn is_router(tool: &str, schema: &Value, args: &Value) -> bool {
-    if is_router_name(tool) {
-        return true;
-    }
-    if schema_router_shaped(schema, schema) || !schema_router_keys(schema).is_empty() {
-        return true;
-    }
-    args.as_object().is_some_and(|a| {
-        router_keys(a.keys())
-            || a.iter().any(|(key, value)| {
-                router_shaped(value)
-                    || value.as_array().is_some_and(|list| {
-                        let batch_word = BATCH_KEY_WORDS.contains(&key_word(key).as_str());
-                        list.iter().any(|entry| {
-                            router_shaped(entry) || (batch_word && names_a_tool(entry))
-                        })
-                    })
-            })
-    })
+    is_router_name(tool) || schema_has_router(schema) || search_calls(args, schema).shaped
 }
 
 /// The different non-empty tool names in every key that may hold one.
@@ -586,14 +711,6 @@ fn inner_names(obj: &Map<String, Value>) -> Vec<&str> {
     names
 }
 
-/// Two different names (name: "get_status", tool_name: "delete_vlan"): the
-/// server may run either one.
-fn names_clash(value: &Value) -> bool {
-    value
-        .as_object()
-        .is_some_and(|obj| inner_names(obj).len() > 1)
-}
-
 /// The values of the keys that may hold the routed tool's arguments and are
 /// set (not null).
 fn args_values(obj: &Map<String, Value>) -> Vec<&Value> {
@@ -601,6 +718,19 @@ fn args_values(obj: &Map<String, Value>) -> Vec<&Value> {
         .filter(|(k, v)| ARGS_KEY_WORDS.contains(&key_word(k).as_str()) && !v.is_null())
         .map(|(_, v)| v)
         .collect()
+}
+
+/// Arguments sent as a JSON text (OpenAI tool_calls: arguments:
+/// '{"vlan": 10}') are read as the object they hold. Same as TS argsObject.
+fn args_object(value: &Value) -> Value {
+    match value {
+        Value::Object(_) => value.clone(),
+        Value::String(text) => match serde_json::from_str::<Value>(text) {
+            Ok(parsed @ Value::Object(_)) => parsed,
+            _ => Value::Object(Map::new()),
+        },
+        _ => Value::Object(Map::new()),
+    }
 }
 
 /// The call a router argument object names; none when it names no tool or
@@ -614,51 +744,39 @@ fn inner_call(value: &Value) -> Option<(String, Value)> {
     };
     let args = match args_values(obj).as_slice() {
         [] => Value::Object(Map::new()),
-        [only] if only.is_object() => (*only).clone(),
-        [_] => Value::Object(Map::new()),
+        [only] => args_object(only),
         _ => return None,
     };
     Some((name.to_string(), args))
 }
 
-/// The real tools a router call runs: {name, arguments}, a router-shaped
-/// object one level down, and every entry of a batch list.
+/// The real tools a router call runs: every place search_calls finds that
+/// names one tool. Same as TS routedCalls.
 pub fn routed_calls(tool: &str, schema: &Value, args: &Value) -> Vec<(String, Value)> {
     if !is_router(tool, schema, args) {
         return Vec::new();
     }
-    let mut calls: Vec<(String, Value)> = inner_call(args).into_iter().collect();
-    calls.extend(
-        nested_calls(args, schema)
-            .into_iter()
-            .filter_map(inner_call),
-    );
-    for list in batch_lists(args, schema) {
-        calls.extend(list.iter().filter_map(inner_call));
-    }
-    calls
+    search_calls(args, schema)
+        .sites
+        .into_iter()
+        .filter_map(inner_call)
+        .collect()
 }
 
 /// The tool looks like a router, but GreenCLI can't tell every tool it runs:
-/// it names none, or two different ones; a batch entry names none or two; or
-/// a tool it runs is itself a router. Same as TS routerUnclear.
+/// it runs no tool GreenCLI can name; a place that holds a call names no
+/// tool or two different ones, or sets two arguments keys; or a tool it runs
+/// is itself a router. Same as TS routerUnclear.
 pub fn router_unclear(tool: &str, schema: &Value, args: &Value) -> bool {
     if !is_router(tool, schema, args) {
         return false;
     }
     let routed = routed_calls(tool, schema, args);
-    let names_a_call = args
-        .as_object()
-        .is_some_and(|obj| !inner_names(obj).is_empty());
     routed.is_empty()
-        || names_clash(args)
-        || (names_a_call && inner_call(args).is_none())
-        || nested_calls(args, schema)
+        || search_calls(args, schema)
+            .sites
             .into_iter()
-            .any(|value| inner_call(value).is_none())
-        || batch_lists(args, schema)
-            .iter()
-            .any(|list| list.iter().any(|entry| inner_call(entry).is_none()))
+            .any(|site| inner_call(site).is_none())
         || routed
             .iter()
             .any(|(name, inner)| is_router(name, &Value::Null, inner))

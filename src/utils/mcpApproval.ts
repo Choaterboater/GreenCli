@@ -6,10 +6,12 @@
 // - A router is found by its name words (callTool, call-tool, tool_call, use_tool, proxy_tool) and by
 //   its shape, not only by /invoke|dispatch|call_tool|run_tool/. The shape is a tool-name key (name,
 //   tool, tool_name, toolName, tool_id, method, function) next to an arguments key (arguments, args,
-//   params, parameters, input), in its input schema (through $ref, anyOf, oneOf and allOf too) or in
-//   the call, at the top level, in an object one level down, or in a batch list (calls, requests,
-//   items, steps, or any list of such objects). Under calls, requests, items or steps an entry that
-//   only names a tool counts too.
+//   params, parameters, input), in its input schema (through $ref, anyOf, oneOf, allOf, properties,
+//   items, prefixItems and additionalProperties) or in the call, at any depth down to MAX_DEPTH: in
+//   an object ({request: {method, params}}), in a batch list (calls, requests, items, steps, or any
+//   list of such objects, also inside an object or another list), or in a list entry
+//   ({tool_calls: [{function: {name, arguments}}]}). Under calls, requests, items or steps an entry
+//   that only names a tool counts too. Every call found is judged and the strictest wins.
 // - Two arguments keys in one call ({args: {}, params: {...}}) make it unclear: the server may read either.
 // - Every key that may hold the tool's name counts, in any spelling. Two different names make the
 //   call unclear, and so does a batch entry GreenCLI can't read or a routed tool that is a router.
@@ -137,49 +139,119 @@ function schemaRouterShaped(schema: unknown, root: unknown): boolean {
   return routerKeys([...schemaProperties(schema, root).keys()]);
 }
 
-/** The schema properties that are a router-shaped object (request: {method, params}) or a list of
- *  them (calls: [{name, arguments}]), also through $ref and anyOf/oneOf/allOf. */
-function schemaRouterKeys(schema: unknown): Set<string> {
-  const keys = new Set<string>();
-  for (const [key, properties] of schemaProperties(schema, schema)) {
-    if (properties.some((property) => schemaRouterShaped(property, schema)
-      || schemaNodes(property, schema).some((node) => schemaRouterShaped(node.items, schema)))) keys.add(key);
+function anySchemaRouterShaped(schemas: unknown[], root: unknown): boolean {
+  return schemas.some((schema) => schemaRouterShaped(schema, root));
+}
+
+/** The schemas for one key of an object: its property schema, or additionalProperties (a map). */
+function propertySchemas(schemas: unknown[], key: string, root: unknown): unknown[] {
+  const out: unknown[] = [];
+  for (const schema of schemas) for (const node of schemaNodes(schema, root)) {
+    if (isRecord(node.properties) && Object.prototype.hasOwnProperty.call(node.properties, key)) out.push(node.properties[key]);
+    else if (isRecord(node.additionalProperties)) out.push(node.additionalProperties);
   }
-  return keys;
+  return out;
 }
 
-/** The lists in a router call that hold a batch of calls: calls, requests, items or steps, a list
- *  the schema says holds router-shaped objects, or any list with a router-shaped object in it. */
-function batchLists(args: Record<string, unknown>, schema?: unknown): unknown[][] {
-  const schemaKeys = schemaRouterKeys(schema);
-  return Object.entries(args)
-    .filter(([key, value]) => Array.isArray(value) && (BATCH_KEY_WORDS.has(keyWord(key))
-      || schemaKeys.has(key)
-      || value.some(routerShaped)))
-    .map(([, value]) => value as unknown[]);
+/** The schemas for one entry of a list: prefixItems, a tuple items list, or items. */
+function itemSchemas(schemas: unknown[], index: number, root: unknown): unknown[] {
+  const out: unknown[] = [];
+  for (const schema of schemas) for (const node of schemaNodes(schema, root)) {
+    if (Array.isArray(node.prefixItems) && index < node.prefixItems.length) out.push(node.prefixItems[index]);
+    else if (Array.isArray(node.items)) { if (index < node.items.length) out.push(node.items[index]); }
+    else if (isRecord(node.items)) out.push(node.items);
+  }
+  return out;
 }
 
-/** Objects in a router call that hold one call (request: {method, params}): router-shaped, or
- *  router-shaped by the schema. */
-function nestedCalls(args: Record<string, unknown>, schema?: unknown): Record<string, unknown>[] {
-  const schemaKeys = schemaRouterKeys(schema);
-  return Object.entries(args)
-    .filter(([key, value]) => isRecord(value) && (routerShaped(value) || schemaKeys.has(key)))
-    .map(([, value]) => value as Record<string, unknown>);
+/** The schemas one level down: properties, additionalProperties, items and prefixItems. */
+function schemaChildren(schema: unknown, root: unknown): unknown[] {
+  const out: unknown[] = [];
+  for (const node of schemaNodes(schema, root)) {
+    if (isRecord(node.properties)) out.push(...Object.values(node.properties));
+    if (isRecord(node.additionalProperties)) out.push(node.additionalProperties);
+    if (Array.isArray(node.items)) out.push(...node.items);
+    else if (isRecord(node.items)) out.push(node.items);
+    if (Array.isArray(node.prefixItems)) out.push(...node.prefixItems);
+  }
+  return out;
 }
 
-/** A router by its name, or by its shape: in the input schema (also through $ref, anyOf, oneOf and
- *  allOf) or in the call's arguments, at the top level, in an object one level down
- *  ({request: {method, params}}), or inside a list (a batch: calls: [{name, arguments}, ...]). A list
- *  under calls, requests, items or steps counts as a batch when an entry names a tool, even with no
- *  arguments key. */
+/** The schema has a router-shaped object anywhere down to MAX_DEPTH: at the top, in a property,
+ *  in a list's items or a map's additionalProperties, also through $ref and anyOf/oneOf/allOf.
+ *  FastMCP writes `run_batch(request: BatchRequest)` as request -> $ref BatchRequest -> calls ->
+ *  items -> $ref Call {name, arguments}. */
+function schemaHasRouter(schema: unknown): boolean {
+  const seen = new Set<object>();
+  const visit = (node: unknown, depth: number): boolean => {
+    if (depth > MAX_DEPTH || !isRecord(node) || seen.has(node)) return false;
+    seen.add(node);
+    return schemaRouterShaped(node, schema) || schemaChildren(node, schema).some((child) => visit(child, depth + 1));
+  };
+  return visit(schema, 0);
+}
+
+/** What a search of a call's arguments found: router shapes, and every object that holds one call. */
+interface CallSearch { shaped: boolean; sites: unknown[] }
+
+/**
+ * Every place in a call's arguments that holds one routed call, down to MAX_DEPTH:
+ * - the arguments themselves when they name a tool;
+ * - any object shaped like a router call ({method, params}), or that the schema says is one;
+ * - every entry of a batch list: a list with a router-shaped entry, a list whose items the schema
+ *   says are router calls, a list under calls, requests, items or steps (at the top always, deeper
+ *   when an entry names a tool), and a list inside a batch list ([[{name, arguments}]]).
+ * Every object is searched further down too ({request: {calls: [...]}}, {tool_calls: [{function:
+ * {name, arguments}}]}, {batch: {calls: [...]}}).
+ */
+function searchCalls(args: Record<string, unknown>, schema: unknown): CallSearch {
+  const found: CallSearch = { shaped: routerKeys(Object.keys(args)), sites: [] };
+  if (innerNames(args).length > 0) found.sites.push(args);
+  searchChildren(args, [schema], schema, true, 1, found);
+  return found;
+}
+
+function searchChildren(
+  value: Record<string, unknown>, schemas: unknown[], root: unknown, top: boolean, depth: number, found: CallSearch
+): void {
+  if (depth > MAX_DEPTH) return;
+  for (const [key, child] of Object.entries(value)) {
+    const childSchemas = propertySchemas(schemas, key, root);
+    if (Array.isArray(child)) {
+      const batchWord = BATCH_KEY_WORDS.has(keyWord(key));
+      searchList(child, childSchemas, root, batchWord && (top || child.some(namesATool)), depth + 1, found);
+    } else searchEntry(child, childSchemas, root, false, depth + 1, found);
+  }
+}
+
+/** A list: a batch when told so (a batch word, or a list inside a batch) or when an entry is router-shaped. */
+function searchList(list: unknown[], schemas: unknown[], root: unknown, batch: boolean, depth: number, found: CallSearch): void {
+  if (depth > MAX_DEPTH) return;
+  const isBatch = batch || list.some(routerShaped);
+  list.forEach((entry, index) => {
+    const entrySchemas = itemSchemas(schemas, index, root);
+    if (Array.isArray(entry)) searchList(entry, entrySchemas, root, isBatch, depth + 1, found);
+    else searchEntry(entry, entrySchemas, root, isBatch, depth + 1, found);
+  });
+}
+
+/** One value: it holds a call when it is router-shaped, the schema says it is one (and it is set),
+ *  or it is a batch entry. Objects are searched further down. */
+function searchEntry(value: unknown, schemas: unknown[], root: unknown, inBatch: boolean, depth: number, found: CallSearch): void {
+  const byShape = routerShaped(value) || (value !== null && value !== undefined && anySchemaRouterShaped(schemas, root));
+  if (inBatch || byShape) {
+    if (byShape || namesATool(value)) found.shaped = true;
+    found.sites.push(value);
+  }
+  if (isRecord(value)) searchChildren(value, schemas, root, false, depth, found);
+}
+
+/** A router by its name, or by its shape anywhere down to MAX_DEPTH: in the input schema (also
+ *  through $ref, anyOf, oneOf and allOf, properties, items and additionalProperties) or in the
+ *  call's arguments (see searchCalls). */
 export function isRouter(tool: string, schema?: unknown, args?: Record<string, unknown>): boolean {
-  if (isRouterName(tool)) return true;
-  if (schemaRouterShaped(schema, schema) || schemaRouterKeys(schema).size > 0) return true;
-  if (!isRecord(args)) return false;
-  return routerKeys(Object.keys(args))
-    || Object.entries(args).some(([key, value]) => routerShaped(value) || (Array.isArray(value)
-      && value.some((entry) => routerShaped(entry) || (BATCH_KEY_WORDS.has(keyWord(key)) && namesATool(entry)))));
+  if (isRouterName(tool) || schemaHasRouter(schema)) return true;
+  return isRecord(args) && searchCalls(args, schema).shaped;
 }
 
 /** The different non-empty tool names in every key that may hold one (name, tool, tool_name, toolName, tool_id, ...). */
@@ -191,14 +263,23 @@ function innerNames(value: Record<string, unknown>): string[] {
   return [...new Set(names)];
 }
 
-/** Two different names (name: "get_status", tool_name: "delete_vlan"): the server may run either one. */
-function namesClash(value: unknown): boolean {
-  return isRecord(value) && innerNames(value).length > 1;
-}
-
 /** The keys that may hold the routed tool's arguments and are set (not null). */
 function argsKeys(value: Record<string, unknown>): string[] {
   return Object.keys(value).filter((key) => ARGS_KEY_WORDS.has(keyWord(key)) && value[key] !== undefined && value[key] !== null);
+}
+
+/** Arguments sent as a JSON text (OpenAI tool_calls: arguments: '{"vlan": 10}') are read as the object they hold. */
+function argsObject(value: unknown): Record<string, unknown> {
+  if (isRecord(value)) return value;
+  if (typeof value === "string") {
+    try {
+      const parsed: unknown = JSON.parse(value);
+      if (isRecord(parsed)) return parsed;
+    } catch {
+      // Not JSON: no arguments GreenCLI can read.
+    }
+  }
+  return {};
 }
 
 /**
@@ -210,38 +291,23 @@ function innerCall(value: unknown): RoutedCall | undefined {
   const names = innerNames(value);
   const keys = argsKeys(value);
   if (names.length !== 1 || keys.length > 1) return undefined;
-  const argsValue = keys.length === 1 ? value[keys[0]!] : undefined;
-  return { name: names[0]!, arguments: isRecord(argsValue) ? argsValue : {} };
+  return { name: names[0]!, arguments: keys.length === 1 ? argsObject(value[keys[0]!]) : {} };
 }
 
-/** The real tools a router call runs: {name, arguments}, a router-shaped object one level down,
- *  and every entry of a batch list. */
+/** The real tools a router call runs: every place searchCalls finds that names one tool. */
 export function routedCalls(tool: string, args: Record<string, unknown>, schema?: unknown): RoutedCall[] {
   if (!isRouter(tool, schema, args)) return [];
-  const calls: RoutedCall[] = [];
-  const single = innerCall(args);
-  if (single) calls.push(single);
-  for (const value of nestedCalls(args, schema)) {
-    const call = innerCall(value);
-    if (call) calls.push(call);
-  }
-  for (const list of batchLists(args, schema)) for (const entry of list) {
-    const call = innerCall(entry);
-    if (call) calls.push(call);
-  }
-  return calls;
+  return searchCalls(args, schema).sites.map(innerCall).filter((call): call is RoutedCall => call !== undefined);
 }
 
 /**
- * The router call can't be judged: it names no tool, or two different ones, or sets two arguments
- * keys; a nested call or a batch entry is like that; or a tool it runs is itself a router
- * (invoke_tool running invoke_tools_batch).
+ * The router call can't be judged: it runs no tool GreenCLI can name; a place that holds a call
+ * (the arguments, a nested call, a batch entry) names no tool or two different ones, or sets two
+ * arguments keys; or a tool it runs is itself a router (invoke_tool running invoke_tools_batch).
  */
 function routerUnclear(args: Record<string, unknown>, schema: unknown, routed: RoutedCall[]): boolean {
-  return routed.length === 0 || namesClash(args)
-    || (innerNames(args).length > 0 && !innerCall(args))
-    || nestedCalls(args, schema).some((value) => !innerCall(value))
-    || batchLists(args, schema).some((list) => list.some((entry) => !innerCall(entry)))
+  return routed.length === 0
+    || searchCalls(args, schema).sites.some((site) => !innerCall(site))
     || routed.some((call) => isRouter(call.name, undefined, call.arguments));
 }
 

@@ -276,6 +276,60 @@ mod tests {
     }
 
     #[test]
+    fn deep_batch_routers_are_found() {
+        // FastMCP writes run_batch(request: BatchRequest) like this.
+        let schema = json!({
+            "type": "object",
+            "properties": { "request": { "$ref": "#/$defs/BatchRequest" } },
+            "$defs": {
+                "BatchRequest": { "type": "object", "properties": {
+                    "calls": { "type": "array", "items": { "$ref": "#/$defs/Call" } }
+                } },
+                "Call": { "type": "object", "properties": {
+                    "name": { "type": "string" }, "arguments": { "type": "object" }
+                } }
+            }
+        });
+        let run_batch = tool_from_json(
+            "s",
+            &json!({ "name": "run_batch", "annotations": { "readOnlyHint": true }, "inputSchema": schema }),
+        )
+        .unwrap();
+        let delete =
+            json!({ "request": { "calls": [{ "name": "delete_vlan", "arguments": {} }] } });
+        let off = def("uvx", &["some-server"], None);
+        let on = def("uvx", &["some-server"], Some(McpWrites::On));
+        assert_eq!(
+            refuse(&policy(&off, &[]), &run_batch, delete.clone(), false),
+            Some(writes_off_reason("s"))
+        );
+        assert_eq!(
+            refuse(&policy(&on, &[]), &run_batch, delete.clone(), true),
+            Some(AUDITOR_REFUSAL.to_string())
+        );
+        // No schema: the shapes in the call are enough.
+        let helper = read_tool("helper");
+        for args in [
+            json!({ "tool_calls": [{ "id": "c1", "type": "function",
+                "function": { "name": "delete_vlan", "arguments": "{}" } }] }),
+            json!({ "batch": { "calls": [{ "name": "delete_vlan" }] } }),
+            json!({ "calls": [[{ "name": "delete_vlan", "arguments": {} }]] }),
+            delete,
+        ] {
+            assert_eq!(
+                refuse(&policy(&off, &[]), &helper, args.clone(), false),
+                Some(writes_off_reason("s")),
+                "{args}"
+            );
+            assert_eq!(
+                refuse(&policy(&on, &[]), &helper, args.clone(), true),
+                Some(AUDITOR_REFUSAL.to_string()),
+                "{args}"
+            );
+        }
+    }
+
+    #[test]
     fn writes_off_hides_writes_but_not_exec() {
         let d = def("uvx", &["some-server"], None);
         let p = policy(&d, &[]);
