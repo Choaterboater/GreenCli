@@ -9,7 +9,7 @@
 // servers into a CliContext.
 
 use super::casper::{
-    self, CasperVersion, FolderRules, ProfileError, ProfileSource, RunEnd, SandboxScan,
+    self, CasperVersion, FolderRules, ProfileError, ProfileSource, RunEnd, SandboxScan, UrlHost,
 };
 use super::cli_run::{run_cli_process, RunOpts};
 use super::floor_char_boundary;
@@ -17,6 +17,7 @@ use crate::error::AppError;
 use crate::private_fs;
 use std::borrow::Cow;
 use std::collections::HashSet;
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -182,6 +183,60 @@ fn cap_prompt(prompt: &str) -> Cow<'_, str> {
 
 // ─── Dispatch ───
 
+/// Casper (asked for by the Casper provider, or typed as the Local CLI
+/// command, even as a `.cmd` shim that is then refused) runs through `run_casper`.
+fn routes_to_casper(argv0: &str, as_casper: bool) -> bool {
+    as_casper || casper::is_casper_program(argv0) || casper::refuse_batch_shim(argv0).is_err()
+}
+
+/// Whether `cli_passthrough` will run this command as Casper.
+pub fn is_casper_command(command: &str, as_casper: bool) -> bool {
+    as_casper
+        || split_command(command.trim())
+            .ok()
+            .and_then(|argv| argv.into_iter().next())
+            .is_some_and(|argv0| routes_to_casper(&argv0, false))
+}
+
+/// How long looking up an MCP server's host name may take.
+const LOOKUP_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// An address of this computer: binding a socket to it works. A server
+/// listening on all addresses answers on 127.0.0.1 too, however it is named.
+fn is_own_address(ip: IpAddr) -> bool {
+    casper::is_local_ip(ip) || std::net::UdpSocket::bind((ip, 0)).is_ok()
+}
+
+/// Whether an MCP server URL may lead to this computer: loopback names and
+/// addresses, this computer's own addresses, and host names that resolve to
+/// any of those. Fails closed: a name that doesn't resolve in time counts.
+pub async fn mcp_url_is_local(url: &str) -> bool {
+    match casper::url_host(url) {
+        UrlHost::Local => true,
+        UrlHost::Ip(ip) => is_own_address(ip),
+        UrlHost::Name(host, port) => {
+            let lookup = tokio::time::timeout(
+                LOOKUP_TIMEOUT,
+                tokio::net::lookup_host((host.as_str(), port)),
+            )
+            .await;
+            match lookup {
+                Ok(Ok(addrs)) => {
+                    let mut any = false;
+                    for addr in addrs {
+                        any = true;
+                        if is_own_address(addr.ip()) {
+                            return true;
+                        }
+                    }
+                    !any
+                }
+                _ => true,
+            }
+        }
+    }
+}
+
 /// Run an AI CLI one-shot with the prompt on stdin and return its answer.
 /// Casper (asked for by the Casper provider, or typed as the Local CLI
 /// command) goes through `run_casper`; any other CLI keeps its old handling.
@@ -197,10 +252,7 @@ pub async fn cli_passthrough(
     refuse_program(&argv[0])?;
     // Before the kimi/claude rewrites below: `--model moonshot/kimi-k2` must
     // never get kimi's --quiet.
-    if ctx.as_casper
-        || casper::is_casper_program(&argv[0])
-        || casper::refuse_batch_shim(&argv[0]).is_err()
-    {
+    if routes_to_casper(&argv[0], ctx.as_casper) {
         return run_casper(argv, prompt, ctx)
             .await
             .map_err(AppError::ApiError);
@@ -935,6 +987,39 @@ mod tests {
         assert!(fresh.exists(), "a fresh folder isn't stale");
         assert!(keep.exists());
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn casper_commands_are_recognised() {
+        for (cmd, as_casper) in [
+            ("casper", false),
+            ("casper --verbose", false),
+            ("/usr/local/bin/casper --model x", false),
+            ("casper.cmd", false),
+            ("claude -p", true),
+        ] {
+            assert!(is_casper_command(cmd, as_casper), "{cmd}");
+        }
+        for cmd in ["claude -p", "kimi", "", "\"open"] {
+            assert!(!is_casper_command(cmd, false), "{cmd}");
+        }
+    }
+
+    #[tokio::test]
+    async fn mcp_urls_on_this_computer() {
+        for url in [
+            "http://127.1:9000/mcp",
+            "http://0x7f000001:9000/mcp",
+            "http://[0:0:0:0:0:0:0:1]:9000/mcp",
+            "http://localhost./",
+            "not a url",
+            // A name that never resolves counts as local (fail closed).
+            "http://greencli-test.invalid/mcp",
+        ] {
+            assert!(mcp_url_is_local(url).await, "{url}");
+        }
+        // TEST-NET-1 is never this computer's address.
+        assert!(!mcp_url_is_local("http://192.0.2.1:8000/mcp").await);
     }
 
     #[test]

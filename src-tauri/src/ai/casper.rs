@@ -10,7 +10,8 @@
 // - finding the program, and checking its version (0.2.21 or newer);
 // - a fail-closed scan for `sandbox: off` in Casper's own config files;
 // - which working folders are allowed;
-// - refusing to start while a local port leads into the network;
+// - refusing to start while a local port leads into the network, and
+//   counting runs so none is opened while Casper answers;
 // - reading the JSON Lines and turning a finished run into the reply.
 //
 // Casper facts used here are from Casper v0.2.21 (commit ad678b6):
@@ -22,8 +23,10 @@ use serde_json::Value;
 use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 /// A Casper version, as `casper --version` prints it.
@@ -900,39 +903,59 @@ pub fn instruction_files_above(
 
 // ─── Local bridges ───
 
-/// An http(s) URL whose host is this computer.
-pub fn is_loopback_url(url: &str) -> bool {
-    let url = url.trim();
-    let lower = url.to_ascii_lowercase();
-    let Some(rest) = lower
-        .strip_prefix("http://")
-        .or_else(|| lower.strip_prefix("https://"))
-    else {
-        return false;
-    };
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
-    let host_port = authority.rsplit('@').next().unwrap_or("");
-    let host = if host_port.starts_with('[') {
-        match host_port.find(']') {
-            Some(end) => &host_port[..=end],
-            None => return false,
+/// Where an MCP server's URL leads, for the local-bridge check.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UrlHost {
+    /// This computer (a loopback or unspecified address, `localhost`), or a
+    /// URL GreenCLI can't read (fail closed).
+    Local,
+    /// An address that is local only if it is one of this computer's own.
+    Ip(IpAddr),
+    /// A host name to look up, with the URL's port.
+    Name(String, u16),
+}
+
+/// A loopback or unspecified address, also written as IPv4 inside IPv6
+/// (`::ffff:127.0.0.1`). Casper's sandbox lets commands reach these.
+pub fn is_local_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => v4.is_loopback() || v4.is_unspecified(),
+        IpAddr::V6(v6) => {
+            v6.is_loopback()
+                || v6.is_unspecified()
+                || v6
+                    .to_ipv4()
+                    .is_some_and(|v4| v4.is_loopback() || v4.is_unspecified())
         }
-    } else {
-        host_port.split(':').next().unwrap_or("")
+    }
+}
+
+/// Read an MCP server URL the way its HTTP client does (WHATWG rules:
+/// `127.1`, `2130706433` and `0x7f000001` are all 127.0.0.1).
+pub fn url_host(url: &str) -> UrlHost {
+    let Ok(parsed) = reqwest::Url::parse(url.trim()) else {
+        return UrlHost::Local;
     };
-    let host = host.trim_end_matches('.');
-    if host == "localhost" || host.ends_with(".localhost") {
-        return true;
+    let port = parsed.port_or_known_default().unwrap_or(0);
+    let Some(host) = parsed.host_str() else {
+        return UrlHost::Local;
+    };
+    let bare = host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host);
+    if let Ok(ip) = bare.parse::<IpAddr>() {
+        return if is_local_ip(ip) {
+            UrlHost::Local
+        } else {
+            UrlHost::Ip(ip)
+        };
     }
-    if matches!(host, "[::1]" | "0.0.0.0" | "[::]" | "[::ffff:127.0.0.1]") {
-        return true;
+    let name = host.trim_end_matches('.').to_ascii_lowercase();
+    if name.is_empty() || name == "localhost" || name.ends_with(".localhost") {
+        return UrlHost::Local;
     }
-    let octets: Vec<&str> = host.split('.').collect();
-    octets.len() == 4
-        && octets[0] == "127"
-        && octets
-            .iter()
-            .all(|o| !o.is_empty() && o.len() <= 3 && o.parse::<u8>().is_ok())
+    UrlHost::Name(name, port)
 }
 
 /// Casper's sandboxed commands may reach this computer's local ports. A port
@@ -942,7 +965,38 @@ pub fn bridge_problem(forwards: &[(String, u16)], loopback_mcp: &[String]) -> Op
     if let Some((_, port)) = forwards.first() {
         return Some(format!("Casper's commands can reach this computer's local ports, and GreenCLI has a port forward open on port {port} (Tunnels). Close it, or ask with another AI provider."));
     }
-    loopback_mcp.first().map(|name| format!("Casper's commands can reach this computer's local ports, and the MCP server \"{name}\" is connected on one. Disconnect it in MCP Servers, or ask with another AI provider."))
+    loopback_mcp.first().map(|name| format!("Casper's commands can reach this computer's local ports, and the MCP server \"{name}\" is connected and may run on this computer. Disconnect it in MCP Servers, or ask with another AI provider."))
+}
+
+/// Shown when a port forward is opened while Casper answers.
+pub const BUSY_FORWARD: &str = "Casper is answering a question in the AI panel, and its commands can reach this computer's local ports. Open the port forward when it's done, or press Stop first.";
+/// Shown when a web MCP server is connected while Casper answers.
+pub const BUSY_MCP: &str = "Casper is answering a question in the AI panel, and its commands can reach this computer's local ports. Connect this MCP server when it's done, or press Stop first.";
+
+/// Counts the Casper questions in progress. While one runs, GreenCLI opens
+/// no port forward and connects no web MCP server: Casper checked for those
+/// only when it started. The count drops when the guard does.
+pub struct CasperRunGuard(Arc<AtomicUsize>);
+
+impl CasperRunGuard {
+    /// Start counting a run. Take the guard before looking for bridges, so a
+    /// forward opened in between is either seen or refused.
+    pub fn start(count: &Arc<AtomicUsize>) -> Self {
+        count.fetch_add(1, Ordering::SeqCst);
+        CasperRunGuard(count.clone())
+    }
+}
+
+impl Drop for CasperRunGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// True while a Casper question runs. Check it under the same lock the
+/// bridge scan reads (the forwards map, the MCP manager).
+pub fn casper_busy(count: &AtomicUsize) -> bool {
+    count.load(Ordering::SeqCst) > 0
 }
 
 // ─── Output ───
@@ -1777,6 +1831,13 @@ mod tests {
     }
 
     #[test]
+    fn unsure_message_keeps_lists() {
+        let m = sandbox_message(SandboxScan::Unsure, Path::new("/h/.casper/config.yaml")).unwrap();
+        assert!(m.contains("Your sandbox lists can stay"), "{m}");
+        assert!(!m.contains("remove"), "{m}");
+    }
+
+    #[test]
     fn selected_profile_order() {
         let project = "profile: proj\n";
         let global = "profile: glob # mine\nmodel: x\n";
@@ -1856,13 +1917,6 @@ mod tests {
     }
 
     // ─── Working folder ───
-
-    #[test]
-    fn unsure_message_keeps_lists() {
-        let m = sandbox_message(SandboxScan::Unsure, Path::new("/h/.casper/config.yaml")).unwrap();
-        assert!(m.contains("Your sandbox lists can stay"), "{m}");
-        assert!(!m.contains("remove"), "{m}");
-    }
 
     #[test]
     fn chosen_folder_rules() {
@@ -1988,8 +2042,8 @@ mod tests {
     // ─── Bridges ───
 
     #[test]
-    fn is_loopback_url_cases() {
-        for yes in [
+    fn url_host_cases() {
+        for local in [
             "http://127.0.0.1:8010/mcp",
             "https://localhost/mcp",
             "HTTP://LOCALHOST:9/x",
@@ -1998,20 +2052,81 @@ mod tests {
             "http://user:pw@localhost:1/",
             "http://0.0.0.0:80",
             "http://app.localhost/",
+            "http://localhost./",
+            // Shorthand and other spellings the HTTP client reads as loopback.
+            "http://127.1:8080/mcp",
+            "http://2130706433/",
+            "http://0x7f000001:9000/mcp",
+            "http://0177.0.0.1/",
+            "http://[0:0:0:0:0:0:0:1]:8080/",
+            "http://[::ffff:7f00:1]/",
+            "http://[::ffff:127.0.0.1]/",
+            "http://[::]:80/",
+            "http://0/",
+            // Unreadable: fail closed.
+            "",
+            "127.0.0.1:80",
+            "http://[::1/",
         ] {
-            assert!(is_loopback_url(yes), "{yes}");
+            assert_eq!(url_host(local), UrlHost::Local, "{local}");
+        }
+        assert_eq!(
+            url_host("http://10.0.0.1/mcp"),
+            UrlHost::Ip("10.0.0.1".parse().unwrap())
+        );
+        assert_eq!(
+            url_host("https://MCP.Example.com/"),
+            UrlHost::Name("mcp.example.com".into(), 443)
+        );
+        assert_eq!(
+            url_host("http://mbp.local:8000/mcp"),
+            UrlHost::Name("mbp.local".into(), 8000)
+        );
+        assert_eq!(
+            url_host("http://127.0.0.1.example.com/"),
+            UrlHost::Name("127.0.0.1.example.com".into(), 80)
+        );
+        assert_eq!(
+            url_host("http://localhost@evil.com/"),
+            UrlHost::Name("evil.com".into(), 80)
+        );
+    }
+
+    #[test]
+    fn is_local_ip_cases() {
+        for yes in [
+            "127.0.0.1",
+            "127.9.9.9",
+            "0.0.0.0",
+            "::1",
+            "::",
+            "::ffff:127.0.0.1",
+            "::ffff:0.0.0.0",
+        ] {
+            assert!(is_local_ip(yes.parse().unwrap()), "{yes}");
         }
         for no in [
-            "http://10.0.0.1/mcp",
-            "https://mcp.example.com/",
-            "http://127.0.0.1.example.com/",
-            "http://localhost@evil.com/",
-            "ftp://127.0.0.1/",
-            "127.0.0.1:80",
-            "",
+            "10.0.0.1",
+            "192.168.1.5",
+            "fe80::1",
+            "::ffff:10.0.0.1",
+            "2001:db8::1",
         ] {
-            assert!(!is_loopback_url(no), "{no}");
+            assert!(!is_local_ip(no.parse().unwrap()), "{no}");
         }
+    }
+
+    #[test]
+    fn casper_run_guard_counts() {
+        let count = Arc::new(AtomicUsize::new(0));
+        assert!(!casper_busy(&count));
+        let a = CasperRunGuard::start(&count);
+        let b = CasperRunGuard::start(&count);
+        assert!(casper_busy(&count));
+        drop(a);
+        assert!(casper_busy(&count));
+        drop(b);
+        assert!(!casper_busy(&count));
     }
 
     #[test]
@@ -2023,7 +2138,10 @@ mod tests {
             "{f}"
         );
         let m = bridge_problem(&[], &["central".into()]).unwrap();
-        assert!(m.contains("MCP server \"central\" is connected"), "{m}");
+        assert!(
+            m.contains("MCP server \"central\" is connected and may run on this computer"),
+            "{m}"
+        );
     }
 
     // ─── Parsing ───

@@ -20,7 +20,9 @@ pub mod casper;
 mod cli;
 mod cli_run;
 
-pub use cli::{casper_check, cli_passthrough, CasperCheck, CliContext};
+pub use cli::{
+    casper_check, cli_passthrough, is_casper_command, mcp_url_is_local, CasperCheck, CliContext,
+};
 pub use cli_run::stop_all_cli_runs;
 
 use crate::error::AppError;

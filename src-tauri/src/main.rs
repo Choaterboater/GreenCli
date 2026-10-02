@@ -118,6 +118,9 @@ struct AppState {
     /// so the frontend Stop button can actually abort the backend
     /// request/egress, even when Stop arrives before the run is registered.
     ai_cancels: Arc<AsyncMutex<ai::cancel::CancelBook>>,
+    /// Casper questions in progress: no port forward opens and no web MCP
+    /// server connects meanwhile (Casper's commands may reach local ports).
+    casper_runs: Arc<std::sync::atomic::AtomicUsize>,
     app_dir: std::path::PathBuf,
 }
 
@@ -148,6 +151,7 @@ impl AppState {
             session_logs: Arc::new(AsyncMutex::new(HashMap::new())),
             forwards: Arc::new(AsyncMutex::new(HashMap::new())),
             ai_cancels: Arc::new(AsyncMutex::new(ai::cancel::CancelBook::default())),
+            casper_runs: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             app_dir,
         })
     }
@@ -1623,19 +1627,40 @@ async fn mcp_connect(name: String, state: State<'_, AppState>) -> Result<usize, 
         let mgr = state.mcp_manager.lock().await;
         mgr.resolve_connect_def(&name).map_err(|e| e.to_string())?
     };
+    // A web server may run on this computer, where Casper's commands could
+    // reach it: none connects while Casper answers.
+    let web = def.url.is_some();
+    if web && ai::casper::casper_busy(&state.casper_runs) {
+        return Err(ai::casper::BUSY_MCP.to_string());
+    }
     // 2) unlocked: spawn + handshake (connect the NEW client before touching the
     //    old one, so a failed reconnect leaves the existing connection intact).
     let client = McpClient::connect(&def).await.map_err(|e| e.to_string())?;
     let count = client.tools.lock().map(|g| g.len()).unwrap_or(0);
     // 3) brief lock: swap in; shut down any displaced client outside the lock.
-    let old = {
-        let mut mgr = state.mcp_manager.lock().await;
-        mgr.install_client(name, client)
-    };
+    let old = install_mcp_client(&state, name, client, web).await?;
     if let Some(old) = old {
         old.shutdown().await;
     }
     Ok(count)
+}
+
+/// Swap a connected client in. A web server is checked again under the
+/// manager lock (the lock the bridge look reads): while Casper answers it is
+/// shut down instead of installed.
+async fn install_mcp_client(
+    state: &AppState,
+    name: String,
+    client: McpClient,
+    web: bool,
+) -> Result<Option<McpClient>, String> {
+    let mut mgr = state.mcp_manager.lock().await;
+    if web && ai::casper::casper_busy(&state.casper_runs) {
+        drop(mgr);
+        client.shutdown().await;
+        return Err(ai::casper::BUSY_MCP.to_string());
+    }
+    Ok(mgr.install_client(name, client))
 }
 
 #[tauri::command]
@@ -1901,6 +1926,10 @@ async fn ssh_start_forward(
     remote_port: Option<u16>,
     state: State<'_, AppState>,
 ) -> Result<ssh::forward::ForwardMeta, String> {
+    // Casper's commands may reach local ports: no new forward while it answers.
+    if ai::casper::casper_busy(&state.casper_runs) {
+        return Err(ai::casper::BUSY_FORWARD.to_string());
+    }
     let handle = state
         .session_manager.get_ssh_handle(&session_id)
         .await
@@ -1935,7 +1964,14 @@ async fn ssh_start_forward(
         remote_host,
         remote_port,
     };
-    state.forwards.lock().await.insert(id, (meta.clone(), task));
+    // Checked again under the lock the bridge look reads, so a Casper run
+    // that started meanwhile either sees this forward or it closes here.
+    let mut forwards = state.forwards.lock().await;
+    if ai::casper::casper_busy(&state.casper_runs) {
+        task.abort();
+        return Err(ai::casper::BUSY_FORWARD.to_string());
+    }
+    forwards.insert(id, (meta.clone(), task));
     Ok(meta)
 }
 
@@ -2487,8 +2523,10 @@ async fn register_ai_cancel(
     cancel
 }
 
-/// Open local/dynamic port forwards, and connected MCP servers whose URL is on
-/// this computer: ways out of Casper's sandbox (it may reach local ports).
+/// Open local/dynamic port forwards, and connected MCP servers whose URL may
+/// lead to this computer: ways out of Casper's sandbox (it may reach local
+/// ports). Called with a CasperRunGuard already held, so a forward or server
+/// added after this look is refused instead (see casper_busy).
 async fn ai_bridges(state: &AppState) -> (Vec<(String, u16)>, Vec<String>) {
     let mut forwards: Vec<(String, u16)> = state
         .forwards
@@ -2501,20 +2539,27 @@ async fn ai_bridges(state: &AppState) -> (Vec<(String, u16)>, Vec<String>) {
         .map(|(meta, _)| (meta.kind.clone(), meta.local_port))
         .collect();
     forwards.sort_by_key(|(_, port)| *port);
-    let mgr = state.mcp_manager.lock().await;
-    let connected: std::collections::HashSet<String> = mgr
-        .status()
-        .iter()
-        .filter(|s| s.get("connected").and_then(|c| c.as_bool()) == Some(true))
-        .filter_map(|s| s.get("name").and_then(|n| n.as_str()).map(str::to_string))
-        .collect();
-    let mut local_mcp: Vec<String> = mgr
-        .list_configs()
-        .into_iter()
-        .filter(|d| connected.contains(&d.name))
-        .filter(|d| d.url.as_deref().is_some_and(ai::casper::is_loopback_url))
-        .map(|d| d.name)
-        .collect();
+    let web_servers: Vec<(String, String)> = {
+        let mgr = state.mcp_manager.lock().await;
+        let connected: std::collections::HashSet<String> = mgr
+            .status()
+            .iter()
+            .filter(|s| s.get("connected").and_then(|c| c.as_bool()) == Some(true))
+            .filter_map(|s| s.get("name").and_then(|n| n.as_str()).map(str::to_string))
+            .collect();
+        mgr.list_configs()
+            .into_iter()
+            .filter(|d| connected.contains(&d.name))
+            .filter_map(|d| d.url.map(|url| (d.name, url)))
+            .collect()
+    };
+    // Name lookups run without the manager lock held.
+    let mut local_mcp: Vec<String> = Vec::new();
+    for (name, url) in web_servers {
+        if ai::mcp_url_is_local(&url).await {
+            local_mcp.push(name);
+        }
+    }
     local_mcp.sort();
     (forwards, local_mcp)
 }
@@ -2527,6 +2572,7 @@ async fn cli_context(
     as_casper: bool,
     log_folder: Option<String>,
     cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
+    with_bridges: bool,
 ) -> ai::CliContext {
     // The session-log folder: the user's, or `<app data>/logs` (resolved the
     // way session logging resolves it). Casper may not work in it.
@@ -2539,7 +2585,11 @@ async fn cli_context(
         cache_dir: app.path_resolver().app_cache_dir(),
         work_folder,
         as_casper,
-        bridges: ai_bridges(state).await,
+        bridges: if with_bridges {
+            ai_bridges(state).await
+        } else {
+            (Vec::new(), Vec::new())
+        },
         extra_protected,
         cancel,
     }
@@ -2563,13 +2613,18 @@ async fn ai_cli(
         Some(id) => Some(register_ai_cancel(&state, id, "ai_cli").await),
         None => None,
     };
+    let as_casper = as_casper.unwrap_or(false);
+    // Counted before the bridge look, and until Casper has finished.
+    let casper = ai::is_casper_command(&command, as_casper);
+    let _casper_run = casper.then(|| ai::casper::CasperRunGuard::start(&state.casper_runs));
     let ctx = cli_context(
         &state,
         &app,
         work_folder,
-        as_casper.unwrap_or(false),
+        as_casper,
         log_folder,
         cancel.clone(),
+        casper,
     )
     .await;
     let result = ai::cli_passthrough(&command, &prompt, ctx).await;
@@ -2589,7 +2644,7 @@ async fn ai_casper_check(
     state: State<'_, AppState>,
     app: AppHandle,
 ) -> Result<ai::CasperCheck, String> {
-    let ctx = cli_context(&state, &app, work_folder, true, log_folder, None).await;
+    let ctx = cli_context(&state, &app, work_folder, true, log_folder, None, true).await;
     Ok(ai::casper_check(&command, ctx).await)
 }
 
@@ -2749,12 +2804,11 @@ fn main() {
                     // as mcp_connect) so a slow server can't block MCP commands.
                     match McpClient::connect(&resolved).await {
                         Ok(client) => {
-                            let old = {
-                                let mut mgr = state.mcp_manager.lock().await;
-                                mgr.install_client(def.name.clone(), client)
-                            };
-                            if let Some(old) = old {
-                                old.shutdown().await;
+                            let web = resolved.url.is_some();
+                            match install_mcp_client(&state, def.name.clone(), client, web).await {
+                                Ok(Some(old)) => old.shutdown().await,
+                                Ok(None) => {}
+                                Err(e) => log::warn!("MCP auto-connect '{}': {}", def.name, e),
                             }
                         }
                         Err(e) => log::warn!("MCP auto-connect '{}' failed: {}", def.name, e),
