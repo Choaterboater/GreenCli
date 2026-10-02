@@ -501,6 +501,8 @@ pub struct SecretStore {
     marker: Option<PathBuf>,
     leftover: Mutex<Vec<PathBuf>>,
     move_pending: AtomicBool,
+    /// The old files whose move is pending, with their account prefix.
+    pending: Mutex<Vec<(PathBuf, String)>>,
     #[cfg(test)]
     crash_before_delete: AtomicBool,
 }
@@ -560,6 +562,7 @@ impl SecretStore {
             marker,
             leftover: Mutex::new(Vec::new()),
             move_pending: AtomicBool::new(false),
+            pending: Mutex::new(Vec::new()),
             #[cfg(test)]
             crash_before_delete: AtomicBool::new(false),
         }
@@ -637,9 +640,36 @@ impl SecretStore {
         }
     }
 
-    fn move_failed(&self) -> MoveOutcome {
+    fn move_failed(&self, path: &Path, prefix: &str) -> MoveOutcome {
+        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        if !pending.iter().any(|(p, _)| p == path) {
+            pending.push((path.to_path_buf(), prefix.to_string()));
+        }
         self.move_pending.store(true, Ordering::Relaxed);
         MoveOutcome::Failed
+    }
+
+    /// The value for `account` still waiting in an old file whose move is
+    /// pending: not in the OS store yet, and not saved or removed in 2.0
+    /// since. None when there is none, or the file can't be read.
+    fn pending_value(&self, account: &str) -> Option<Zeroizing<String>> {
+        if !matches!(self.mode, Mode::Os(_)) || !self.move_pending.load(Ordering::Relaxed) {
+            return None;
+        }
+        let (path, name) = self
+            .pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .find_map(|(path, prefix)| Some((path.clone(), account.strip_prefix(prefix.as_str())?.to_string())))?;
+        let _ops = self.lock_ops();
+        let marker = self.marker.as_deref().map(read_marker).unwrap_or_default();
+        if list_of(&marker, DONE).iter().any(|a| a == account) {
+            return None;
+        }
+        let bytes = Zeroizing::new(fs::read(&path).ok()?);
+        let mut map: HashMap<String, Zeroizing<String>> = serde_json::from_slice(&bytes).ok()?;
+        map.remove(&name).filter(|v| !v.is_empty())
     }
 
     fn lock_ops(&self) -> std::sync::MutexGuard<'_, ()> {
@@ -750,8 +780,11 @@ impl SecretStore {
     /// Copy `from` to `to` and check the copy reads back the same, through a
     /// new read. Ok(false) when `from` has nothing saved; `to` is left as it
     /// is then. `from` always stays; a copy that doesn't check out is removed.
+    /// A value for `from` still waiting in an old 1.9 file is copied too, so
+    /// a rename while a move is pending takes it along (deleting `from` then
+    /// marks it done, and the next start doesn't move it under the old name).
     pub fn copy(&self, from: &str, to: &str) -> Result<bool, String> {
-        let Some(value) = self.get(from)? else {
+        let Some(value) = self.get(from)?.or_else(|| self.pending_value(from)) else {
             return Ok(false);
         };
         self.set(to, &value)?;
@@ -798,7 +831,7 @@ impl SecretStore {
             }
             Err(e) => {
                 log::warn!("Couldn't read {}: {}; left in place", path.display(), e);
-                return self.move_failed();
+                return self.move_failed(path, prefix);
             }
         };
         // In name order, so a move that stops partway stops at the same place.
@@ -827,7 +860,7 @@ impl SecretStore {
                 add_to_list(m, MOVING, &file);
             }) {
                 log::warn!("Couldn't write {}: {}; {} left in place", MARKER_FILE, e, path.display());
-                return self.move_failed();
+                return self.move_failed(path, prefix);
             }
             Default::default()
         };
@@ -849,7 +882,7 @@ impl SecretStore {
                     Ok(_) => {}
                     Err(e) => {
                         log::warn!("Reading {} failed: {}; {} left in place", account, e, path.display());
-                        return self.move_failed();
+                        return self.move_failed(path, prefix);
                     }
                 }
             }
@@ -876,11 +909,11 @@ impl SecretStore {
                 if let Err(e) = delete_parts(b.as_ref(), &account) {
                     log::warn!("Couldn't clear {} after a failed move: {}", account, e);
                 }
-                return self.move_failed();
+                return self.move_failed(path, prefix);
             }
             if let Err(e) = self.update_marker(|m| add_to_list(m, MOVED, &account)) {
                 log::warn!("Couldn't write {}: {}; {} left in place", MARKER_FILE, e, path.display());
-                return self.move_failed();
+                return self.move_failed(path, prefix);
             }
         }
         // Copied by an earlier try but removed in 1.9 since: remove it here too.
@@ -895,16 +928,16 @@ impl SecretStore {
             self.cache().remove(account);
             if let Err(e) = delete_parts(b.as_ref(), account) {
                 log::warn!("Removing {} failed: {}; {} left in place", account, e, path.display());
-                return self.move_failed();
+                return self.move_failed(path, prefix);
             }
         }
         #[cfg(test)]
         if self.crash_before_delete.load(Ordering::Relaxed) {
-            return self.move_failed();
+            return self.move_failed(path, prefix);
         }
         if let Err(e) = fs::remove_file(path) {
             log::warn!("Couldn't delete {} after moving it: {}", path.display(), e);
-            return self.move_failed();
+            return self.move_failed(path, prefix);
         }
         let _ = fs::remove_file(private_fs::key_file_tmp(path));
         if let Err(e) = self.update_marker(|m| forget_move(m, &file, prefix)) {
@@ -1769,6 +1802,31 @@ mod tests {
         assert!(store.copy("mcp-creds:a", "mcp-creds:c").is_err());
         assert!(mem.raw("mcp-creds:c").is_none());
         assert_eq!(mem.raw("mcp-creds:a").unwrap(), b"content");
+    }
+
+    #[test]
+    fn copy_takes_a_login_still_waiting_in_the_19_file() {
+        let dir = temp_dir();
+        let mem = MemBackend::new();
+        let path = dir.join(MCP_CREDS_FILE);
+        let body = serde_json::json!({ "central": "login: c", "old": "login: o" }).to_string();
+        fs::write(&path, &body).unwrap();
+        *mem.fail_account.lock().unwrap() = Some("mcp-creds:central".into());
+        let store = os_store(&dir, &mem);
+        assert_eq!(store.move_file(&path, MCP_CREDS_PREFIX), MoveOutcome::Failed);
+        *mem.fail_account.lock().unwrap() = None;
+        assert!(mem.accounts().is_empty());
+
+        assert!(store.copy("mcp-creds:central", "mcp-creds:central-prod").unwrap());
+        assert_eq!(mem.raw("mcp-creds:central-prod").unwrap(), b"login: c");
+        // One the user removed in 2.0 since isn't taken from the file.
+        store.delete("mcp-creds:old").unwrap();
+        assert!(!store.copy("mcp-creds:old", "mcp-creds:other").unwrap());
+        assert!(mem.raw("mcp-creds:other").is_none());
+        // Nothing waits for a name the file doesn't have, or another prefix.
+        assert!(!store.copy("mcp-creds:none", "mcp-creds:other").unwrap());
+        assert!(!store.copy("ai-key:central", "ai-key:other").unwrap());
+        assert_eq!(fs::read(&path).unwrap(), body.as_bytes());
     }
 
     /// For the owner, against the real store:

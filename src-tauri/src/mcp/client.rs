@@ -3520,6 +3520,35 @@ while (<STDIN>) {
     }
 
     #[tokio::test]
+    async fn rename_while_the_19_move_is_pending_takes_the_login_along() {
+        use crate::secret_store::{mem::MemBackend, MoveOutcome, MCP_CREDS_FILE};
+        let dir = temp_dir();
+        let mem = MemBackend::new();
+        let file = dir.join(MCP_CREDS_FILE);
+        std::fs::write(&file, serde_json::json!({ "central": "client_secret: s3cr3t" }).to_string()).unwrap();
+        // First 2.0 start: the login fails to move, so it waits in the file.
+        *mem.fail_account.lock().unwrap() = Some("mcp-creds:central".into());
+        let store = Arc::new(SecretStore::open_with(&dir, mem.clone(), Duration::from_secs(3)));
+        assert_eq!(store.move_file(&file, MCP_CREDS_PREFIX), MoveOutcome::Failed);
+        *mem.fail_account.lock().unwrap() = None;
+        let mgr = McpManager::new(dir.clone(), McpCreds::new(store));
+        mgr.save_config(def("central", "uvx", &["centralmcp"])).unwrap();
+        let manager = Mutex::new(mgr);
+
+        rename_server(&manager, "central", "central-prod").await.unwrap();
+        assert_eq!(mem.raw("mcp-creds:central-prod").unwrap(), b"client_secret: s3cr3t");
+        drop(manager);
+
+        // Next start: the move finishes without putting the login back under
+        // the old name, where a later server called "central" would get it.
+        let next = SecretStore::open_with(&dir, mem.clone(), Duration::from_secs(3));
+        assert_eq!(next.move_file(&file, MCP_CREDS_PREFIX), MoveOutcome::Moved(1));
+        assert!(!file.exists());
+        assert_eq!(mem.raw("mcp-creds:central-prod").unwrap(), b"client_secret: s3cr3t");
+        assert!(mem.raw("mcp-creds:central").is_none());
+    }
+
+    #[tokio::test]
     async fn a_10kb_login_survives_split_storage_connect_and_export() {
         use crate::secret_store::mem::MemBackend;
         let mem = MemBackend::new();
