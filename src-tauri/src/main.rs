@@ -21,6 +21,9 @@ mod ssh;
 mod telnet;
 mod vault;
 
+#[cfg(test)]
+mod tauri_conf_tests;
+
 use ai::{AiChatRequest, AiKeyStore};
 use api::{Aos8Client, ArubaCxClient, AossClient, JunosClient, MistClient};
 use central::CentralClient;
