@@ -139,6 +139,19 @@ impl ConfigArchiveStore {
             .join(format!("{ts}.hidden.json"))
     }
 
+    /// Whether the entry's hidden copy is one greencli-mcp serves: the index
+    /// says this filter, and the file passes greencli-mcp's own checks (a
+    /// plain file it can read, made by this filter, for this snapshot). A
+    /// damaged copy counts as missing, so Make hidden copies makes it again.
+    fn hidden_ok(&self, device: &str, entry: &ArchiveEntry) -> bool {
+        entry.hidden_filter == Some(HIDDEN_COPY_FILTER)
+            && greencli_mcp::hidden_copy_usable(
+                &self.hidden_path(device, entry.ts),
+                device,
+                entry.ts,
+            )
+    }
+
     /// Write the hidden copy of snapshot `ts`. Caller holds `lock`.
     fn write_hidden(
         &self,
@@ -264,8 +277,7 @@ impl ConfigArchiveStore {
         if let Some(latest) = latest {
             if let Ok(existing) = self.read_snapshot(device, latest.ts) {
                 if existing == content {
-                    let needs_copy = latest.hidden_filter != Some(HIDDEN_COPY_FILTER)
-                        || !self.hidden_path(device, latest.ts).is_file();
+                    let needs_copy = !self.hidden_ok(device, &latest);
                     if let (Some(text), true) = (hidden, needs_copy) {
                         match self.write_hidden(device, latest.ts, &latest.source, text, "capture")
                         {
@@ -372,7 +384,8 @@ impl ConfigArchiveStore {
     }
 
     /// Count snapshots by hidden copy: current, stale (an older filter) or
-    /// missing, and list the ones that need a new copy.
+    /// missing (none, or one greencli-mcp can't use), and list the ones that
+    /// need a new copy. Reads each copy, as greencli-mcp would.
     pub fn hidden_status(&self) -> HiddenStatus {
         let _g = self.lock.lock().unwrap_or_else(|e| e.into_inner());
         let index = self.read_index();
@@ -381,9 +394,7 @@ impl ConfigArchiveStore {
         devices.sort_by(|a, b| a.0.cmp(b.0));
         for (device, entries) in devices {
             for e in entries {
-                let current = e.hidden_filter == Some(HIDDEN_COPY_FILTER)
-                    && self.hidden_path(device, e.ts).is_file();
-                if current {
+                if self.hidden_ok(device, e) {
                     status.current += 1;
                     continue;
                 }
@@ -777,6 +788,61 @@ mod tests {
         // A current copy whose file is gone counts as missing.
         fs::remove_file(store.hidden_path("sw-1", t2)).unwrap();
         assert_eq!(store.hidden_status().missing, 2);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_copy_greencli_mcp_cant_use_counts_as_missing_and_is_made_again() {
+        let dir = temp_dir();
+        let store = ConfigArchiveStore::new(dir.clone());
+        let ts = store
+            .capture("sw-1", "connect", "a", Some(("a", HIDDEN_COPY_FILTER)))
+            .unwrap()
+            .ts
+            .unwrap();
+        assert_eq!(store.hidden_status().current, 1);
+        let path = store.hidden_path("sw-1", ts);
+        let good = fs::read(&path).unwrap();
+        let other_ts = String::from_utf8(good.clone())
+            .unwrap()
+            .replace(&format!("\"ts\": {ts}"), &format!("\"ts\": {}", ts + 1));
+        let old_filter = String::from_utf8(good.clone()).unwrap().replace(
+            &format!("\"filter\": {HIDDEN_COPY_FILTER}"),
+            &format!("\"filter\": {}", HIDDEN_COPY_FILTER - 1),
+        );
+        // Cut short (a crash after the rename), empty, another snapshot's, or
+        // stamped with an older filter while the index says this one: the
+        // index still says this filter, but greencli-mcp refuses each.
+        let broken: [&[u8]; 4] = [b"{", b"", other_ts.as_bytes(), old_filter.as_bytes()];
+        for bytes in broken {
+            fs::write(&path, bytes).unwrap();
+            assert!(!greencli_mcp::hidden_copy_usable(&path, "sw-1", ts));
+            assert_eq!(
+                store.list("sw-1").unwrap()[0].hidden_filter,
+                Some(HIDDEN_COPY_FILTER)
+            );
+            let status = store.hidden_status();
+            assert_eq!((status.missing, status.stale, status.current), (1, 0, 0));
+            assert_eq!(
+                status.todo,
+                vec![HiddenTodo {
+                    device: "sw-1".into(),
+                    ts
+                }]
+            );
+            // Make hidden copies (set_hidden) puts it right.
+            store
+                .set_hidden("sw-1", ts, "a", HIDDEN_COPY_FILTER)
+                .unwrap();
+            assert_eq!(store.hidden_status().current, 1);
+        }
+        // A capture of the same config fills in a damaged newest copy too.
+        fs::write(&path, b"{").unwrap();
+        let again = store
+            .capture("sw-1", "connect", "a", Some(("a", HIDDEN_COPY_FILTER)))
+            .unwrap();
+        assert_eq!(again.ts, None);
+        assert_eq!(store.hidden_status().current, 1);
         std::fs::remove_dir_all(&dir).ok();
     }
 

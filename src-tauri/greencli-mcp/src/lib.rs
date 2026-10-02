@@ -32,6 +32,8 @@ mod transport;
 /// list's length, and tests/identity.rs fails until this value equals it.
 pub const HIDDEN_COPY_FILTER: u32 = 1;
 
+pub use archive::hidden_copy_usable;
+
 /// The app's bundle identifier: the name of its data folder.
 pub const APP_IDENTIFIER: &str = "com.choatelabs.greencli";
 

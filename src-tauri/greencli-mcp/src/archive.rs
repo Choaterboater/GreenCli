@@ -131,7 +131,18 @@ fn find(entries: &[Entry], ts: u64) -> Result<&Entry, ToolFail> {
 /// The hidden copy of a snapshot that is in the index. Refused when missing,
 /// unreadable, made by another filter version, or not this snapshot's.
 fn load_hidden(data_dir: &Path, device: &str, ts: u64) -> Result<String, ToolFail> {
-    let bytes = match read_capped(&hidden_path(data_dir, device, ts), MAX_COPY) {
+    read_hidden(&hidden_path(data_dir, device, ts), device, ts)
+}
+
+/// Whether the hidden copy at `path` is one this server serves for snapshot
+/// `ts` of `device`: the same checks as get_config. GreenCLI counts a copy
+/// that fails them as missing, so Make hidden copies makes it again.
+pub fn hidden_copy_usable(path: &Path, device: &str, ts: u64) -> bool {
+    read_hidden(path, device, ts).is_ok()
+}
+
+fn read_hidden(path: &Path, device: &str, ts: u64) -> Result<String, ToolFail> {
+    let bytes = match read_capped(path, MAX_COPY) {
         Ok(ReadFile::Missing) => return Err(ToolFail::Error(NO_COPY.into())),
         Ok(ReadFile::Bytes(b)) => b,
         Err(_) => return Err(ToolFail::Error(BAD_COPY.into())),
