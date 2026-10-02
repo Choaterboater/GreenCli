@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-10-02
+
 ### Added
 - **Casper tab**: Quick Connect → Local → **Casper** starts Casper in a terminal tab, in the
   **Start folder** you pick (your project). The folder is the tab's working directory, never a
@@ -31,6 +33,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Plain-text passwords get a tip** in the editor: `password plaintext …`, `key plaintext …`,
   `auth-pass plaintext …` and the like are underlined in blue with a pointer to Copy with secrets
   hidden. It stays out of the Send dialog, since setting a password is what a send is for.
+- **Hover cards for Aruba CX and Junos**: hover a line in the Config Editor (VLAN, access or trunk
+  port, LAG, VLAN interface, static route, NTP, SNMP, RADIUS, commit confirmed …) to see what it
+  does in plain words and how the other vendor writes it.
+- **Passwords written into code and data files are flagged**: in YAML, JSON, Python, shell, `.env`,
+  JavaScript/TypeScript, PowerShell and Terraform tabs, a password, token, API key, RADIUS/TACACS
+  key or SNMP community written as a value gets a warning. Variables, vault lookups (`{{ … }}`,
+  `!vault`, `${ENV}`, `os.environ`), placeholders and UI labels are left alone.
+- **Quick fixes (Ctrl+. or the light bulb)** on Config Editor problems: strip terminal junk from the
+  tab, comment out a risky or rejected line (`!` on Aruba, `#` on Junos) so it isn't sent, add
+  `commit confirmed 5` to a Junos tab, or swap a plain-text password for a blank (`${password}`).
+- **Go to Symbol (Ctrl+Shift+O, or the Outline button)**: type to jump to any interface, LAG, VLAN,
+  router or Junos section by name, like VS Code. Junos works in set or brace style; code files use
+  the editor's own symbols. It replaces the old Outline list.
 
 ### Fixed
 - Confirm dialogs kept their text on one line: the Send preview, the problem list and the SFTP

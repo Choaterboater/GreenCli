@@ -157,6 +157,56 @@ describe('plain-text secrets', () => {
   });
 
   it('only checks device configs', () => {
-    expect(buildProblems('password = "plaintext hunter2"', 'python')).toEqual([]);
+    expect(buildProblems('password = "plaintext hunter2"', 'python').filter((p) => p.code === 'plaintext-secret')).toEqual([]);
+  });
+});
+
+describe('secrets written into code and data files', () => {
+  const values = (text: string, language: string) =>
+    buildProblems(text, language)
+      .filter((p) => p.code === 'code-secret')
+      .map((p) => text.split('\n')[p.lineNumber - 1].slice(p.startColumn - 1, p.endColumn - 1));
+
+  it('finds them in YAML, .env, JSON, Python, shell, PowerShell and Terraform', () => {
+    expect(values('ansible_password: Hunter22\nradius_key: "R4d!us"\nsnmp_community: n0tPublic # lab', 'yaml')).toEqual([
+      'Hunter22',
+      'R4d!us',
+      'n0tPublic',
+    ]);
+    expect(values('DB_PASSWORD=s3cr3t\nexport API_KEY="abc123def"', 'ini')).toEqual(['s3cr3t', 'abc123def']);
+    expect(values('{\n  "client_secret": "q9Zx81",\n  "user": "admin"\n}', 'json')).toEqual(['q9Zx81']);
+    expect(values("password = 'Sup3r!'\ntoken = get_token()", 'python')).toEqual(['Sup3r!']);
+    expect(values('MIST_API_TOKEN=Abc123Def456', 'shell')).toEqual(['Abc123Def456']);
+    expect(values('$password = "Pa55word"', 'powershell')).toEqual(['Pa55word']);
+    expect(values('  password = "Hunter22"\n  password = var.db_password', 'hcl')).toEqual(['Hunter22']);
+  });
+
+  it('marks the value as a warning', () => {
+    const [problem] = buildProblems('api_key: abc123def', 'yaml');
+    expect(problem).toMatchObject({ severity: 'warning', code: 'code-secret', startColumn: 10, endColumn: 19 });
+  });
+
+  it('leaves variables, vault lookups, placeholders, labels and other names alone', () => {
+    const yaml = [
+      'password: "{{ vault_ansible_password }}"',
+      'become_password: !vault |',
+      'password_file: /etc/creds',
+      'token_url: https://example.com/oauth',
+      'tokenizer: bert',
+      'passwordless: true',
+      'password:',
+      'secret: ${SECRET_FROM_ENV}',
+      '# password: old-one',
+      'api_key: "<your key here>"',
+      'password: "***"',
+    ].join('\n');
+    expect(values(yaml, 'yaml')).toEqual([]);
+    expect(values('password = os.environ["PW"]\nif password == "x": pass', 'python')).toEqual([]);
+    expect(values('const label = { password: "Enter your password" };\n// token: "abc123"', 'typescript')).toEqual([]);
+  });
+
+  it('only checks code and data files', () => {
+    expect(values('password: Hunter22', 'markdown')).toEqual([]);
+    expect(buildProblems('password: Hunter22', 'aruba-cx').some((p) => p.code === 'code-secret')).toBe(false);
   });
 });

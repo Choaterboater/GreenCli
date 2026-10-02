@@ -281,7 +281,7 @@ export const HELP_TOPICS: HelpTopic[] = [
     title: 'Tunnels, SFTP & tools',
     icon: Waypoints,
     summary: 'Port forwarding, file transfer, triggers, config editor, bulk runner.',
-    keywords: ['tunnel', 'forward', 'socks', 'sftp', 'file', 'upload', 'download', 'trigger', 'bulk', 'editor', 'problems', 'snippet', 'f8', 'ctrl+shift+m', 'status', 'send to', 'vendor', 'copy', 'secrets', 'hidden', 'share', 'ticket', 'diff', 'compare', 'comment'],
+    keywords: ['tunnel', 'forward', 'socks', 'sftp', 'file', 'upload', 'download', 'trigger', 'bulk', 'editor', 'problems', 'snippet', 'f8', 'ctrl+shift+m', 'status', 'send to', 'vendor', 'copy', 'secrets', 'hidden', 'share', 'ticket', 'hover', 'junos', 'quick fix', 'ctrl+.', 'symbol', 'outline', 'ctrl+shift+o', 'diff', 'compare', 'comment'],
     blocks: [
       {
         kind: 'bullets',
@@ -296,6 +296,10 @@ export const HELP_TOPICS: HelpTopic[] = [
         kind: 'bullets',
         items: [
           '**Config Editor problems**: risky lines, blanks to fill in, terminal junk and a Junos edit with no commit are underlined and counted in the toolbar. Click the count (or **Ctrl+Shift+M**) for the Problems panel; **F8** jumps to the next one. A line the switch rejected shows in red.',
+          '**Go to Symbol**: press **Ctrl+Shift+O** (or click Outline) and type to jump to an interface, VLAN or section.',
+          '**Quick fixes**: on a problem press **Ctrl+.** (or click the light bulb) to strip terminal junk, comment out a risky line, add commit confirmed 5, or swap a plain-text password for a blank.',
+          '**Hover cards**: hover an Aruba CX or Junos line to see what it does and how the other vendor writes it.',
+          '**Secrets in code files**: a password, token or key written into a YAML, JSON, Python, shell or .env file gets a warning.',
           '**Copy with secrets hidden**: the eye button next to Copy copies the tab with passwords, keys and SNMP communities hidden, safe for a ticket or chat.',
           '**Editor status line**: where Send goes, the device\'s CLI, **CONFIG MODE**, and when you pulled its config. It warns in red when the tab is for another vendor than the device.',
           '**After a Send**: bars beside the lines show what reached the switch (green), what it rejected (red) and what was never sent (grey).',
