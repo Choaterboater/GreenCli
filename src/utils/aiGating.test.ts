@@ -162,6 +162,79 @@ describe('auditorAllowsCommand', () => {
     // As a pipe stage they read the pipe.
     expect(auditorAllowsCommand('show log messages | tail -n 20')).toBe(true);
   });
+
+  it('skips the value of a long option or BSD tail -b, so it is not taken for a file', () => {
+    for (const cmd of ['head --lines 5', 'tail --lines 3', 'head --bytes 100', 'head --lin 5', 'tail -b 5', 'tail -qn 5', 'tail --sleep-interval 2']) {
+      expect([cmd, auditorAllowsCommand(cmd)]).toEqual([cmd, false]);
+    }
+    for (const cmd of ['head --lines 5 /var/log/x', 'head --lines=5 /var/log/x', 'tail -b 5 x', 'head --quiet x', 'tail -qn 5 x']) {
+      expect([cmd, auditorAllowsCommand(cmd)]).toEqual([cmd, true]);
+    }
+  });
+
+  it('refuses files that wait on the keyboard or never end', () => {
+    for (const cmd of [
+      'cat /dev/stdin',
+      'cat /dev/tty',
+      'cat /dev/fd/0',
+      'cat /proc/self/fd/0',
+      'cat /dev/zero',
+      'head -n 5 /dev/random',
+      'tail -n 5 /dev/urandom',
+      'cat /etc/hosts /dev/stdin',
+      'cat "/dev/zero"',
+      'cat /d\\ev/zero',
+      'cat //dev/./zero',
+      'cat /tmp/../dev/zero',
+      'cat /proc/kmsg',
+      'cat /d?v/zero',
+      'cat $Z',
+      'cat -- /dev/stdin',
+      'show log | tail /dev/zero',
+    ]) {
+      expect([cmd, auditorAllowsCommand(cmd)]).toEqual([cmd, false]);
+    }
+    expect(auditorAllowsCommand('cat /dev/null')).toBe(true);
+    expect(auditorAllowsCommand('cat /var/log/*.log')).toBe(true);
+    expect(auditorAllowsCommand('cat /proc/cpuinfo')).toBe(true);
+  });
+
+  it('refuses pings that go on for hours, and ping.exe without a count', () => {
+    for (const cmd of [
+      'ping -c 999999999 8.8.8.8',
+      'ping 8.8.8.8 count 100000000',
+      'ping -c101 8.8.8.8',
+      'ping -c 2 -i 86400 8.8.8.8',
+      'ping 10.0.0.1 count 5 interval 3600',
+      'ping -c 2 -w 999999 8.8.8.8',
+      'ping 10.0.0.1 count 5 wait 86400',
+      'ping.exe -t 8.8.8.8',
+      'PING.EXE 8.8.8.8',
+      'ping -n 4 -t 8.8.8.8',
+      'ping /n 4 /t 8.8.8.8',
+      'ping -c 4 -c 0 8.8.8.8',
+    ]) {
+      expect([cmd, auditorAllowsCommand(cmd)]).toEqual([cmd, false]);
+    }
+    for (const cmd of [
+      'ping -c 100 8.8.8.8',
+      'ping -c 5 -i 0.2 8.8.8.8',
+      'ping -c 3 -W 2 8.8.8.8',
+      'ping.exe -n 4 -w 1000 8.8.8.8',
+      'ping /n 4 8.8.8.8',
+      'ping 10.0.0.1 count 5 wait 2 rapid',
+    ]) {
+      expect([cmd, auditorAllowsCommand(cmd)]).toEqual([cmd, true]);
+    }
+  });
+
+  it('refuses sh when it runs a shell rather than meaning show', () => {
+    for (const cmd of ['sh -c "id"', 'sh script.sh', 'sh /tmp/x', 'do sh -c id']) {
+      expect([cmd, auditorAllowsCommand(cmd)]).toEqual([cmd, false]);
+    }
+    expect(auditorAllowsCommand('sh ip route')).toBe(true);
+    expect(auditorAllowsCommand('sh run | inc vlan')).toBe(true);
+  });
 });
 
 describe('CONTROL_CHARS', () => {
