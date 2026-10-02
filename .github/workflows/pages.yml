@@ -7,11 +7,11 @@ name: Pages
 # scripts/build-site.mjs reads those files on every run, so nothing is
 # copied by hand.
 #
-# Set up once on GitHub:
-# - Settings → Pages → Source: GitHub Actions.
-# - Settings → Environments → github-pages → Deployment branches and tags:
-#   add a tag rule "v*". A published release runs on its tag, and by default
-#   that environment only takes main.
+# Set up once on GitHub: Settings → Pages → Source: GitHub Actions.
+#
+# A published release runs on its tag, and GitHub Pages only takes main. So a
+# release just starts a new run on main (the release job below); that run
+# builds the site with the new release's download links.
 on:
   release:
     types: [published]
@@ -20,7 +20,6 @@ on:
     paths:
       - "docs/**"
       - "CHANGELOG.md"
-      - "README.md"
       - "src/data/helpContent.ts"
       - "src/utils/shortcuts.ts"
       - "site/**"
@@ -30,7 +29,8 @@ on:
       - ".github/workflows/pages.yml"
   workflow_dispatch:
 
-# Read-only by default; only the deploy job may publish to Pages.
+# Read-only by default. Only the deploy job may publish to Pages, and only
+# the release job may start a run.
 permissions:
   contents: read
 
@@ -40,7 +40,20 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  release:
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Start a run on main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh workflow run pages.yml --ref main
+
   build:
+    if: github.event_name != 'release'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -87,6 +100,7 @@ jobs:
           path: site-dist
 
   deploy:
+    if: github.event_name != 'release'
     needs: build
     runs-on: ubuntu-latest
     permissions:

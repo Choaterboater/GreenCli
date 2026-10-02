@@ -837,11 +837,12 @@ npm run site:preview    # build it, then open http://127.0.0.1:4173/
 
 The **Pages** workflow (`.github/workflows/pages.yml`) builds it with fresh photos and
 publishes it when a release is published, when these files change on main, and when you
-run it by hand (Actions → **Pages** → **Run workflow**). Set it up once on GitHub:
+run it by hand (Actions → **Pages** → **Run workflow**). A published release starts a new
+run on main, so the site gets the new download links. Set it up once on GitHub:
 
 1. **Settings → Pages → Source: GitHub Actions.**
-2. **Settings → Environments → github-pages → Deployment branches and tags**: add a tag
-   rule `v*`. A published release runs on its tag, and this lets it update the site.
+2. **Actions → Pages → Run workflow**, once, so the site goes up now and not at the next
+   release.
 
 `--shots <folder>` builds with other photos, and `SITE_RELEASE_JSON` (a file, or the JSON
 the GitHub API gives for a release) stands in for the latest release when GitHub can't be
