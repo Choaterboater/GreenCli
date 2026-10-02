@@ -113,6 +113,24 @@ describe('auditorAllowsCommand', () => {
     expect(auditorAllowsCommand('show version\nrequest system reboot')).toBe(false);
     expect(auditorAllowsCommand('show version\x1a')).toBe(false);
   });
+
+  it('refuses reads that change a Linux box or never end', () => {
+    expect(auditorAllowsCommand('date -s "2020-01-01 00:00"')).toBe(false);
+    expect(auditorAllowsCommand('date --set=2020-01-01')).toBe(false);
+    expect(auditorAllowsCommand('date 010100002020')).toBe(false);
+    expect(auditorAllowsCommand('less /var/log/x')).toBe(false);
+    expect(auditorAllowsCommand('more /etc/passwd')).toBe(false);
+    expect(auditorAllowsCommand('monitor traffic interface ge-0/0/0')).toBe(false);
+    expect(auditorAllowsCommand('tail -f /var/log/x')).toBe(false);
+    expect(auditorAllowsCommand('tail -fn 20 /var/log/x')).toBe(false);
+    expect(auditorAllowsCommand('tail --follow=name /var/log/x')).toBe(false);
+    expect(auditorAllowsCommand('cat /var/log/x | tail -f')).toBe(false);
+    // Plain shows of the same words still pass.
+    expect(auditorAllowsCommand('date')).toBe(true);
+    expect(auditorAllowsCommand('date -u +%F')).toBe(true);
+    expect(auditorAllowsCommand('tail -n 50 /var/log/x')).toBe(true);
+    expect(auditorAllowsCommand('show log messages | last 20')).toBe(true);
+  });
 });
 
 describe('CONTROL_CHARS', () => {

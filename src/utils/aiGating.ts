@@ -63,18 +63,42 @@ export const AUDITOR_PIPES: ReadonlySet<string> = new Set([
 ]);
 // Shell characters that chain, redirect or substitute commands.
 const AUDITOR_SHELL = /[;&`<>]|\$\(/;
+/**
+ * The Auditor's own read words: AI_READ_ONLY_CMD without less, more and monitor. Those open a
+ * pager or a live view, and the AI's next line would be typed into it as keys.
+ */
+const AUDITOR_READ_CMD =
+  /^\s*(do\s+)?(sh(ow)?|disp(lay)?|get|ping|traceroute|tracert|dir|cat|tail|head|echo|whoami|who|uptime|date|\?)\b/i;
+/** date only shows the time: no arguments, or only a +FORMAT, -u/--utc, -R or -I. `date -s` sets the clock. */
+const DATE_SHOW_ARG = /^(?:\+\S*|-u|--utc|--universal|-R|--rfc-email|-I\w*|--iso-8601(?:=\w+)?)$/;
+
+/** `tail -f` (and -F, --follow, -fn 20) never ends, so the AI's next line is typed into it. */
+function tailFollows(words: string[]): boolean {
+  return words.some((w) => /^--(?:follow|retry)/i.test(w) || /^-[A-Za-z0-9]*[fF]/.test(w));
+}
+
+/** Plain reads only: date without a time to set, tail without follow (also as a pipe stage). */
+function auditorWordsOk(line: string): boolean {
+  const stages = line.split('|').map((stage) => stage.trim().split(/\s+/).filter(Boolean));
+  const first = stages[0] ?? [];
+  const verb = (first[0] === 'do' ? first[1] : first[0])?.toLowerCase();
+  const args = first.slice(first[0] === 'do' ? 2 : 1);
+  if (verb === 'date' && !args.every((w) => DATE_SHOW_ARG.test(w))) return false;
+  return stages.every((words) => (words[0] ?? '').toLowerCase() !== 'tail' || !tailFollows(words.slice(1)));
+}
 
 /**
  * The stricter check for the Read-only Auditor: every line must be a plain read. It starts with a
- * read word (show, display, get, ping, ...), has no write word, no `;`, `&`, `<`, `>`, backtick
- * or `$(`, and each `|` stage is in AUDITOR_PIPES. Anything else is refused, with no dialog.
+ * read word (show, display, get, ping, ...; not less, more or monitor), has no write word, no `;`,
+ * `&`, `<`, `>`, backtick or `$(`, each `|` stage is in AUDITOR_PIPES, `date` sets no time and
+ * `tail` doesn't follow. Anything else is refused, with no dialog.
  */
 export function auditorAllowsCommand(cmd: string): boolean {
   if (CONTROL_CHARS.test(cmd)) return false;
   return cmd.split(LINE_BREAK).every((line) => {
     const c = line.trim();
     if (!c) return true;
-    if (aiIsWriteCommand(c) || !AI_READ_ONLY_CMD.test(c) || AUDITOR_SHELL.test(c)) return false;
+    if (aiIsWriteCommand(c) || !AUDITOR_READ_CMD.test(c) || AUDITOR_SHELL.test(c) || !auditorWordsOk(c)) return false;
     return c
       .split('|')
       .slice(1)
