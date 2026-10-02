@@ -1,0 +1,101 @@
+name: Pages
+
+# Builds the GreenCLI website and publishes it on GitHub Pages
+# (https://choaterboater.github.io/GreenCli/): download buttons for the latest
+# release, fresh photos of the app, the guide (docs/SETUP.md), the help
+# topics (src/data/helpContent.ts) and What's new (CHANGELOG.md).
+# scripts/build-site.mjs reads those files on every run, so nothing is
+# copied by hand.
+#
+# Set up once on GitHub:
+# - Settings → Pages → Source: GitHub Actions.
+# - Settings → Environments → github-pages → Deployment branches and tags:
+#   add a tag rule "v*". A published release runs on its tag, and by default
+#   that environment only takes main.
+on:
+  release:
+    types: [published]
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - "CHANGELOG.md"
+      - "README.md"
+      - "src/data/helpContent.ts"
+      - "src/utils/shortcuts.ts"
+      - "site/**"
+      - "scripts/build-site.mjs"
+      - "scripts/capture-screenshots.mjs"
+      - "scripts/screenshots/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+# Read-only by default; only the deploy job may publish to Pages.
+permissions:
+  contents: read
+
+# One publish at a time, and never cancel one halfway.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # First, so a repo without Pages turned on stops here, not after the
+      # build. Its base_url is where the site lives.
+      - name: Check Pages is on
+        id: pages
+        uses: actions/configure-pages@v5
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build the app
+        run: npm run build
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      # New photos of this version, with made-up demo data. If a photo fails
+      # (say the app's screens changed), the site still goes out: that photo
+      # comes from docs/screenshots and the run shows a warning.
+      - name: Take the photos
+        continue-on-error: true
+        run: npm run screenshots -- --out "$RUNNER_TEMP/photos"
+
+      # The download buttons read the latest release from the GitHub API; the
+      # token only lifts the API's rate limit (the data is public).
+      - name: Build the site
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          SITE_URL: ${{ steps.pages.outputs.base_url }}
+        run: npm run site -- --shots "$RUNNER_TEMP/photos"
+
+      - name: Upload the site
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site-dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Publish to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
