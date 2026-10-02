@@ -321,6 +321,23 @@ export default function McpServers() {
         await invoke('mcp_rename_server', { from: editingName, to: def.name });
       }
       await invoke('mcp_save_server', { def });
+      // The config is saved: drop the old approvals and say if writes went
+      // off. Done here so a failed login save below can't skip it.
+      const configSaved = async () => {
+        clearAllowances(def.name);
+        if (editingName) clearAllowances(editingName);
+        if (writesWereOn) {
+          const saved = ((await invoke<McpServerDef[]>('mcp_list_servers').catch(() => [])) || []).find(
+            (s) => s.name === def.name
+          );
+          if (saved?.writes === 'off') {
+            notify.info(
+              `${def.name} writes are off again`,
+              "The server's command, folder or URL changed, so GreenCLI turned writes off."
+            );
+          }
+        }
+      };
       // Persist credentials content only when the user typed new content (so we
       // never wipe saved creds just because the field is blank on edit). Only
       // meaningful for stdio — Http servers aren't spawned by this app, so
@@ -329,25 +346,14 @@ export default function McpServers() {
         // The server is saved; only its login failed (a toast says why). Keep
         // the form open on the saved name so Save can try again.
         if (!(await saveMcpLogin(def.name, form.credsContent))) {
+          await configSaved();
           setEditingName(def.name);
           refresh();
           return;
         }
       }
-      clearAllowances(def.name);
-      if (editingName) clearAllowances(editingName);
       notify.success('MCP server saved', def.name);
-      if (writesWereOn) {
-        const saved = ((await invoke<McpServerDef[]>('mcp_list_servers').catch(() => [])) || []).find(
-          (s) => s.name === def.name
-        );
-        if (saved?.writes === 'off') {
-          notify.info(
-            `${def.name} writes are off again`,
-            "The server's command, folder or URL changed, so GreenCLI turned writes off."
-          );
-        }
-      }
+      await configSaved();
       setShowForm(false);
       setForm({ ...blankForm });
       setCredsSaved(false);
