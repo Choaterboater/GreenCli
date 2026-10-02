@@ -152,6 +152,9 @@ Open the AI panel from the title bar. Settings → **AI + MCP → AI Assistant**
    - **Ollama** — local, no key; set the URL (default `http://localhost:11434`) and a
      model. Start it with `ollama serve`.
    - **Local CLI** — shell out to an installed agent CLI (e.g. `claude -p`, `kimi`).
+   - **Casper (no key)** — answer through [Casper](https://github.com/Choaterboater/casper),
+     the AI agent installed on your computer, with its own sign-in (see *Casper as the AI*
+     below). Needs Casper 0.2.21 or newer.
 2. **API key** — stored `0600` in `ai_keys.json`, **never** in the webview.
 3. **Model** — per provider.
 4. **Assistant tools (opt-in, all off by default except terminal):**
@@ -162,8 +165,43 @@ Open the AI panel from the title bar. Settings → **AI + MCP → AI Assistant**
 5. **References / standards** — free-text grounding the AI applies (golden-config
    rules, doc links, your org standards).
 
-Responses stream token-by-token for every provider; **Stop** actually aborts the
-backend request (the provider stops generating), not just the UI.
+Responses stream token-by-token for the API providers; **Stop** actually aborts the
+backend request (the provider stops generating), not just the UI. Local CLI and Casper answer
+all at once, and **Stop** ends the CLI.
+
+### Casper as the AI
+
+Settings → **AI & MCP → AI Assistant** → provider **Casper (no key)**.
+
+- **Command**: `casper`, or its full path. You can add `--model`, `--effort`, `--max-turns` or
+  `--verify`. GreenCLI adds `--json` and sends your question on its own. Flags that turn
+  Casper's safety off (like `--no-sandbox`) are refused.
+- **Working folder**: each question gets a fresh, empty folder that GreenCLI deletes afterwards.
+  **Choose…** picks a project folder instead. Your home folder, folders that contain it, and
+  folders whose files other programs run (PATH folders, `~/.config`, `~/Library/LaunchAgents` …)
+  can't be used. In a picked folder Casper also follows instruction files it finds there
+  (`.casper/rules.md`, `AGENTS.md`, `CLAUDE.md`); **Check Casper** lists them.
+- **Check Casper** says whether Casper is found, its version, and where it will work.
+- GreenCLI never turns Casper's sandbox off, and won't start Casper if your Casper settings do.
+  It also won't start Casper while a port forward is open or an MCP server on this computer is
+  saved or connected, because Casper's commands can reach local ports. While Casper answers, no
+  new port forward opens and no web MCP server connects.
+- Like Local CLI, Casper answers from your question only: it can't use GreenCLI's device tools,
+  your SSH sessions or MCP servers. Secrets in your question are hidden first.
+- **Know this:** Casper's own file tools can read files outside its folder, including GreenCLI's
+  saved AI keys, MCP logins and session logs. Only ask Casper about text you trust (a prompt
+  hidden in a pasted log could ask it to read those files).
+
+### Read-only Auditor (enforced)
+
+The built-in **Read-only Auditor** agent is enforced, not just a prompt. With it attached:
+
+- Terminal commands must be a plain read: a read command first (`show`, `display`, `ping` with
+  a count, `cat`/`head`/`tail` of a file …), only simple characters, and only filter pipes
+  (`| include`, `| match`, `| last` …). Anything else is refused with no dialog. The `sh` short
+  form isn't accepted: type `show`.
+- The AI only sees MCP tools the server marks as read-only (plus the Junos show tools), and
+  GreenCLI refuses any REST change or MCP call that could change something.
 
 ### Secrets hidden from the AI
 
@@ -192,7 +230,7 @@ it is (`password ciphertext <secret hidden>`), so audits still work.
 ## 6. MCP servers (external tools for the AI)
 
 The app is an **MCP client**: it connects to external MCP servers and exposes
-their tools to the AI for **every** provider. Two transports:
+their tools to the AI for every API provider (not Local CLI or Casper). Two transports:
 
 - **Stdio** (default) — the app launches the server as a child process per
   connect, keyed off Command/Args/Env/Working dir.
@@ -223,6 +261,45 @@ a compact router — `find_tool` / `invoke_read_tool` / `invoke_tool` in its
 default minimal mode). Tool names are namespaced `mcp__<server>__<tool>`.
 Renaming a server moves it (no orphaned duplicate); removing one deletes its
 materialised creds file.
+
+### MCP safety: the approval box and Allow writes
+
+GreenCLI checks every MCP tool before the AI can run it (the same labels as Casper):
+
+- A tool the server marks as read-only runs at once. Anything that might change something opens
+  a box: the tool and server, what it can do in plain words (change settings, run commands,
+  delete or restart things), the real tool when the call goes through a router tool such as
+  `invoke_tool`, and the full arguments. Choose **No**, **Yes, this once**, or (only for a tool
+  whose name clearly just reads) **Yes, until GreenCLI closes**.
+- These always ask: router calls, calls where the AI set `confirm` or turned off `dry_run`
+  itself, calls GreenCLI can't fully read, and anything that can write, run commands or delete.
+  If the tool changes or disconnects while the box is open, nothing runs.
+- **Stop** closes an open box as **No** and asks the server to cancel a running call.
+- **Allow writes** (per server, off by default): with writes off, GreenCLI hides tools that
+  change settings or delete things and blocks them, even through a router. For servers it
+  recognises it also starts them with that product's own read-only settings (HPE networking,
+  Central/centralmcp, Grafana, ClearPass); the row shows which. Turning writes on asks first and
+  restarts the server. Servers saved before 1.9 start with writes off. Changing a server's
+  command, args, folder or URL turns writes off again.
+- If a server offers an `access_check` tool, GreenCLI asks it what the login may do. A read-only
+  login shows as **Login: read-only (checked)**, and writes can't be turned on for it.
+- Junos: **Run plain show commands without asking** lets `show …` with safe pipes run without a
+  box. Everything else still asks.
+- Stdio servers now get only basic variables from your system (PATH, HOME, locale, temp folder,
+  ssh-agent, proxy and certificate settings) plus their own **Env** entries. If a server needs a
+  variable it used to get from your shell (an API key), add it in its Env box.
+- The MCP server URL and Ollama URL fields warn about plain `http://` to another computer.
+
+### Export for Casper / Claude Code
+
+**Export for Casper / Claude…** saves your servers as a `.mcp.json` that Claude Code and Casper
+can both read. You choose where it goes; GreenCLI won't write over another app's own settings
+files. No secret is written to the file: passwords, tokens, keys, header values, logins in
+addresses and `user:password` values become `${NAME}` variables, and after saving GreenCLI lists
+each name and where it was used. Set them only in the terminal you start Claude Code or Casper
+from (a private file you `source` is safest). Servers with writes off get their read-only
+settings in the file, and the list says that GreenCLI's own writes switch and approval box don't
+travel with it.
 
 ---
 
@@ -329,6 +406,10 @@ live compliance:
   - **Diff**: compare with a running-config you pulled (kept per device) or with a file. The
     right side is your tab: edit it there, or click the arrow beside a change to take the left
     side's lines.
+  - **Folder view** (the folder button at the left of the toolbar): open a folder and see its
+    files as a tree, like VS Code. A click opens the file in a tab (or goes to its tab); type to
+    find a file. Pictures, archives and files over 5 MB are greyed out. The last folder is
+    remembered.
   - **Send selected lines**: select lines, then the arrow next to **Send** (or right-click) →
     *Send selected lines*. Only those lines go out.
   - **Send safely as a Change Job**: the arrow next to **Send** (or right-click) opens Change

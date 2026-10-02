@@ -167,19 +167,23 @@ export const HELP_TOPICS: HelpTopic[] = [
     id: 'ai',
     title: 'AI assistant',
     icon: Bot,
-    summary: 'Provider-neutral assistant (Anthropic, OpenRouter, Moonshot, Ollama, Local CLI).',
-    keywords: ['ai', 'assistant', 'claude', 'anthropic', 'openrouter', 'moonshot', 'kimi', 'ollama', 'llm', 'model', 'api key', 'tools', 'secrets', 'hidden', 'redact'],
+    summary: 'Provider-neutral assistant (Anthropic, OpenRouter, Moonshot, Ollama, Local CLI, Casper).',
+    keywords: ['ai', 'assistant', 'claude', 'anthropic', 'openrouter', 'moonshot', 'kimi', 'ollama', 'llm', 'model', 'api key', 'tools', 'secrets', 'hidden', 'redact', 'casper', 'sandbox', 'local cli'],
     blocks: [
       { kind: 'p', text: 'Settings → **AI Assistant**. The assistant works with any provider — keys are stored owner-only outside the webview, never in the browser.' },
       {
         kind: 'steps',
         items: [
-          'Pick a **provider** (Anthropic / OpenRouter / Moonshot need a key; Ollama is local; Local CLI shells out to an installed agent).',
+          'Pick a **provider** (Anthropic / OpenRouter / Moonshot need a key; Ollama is local; Local CLI shells out to an installed agent; **Casper (no key)** uses Casper on your computer).',
           'Enter the **API key** and choose a **model**.',
           'Enable the opt-in **Assistant tools** you want (run CLI commands, device REST, MCP tools, evaluate intents).',
         ],
       },
-      { kind: 'note', text: 'Responses stream token-by-token; **Stop** actually aborts the provider request, not just the UI.' },
+      { kind: 'note', text: 'Responses stream token-by-token; **Stop** actually aborts the provider request, not just the UI. Local CLI and Casper answer all at once, and **Stop** ends the CLI.' },
+      {
+        kind: 'note',
+        text: '**Casper**: each question gets a fresh folder (or one you pick with **Choose…**; **Check Casper** tests it). GreenCLI never turns Casper’s sandbox off, and won’t start Casper while a port forward or a local MCP server is open. Casper can’t use device tools or MCP servers. Its own file tools can read files outside its folder, including GreenCLI’s saved keys and logs, so only ask it about text you trust.',
+      },
       {
         kind: 'note',
         text: 'Device secrets (passwords, keys, SNMP communities, private keys) are hidden before the AI sees any tool output: they show as `<secret hidden>`, and the tool row shows how many were hidden. The AI can’t send the marker back to a device. Text you type into the chat is sent as you typed it.',
@@ -204,7 +208,8 @@ export const HELP_TOPICS: HelpTopic[] = [
         ],
       },
       { kind: 'bullets', items: [
-        'Starter agents ship ready: **Read-only Auditor** (never runs config), **Junos Expert**, **Aruba CX Expert**.',
+        'Starter agents ship ready: **Read-only Auditor**, **Junos Expert**, **Aruba CX Expert**.',
+        'The **Read-only Auditor** is enforced: only plain read commands (`show`, `display`, `ping` with a count …) and read-only MCP tools run; anything else is refused. Type `show`, not `sh`.',
         'Provider/model are optional — leave on **Default** to inherit the global AI settings.',
       ] },
       { kind: 'note', text: 'The agent’s instructions are appended to the system prompt for that session only — different tabs can run different agents.' },
@@ -216,9 +221,9 @@ export const HELP_TOPICS: HelpTopic[] = [
     title: 'MCP servers',
     icon: Server,
     summary: 'Connect external MCP servers and expose their tools to the AI.',
-    keywords: ['mcp', 'tools', 'centralmcp', 'stdio', 'http', 'streamable', 'server', 'context protocol'],
+    keywords: ['mcp', 'tools', 'centralmcp', 'stdio', 'http', 'streamable', 'server', 'context protocol', 'approval', 'allow writes', 'writes', 'read-only', 'export', '.mcp.json', 'claude code', 'casper', 'junos show'],
     blocks: [
-      { kind: 'p', text: 'The app is an **MCP client**: it connects to external MCP servers — stdio (launches a command) or Streamable HTTP (points at one already running) — and exposes their tools to the AI for every provider.' },
+      { kind: 'p', text: 'The app is an **MCP client**: it connects to external MCP servers — stdio (launches a command) or Streamable HTTP (points at one already running) — and exposes their tools to the AI for every API provider (not Local CLI or Casper).' },
       {
         kind: 'steps',
         items: [
@@ -227,6 +232,15 @@ export const HELP_TOPICS: HelpTopic[] = [
           'Stdio: set the **command**, **args** (one per line), and any **env**. HTTP: set the **server URL**.',
           'Stdio only — for secrets, set a **credentials env var** + paste the content — it is written to a 0600 file and injected via that env var.',
           'Click **Connect**; the tool count appears in the AI panel.',
+        ],
+      },
+      {
+        kind: 'bullets',
+        items: [
+          '**Approval box**: a tool that might change something asks first: **No**, **Yes, this once**, or (for plain reads only) **Yes, until GreenCLI closes**. Router calls and calls where the AI set confirm itself always ask.',
+          '**Allow writes** (per server, off by default): with writes off, tools that change or delete things are hidden and blocked, and known servers start with their own read-only settings.',
+          'Junos: **Run plain show commands without asking** skips the box for `show …` with safe pipes.',
+          '**Export for Casper / Claude…** saves a `.mcp.json` with every secret turned into a `${NAME}` variable, and lists the names to set.',
         ],
       },
       { kind: 'note', text: 'Example: the centralmcp server (Aruba Central / GLP / monitoring / NAC / ops / RAG) routes hundreds of backend tools through a compact set exposed to the AI. Tool names are namespaced `mcp__<server>__<tool>`. Supports stdio (launch command) or Streamable HTTP (point at a URL).' },
@@ -306,6 +320,7 @@ export const HELP_TOPICS: HelpTopic[] = [
           '**Config Editor smarts**: **Ctrl+/** comments a line (`!` Aruba, `#` Junos); a double-click picks `1/1/5` or `ge-0/0/0.100` whole.',
           '**Snippets**: type `cx-access`, `junos-trunk`, … at the start of a line, or pick from *Snippets*; **Tab** moves to the next blank.',
           '**Diff**: compare the editor with the running-config you pulled, or with a file. Edit your tab on the right; the arrow beside a change takes the left side.',
+          '**Folder view**: the folder button opens a folder as a file tree beside the editor; click a file to open it.',
           '**Send selected lines**: select lines, then the arrow next to Send (or right-click). Only those lines go out.',
           '**Send safely**: the arrow next to Send opens Change Jobs with the tab and this device filled in: a dry run, then the switch\'s own rollback timer.',
           '**Ask AI** (editor toolbar or right-click): explain, check, fix, or convert Aruba ↔ Junos the selected lines. Secrets are hidden first.',

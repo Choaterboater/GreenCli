@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.0] - 2026-10-02
+
+### Added
+- **Folder view in the Config Editor**: the folder button opens a folder (Ansible playbooks,
+  scripts, config backups) as a file tree beside the editor, like VS Code. A click opens the file
+  in a tab or goes to its tab; type to find a file. The last folder is remembered. Pictures,
+  archives and files over 5 MB are greyed out.
+- **Casper as the AI** (Settings → AI Assistant → **Casper (no key)**): the AI panel answers
+  through Casper on your computer, with its own sign-in. Each question gets a fresh folder (or a
+  project folder you pick; **Check Casper** tests it). GreenCLI never turns Casper's sandbox off,
+  refuses flags that would, and won't start Casper while a port forward or a local MCP server is
+  open. Stop ends the answer.
+- **MCP approval box**: every MCP tool that might change something now asks first, with the tool,
+  what it can do in plain words, the real tool behind a router like `invoke_tool`, and the full
+  arguments. Choose **No**, **Yes, this once**, or (plain reads only) **Yes, until GreenCLI
+  closes**. Router calls, calls where the AI set `confirm` or turned off `dry_run` itself, and
+  calls GreenCLI can't fully read always ask. Stop closes the box and cancels a running call.
+- **Allow writes per MCP server** (off by default): with writes off, tools that change or delete
+  things are hidden from the AI and blocked by GreenCLI, even through a router. Known servers
+  (HPE networking, Central/centralmcp, Grafana, ClearPass) also start with their own read-only
+  settings. An `access_check` tool, when a server has one, shows whether the login is read-only.
+- **Junos**: "Run plain show commands without asking" for Junos MCP servers.
+- **Export for Casper / Claude…** in MCP Servers: saves a `.mcp.json` that Claude Code and Casper
+  both read, with every password, token, key and `user:password` turned into a `${NAME}`
+  variable, and lists the names to set.
+- Plain `http://` to another computer gets a warning in the MCP server URL and Ollama URL fields.
+
+### Changed
+- The **Read-only Auditor** agent is enforced, not just a prompt: only plain read commands and
+  read-only MCP tools run, and anything else is refused. It no longer accepts the `sh` short
+  form (type `show`).
+- Stdio MCP servers get only basic system variables (PATH, HOME, locale, temp folder, ssh-agent,
+  proxy and certificate settings) plus their own Env entries, instead of everything from your
+  shell. A server that needs an API key from your shell needs it in its Env box now.
+- Servers saved before 1.9 start with writes off and show a one-time note.
+- MCP connections use protocol 2025-06-18 and read the servers' tool hints.
+- Stop also ends a Local CLI answer, and quitting GreenCLI stops a CLI that is still running.
+
+### Fixed
+- If `mcp_servers.json` can't be read, saving no longer overwrites it.
+- A Stop or timeout during an MCP HTTP session restart no longer breaks the server connection.
+
+### Known limits
+- Casper's own file tools can read files outside its folder, including GreenCLI's saved AI keys,
+  MCP logins and session logs. Settings says so. A full fix needs a Casper change or moving those
+  keys into the system keychain.
+- On Windows, processes a CLI leaves behind after it ends by itself are not stopped.
+
 ## [1.8.0] - 2026-10-02
 
 ### Added
