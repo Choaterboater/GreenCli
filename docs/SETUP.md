@@ -125,6 +125,11 @@ There is nothing to set up for update signing: no key to make, keep or paste, an
 - **Re-running one build job** makes a new key and replaces that build's files and key in the
   draft. Make sure update-files runs again after it (re-run it by hand if GitHub didn't) and is
   green before you publish. Don't publish while update-files is red or hasn't run.
+- The three build jobs write to the same draft without waiting for each other, so two that finish
+  at the same moment can lose a platform from `latest.json` or make two `v<version>` drafts. If
+  update-files says `latest.json has no <platform> entry` or that the release has no
+  `update-key-<platform>.pub`, or there are two `v<version>` drafts: delete the extra draft (the
+  one with fewer files), then re-run only the build job for the missing platform.
 - If the tag doesn't match the version (for example `v2.0` for 2.0.0), update-files fails. Delete
   the draft and the tag, then tag again with the right name.
 
