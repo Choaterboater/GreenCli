@@ -5,7 +5,7 @@ import { useMcpApprovalStore } from '../store/mcpApprovalStore';
 import { notify } from '../store/toastStore';
 import type { McpPresetId, McpServerDef, McpStatus, McpWrites } from '../utils/mcpTypes';
 
-/** Forget every "Yes, for this session" answer for a server: its tools must ask again. */
+/** Forget every "Yes, until GreenCLI closes" answer for a server: its tools must ask again. */
 const clearAllowances = (name: string) => useMcpApprovalStore.getState().clearServer(name);
 
 const WRITES_ON_HELP = 'Writes are on. Tools that change things still ask you every time.';

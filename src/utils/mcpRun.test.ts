@@ -146,7 +146,7 @@ describe('runMcpTool', () => {
     expect(f.calls).toHaveLength(0);
   });
 
-  it('remembers "Yes, for this session" with the fingerprint', async () => {
+  it('remembers "Yes, until GreenCLI closes" with the fingerprint', async () => {
     const live = tool('get_device');
     const f = fake({ infos: [live], answer: 'session' });
     await runMcpTool('srv', 'get_device', {}, ctx(), f.deps);

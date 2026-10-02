@@ -33,8 +33,8 @@ describe('mcpChoices', () => {
       { value: 'once', label: 'Yes, this once', detail: 'Runs this call only', tone: 'accent' },
       {
         value: 'session',
-        label: 'Yes, for this session',
-        detail: "get_device on central won't ask again until GreenCLI closes or the tool or server changes",
+        label: 'Yes, until GreenCLI closes',
+        detail: "Won't ask again for get_device until you close GreenCLI, or central reconnects or changes",
         tone: 'accent',
       },
     ]);

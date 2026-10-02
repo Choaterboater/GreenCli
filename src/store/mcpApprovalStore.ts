@@ -1,4 +1,4 @@
-// "Yes, for this session" answers in the MCP approval box. In memory only:
+// "Yes, until GreenCLI closes" answers in the MCP approval box. In memory only:
 // they end when GreenCLI closes. Each one is tied to the tool's fingerprint
 // (mcpGate.ts toolFingerprint), so a tool the server redefines asks again.
 import { create } from 'zustand';
@@ -8,7 +8,7 @@ export function allowanceKey(server: string, tool: string): string {
 }
 
 interface McpApprovalState {
-  /** key -> toolFingerprint at the time of "Yes, for this session" */
+  /** key -> toolFingerprint at the time of "Yes, until GreenCLI closes" */
   allowed: Record<string, string>;
   allow(server: string, tool: string, fingerprint: string): void;
   /** True only when the stored fingerprint matches. */

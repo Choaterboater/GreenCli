@@ -26,7 +26,7 @@ import McpServerSafety from './McpServerSafety';
 
 type McpTransport = McpServerDef['transport'];
 
-/** Forget every "Yes, for this session" answer for a server: it was
+/** Forget every "Yes, until GreenCLI closes" answer for a server: it was
  *  reconnected, changed or removed, so its tools must ask again. */
 const clearAllowances = (name: string) => useMcpApprovalStore.getState().clearServer(name);
 import type { ExportSummary } from '../utils/mcpExport';

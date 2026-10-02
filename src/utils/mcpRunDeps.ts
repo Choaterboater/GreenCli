@@ -31,8 +31,8 @@ export function mcpChoices(request: McpAskRequest): DialogChoice[] {
     },
     session: {
       value: 'session',
-      label: 'Yes, for this session',
-      detail: `${showName(request.tool)} on ${showName(request.server)} won't ask again until GreenCLI closes or the tool or server changes`,
+      label: 'Yes, until GreenCLI closes',
+      detail: `Won't ask again for ${showName(request.tool)} until you close GreenCLI, or ${showName(request.server)} reconnects or changes`,
       tone: 'accent',
     },
   };
