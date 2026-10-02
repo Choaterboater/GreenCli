@@ -17,7 +17,12 @@
 // With the OS store, old 1.9 files are moved in at every start while they
 // exist: each entry is saved, read back and compared byte for byte, and only
 // when every entry checks out is the file deleted. A file that can't be read
-// is left alone.
+// is left alone, and Settings names it.
+//
+// A move that stops partway is tried again at the next start. The marker
+// keeps the files being moved (`moving`) and the accounts already done
+// (`done`): those moved, and those the user saved or removed since. A retry
+// skips them, so it never puts an old 1.9 value back over a 2.0 change.
 //
 // Windows Credential Manager holds at most 2560 bytes per item, so a longer
 // value is split: the item itself holds the header `GCS1 N\n` and the parts
@@ -26,7 +31,7 @@
 
 use crate::private_fs;
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -46,6 +51,10 @@ pub const AI_KEYS_FILE: &str = "ai_keys.json";
 pub const MCP_CREDS_FILE: &str = "mcp_creds.json";
 /// Written the first time the OS store works; from then on it is always used.
 const MARKER_FILE: &str = "secret_store.json";
+/// Marker fields: the 1.9 files a move has started on, and the accounts
+/// already done for them.
+const MOVING: &str = "moving";
+const DONE: &str = "done";
 const PROBE_ACCOUNT: &str = "greencli-probe";
 const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 const CHUNK_MAGIC: &str = "GCS1 ";
@@ -306,8 +315,11 @@ pub struct StoreStatus {
     pub kind: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
-    /// An old key file couldn't be read and was left in place.
-    pub leftover: bool,
+    /// Old 1.9 key files that couldn't be read. They are left in place and
+    /// may still hold keys.
+    pub leftover_files: Vec<String>,
+    /// Some keys in an old 1.9 file didn't move; the next start tries again.
+    pub move_pending: bool,
 }
 
 /// The result of moving one old file into the OS store.
@@ -331,7 +343,10 @@ pub struct SecretStore {
     /// Held across every backend call that changes or fills the cache, so a
     /// read never puts back a value a save just replaced.
     ops: Mutex<()>,
-    leftover: AtomicBool,
+    /// `secret_store.json` (OS store only; None in some tests).
+    marker: Option<PathBuf>,
+    leftover: Mutex<Vec<PathBuf>>,
+    move_pending: AtomicBool,
     #[cfg(test)]
     crash_before_delete: AtomicBool,
 }
@@ -348,7 +363,7 @@ impl SecretStore {
         // Any marker, even one that can't be read, means keys may be in the
         // OS store: never go back to the files.
         if fs::symlink_metadata(&marker).is_ok() {
-            return Self::with_mode(Mode::Os(os));
+            return Self::with_mode(Mode::Os(os), Some(marker));
         }
         match probe_with_timeout(os.clone(), timeout) {
             Ok(()) => {
@@ -358,7 +373,7 @@ impl SecretStore {
                     .unwrap_or(0);
                 let body = serde_json::json!({ "store": "os", "since": since }).to_string();
                 match private_fs::write_private_atomic(&marker, body.as_bytes()) {
-                    Ok(()) => Self::with_mode(Mode::Os(os)),
+                    Ok(()) => Self::with_mode(Mode::Os(os), Some(marker)),
                     Err(e) => {
                         log::warn!("Couldn't write {}: {}; keys stay in files this time", MARKER_FILE, e);
                         Self::files(app_dir)
@@ -374,18 +389,23 @@ impl SecretStore {
 
     /// The 1.9 files.
     pub(crate) fn files(app_dir: &Path) -> Self {
-        Self::with_mode(Mode::File(vec![
-            FileBackend::new(app_dir.join(AI_KEYS_FILE), AI_KEY_PREFIX),
-            FileBackend::new(app_dir.join(MCP_CREDS_FILE), MCP_CREDS_PREFIX),
-        ]))
+        Self::with_mode(
+            Mode::File(vec![
+                FileBackend::new(app_dir.join(AI_KEYS_FILE), AI_KEY_PREFIX),
+                FileBackend::new(app_dir.join(MCP_CREDS_FILE), MCP_CREDS_PREFIX),
+            ]),
+            None,
+        )
     }
 
-    fn with_mode(mode: Mode) -> Self {
+    fn with_mode(mode: Mode, marker: Option<PathBuf>) -> Self {
         Self {
             mode,
             cache: Mutex::new(HashMap::new()),
             ops: Mutex::new(()),
-            leftover: AtomicBool::new(false),
+            marker,
+            leftover: Mutex::new(Vec::new()),
+            move_pending: AtomicBool::new(false),
             #[cfg(test)]
             crash_before_delete: AtomicBool::new(false),
         }
@@ -394,7 +414,7 @@ impl SecretStore {
     /// The OS store with no probe and no marker (tests).
     #[cfg(test)]
     pub(crate) fn os_for_tests(os: Arc<dyn SecretBackend>) -> Self {
-        Self::with_mode(Mode::Os(os))
+        Self::with_mode(Mode::Os(os), None)
     }
 
     pub fn kind(&self) -> StoreKind {
@@ -408,14 +428,22 @@ impl SecretStore {
     /// (a read of an account that doesn't exist), so a locked or missing
     /// store shows as unavailable.
     pub fn status(&self) -> StoreStatus {
-        let leftover = self.leftover.load(Ordering::Relaxed);
+        let leftover_files: Vec<String> = self
+            .leftover
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect();
+        let move_pending = self.move_pending.load(Ordering::Relaxed);
         if let Mode::Os(b) = &self.mode {
             if let Err(e) = b.get(PROBE_ACCOUNT) {
                 log::warn!("System password store: {}", e);
                 return StoreStatus {
                     kind: "unavailable".into(),
                     reason: Some(UNAVAILABLE.into()),
-                    leftover,
+                    leftover_files,
+                    move_pending,
                 };
             }
         }
@@ -425,8 +453,36 @@ impl SecretStore {
                 .and_then(|v| v.as_str().map(str::to_string))
                 .unwrap_or_default(),
             reason: None,
-            leftover,
+            leftover_files,
+            move_pending,
         }
+    }
+
+    /// Change the marker (OS store only).
+    fn update_marker(&self, f: impl FnOnce(&mut serde_json::Map<String, serde_json::Value>)) -> Result<(), String> {
+        let Some(path) = &self.marker else {
+            return Ok(());
+        };
+        let mut m = read_marker(path);
+        f(&mut m);
+        let body = serde_json::to_vec(&serde_json::Value::Object(m)).map_err(|e| e.to_string())?;
+        private_fs::write_private_atomic(path, &body).map_err(|e| e.to_string())
+    }
+
+    /// While an old file waits to move, a key the user saves or removes is
+    /// marked done, so the next try never puts the old value back.
+    fn note_user_change(&self, account: &str) {
+        if !matches!(self.mode, Mode::Os(_)) || !self.move_pending.load(Ordering::Relaxed) {
+            return;
+        }
+        if let Err(e) = self.update_marker(|m| add_to_list(m, DONE, account)) {
+            log::warn!("Couldn't note {} in {}: {}", account, MARKER_FILE, e);
+        }
+    }
+
+    fn move_failed(&self) -> MoveOutcome {
+        self.move_pending.store(true, Ordering::Relaxed);
+        MoveOutcome::Failed
     }
 
     fn lock_ops(&self) -> std::sync::MutexGuard<'_, ()> {
@@ -508,6 +564,7 @@ impl SecretStore {
             Ok(()) => {
                 self.cache()
                     .insert(account.to_string(), Some(Zeroizing::new(value.to_string())));
+                self.note_user_change(account);
                 Ok(())
             }
             Err(e) => {
@@ -523,6 +580,7 @@ impl SecretStore {
         match self.delete_backend(account) {
             Ok(()) => {
                 self.cache().insert(account.to_string(), None);
+                self.note_user_change(account);
                 Ok(())
             }
             Err(e) => {
@@ -557,7 +615,8 @@ impl SecretStore {
     /// Move an old 1.9 file (`{name: value}`) into the OS store under
     /// `<prefix><name>`. Only with the OS store. The file is deleted only when
     /// every entry saved and read back byte for byte; a file that can't be
-    /// read, or holds anything but strings, is left alone.
+    /// read, or holds anything but strings, is left alone. A retry skips the
+    /// accounts the marker has as done (see the top of this file).
     pub fn move_file(&self, path: &Path, prefix: &str) -> MoveOutcome {
         let Mode::Os(b) = &self.mode else {
             return MoveOutcome::Nothing;
@@ -567,51 +626,135 @@ impl SecretStore {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return MoveOutcome::Nothing,
             Err(e) => {
                 log::warn!("Couldn't read {}: {}; left in place", path.display(), e);
-                return MoveOutcome::Failed;
+                return self.move_failed();
             }
         };
         let map: HashMap<String, String> = match serde_json::from_slice(&bytes) {
             Ok(m) => m,
             Err(_) => {
                 log::warn!("{} can't be read as keys; left in place", path.display());
-                self.leftover.store(true, Ordering::Relaxed);
+                self.leftover
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push(path.to_path_buf());
                 return MoveOutcome::Corrupt;
             }
         };
         let map: HashMap<String, Zeroizing<String>> =
             map.into_iter().map(|(k, v)| (k, Zeroizing::new(v))).collect();
+        let file = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
         let _ops = self.lock_ops();
+        let marker = self.marker.as_deref().map(read_marker).unwrap_or_default();
+        let done: HashSet<String> = if list_of(&marker, MOVING).contains(&file) {
+            list_of(&marker, DONE).into_iter().collect()
+        } else {
+            // A first try: note it before anything is written.
+            if let Err(e) = self.update_marker(|m| {
+                remove_from_list(m, DONE, |a| a.starts_with(prefix));
+                add_to_list(m, MOVING, &file);
+            }) {
+                log::warn!("Couldn't write {}: {}; {} left in place", MARKER_FILE, e, path.display());
+                return self.move_failed();
+            }
+            HashSet::new()
+        };
         for (name, value) in &map {
             if value.is_empty() {
                 continue;
             }
             let account = format!("{}{}", prefix, name);
-            self.cache().remove(&account);
-            if let Err(e) = write_parts(b.as_ref(), &account, value.as_bytes()) {
-                log::warn!("Moving {} into the system password store failed: {}", account, e);
-                return MoveOutcome::Failed;
+            if done.contains(&account) {
+                continue;
             }
-            match read_parts(b.as_ref(), &account) {
-                Ok(Some(back)) if back.as_slice() == value.as_bytes() => {}
-                Ok(_) => {
-                    log::warn!("{} didn't read back the same; {} left in place", account, path.display());
-                    return MoveOutcome::Failed;
-                }
+            self.cache().remove(&account);
+            let checked = match write_parts(b.as_ref(), &account, value.as_bytes()) {
                 Err(e) => {
-                    log::warn!("Reading back {} failed: {}", account, e);
-                    return MoveOutcome::Failed;
+                    log::warn!("Moving {} into the system password store failed: {}", account, e);
+                    false
                 }
+                Ok(()) => match read_parts(b.as_ref(), &account) {
+                    Ok(Some(back)) if back.as_slice() == value.as_bytes() => true,
+                    Ok(_) => {
+                        log::warn!("{} didn't read back the same; {} left in place", account, path.display());
+                        false
+                    }
+                    Err(e) => {
+                        log::warn!("Reading back {} failed: {}", account, e);
+                        false
+                    }
+                },
+            };
+            if !checked {
+                // Leave no half-written value; the next start writes it again.
+                if let Err(e) = delete_parts(b.as_ref(), &account) {
+                    log::warn!("Couldn't clear {} after a failed move: {}", account, e);
+                }
+                return self.move_failed();
+            }
+            if let Err(e) = self.update_marker(|m| add_to_list(m, DONE, &account)) {
+                log::warn!("Couldn't write {}: {}; {} left in place", MARKER_FILE, e, path.display());
+                return self.move_failed();
             }
         }
         #[cfg(test)]
         if self.crash_before_delete.load(Ordering::Relaxed) {
-            return MoveOutcome::Failed;
+            return self.move_failed();
         }
         if let Err(e) = fs::remove_file(path) {
             log::warn!("Couldn't delete {} after moving it: {}", path.display(), e);
+            return self.move_failed();
         }
         let _ = fs::remove_file(private_fs::key_file_tmp(path));
+        if let Err(e) = self.update_marker(|m| {
+            remove_from_list(m, MOVING, |f| f == file);
+            remove_from_list(m, DONE, |a| a.starts_with(prefix));
+        }) {
+            log::warn!("Couldn't write {}: {}", MARKER_FILE, e);
+        }
         MoveOutcome::Moved(map.values().filter(|v| !v.is_empty()).count())
+    }
+}
+
+/// The marker as an object; one that can't be read starts over (it still
+/// means the OS store, since it exists).
+fn read_marker(path: &Path) -> serde_json::Map<String, serde_json::Value> {
+    match fs::read(path)
+        .ok()
+        .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+    {
+        Some(serde_json::Value::Object(m)) => m,
+        _ => {
+            let mut m = serde_json::Map::new();
+            m.insert("store".into(), "os".into());
+            m
+        }
+    }
+}
+
+fn list_of(m: &serde_json::Map<String, serde_json::Value>, key: &str) -> Vec<String> {
+    m.get(key)
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+        .unwrap_or_default()
+}
+
+fn add_to_list(m: &mut serde_json::Map<String, serde_json::Value>, key: &str, item: &str) {
+    let mut list = list_of(m, key);
+    if !list.iter().any(|x| x == item) {
+        list.push(item.to_string());
+    }
+    m.insert(key.into(), list.into());
+}
+
+fn remove_from_list(m: &mut serde_json::Map<String, serde_json::Value>, key: &str, drop: impl Fn(&str) -> bool) {
+    let list: Vec<String> = list_of(m, key).into_iter().filter(|x| !drop(x)).collect();
+    if list.is_empty() {
+        m.remove(key);
+    } else {
+        m.insert(key.into(), list.into());
     }
 }
 
@@ -670,6 +813,8 @@ pub(crate) mod mem {
         pub data: Mutex<HashMap<String, Vec<u8>>>,
         pub fail_all: AtomicBool,
         pub fail_set: AtomicBool,
+        /// Saves of this one account fail.
+        pub fail_account: Mutex<Option<String>>,
         /// Reads give other bytes than were saved.
         pub wrong_read: AtomicBool,
         pub fail_probe: AtomicBool,
@@ -684,6 +829,7 @@ pub(crate) mod mem {
                 data: Mutex::new(HashMap::new()),
                 fail_all: AtomicBool::new(false),
                 fail_set: AtomicBool::new(false),
+                fail_account: Mutex::new(None),
                 wrong_read: AtomicBool::new(false),
                 fail_probe: AtomicBool::new(false),
                 max_blob: AtomicUsize::new(usize::MAX),
@@ -733,7 +879,9 @@ pub(crate) mod mem {
 
         fn set(&self, account: &str, value: &[u8]) -> Result<(), String> {
             self.check(account)?;
-            if self.fail_set.load(Ordering::Relaxed) {
+            if self.fail_set.load(Ordering::Relaxed)
+                || self.fail_account.lock().unwrap().as_deref() == Some(account)
+            {
                 return Err("set refused".into());
             }
             if value.len() > self.max_blob.load(Ordering::Relaxed) {
@@ -940,7 +1088,13 @@ mod tests {
         assert!(!dir.join("ai_keys.json.tmp").exists());
         assert!(!mcp_path.exists());
         assert_eq!(store.move_file(&ai_path, AI_KEY_PREFIX), MoveOutcome::Nothing);
-        assert!(!store.status().leftover);
+        let status = store.status();
+        assert!(status.leftover_files.is_empty());
+        assert!(!status.move_pending);
+        // The marker forgets the move once it is done.
+        let marker = read_marker(&dir.join(MARKER_FILE));
+        assert!(marker.get(MOVING).is_none() && marker.get(DONE).is_none());
+        assert_eq!(marker["store"], "os");
     }
 
     #[test]
@@ -963,6 +1117,9 @@ mod tests {
         setup(&mem, &store);
         assert_eq!(store.move_file(&path, AI_KEY_PREFIX), MoveOutcome::Failed);
         assert_eq!(fs::read(&path).unwrap(), body.as_bytes());
+        // Settings says some keys didn't move yet.
+        assert!(store.status().move_pending);
+        assert!(store.status().leftover_files.is_empty());
     }
 
     #[test]
@@ -992,9 +1149,58 @@ mod tests {
             let store = os_store(&dir, &mem);
             assert_eq!(store.move_file(&path, AI_KEY_PREFIX), MoveOutcome::Corrupt);
             assert_eq!(fs::read(&path).unwrap(), body);
-            assert!(store.status().leftover);
+            // Settings names the file, so the user can find and delete it.
+            assert_eq!(store.status().leftover_files, vec![path.display().to_string()]);
+            assert!(!store.status().move_pending);
             assert!(mem.accounts().is_empty());
         }
+    }
+
+    #[test]
+    fn a_retry_never_puts_back_a_key_the_user_changed_or_removed() {
+        let dir = temp_dir();
+        let path = dir.join(AI_KEYS_FILE);
+        let body = r#"{"anthropic":"A1","openai":"O1","moonshot":"M1","openrouter":"R1"}"#;
+        fs::write(&path, body).unwrap();
+        let mem = MemBackend::new();
+        // First 2.0 start: the openai save fails, so the file stays.
+        *mem.fail_account.lock().unwrap() = Some("ai-key:openai".into());
+        let first = os_store(&dir, &mem);
+        assert_eq!(first.move_file(&path, AI_KEY_PREFIX), MoveOutcome::Failed);
+        assert_eq!(fs::read(&path).unwrap(), body.as_bytes());
+        assert!(mem.raw("ai-key:openai").is_none(), "no half-moved value is left");
+        assert!(first.status().move_pending);
+        // The user enters openai again, changes anthropic and removes moonshot.
+        *mem.fail_account.lock().unwrap() = None;
+        first.set("ai-key:openai", "O2").unwrap();
+        first.set("ai-key:anthropic", "A2").unwrap();
+        first.delete("ai-key:moonshot").unwrap();
+        drop(first);
+
+        // Next start: the rest moves, and none of the user's changes is undone.
+        let next = os_store(&dir, &mem);
+        assert_eq!(next.move_file(&path, AI_KEY_PREFIX), MoveOutcome::Moved(4));
+        assert!(!path.exists());
+        assert_eq!(mem.raw("ai-key:anthropic").unwrap(), b"A2");
+        assert_eq!(mem.raw("ai-key:openai").unwrap(), b"O2");
+        assert!(mem.raw("ai-key:moonshot").is_none());
+        assert_eq!(mem.raw("ai-key:openrouter").unwrap(), b"R1");
+        assert!(!next.status().move_pending);
+        let marker = read_marker(&dir.join(MARKER_FILE));
+        assert!(marker.get(MOVING).is_none() && marker.get(DONE).is_none());
+    }
+
+    #[test]
+    fn a_first_try_writes_over_an_older_value_in_the_store() {
+        // 2.0, back to 1.9 (a key typed there), then 2.0 again: the file is newer.
+        let dir = temp_dir();
+        let mem = MemBackend::new();
+        let store = os_store(&dir, &mem);
+        store.set("ai-key:anthropic", "old").unwrap();
+        let path = dir.join(AI_KEYS_FILE);
+        fs::write(&path, r#"{"anthropic":"new"}"#).unwrap();
+        assert_eq!(store.move_file(&path, AI_KEY_PREFIX), MoveOutcome::Moved(1));
+        assert_eq!(mem.raw("ai-key:anthropic").unwrap(), b"new");
     }
 
     #[test]

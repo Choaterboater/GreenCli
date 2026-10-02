@@ -146,6 +146,10 @@ pub fn tighten_app_dir(app_dir: &Path) {
             "intents.json.corrupt",
             "mcp_servers.json",
             "mcp_servers.json.tmp",
+            // 1.9 key files: used when there is no system password store,
+            // and one that can't be moved stays until the user deletes it.
+            "ai_keys.json",
+            "mcp_creds.json",
             "secret_store.json",
         ] {
             let p = app_dir.join(name);
@@ -269,6 +273,10 @@ mod tests {
         let snap = device.join("1700000000000.json");
         fs::write(&snap, b"{}").unwrap();
         fs::set_permissions(&snap, fs::Permissions::from_mode(0o644)).unwrap();
+        // A 1.9 key file left in place (one that couldn't be moved).
+        let keys = dir.join("ai_keys.json");
+        fs::write(&keys, b"{not json").unwrap();
+        fs::set_permissions(&keys, fs::Permissions::from_mode(0o644)).unwrap();
 
         tighten_app_dir(&dir);
 
@@ -277,6 +285,7 @@ mod tests {
         assert_eq!(mode(&dir.join("config_archive")), 0o700);
         assert_eq!(mode(&device), 0o700);
         assert_eq!(mode(&snap), 0o600);
+        assert_eq!(mode(&keys), 0o600);
     }
 
     #[test]

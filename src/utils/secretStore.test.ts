@@ -5,6 +5,8 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 import { invoke } from '@tauri-apps/api/core';
 import { useToastStore } from '../store/toastStore';
 import {
+  keyCheckError,
+  leftoverLine,
   loadSecretStoreStatus,
   saveAiKey,
   saveMcpLogin,
@@ -31,7 +33,7 @@ describe('secretStoreLine', () => {
     ],
   ];
   it.each(cases)('%s', (kind, line) => {
-    expect(secretStoreLine({ kind, leftover: false })).toBe(line);
+    expect(secretStoreLine({ kind, leftoverFiles: [], movePending: false })).toBe(line);
   });
 
   it('has a plain line when the status is unknown', () => {
@@ -39,14 +41,30 @@ describe('secretStoreLine', () => {
   });
 
   it('matches the Rust text for an unreachable store', () => {
-    expect(UNAVAILABLE_LINE).toBe(secretStoreLine({ kind: 'unavailable', leftover: false }));
+    expect(UNAVAILABLE_LINE).toBe(secretStoreLine({ kind: 'unavailable', leftoverFiles: [], movePending: false }));
+  });
+});
+
+describe('leftoverLine', () => {
+  it('names the file and says it may still hold keys', () => {
+    expect(leftoverLine('/Users/me/Library/Application Support/com.choatelabs.greencli/ai_keys.json')).toBe(
+      "An old key file couldn't be read and may still hold keys: /Users/me/Library/Application Support/com.choatelabs.greencli/ai_keys.json. Delete it after you re-enter your keys."
+    );
+  });
+});
+
+describe('keyCheckError', () => {
+  it('uses the error from Rust, or the unreachable line when there is none', () => {
+    expect(keyCheckError(UNAVAILABLE_LINE)).toBe(UNAVAILABLE_LINE);
+    expect(keyCheckError(new Error('locked'))).toBe('locked');
+    expect(keyCheckError('')).toBe(UNAVAILABLE_LINE);
   });
 });
 
 describe('loadSecretStoreStatus', () => {
   it('returns the status', async () => {
-    vi.mocked(invoke).mockResolvedValue({ kind: 'keychain', leftover: true });
-    await expect(loadSecretStoreStatus()).resolves.toEqual({ kind: 'keychain', leftover: true });
+    vi.mocked(invoke).mockResolvedValue({ kind: 'keychain', leftoverFiles: ['/x/ai_keys.json'], movePending: true });
+    await expect(loadSecretStoreStatus()).resolves.toEqual({ kind: 'keychain', leftoverFiles: ['/x/ai_keys.json'], movePending: true });
     expect(invoke).toHaveBeenCalledWith('secret_store_status');
   });
 

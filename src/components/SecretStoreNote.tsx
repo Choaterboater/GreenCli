@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import {
-  LEFTOVER_LINE,
+  leftoverLine,
   loadSecretStoreStatus,
+  MOVE_PENDING_LINE,
   secretStoreLine,
   type SecretStoreStatus,
 } from '../utils/secretStore';
@@ -34,7 +35,12 @@ export default function SecretStoreNote({ after, refreshKey }: { after?: string;
         {secretStoreLine(status)}
         {after ? ` ${after}` : ''}
       </p>
-      {status?.leftover && <p className="text-[var(--accent-warning)]">{LEFTOVER_LINE}</p>}
+      {status?.movePending && <p className="text-[var(--accent-warning)]">{MOVE_PENDING_LINE}</p>}
+      {(status?.leftoverFiles ?? []).map((path) => (
+        <p key={path} className="text-[var(--accent-warning)] break-all">
+          {leftoverLine(path)}
+        </p>
+      ))}
     </div>
   );
 }

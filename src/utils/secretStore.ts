@@ -10,13 +10,19 @@ export type SecretStoreKind = 'keychain' | 'credential-manager' | 'secret-servic
 export interface SecretStoreStatus {
   kind: SecretStoreKind;
   reason?: string;
-  /** An old key file couldn't be read and was left in place. */
-  leftover: boolean;
+  /** Old 1.9 key files that couldn't be read. Left in place; they may still hold keys. */
+  leftoverFiles: string[];
+  /** Some keys in an old 1.9 file didn't move yet; the next start tries again. */
+  movePending: boolean;
 }
 
 export const UNAVAILABLE_LINE =
   "Can't reach the system password store. Your keys are still there. Try again after you log in to the desktop.";
-export const LEFTOVER_LINE = "An old key file couldn't be read. It was left in place.";
+/** For an old key file that couldn't be read: where it is, and what to do. */
+export function leftoverLine(path: string): string {
+  return `An old key file couldn't be read and may still hold keys: ${path}. Delete it after you re-enter your keys.`;
+}
+export const MOVE_PENDING_LINE = 'Some keys from 1.9 were not moved yet. GreenCLI will try again next start.';
 /** When the status can't be read (outside the app). */
 export const UNKNOWN_LINE = 'Saved on this computer, outside the browser.';
 
@@ -44,8 +50,16 @@ export async function loadSecretStoreStatus(): Promise<SecretStoreStatus | null>
 }
 
 /** Plain text of a command error (Rust returns a string). */
-function errorText(e: unknown): string {
+export function errorText(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
+}
+
+/**
+ * The line for a has-key check that failed: the store couldn't be asked, so
+ * whether a key is saved is unknown (not "no key").
+ */
+export function keyCheckError(e: unknown): string {
+  return errorText(e).trim() || UNAVAILABLE_LINE;
 }
 
 /**
