@@ -43,6 +43,16 @@ export interface QuickConnectDraft {
   save?: boolean;
 }
 
+/** Change Jobs opened from the Config Editor ("Send safely"). */
+export interface ChangeJobDraft {
+  /** The config block (the tab or the selected lines). */
+  block: string;
+  /** The open tab to push it through. */
+  sessionId: string;
+  /** Lines taken out because the job adds them itself (commit, checkpoint auto). */
+  removed: string[];
+}
+
 interface SessionState {
   // Active sessions (tabs)
   sessions: Session[];
@@ -86,6 +96,9 @@ interface SessionState {
   showBulkRunner: boolean;
   /** Change Jobs: push one config change to many devices (dry run, canary). */
   showChangeJobs: boolean;
+  /** A block the Config Editor handed over ("Send safely"); Change Jobs takes
+   *  it when it opens and clears it. */
+  changeJobDraft: ChangeJobDraft | null;
   showSftp: boolean;
   showTunnels: boolean;
   showIntent: boolean;
@@ -140,6 +153,9 @@ interface SessionState {
   setVaultUnlocked: (unlocked: boolean) => void;
   setShowBulkRunner: (show: boolean) => void;
   setShowChangeJobs: (show: boolean) => void;
+  /** Open Change Jobs with this block and device filled in. */
+  openChangeJobWith: (draft: ChangeJobDraft) => void;
+  clearChangeJobDraft: () => void;
   setShowSftp: (show: boolean) => void;
   setShowTunnels: (show: boolean) => void;
   setShowIntent: (show: boolean) => void;
@@ -239,6 +255,7 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
   vaultUnlocked: false,
   showBulkRunner: false,
   showChangeJobs: false,
+  changeJobDraft: null,
   showSftp: false,
   showTunnels: false,
   showIntent: false,
@@ -496,6 +513,8 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
   setVaultUnlocked: (unlocked) => set({ vaultUnlocked: unlocked }),
   setShowBulkRunner: (show) => set({ showBulkRunner: show }),
   setShowChangeJobs: (show) => set({ showChangeJobs: show }),
+  openChangeJobWith: (draft) => set({ changeJobDraft: draft, showChangeJobs: true }),
+  clearChangeJobDraft: () => set({ changeJobDraft: null }),
   // SFTP browses the ACTIVE session; "open" with no session rendered nothing
   // but left the flag set, so the modal popped over the next tab and Ctrl+W /
   // file drops stayed disabled until then.

@@ -53,6 +53,8 @@ import { vendorMismatch } from '../utils/editorStatus';
 import { hideSecretsForCopy } from '../utils/secrets/forCopy';
 import { tabLabel } from '../utils/tabs';
 import { SEND_MARK_TEXT, sendMarkCounts, sendMarkSummary, sendMarks, type SendMark, type SendMarkState } from '../utils/sendMarks';
+import { linesInSpan, selectedLines, spanText, type LineSpan } from '../utils/sendSelection';
+import { jobBlockFromEditor, vendorSteps } from '../utils/changeJobs';
 import { timeAgo } from '../store/recentStore';
 import { useTheme } from '../hooks/useTheme';
 import { isTauri, tauriOpen, tauriSave, tauriReadText, tauriWriteText, browserOpen, browserSave } from '../utils/fileSystem';
@@ -642,6 +644,9 @@ export default function ConfigEditor() {
   const [lastSend, setLastSend] = useState<{ bufferId: string; target: string; at: number; marks: SendMark[] } | null>(null);
   const sendMarkIdsRef = useRef(new Map<string, string[]>());
   const [sendProgress, setSendProgress] = useState<{ sent: number; total: number } | null>(null);
+  // The whole lines the editor selection covers (Send selected lines, Ask AI).
+  const [selection, setSelection] = useState<LineSpan | null>(null);
+  const [showSendMenu, setShowSendMenu] = useState(false);
   // Config archive panel (NW-16): store-lifted so Tools / palette can open it.
   const showArchive = useSessionStore((s) => s.showArchive);
   const setShowArchive = useSessionStore((s) => s.setShowArchive);
@@ -652,6 +657,11 @@ export default function ConfigEditor() {
   // problem markers are put back on the new editor's model.
   const [editorEpoch, setEditorEpoch] = useState(0);
   const saveFileRef = useRef<(forcePicker?: boolean) => Promise<void>>();
+  // Monaco actions are added once per mount; they call the latest handlers through this.
+  const editorCommandsRef = useRef<{ sendSelection: () => void; sendSafely: () => void }>({
+    sendSelection: () => {},
+    sendSafely: () => {},
+  });
   const openFileRef = useRef<() => Promise<void>>();
 
   // path={buffer.id} gives each tab its own Monaco model, but the library never
@@ -1156,11 +1166,31 @@ export default function ConfigEditor() {
       keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyM],
       run: () => setShowProblems((open) => !open),
     });
+    // Right-click menu: the device commands, in their own group at the top.
+    ed.addAction({
+      id: 'greencli-send-selection',
+      label: 'Send Selected Lines to Device',
+      contextMenuGroupId: '0_greencli',
+      contextMenuOrder: 1,
+      run: () => editorCommandsRef.current.sendSelection(),
+    });
+    ed.addAction({
+      id: 'greencli-send-safely',
+      label: 'Send Safely as a Change Job…',
+      contextMenuGroupId: '0_greencli',
+      contextMenuOrder: 2,
+      run: () => editorCommandsRef.current.sendSafely(),
+    });
+
+    setSelection(selectedLines(ed.getSelection()));
+    ed.onDidChangeCursorSelection((e) => setSelection(selectedLines(e.selection)));
+    ed.onDidChangeModel(() => setSelection(selectedLines(ed.getSelection())));
   };
 
   // ─── Send to terminal ───
 
-  const sendToTerminal = async () => {
+  /** Send the tab, or with `span` only the selected lines (Send selected lines). */
+  const sendToTerminal = async (span?: LineSpan) => {
     if (sendingRef.current) return;
     if (pulling) {
       showStatus('Pull in progress — wait for it to finish');
@@ -1171,10 +1201,11 @@ export default function ConfigEditor() {
       showStatus('Not connected — connect the session first');
       return;
     }
-    const prepared = prepareSendLines(content);
+    const allPrepared = prepareSendLines(content);
+    const prepared = span ? linesInSpan(allPrepared, span) : allPrepared;
     const lines = prepared.map((l) => l.text);
     if (lines.length === 0) {
-      showStatus('Nothing to send');
+      showStatus(span ? 'Nothing to send in the selected lines' : 'Nothing to send');
       return;
     }
 
@@ -1185,7 +1216,7 @@ export default function ConfigEditor() {
     // since it is going to a device.
     // Setting a password in plain text is what a send is for, so that tip stays out of the dialog.
     const sendProblems = buildProblems(content, NETWORK_LANGUAGES.has(language) ? language : 'generic').filter(
-      (p) => p.code !== 'plaintext-secret'
+      (p) => p.code !== 'plaintext-secret' && (!span || (p.lineNumber >= span.start && p.lineNumber <= span.end))
     );
     const risky = sendProblems.some((p) => p.severity === 'error' || p.code === 'danger');
     const mismatch = vendorMismatch(
@@ -1193,12 +1224,15 @@ export default function ConfigEditor() {
       profileForSession(activeSession.config, customDeviceProfiles).deviceType,
       target
     );
-    const diffSummary = describeSendBaseline(
-      content,
-      target,
-      baselinesRef.current.get(deviceKey(activeSession.config)),
-      lastBaselineRef.current
-    );
+    // The compare with what you pulled is about the whole tab.
+    const diffSummary = span
+      ? `Only the selected lines ${span.start === span.end ? span.start : `${span.start}–${span.end}`} are sent.`
+      : describeSendBaseline(
+          content,
+          target,
+          baselinesRef.current.get(deviceKey(activeSession.config)),
+          lastBaselineRef.current
+        );
     const preview = lines.slice(0, 12).join('\n');
     const sid = activeSession.sessionId;
     const bufferId = active.id;
@@ -1208,7 +1242,7 @@ export default function ConfigEditor() {
 
     try {
       const ok = await askConfirm({
-        title: `Send ${lines.length} line${lines.length === 1 ? '' : 's'} to ${target}?`,
+        title: `Send ${lines.length}${span ? ' selected' : ''} line${lines.length === 1 ? '' : 's'} to ${target}?`,
         message: [
           mismatch,
           sendProblemNote(sendProblems),
@@ -1279,6 +1313,33 @@ export default function ConfigEditor() {
       setSendProgress(null);
       cancelSendRef.current = false;
     }
+  };
+
+  /** Send safely: hand the tab (or the selected lines) to Change Jobs with this
+   *  device ticked, so it goes out under the vendor's rollback timer after a
+   *  dry run. Nothing is sent from here. */
+  const sendSafely = (span?: LineSpan | null) => {
+    if (!activeSession) {
+      showStatus('Open a device tab first');
+      return;
+    }
+    const text = span ? spanText(content, span) : content;
+    const { deviceType } = profileForSession(activeSession.config, customDeviceProfiles);
+    const { block, removed } = jobBlockFromEditor(text, deviceType);
+    if (!prepareSendLines(block).length) {
+      showStatus(span ? 'Nothing to send in the selected lines' : 'Nothing to send');
+      return;
+    }
+    useSessionStore.getState().openChangeJobWith({ block, sessionId: activeSession.sessionId, removed });
+  };
+
+  editorCommandsRef.current = {
+    sendSelection: () => {
+      const span = selectedLines(editorRef.current?.getSelection());
+      if (span) void sendToTerminal(span);
+      else showStatus('Select the lines to send first');
+    },
+    sendSafely: () => sendSafely(selectedLines(editorRef.current?.getSelection())),
   };
 
   // Select a line in the editor (from the send-error banner).
@@ -1372,6 +1433,15 @@ export default function ConfigEditor() {
         deviceType: profileForSession(activeSession.config, customDeviceProfiles).deviceType,
       }
     : null;
+  // What "Send safely" protects the change with, for this device.
+  const safeVendor = sendTarget ? vendorSteps(sendTarget.deviceType) : null;
+  const safeSendHint = !safeVendor
+    ? ''
+    : safeVendor.wrapper === 'checkpoint'
+      ? 'Dry run, then checkpoint auto: the switch rolls back unless you confirm.'
+      : safeVendor.wrapper === 'commit-confirmed'
+        ? 'Dry run, then commit confirmed: Junos rolls back unless you confirm.'
+        : `${safeVendor.label} has no rollback timer, but you get a dry run and checks.`;
   const pulledForTarget = activeSession ? baselinesRef.current.get(deviceKey(activeSession.config)) : undefined;
   const sendTargetPull = pulledForTarget ? { at: pulledForTarget.pulledAt, truncated: pulledForTarget.truncated } : undefined;
   const filteredLangs = LANGUAGE_LIST.filter((l) =>
@@ -1847,19 +1917,63 @@ export default function ConfigEditor() {
           </button>
         )}
         {activeSession && (
-          <button
-            onClick={sendToTerminal}
-            disabled={sending || pulling || !activeSession?.connected}
-            className="flex items-center gap-1.5 px-2.5 py-1 text-xs bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-40 text-[var(--accent-fg)] rounded transition-colors"
-            title={activeSession ? 'Send lines to terminal' : 'No active session'}
-          >
-            <Send size={12} />
-            {sending
-              ? sendProgress
-                ? `Sending ${sendProgress.sent}/${sendProgress.total}…`
-                : 'Sending…'
-              : 'Send'}
-          </button>
+          <div className="relative flex items-stretch">
+            <button
+              onClick={() => void sendToTerminal()}
+              disabled={sending || pulling || !activeSession?.connected}
+              className="flex items-center gap-1.5 pl-2.5 pr-2 py-1 text-xs bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-40 text-[var(--accent-fg)] rounded-l transition-colors"
+              title={activeSession ? 'Send lines to terminal' : 'No active session'}
+            >
+              <Send size={12} />
+              {sending
+                ? sendProgress
+                  ? `Sending ${sendProgress.sent}/${sendProgress.total}…`
+                  : 'Sending…'
+                : 'Send'}
+            </button>
+            <button
+              onClick={() => setShowSendMenu((open) => !open)}
+              disabled={sending || pulling}
+              className="flex items-center px-1 border-l border-black/20 bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-40 text-[var(--accent-fg)] rounded-r transition-colors"
+              title="Send selected lines, or send safely as a Change Job"
+              aria-label="More ways to send"
+            >
+              <ChevronDown size={11} />
+            </button>
+            {showSendMenu && (
+              <>
+                <div className="fixed inset-0 z-20" onClick={() => setShowSendMenu(false)} />
+                <div className="absolute bottom-full right-0 mb-1 z-30 w-72 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg shadow-xl py-1">
+                  <button
+                    onClick={() => {
+                      setShowSendMenu(false);
+                      if (selection) void sendToTerminal(selection);
+                    }}
+                    disabled={!selection || !activeSession.connected}
+                    className="flex flex-col w-full px-3 py-1.5 text-xs text-left text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] disabled:opacity-40 disabled:hover:bg-transparent"
+                  >
+                    <span>
+                      Send selected lines
+                      {selection ? ` (${selection.start === selection.end ? `line ${selection.start}` : `lines ${selection.start}–${selection.end}`})` : ''}
+                    </span>
+                    <span className="text-[10px] text-[var(--text-muted)]">
+                      {selection ? 'Only these lines go out, one at a time.' : 'Select some lines in the editor first.'}
+                    </span>
+                  </button>
+                  <button
+                    onClick={() => {
+                      setShowSendMenu(false);
+                      sendSafely(selection);
+                    }}
+                    className="flex flex-col w-full px-3 py-1.5 text-xs text-left text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]"
+                  >
+                    <span>Send safely as a Change Job…{selection ? ' (selected lines)' : ''}</span>
+                    <span className="text-[10px] text-[var(--text-muted)]">{safeSendHint}</span>
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
         )}
       </div>
 
