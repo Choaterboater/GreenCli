@@ -1151,7 +1151,8 @@
       ]
     },
     "routed": [
-      "helper"
+      "helper",
+      "delete_vlan"
     ],
     "unclear": true
   },
@@ -1315,6 +1316,227 @@
           "b"
         ]
       }
+    },
+    "routed": [
+      "get_ports"
+    ],
+    "unclear": false
+  },
+  {
+    "tool": "run",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "batch": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Call"
+          }
+        },
+        "request": {
+          "$ref": "#/$defs/Call"
+        }
+      },
+      "$defs": {
+        "Call": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "arguments": {
+              "type": "object"
+            }
+          }
+        }
+      }
+    },
+    "args": {
+      "batch": "[{\"arguments\": {}, \"name\": \"delete_vlan\"}]",
+      "request": {
+        "arguments": {},
+        "name": "get_status"
+      }
+    },
+    "routed": [
+      "delete_vlan",
+      "get_status"
+    ],
+    "unclear": false
+  },
+  {
+    "tool": "run",
+    "args": {
+      "batch": "[{\"arguments\": {}, \"name\": \"delete_vlan\"}]",
+      "request": {
+        "arguments": {},
+        "name": "get_status"
+      }
+    },
+    "routed": [
+      "delete_vlan",
+      "get_status"
+    ],
+    "unclear": false
+  },
+  {
+    "tool": "helper",
+    "args": {
+      "arguments": {},
+      "calls": "[{\"name\": \"delete_vlan\"}]",
+      "name": "get_status"
+    },
+    "routed": [
+      "get_status",
+      "delete_vlan"
+    ],
+    "unclear": false
+  },
+  {
+    "tool": "helper",
+    "args": {
+      "other": {
+        "arguments": {},
+        "name": "get_status"
+      },
+      "request": " \n\t{\"arguments\": {}, \"name\": \"delete_vlan\"} "
+    },
+    "routed": [
+      "get_status",
+      "delete_vlan"
+    ],
+    "unclear": false
+  },
+  {
+    "tool": "helper",
+    "args": {
+      "batch": "[\"{\\\"arguments\\\": {}, \\\"name\\\": \\\"delete_vlan\\\"}\"]",
+      "request": {
+        "arguments": {},
+        "name": "get_status"
+      }
+    },
+    "routed": [
+      "delete_vlan",
+      "get_status"
+    ],
+    "unclear": false
+  },
+  {
+    "tool": "helper",
+    "args": {
+      "options": {
+        "plan": {
+          "steps": "[{\"tool\": \"delete_vlan\"}]"
+        }
+      },
+      "request": {
+        "arguments": {},
+        "name": "get_status"
+      }
+    },
+    "routed": [
+      "delete_vlan",
+      "get_status"
+    ],
+    "unclear": false
+  },
+  {
+    "tool": "get_device",
+    "args": {
+      "request": "{\"arguments\": {}, \"name\": \"delete_vlan\"}"
+    },
+    "routed": [
+      "delete_vlan"
+    ],
+    "unclear": false
+  },
+  {
+    "tool": "helper",
+    "args": {
+      "batch": "[{\"name\": \"delete_vlan\", ",
+      "request": {
+        "arguments": {},
+        "name": "get_status"
+      }
+    },
+    "routed": [
+      "get_status"
+    ],
+    "unclear": true
+  },
+  {
+    "tool": "call_tool",
+    "args": {
+      "arguments": {
+        "filter": "{site: 1}"
+      },
+      "name": "get_ports"
+    },
+    "routed": [
+      "get_ports"
+    ],
+    "unclear": true
+  },
+  {
+    "tool": "invoke_tool",
+    "args": {
+      "request": "{oops"
+    },
+    "routed": [],
+    "unclear": true
+  },
+  {
+    "tool": "call_tool",
+    "args": {
+      "arguments": {
+        "ports": "[NaN]"
+      },
+      "name": "get_ports"
+    },
+    "routed": [
+      "get_ports"
+    ],
+    "unclear": true
+  },
+  {
+    "tool": "get_device",
+    "args": {
+      "filter": "{not json",
+      "note": "[WARN] fan"
+    },
+    "routed": [],
+    "unclear": false
+  },
+  {
+    "tool": "get_device",
+    "args": {
+      "ports": "[1, 2]",
+      "site": "{\"id\": 3}"
+    },
+    "routed": [],
+    "unclear": false
+  },
+  {
+    "tool": "call_tool",
+    "args": {
+      "arguments": {
+        "ports": "[1, 2]"
+      },
+      "name": "get_ports"
+    },
+    "routed": [
+      "get_ports"
+    ],
+    "unclear": false
+  },
+  {
+    "tool": "call_tool",
+    "args": {
+      "arguments": {
+        "note": "see [1]"
+      },
+      "name": "get_ports"
     },
     "routed": [
       "get_ports"

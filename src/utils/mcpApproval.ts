@@ -12,6 +12,9 @@
 //   list of such objects, also inside an object or another list), or in a list entry
 //   ({tool_calls: [{function: {name, arguments}}]}). Under calls, requests, items or steps an entry
 //   that only names a tool counts too. Every call found is judged and the strictest wins.
+// - Every string that starts with { or [ and parses as JSON is searched as if the JSON were there in
+//   place (FastMCP json.loads's any non-str parameter sent as a string). One that doesn't parse makes
+//   a router call unclear.
 // - Two arguments keys in one call ({args: {}, params: {...}}) make it unclear: the server may read either.
 // - Every key that may hold the tool's name counts, in any spelling. Two different names make the
 //   call unclear, and so does a batch entry GreenCLI can't read or a routed tool that is a router.
@@ -191,11 +194,53 @@ function schemaHasRouter(schema: unknown): boolean {
   return visit(schema, 0);
 }
 
-/** What a search of a call's arguments found: router shapes, and every object that holds one call. */
-interface CallSearch { shaped: boolean; sites: unknown[] }
+/** What a search of a call's arguments found: router shapes, every object that holds one call, and
+ *  whether a JSON text in them could not be read. */
+interface CallSearch { shaped: boolean; sites: unknown[]; unreadable: boolean }
+
+/** A string a server may read as JSON: after JSON whitespace it starts with { or [. */
+function looksLikeJson(text: string): boolean {
+  const start = text.replace(/^[ \t\n\r]+/, "")[0];
+  return start === "{" || start === "[";
+}
 
 /**
- * Every place in a call's arguments that holds one routed call, down to MAX_DEPTH:
+ * The call's arguments with every JSON text read in place, at any depth, top-level parameters too.
+ * FastMCP runs json.loads on any argument sent as a string when the parameter is not a str, so
+ * {calls: '[{"name": "delete_vlan"}]'} runs delete_vlan. A string counts when it starts with { or [
+ * (after JSON whitespace) and parses; the JSON it holds is read the same way, down to MAX_DEPTH.
+ * unreadable: such a string did not parse, or its JSON goes deeper than MAX_DEPTH, so the search
+ * can't see everything the server might read. Same as Rust read_json_text.
+ */
+function readJsonText(args: Record<string, unknown>): { value: Record<string, unknown>; unreadable: boolean } {
+  let unreadable = false;
+  const read = (value: unknown, depth: number, fromText: boolean): unknown => {
+    if (typeof value === "string") {
+      if (!looksLikeJson(value)) return value;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(value);
+      } catch {
+        unreadable = true;
+        return value;
+      }
+      return read(parsed, depth, true);
+    }
+    if (typeof value !== "object" || value === null) return value;
+    if (depth > MAX_DEPTH) {
+      // Real objects this deep are refused before the call (mcpGate argsDepth); JSON text is not.
+      if (fromText) unreadable = true;
+      return value;
+    }
+    if (Array.isArray(value)) return value.map((item) => read(item, depth + 1, fromText));
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, read(item, depth + 1, fromText)]));
+  };
+  return { value: read(args, 1, false) as Record<string, unknown>, unreadable };
+}
+
+/**
+ * Every place in a call's arguments that holds one routed call, down to MAX_DEPTH (JSON text read
+ * in place, see readJsonText):
  * - the arguments themselves when they name a tool;
  * - any object shaped like a router call ({method, params}), or that the schema says is one;
  * - every entry of a batch list: a list with a router-shaped entry, a list whose items the schema
@@ -204,8 +249,9 @@ interface CallSearch { shaped: boolean; sites: unknown[] }
  * Every object is searched further down too ({request: {calls: [...]}}, {tool_calls: [{function:
  * {name, arguments}}]}, {batch: {calls: [...]}}).
  */
-function searchCalls(args: Record<string, unknown>, schema: unknown): CallSearch {
-  const found: CallSearch = { shaped: routerKeys(Object.keys(args)), sites: [] };
+function searchCalls(callArgs: Record<string, unknown>, schema: unknown): CallSearch {
+  const { value: args, unreadable } = readJsonText(callArgs);
+  const found: CallSearch = { shaped: routerKeys(Object.keys(args)), sites: [], unreadable };
   if (innerNames(args).length > 0) found.sites.push(args);
   searchChildren(args, [schema], schema, true, 1, found);
   return found;
@@ -303,11 +349,15 @@ export function routedCalls(tool: string, args: Record<string, unknown>, schema?
 /**
  * The router call can't be judged: it runs no tool GreenCLI can name; a place that holds a call
  * (the arguments, a nested call, a batch entry) names no tool or two different ones, or sets two
- * arguments keys; or a tool it runs is itself a router (invoke_tool running invoke_tools_batch).
+ * arguments keys; a tool it runs is itself a router (invoke_tool running invoke_tools_batch); or a
+ * string in the arguments starts with { or [ but GreenCLI can't read it as JSON (fails closed: the
+ * server may read it some other way).
  */
 function routerUnclear(args: Record<string, unknown>, schema: unknown, routed: RoutedCall[]): boolean {
+  const found = searchCalls(args, schema);
   return routed.length === 0
-    || searchCalls(args, schema).sites.some((site) => !innerCall(site))
+    || found.unreadable
+    || found.sites.some((site) => !innerCall(site))
     || routed.some((call) => isRouter(call.name, undefined, call.arguments));
 }
 

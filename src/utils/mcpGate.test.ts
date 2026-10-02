@@ -365,6 +365,28 @@ describe('writes off, read-only login and the Read-only Auditor', () => {
     expect(decide(mapTool, { ops: { a: { name: 'delete_vlan' } } })).toEqual(refused(writesOffText('srv')));
   });
 
+  it('reads a batch sent as JSON text next to a visible call (FastMCP json.loads it)', () => {
+    const fastmcp = {
+      type: 'object' as const,
+      properties: { request: { $ref: '#/$defs/Call' }, batch: { type: 'array', items: { $ref: '#/$defs/Call' } } },
+      $defs: { Call: { type: 'object', properties: { name: { type: 'string' }, arguments: { type: 'object' } } } },
+    };
+    const args = {
+      request: { name: 'get_status', arguments: {} },
+      batch: JSON.stringify([{ name: 'delete_vlan', arguments: {} }]),
+    };
+    const runTool = (extra: Partial<McpToolInfo> = {}) =>
+      tool('run', { annotations: READ_ONLY, inputSchema: fastmcp, ...extra });
+    expect(decide(runTool({ writes: 'off' }), args)).toEqual(refused(writesOffText('srv')));
+    expect(auditor(runTool({ writes: 'on' }), args)).toEqual(refused(AUDITOR_REFUSAL));
+    expect(asked(decide(runTool({ writes: 'on' }), args)).label).toBe('destructive');
+    // Text that starts like JSON but doesn't parse: the server may read it some other way.
+    const broken = { request: { name: 'get_status', arguments: {} }, batch: '[{"name": "delete_vlan", ' };
+    expect(decide(runTool({ writes: 'off' }), broken)).toEqual(refused(writesOffText('srv')));
+    expect(auditor(runTool({ writes: 'on' }), broken)).toEqual(refused(AUDITOR_REFUSAL));
+    expect(asked(decide(runTool({ writes: 'on' }), broken)).notes.join('\n')).toContain("tools GreenCLI can't see");
+  });
+
   it('counts force="t" as the AI skipping a check (pydantic reads it as true)', () => {
     expect(decide(tool('list_sessions'), { force: 'true' }, true).kind).toBe('ask');
     expect(decide(tool('list_sessions'), { force: 't' }, true).kind).toBe('ask');

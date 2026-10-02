@@ -20,6 +20,10 @@
 //   [{function: {name, arguments}}]}). Under calls, requests, items or steps
 //   an entry that only names a tool counts too. Every call found is judged
 //   and the strictest wins.
+// - Every string that starts with { or [ and parses as JSON is searched as
+//   if the JSON were there in place (FastMCP json.loads's any non-str
+//   parameter sent as a string). One that doesn't parse makes a router call
+//   unclear.
 // - Two arguments keys in one call ({args: {}, params: {...}}) make it
 //   unclear: the server may read either.
 // - Every key that may hold the routed tool's name counts, in any spelling.
@@ -589,10 +593,68 @@ fn schema_has_router(schema: &Value) -> bool {
 }
 
 /// What a search of a call's arguments found: router shapes, and every value
-/// that holds one call. Same as TS CallSearch.
+/// that holds one call. Same as TS CallSearch (whose unreadable flag comes
+/// from read_json_text here).
 struct CallSearch<'a> {
     shaped: bool,
     sites: Vec<&'a Value>,
+}
+
+/// A string a server may read as JSON: after JSON whitespace it starts with
+/// { or [. Same as TS looksLikeJson.
+fn looks_like_json(text: &str) -> bool {
+    matches!(
+        text.trim_start_matches([' ', '\t', '\n', '\r'])
+            .chars()
+            .next(),
+        Some('{' | '[')
+    )
+}
+
+/// The call's arguments with every JSON text read in place, at any depth,
+/// top-level parameters too. FastMCP runs json.loads on any argument sent as
+/// a string when the parameter is not a str, so {calls: '[{"name":
+/// "delete_vlan"}]'} runs delete_vlan. A string counts when it starts with {
+/// or [ (after JSON whitespace) and parses; the JSON it holds is read the
+/// same way, down to MAX_DEPTH. The flag says such a string did not parse,
+/// or its JSON goes deeper than MAX_DEPTH, so the search can't see
+/// everything the server might read. Same as TS readJsonText.
+fn read_json_text(args: &Value) -> (Value, bool) {
+    fn read(value: &Value, depth: usize, from_text: bool, unreadable: &mut bool) -> Value {
+        match value {
+            Value::String(text) if looks_like_json(text) => {
+                match serde_json::from_str::<Value>(text) {
+                    Ok(parsed) => read(&parsed, depth, true, unreadable),
+                    Err(_) => {
+                        *unreadable = true;
+                        value.clone()
+                    }
+                }
+            }
+            Value::Array(_) | Value::Object(_) if depth > MAX_DEPTH => {
+                // Real objects this deep are refused before the call
+                // (too_deep); JSON text is not.
+                if from_text {
+                    *unreadable = true;
+                }
+                value.clone()
+            }
+            Value::Array(list) => Value::Array(
+                list.iter()
+                    .map(|item| read(item, depth + 1, from_text, unreadable))
+                    .collect(),
+            ),
+            Value::Object(obj) => Value::Object(
+                obj.iter()
+                    .map(|(key, item)| (key.clone(), read(item, depth + 1, from_text, unreadable)))
+                    .collect(),
+            ),
+            _ => value.clone(),
+        }
+    }
+    let mut unreadable = false;
+    let value = read(args, 1, false, &mut unreadable);
+    (value, unreadable)
 }
 
 /// Every place in a call's arguments that holds one routed call, down to
@@ -601,7 +663,8 @@ struct CallSearch<'a> {
 /// entry of a batch list (a list with a router-shaped entry, a list under
 /// calls, requests, items or steps (at the top always, deeper when an entry
 /// names a tool), and a list inside a batch list). Every object is searched
-/// further down too. Same as TS searchCalls.
+/// further down too. Callers pass the arguments through read_json_text
+/// first. Same as TS searchCalls.
 fn search_calls<'a>(args: &'a Value, schema: &Value) -> CallSearch<'a> {
     let mut found = CallSearch {
         shaped: false,
@@ -693,7 +756,9 @@ fn search_entry<'a>(
 /// items and additionalProperties) or in the call's arguments (see
 /// search_calls). Same as TS isRouter.
 pub fn is_router(tool: &str, schema: &Value, args: &Value) -> bool {
-    is_router_name(tool) || schema_has_router(schema) || search_calls(args, schema).shaped
+    is_router_name(tool)
+        || schema_has_router(schema)
+        || search_calls(&read_json_text(args).0, schema).shaped
 }
 
 /// The different non-empty tool names in every key that may hold one.
@@ -756,7 +821,8 @@ pub fn routed_calls(tool: &str, schema: &Value, args: &Value) -> Vec<(String, Va
     if !is_router(tool, schema, args) {
         return Vec::new();
     }
-    search_calls(args, schema)
+    let (args, _) = read_json_text(args);
+    search_calls(&args, schema)
         .sites
         .into_iter()
         .filter_map(inner_call)
@@ -765,15 +831,19 @@ pub fn routed_calls(tool: &str, schema: &Value, args: &Value) -> Vec<(String, Va
 
 /// The tool looks like a router, but GreenCLI can't tell every tool it runs:
 /// it runs no tool GreenCLI can name; a place that holds a call names no
-/// tool or two different ones, or sets two arguments keys; or a tool it runs
-/// is itself a router. Same as TS routerUnclear.
+/// tool or two different ones, or sets two arguments keys; a tool it runs is
+/// itself a router; or a string in the arguments starts with { or [ but
+/// GreenCLI can't read it as JSON (fails closed: the server may read it some
+/// other way). Same as TS routerUnclear.
 pub fn router_unclear(tool: &str, schema: &Value, args: &Value) -> bool {
     if !is_router(tool, schema, args) {
         return false;
     }
     let routed = routed_calls(tool, schema, args);
+    let (read, unreadable) = read_json_text(args);
     routed.is_empty()
-        || search_calls(args, schema)
+        || unreadable
+        || search_calls(&read, schema)
             .sites
             .into_iter()
             .any(|site| inner_call(site).is_none())
@@ -1228,6 +1298,54 @@ mod tests {
         assert!(!is_router("get_tree", &looped, &json!({ "child": {} })));
         assert_eq!(resolve_ref(&looped, "#/$defs/Missing"), None);
         assert_eq!(resolve_ref(&looped, "other.json#/x"), None);
+    }
+
+    #[test]
+    fn json_text_in_arguments() {
+        fn nest(inner: Value, levels: usize) -> Value {
+            (0..levels).fold(inner, |value, _| json!({ "a": value }))
+        }
+        fn names(args: &Value) -> Vec<String> {
+            routed_calls("helper", &Value::Null, args)
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect()
+        }
+        let call = json!({ "name": "delete_vlan", "arguments": {} });
+        let get = json!({ "name": "get_status", "arguments": {} });
+        // A batch sent as JSON text next to a visible call (FastMCP json.loads it).
+        let args = json!({ "request": get, "batch": json!([call]).to_string() });
+        assert_eq!(names(&args), vec!["get_status", "delete_vlan"]);
+        assert!(!router_unclear("helper", &Value::Null, &args));
+        assert_eq!(
+            call_label(SafetyLabel::Read, "helper", &Value::Null, &args),
+            SafetyLabel::Destructive
+        );
+        // Its arguments are read too.
+        let set = json!({ "request": json!({ "name": "set_vlan", "arguments": { "vlan": 10 } }).to_string() });
+        assert_eq!(
+            routed_calls("helper", &Value::Null, &set),
+            vec![("set_vlan".to_string(), json!({ "vlan": 10 }))]
+        );
+        // Down to MAX_DEPTH: the text at depth 30 holds a call at depth 31.
+        let shallow = json!({ "request": get, "deep": nest(Value::String(call.to_string()), 28) });
+        assert_eq!(names(&shallow), vec!["get_status", "delete_vlan"]);
+        assert!(!router_unclear("helper", &Value::Null, &shallow));
+        // Past it: the search can't see it all, so the call is unclear.
+        let deep = json!({ "request": get, "deep": nest(Value::String(nest(call.clone(), 4).to_string()), 28) });
+        assert_eq!(names(&deep), vec!["get_status"]);
+        assert!(router_unclear("helper", &Value::Null, &deep));
+        // Text that starts like JSON but doesn't parse.
+        let broken = json!({ "request": get, "batch": "[{\"name\": \"delete_vlan\", " });
+        assert!(router_unclear("helper", &Value::Null, &broken));
+        assert!(!router_unclear(
+            "get_device",
+            &Value::Null,
+            &json!({ "filter": "{oops" })
+        ));
+        assert!(looks_like_json(" \n\t{"));
+        assert!(!looks_like_json("see [1]"));
+        assert!(!looks_like_json("\u{a0}{}"));
     }
 
     #[test]

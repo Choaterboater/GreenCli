@@ -145,6 +145,43 @@ describe('routedCalls', () => {
   });
 });
 
+describe('JSON text in the arguments', () => {
+  const nest = (inner: unknown, levels: number): unknown => {
+    let value = inner;
+    for (let i = 0; i < levels; i++) value = { a: value };
+    return value;
+  };
+  const plan = (args: Record<string, unknown>) =>
+    buildPlan({ server: 's', tool: 'helper', label: 'read', schema: { type: 'object' }, arguments: args });
+
+  it('reads JSON text as if it were there in place', () => {
+    const p = plan({ request: { name: 'get_status', arguments: {} }, batch: JSON.stringify([{ name: 'delete_vlan', arguments: {} }]) });
+    expect(p.routed.map((call) => call.name)).toEqual(['get_status', 'delete_vlan']);
+    expect(p.routerUnclear).toBe(false);
+    // Its arguments are read too.
+    expect(routedCalls('helper', { request: JSON.stringify({ name: 'set_vlan', arguments: { vlan: 10 } }) })).toEqual([
+      { name: 'set_vlan', arguments: { vlan: 10 } },
+    ]);
+  });
+
+  it('reads JSON text down to MAX_DEPTH, and fails closed past it', () => {
+    const call = { name: 'delete_vlan', arguments: {} };
+    // The text sits at depth 30 and holds a call at depth 31: read.
+    const shallow = plan({ request: { name: 'get_status', arguments: {} }, deep: nest(JSON.stringify(call), 28) });
+    expect(shallow.routed.map((c) => c.name)).toEqual(['get_status', 'delete_vlan']);
+    expect(shallow.routerUnclear).toBe(false);
+    // The JSON it holds goes past MAX_DEPTH: the search can't see it all.
+    const deep = plan({ request: { name: 'get_status', arguments: {} }, deep: nest(JSON.stringify(nest(call, 4)), 28) });
+    expect(deep.routed.map((c) => c.name)).toEqual(['get_status']);
+    expect(deep.routerUnclear).toBe(true);
+  });
+
+  it('leaves a call that is not a router alone', () => {
+    const p = buildPlan({ server: 's', tool: 'get_device', label: 'read', schema: { type: 'object' }, arguments: { filter: '{oops' } });
+    expect([p.router, p.routerUnclear]).toEqual([false, false]);
+  });
+});
+
 describe('buildPlan and planLabel', () => {
   it('marks a router that names nothing as unclear', () => {
     const plan = buildPlan({ server: 's', tool: 'invoke_tool', label: 'read', schema, arguments: {} });
