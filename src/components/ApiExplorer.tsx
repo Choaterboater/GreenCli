@@ -51,6 +51,7 @@ import {
   CENTRAL_DOCS,
 } from '../types';
 import { isTauri } from '../utils/tauri';
+import { openWebLink } from '../utils/openUrl';
 
 // Per-device-REST flavour: label, default base URL, endpoint catalog, and the
 // backend login/request commands.
@@ -808,6 +809,12 @@ export default function ApiExplorer() {
                   href={d.url}
                   target="_blank"
                   rel="noreferrer"
+                  // The webview opens no window for target="_blank"; the
+                  // system browser does (href stays so hover shows the URL).
+                  onClick={(e) => {
+                    e.preventDefault();
+                    void openWebLink(d.url);
+                  }}
                   className="text-[10px] text-[var(--accent)] hover:underline"
                   title={d.label}
                 >

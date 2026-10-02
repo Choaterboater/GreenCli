@@ -24,6 +24,7 @@ mod ssh;
 mod telnet;
 mod updater;
 mod vault;
+mod web_link;
 
 #[cfg(test)]
 mod tauri_conf_tests;
@@ -1583,6 +1584,15 @@ async fn session_log_path(
         .map(|open| open.path.to_string_lossy().into_owned()))
 }
 
+/// The system's "open this" program: Finder / Explorer / the desktop file
+/// manager for a folder, the default browser for a web link.
+#[cfg(target_os = "macos")]
+const SYSTEM_OPENER: &str = "open";
+#[cfg(windows)]
+const SYSTEM_OPENER: &str = "explorer";
+#[cfg(all(unix, not(target_os = "macos")))]
+const SYSTEM_OPENER: &str = "xdg-open";
+
 /// Show a log folder in Finder / Explorer / the desktop file manager. `dir`
 /// is the folder to show (empty = the default log folder). Returns the folder.
 #[tauri::command]
@@ -1598,21 +1608,36 @@ async fn reveal_log_folder(
     if !dir.is_dir() {
         return Err(format!("Not a folder: {}", dir.display()));
     }
-    #[cfg(target_os = "macos")]
-    let opener = "open";
-    #[cfg(windows)]
-    let opener = "explorer";
-    #[cfg(all(unix, not(target_os = "macos")))]
-    let opener = "xdg-open";
-    let mut child = tokio::process::Command::new(opener)
+    let mut child = tokio::process::Command::new(SYSTEM_OPENER)
         .arg(&dir)
         .spawn()
-        .map_err(|e| format!("Could not open the folder with {opener}: {e}"))?;
+        .map_err(|e| format!("Could not open the folder with {SYSTEM_OPENER}: {e}"))?;
     // Reap the opener in the background so it can't linger as a zombie.
     tokio::spawn(async move {
         let _ = child.wait().await;
     });
     Ok(dir.to_string_lossy().into_owned())
+}
+
+/// Open an http(s) link in the system browser (see web_link.rs). Only the
+/// opener runs, with the link as its one argument: never a shell, which would
+/// read `&` and `^` in a URL as commands.
+#[tauri::command]
+async fn open_url(url: String) -> Result<(), String> {
+    let url = web_link::checked_web_url(&url)?;
+    let mut command = tokio::process::Command::new(SYSTEM_OPENER);
+    #[cfg(windows)]
+    command.raw_arg(web_link::explorer_arg(&url));
+    #[cfg(not(windows))]
+    command.arg(&url);
+    let mut child = command
+        .spawn()
+        .map_err(|e| format!("Could not open the link with {SYSTEM_OPENER}: {e}"))?;
+    // Reap the opener in the background so it can't linger as a zombie.
+    tokio::spawn(async move {
+        let _ = child.wait().await;
+    });
+    Ok(())
 }
 
 #[tauri::command]
@@ -3013,6 +3038,7 @@ fn main() {
             is_session_logging,
             session_log_path,
             reveal_log_folder,
+            open_url,
             read_file_text,
             write_file_text,
             list_folder,

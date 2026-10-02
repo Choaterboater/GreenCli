@@ -56,6 +56,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the first one's files alone.
 - Removing an MCP server also removes its saved login. If the password store can't be reached,
   nothing is removed.
+- **Web links open in your browser**: Ctrl+click (Cmd+click on a Mac) a web address in a terminal
+  to open it in your default browser, on every system. In 1.9 a plain click opened it in a small
+  window, and only on Windows. The Central docs links in API Explorer open in the browser too
+  (they did nothing in 1.9).
 - **The window shows as soon as it has drawn.** When the system holds back the first frame (Linux
   does), it shows after half a second instead of after 4 seconds.
 - **Linux builds need webkit2gtk-4.1** (Ubuntu 24.04 or newer) and Rust 1.90 or newer. See
