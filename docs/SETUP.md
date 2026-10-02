@@ -22,15 +22,15 @@ feature overview see the top-level [`README.md`](../README.md); for the work log
 | [Rust](https://rustup.rs/) stable, **1.90+** (MSRV) | Build the Tauri/Rust backend |
 | Tauri 2 OS build tools | Native webview + bundling — see [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) |
 
-**The app runs on** macOS 13.3 (Ventura) or newer, Windows 10/11, and Linux with WebKitGTK 4.1. The
-secret filter that protects the AI panel needs regex features older macOS WebKit lacks; on an old Linux
-WebKitGTK the AI panel withholds device output rather than send it unchecked.
+**The app runs on** macOS 13.3 (Ventura) or newer, Windows 10/11, and Linux with WebKitGTK 4.1
+(2.40+). The secret filter that protects the AI panel needs regex features older macOS WebKit lacks;
+on an old Linux WebKitGTK the AI panel withholds device output rather than send it unchecked.
 
 **Per-OS Tauri deps (summary — follow the link above for specifics):**
 - **macOS**: Xcode Command Line Tools (`xcode-select --install`).
 - **Windows**: Microsoft C++ Build Tools + the WebView2 runtime.
-- **Linux**: Ubuntu 24.04 or newer, which is what CI uses. Tauri 2 needs webkit2gtk-4.1 and
-  libsoup 3. These are the packages CI installs:
+- **Linux**: Ubuntu 22.04 (with updates) or newer; CI uses 24.04. Tauri 2 needs webkit2gtk-4.1
+  2.40+ and libsoup 3. These are the packages CI installs:
 
   ```bash
   sudo apt install build-essential libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libudev-dev \

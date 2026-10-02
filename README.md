@@ -112,7 +112,7 @@ green-cli/
 
 - **macOS 13.3 (Ventura) or newer.** Older macOS versions lack features the app needs to hide device secrets from the AI.
 - **Windows 10/11** with the WebView2 runtime.
-- **Linux** with WebKitGTK 4.1 (Ubuntu 24.04 or newer). On an old WebKitGTK, the AI panel withholds device output instead of sending it unchecked. There is no Linux release build, so no automatic updates there.
+- **Linux** with WebKitGTK 4.1, 2.40 or newer (an updated Ubuntu 22.04 or newer). On an old WebKitGTK, the AI panel withholds device output instead of sending it unchecked. There is no Linux release build, so no automatic updates there.
 
 ### Prerequisites
 

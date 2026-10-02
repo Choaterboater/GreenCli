@@ -32,7 +32,7 @@ futures = "0.3"
 # This computer's host name (a saved web MCP server named after it counts as local).
 gethostname = "1.1"
 # default crypto backend is aws-lc-rs (needs NASM on Windows). `ring` is the
-# portable backend that builds on the Windows MSVC toolchain and ubuntu-22.04 CI.
+# portable backend that builds on the Windows MSVC toolchain and Linux CI.
 russh = { version = "0.63.1", default-features = false, features = ["flate2", "ring", "rsa"] }
 russh-sftp = "2.4"
 aes-gcm = "0.10"
