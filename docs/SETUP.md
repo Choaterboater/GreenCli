@@ -387,7 +387,7 @@ preserved so nothing is silently lost.
 
 ## 5. AI assistant (provider-neutral)
 
-Open the AI panel with **AI** in the bar on the left. Settings → **AI & MCP → AI Assistant**:
+Open the AI panel with **AI Assistant** (the sparkle icon) in the bar on the left. Settings → **AI & MCP → AI Assistant**:
 
 1. **Provider** — pick one:
    - **Anthropic** (Claude) — needs an API key.
