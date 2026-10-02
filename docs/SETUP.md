@@ -723,7 +723,7 @@ live compliance:
 | *"An old key file couldn't be read …"* | Enter your keys again, then delete the file Settings names. |
 | greencli-mcp: *"No hidden copy for this snapshot"* or *"out of date"* | Open Config archive and click **Make hidden copies**. |
 | Updates: *"Move GreenCLI to Applications first."* | Drag GreenCLI into Applications and open it from there. |
-| Updates: *"You have the latest version."* but GitHub has a newer one | That release is still a draft. Publish it as the latest release. |
+| Updates: *"You have the latest version."* but GitHub has a newer one | That release is still a draft, or wasn't set as the latest release: publish it as the latest release. If it is already published as the latest, its update files are missing or wrong (update-files wasn't green for it): release a new version and publish it only after update-files is green. |
 
 ---
 
