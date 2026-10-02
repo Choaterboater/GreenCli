@@ -445,8 +445,9 @@ impl Drop for RunFolder {
     }
 }
 
-/// Remove question folders an earlier run left behind (a crash, a kill).
-fn sweep_stale_runs(root: &Path) {
+/// Remove question folders an earlier run left behind (a crash, a kill):
+/// `run-…` folders older than `stale_after` that no run in this process holds.
+fn sweep_stale_runs(root: &Path, stale_after: Duration) {
     let Ok(entries) = std::fs::read_dir(root) else {
         return;
     };
@@ -463,7 +464,7 @@ fn sweep_stale_runs(root: &Path) {
             .modified()
             .ok()
             .and_then(|m| m.elapsed().ok())
-            .is_some_and(|age| age > STALE_RUN);
+            .is_some_and(|age| age > stale_after);
         if meta.is_dir() && old {
             let _ = std::fs::remove_dir_all(&path);
         }
@@ -512,7 +513,7 @@ fn prepare_work_place(ctx: &CliContext) -> Result<WorkPlace, String> {
         });
     }
     let root = ready_work_root(ctx)?;
-    sweep_stale_runs(&root);
+    sweep_stale_runs(&root, STALE_RUN);
     let dir = root.join(casper::run_folder_name(rand::random()));
     let cleanup = RunFolder::new(dir.clone());
     private_fs::private_dir(&dir).map_err(io_msg)?;
@@ -813,6 +814,12 @@ pub async fn casper_check(command: &str, ctx: CliContext) -> CasperCheck {
         .copied()
         .flatten()
         .map(|v| v.to_string());
+    if chain.is_err() {
+        // Both problems at once: the message holds the command's.
+        if let Some(m) = &folder_message {
+            warnings.insert(0, m.clone());
+        }
+    }
     let message = match &chain {
         Err(m) => m.clone(),
         Ok(_) if !folder_ok => folder_message.clone().unwrap_or_default(),
@@ -979,14 +986,53 @@ mod tests {
     #[test]
     fn stale_runs_are_swept_but_active_ones_kept() {
         let root = std::env::temp_dir().join(format!("greencli-sweep-{}", rand::random::<u64>()));
-        let fresh = root.join("run-0000000000000001");
-        std::fs::create_dir_all(&fresh).unwrap();
-        let keep = root.join("other");
-        std::fs::create_dir_all(&keep).unwrap();
-        sweep_stale_runs(&root);
-        assert!(fresh.exists(), "a fresh folder isn't stale");
-        assert!(keep.exists());
+        let left = root.join("run-0000000000000001");
+        let held = root.join("run-0000000000000002");
+        let other = root.join("other");
+        for dir in [&left, &held, &other] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let running = RunFolder::new(held.clone());
+        // Fresh folders aren't stale yet.
+        sweep_stale_runs(&root, STALE_RUN);
+        assert!(left.exists() && held.exists() && other.exists());
+        // Once old enough, a left-over run folder goes; a held one and a
+        // folder that isn't a run folder stay.
+        std::thread::sleep(Duration::from_millis(30));
+        sweep_stale_runs(&root, Duration::from_millis(10));
+        assert!(!left.exists(), "a stale run folder is removed");
+        assert!(held.exists(), "a run in progress keeps its folder");
+        assert!(other.exists(), "only run folders are swept");
+        drop(running);
+        assert!(!held.exists(), "a run's folder goes when it ends");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn check_shows_the_folder_problem_with_a_command_problem() {
+        let mut c = ctx(true);
+        c.work_folder = Some(
+            std::env::temp_dir()
+                .join(format!("greencli-gone-{}", rand::random::<u64>()))
+                .to_string_lossy()
+                .into_owned(),
+        );
+        let check = casper_check("  ", c).await;
+        assert!(!check.ok);
+        assert!(
+            check.message.contains("Put the Casper command"),
+            "{}",
+            check.message
+        );
+        assert!(!check.folder_ok);
+        assert!(
+            check
+                .warnings
+                .iter()
+                .any(|w| w.contains("isn't there any more")),
+            "{:?}",
+            check.warnings
+        );
     }
 
     #[test]

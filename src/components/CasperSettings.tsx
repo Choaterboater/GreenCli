@@ -116,9 +116,13 @@ export default function CasperSettings() {
         </p>
         <p className="text-[10px] text-[var(--text-muted)] mt-1">
           Casper can still run its own sandboxed commands on this computer. They can reach this computer&apos;s local
-          ports and read files outside its folder (not private ones like ~/.ssh). So GreenCLI won&apos;t start Casper
-          while a port forward or a local MCP server is open. Casper keeps a copy of each question and answer in
-          ~/.casper.
+          ports, so GreenCLI won&apos;t start Casper while a port forward or a local MCP server is open, and won&apos;t
+          open one while Casper is answering. Casper keeps a copy of each question and answer in ~/.casper.
+        </p>
+        <p className="text-[10px] text-[var(--accent-warning)] mt-1">
+          Casper can read files outside its folder. It keeps only a short list of private places from the AI (like
+          ~/.ssh), and GreenCLI&apos;s own files are not on that list: your AI keys, MCP logins and session logs. Ask
+          Casper only about text you trust, since words hidden in a config or log could ask it to read those files.
         </p>
       </div>
 

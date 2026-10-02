@@ -41,6 +41,13 @@ describe('CasperSettings', () => {
     expect(useSettingsStore.getState().casperCommand).toBe('casper --model a/b');
   });
 
+  it('says plainly that Casper can read GreenCLI’s own keys and logs', () => {
+    render(<CasperSettings />);
+    expect(screen.getByText(/GreenCLI's own files are not on that list/)).toBeTruthy();
+    expect(screen.getByText(/your AI keys, MCP logins and session logs/)).toBeTruthy();
+    expect(screen.queryByText(/not private ones like ~\/\.ssh/)).toBeNull();
+  });
+
   it('checks Casper and shows the result and warnings', async () => {
     vi.mocked(invoke).mockResolvedValue({ ...OK, warnings: ['Casper will follow the instruction files it finds here: /x/AGENTS.md.'] });
     render(<CasperSettings />);
