@@ -398,18 +398,31 @@ export default function SettingsPanel() {
   const aiProvider = settings.aiProvider;
   const providerMeta = AI_PROVIDERS.find((p) => p.value === aiProvider);
 
-  // When the selected provider changes, reflect whether a key is already stored
-  // (in the Rust key store) and reset the transient input.
+  // Each time the panel opens, and when the provider changes while it is open,
+  // ask the password store whether a key is saved and reset the transient
+  // input. Asking on every open lets a failed check (a denied Keychain prompt,
+  // a locked keyring) recover, and shows a key flushed on the last close. A
+  // reply that arrives after the panel closed or the provider changed is
+  // dropped.
   useEffect(() => {
+    if (!showSettings) return;
     setKeyInput('');
-    if (providerMeta?.needsKey) {
-      invoke<boolean>('ai_has_key', { provider: aiProvider })
-        .then(setKeySaved)
-        .catch(() => setKeySaved(null));
-    } else {
+    if (!providerMeta?.needsKey) {
       setKeySaved(false);
+      return;
     }
-  }, [aiProvider, providerMeta?.needsKey]);
+    let live = true;
+    invoke<boolean>('ai_has_key', { provider: aiProvider })
+      .then((has) => {
+        if (live) setKeySaved(has);
+      })
+      .catch(() => {
+        if (live) setKeySaved(null);
+      });
+    return () => {
+      live = false;
+    };
+  }, [showSettings, aiProvider, providerMeta?.needsKey]);
 
   const saveKey = () => {
     // Don't overwrite a stored key when the (always-empty-on-open) field is
