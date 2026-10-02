@@ -30,6 +30,8 @@ import { notify } from '../store/toastStore';
 import McpServers from './McpServers';
 import AiAgents from './AiAgents';
 import CasperSettings from './CasperSettings';
+import SecretStoreNote from './SecretStoreNote';
+import { saveAiKey } from '../utils/secretStore';
 import HostsManager from './HostsManager';
 import LoginProfiles from './LoginProfiles';
 import TriggersSettings from './TriggersSettings';
@@ -409,9 +411,10 @@ export default function SettingsPanel() {
     // Don't overwrite a stored key when the (always-empty-on-open) field is
     // blurred without typing — that would silently wipe a saved key.
     if (!keyInput) return;
-    invoke('ai_set_key', { provider: aiProvider, key: keyInput })
-      .then(() => setKeySaved(true))
-      .catch(() => {});
+    // A failed save shows a toast (saveAiKey).
+    void saveAiKey(aiProvider, keyInput).then((ok) => {
+      if (ok) setKeySaved(true);
+    });
   };
 
   // The key otherwise saves only on the input's onBlur. Every close path (Escape,
@@ -425,7 +428,7 @@ export default function SettingsPanel() {
   useEffect(() => {
     if (wasOpenRef.current && !showSettings) {
       const { keyInput: pending, aiProvider: provider } = keyFlushRef.current;
-      if (pending) invoke('ai_set_key', { provider, key: pending }).catch(() => {});
+      if (pending) void saveAiKey(provider, pending);
       // The panel stays mounted across close (App renders it unconditionally),
       // so the typed key would otherwise still be sitting in the input — and
       // behind the reveal toggle — on reopen. Clear it on every close.
@@ -1271,12 +1274,11 @@ export default function SettingsPanel() {
                           <button
                             type="button"
                             onClick={() => {
-                              invoke('ai_set_key', { provider: aiProvider, key: '' })
-                                .then(() => {
-                                  setKeySaved(false);
-                                  setKeyInput('');
-                                })
-                                .catch(() => {});
+                              void saveAiKey(aiProvider, '').then((ok) => {
+                                if (!ok) return;
+                                setKeySaved(false);
+                                setKeyInput('');
+                              });
                             }}
                             className="ml-auto text-[10px] text-[var(--text-muted)] hover:text-[var(--accent-danger)]"
                           >
@@ -1302,9 +1304,10 @@ export default function SettingsPanel() {
                         {showApiKey ? <EyeOff size={12} /> : <Eye size={12} />}
                       </button>
                     </div>
-                    <p className="text-[10px] text-[var(--text-muted)] mt-1">
-                      Stored in the app data dir (outside the browser), sent only to the provider from the Rust backend.
-                    </p>
+                    <SecretStoreNote
+                      after="Sent only to the provider, never kept in the browser."
+                      refreshKey={`${showSettings}:${aiProvider}:${keySaved}`}
+                    />
                   </div>
                 )}
 

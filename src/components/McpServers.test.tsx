@@ -315,6 +315,48 @@ describe('McpServers writes switch', () => {
   });
 });
 
+describe('McpServers login save', () => {
+  it('shows a toast and keeps the form open when the login is not saved', async () => {
+    defs = [plainDef()];
+    status = [st()];
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === 'mcp_list_servers') return defs;
+      if (cmd === 'mcp_status') return status;
+      if (cmd === 'secret_store_status') return { kind: 'unavailable', leftover: false };
+      if (cmd === 'mcp_set_credentials') {
+        throw "Can't reach the system password store. Your keys are still there. Try again after you log in to the desktop.";
+      }
+      return null;
+    });
+    render(<McpServers />);
+    fireEvent.click(await screen.findByTitle('Edit'));
+    fireEvent.change(screen.getByPlaceholderText(/Paste the server's credentials file/), {
+      target: { value: 'client_id: x' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(toastTitles()).toContain('central login not saved'));
+    expect(toastTitles()).not.toContain('MCP server saved');
+    expect(screen.getByRole('button', { name: 'Save' })).toBeTruthy();
+    expect(screen.getByTestId('secret-store-line').textContent).toMatch(/^Can't reach the system password store/);
+  });
+
+  it('says where the login is kept', async () => {
+    defs = [plainDef()];
+    status = [st()];
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === 'mcp_list_servers') return defs;
+      if (cmd === 'mcp_status') return status;
+      if (cmd === 'secret_store_status') return { kind: 'keychain', leftover: false };
+      return null;
+    });
+    render(<McpServers />);
+    fireEvent.click(await screen.findByTitle('Edit'));
+    await waitFor(() =>
+      expect(screen.getByTestId('secret-store-line').textContent).toMatch(/^Saved in macOS Keychain\. On connect/)
+    );
+  });
+});
+
 describe('McpServers form help', () => {
   it('warns about plain http to another computer, and explains the environment', async () => {
     defs = [];

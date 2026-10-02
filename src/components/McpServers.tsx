@@ -23,6 +23,8 @@ import { useMcpApprovalStore } from '../store/mcpApprovalStore';
 import type { McpExportPins, McpServerDef, McpStatus } from '../utils/mcpTypes';
 import { plainHttpWarning } from '../utils/urlSafety';
 import McpServerSafety from './McpServerSafety';
+import SecretStoreNote from './SecretStoreNote';
+import { saveMcpLogin } from '../utils/secretStore';
 
 type McpTransport = McpServerDef['transport'];
 
@@ -324,7 +326,13 @@ export default function McpServers() {
       // meaningful for stdio — Http servers aren't spawned by this app, so
       // there's no process to inject a credentials env var into.
       if (form.transport === 'stdio' && form.credsContent.trim()) {
-        await invoke('mcp_set_credentials', { name: def.name, content: form.credsContent });
+        // The server is saved; only its login failed (a toast says why). Keep
+        // the form open on the saved name so Save can try again.
+        if (!(await saveMcpLogin(def.name, form.credsContent))) {
+          setEditingName(def.name);
+          refresh();
+          return;
+        }
       }
       clearAllowances(def.name);
       if (editingName) clearAllowances(editingName);
@@ -757,10 +765,10 @@ export default function McpServers() {
                     {showCreds ? <EyeOff size={13} /> : <Eye size={13} />}
                   </button>
                 </div>
-                <p className="text-[10px] text-[var(--text-muted)]">
-                  Stored in the app data dir (outside the browser). On connect it's written to a file and the env var
-                  above is pointed at it — so you never keep a separate credentials file by hand.
-                </p>
+                <SecretStoreNote
+                  after="On connect it's written to a private file that the env var above points at. The file is deleted when the server stops."
+                  refreshKey={showForm}
+                />
               </div>
             </>
           )}
