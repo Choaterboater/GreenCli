@@ -940,18 +940,41 @@ pub fn project_yaml(deny_read: &[PathBuf]) -> String {
 /// with ";" instead of failing.
 pub fn git_ceiling(work_dir: &Path) -> Result<OsString, String> {
     let sep = if cfg!(windows) { ';' } else { ':' };
-    let fail = || {
-        format!("Casper's working folder can't be used because its path holds a \"{sep}\". Pick another folder.")
-    };
     let parent = work_dir
         .parent()
-        .filter(|p| !p.as_os_str().is_empty() && p.is_absolute())
-        .ok_or_else(fail)?;
-    let parent = plain_path(parent);
-    if parent.to_string_lossy().contains(sep) {
-        return Err(fail());
+        .filter(|p| p.is_absolute())
+        .map(plain_path)
+        .unwrap_or_default();
+    check_ceiling(&parent.to_string_lossy(), sep, cfg!(windows))?;
+    Ok(parent.into_os_string())
+}
+
+/// The checks behind git_ceiling, on the parent folder's path as text (with
+/// Windows' verbatim prefix already dropped), git's list separator `sep`, and
+/// `windows` for Windows path rules. Pure, so both platforms' rules are tested
+/// everywhere. The parent must be absolute (Windows: `C:\` or `\\server\share`;
+/// elsewhere: `/`) and must not hold `sep`.
+pub fn check_ceiling(parent: &str, sep: char, windows: bool) -> Result<(), String> {
+    let absolute = if windows {
+        let b = parent.as_bytes();
+        (b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && matches!(b[2], b'\\' | b'/'))
+            || parent.starts_with(r"\\")
+            || parent.starts_with("//")
+    } else {
+        parent.starts_with('/')
+    };
+    if !absolute {
+        return Err(
+            "Casper's working folder can't be used because it isn't a full path. Pick another folder."
+                .to_string(),
+        );
     }
-    Ok(parent.as_os_str().to_owned())
+    if parent.contains(sep) {
+        return Err(format!(
+            "Casper's working folder can't be used because its path holds a \"{sep}\". Pick another folder."
+        ));
+    }
+    Ok(())
 }
 
 /// Instruction files Casper would follow when it works in `folder`:
@@ -2117,6 +2140,36 @@ mod tests {
                 .join(format!("a{other}b"))
                 .join("run-1");
             assert_eq!(git_ceiling(&ok).unwrap(), ok.parent().unwrap().as_os_str());
+        }
+    }
+
+    #[test]
+    fn check_ceiling_follows_each_platform() {
+        // macOS and Linux: ":" splits the list; the path must start at "/".
+        assert!(check_ceiling("/Users/me/work", ':', false).is_ok());
+        assert!(check_ceiling("/Users/me/a;b", ':', false).is_ok());
+        assert!(check_ceiling("/Users/me/a:b", ':', false)
+            .unwrap_err()
+            .contains("holds a \":\""));
+        for bad in ["", "work", "a/b", r"C:\work"] {
+            assert!(check_ceiling(bad, ':', false)
+                .unwrap_err()
+                .contains("isn't a full path"));
+        }
+        // Windows: ";" splits the list; the path needs a drive or a server.
+        for ok in [
+            r"C:\Users\me\work",
+            "c:/work",
+            r"\\server\share\work",
+            "//server/share",
+        ] {
+            assert!(check_ceiling(ok, ';', true).is_ok(), "{ok}");
+        }
+        assert!(check_ceiling(r"C:\Users\a;b", ';', true)
+            .unwrap_err()
+            .contains("holds a \";\""));
+        for bad in ["", "work", r"\work", "/work", "C:work", r"C:", r"1:\work"] {
+            assert!(check_ceiling(bad, ';', true).is_err(), "{bad}");
         }
     }
 
