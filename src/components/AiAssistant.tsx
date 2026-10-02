@@ -37,6 +37,7 @@ import {
   AlertCircle,
   CheckCircle2,
   EyeOff,
+  FileDiff,
   Square,
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/tauri';
@@ -991,7 +992,7 @@ function buildDeviceContext(activeSession: Session | undefined): string {
 // skips it — markdown is re-parsed (useMemo) only when this message's content
 // changes. Tool-expansion state is local, so toggling one message's tool output
 // never re-renders the rest of the conversation.
-const MessageItem = memo(function MessageItem({ msg }: { msg: DisplayMessage }) {
+const MessageItem = memo(function MessageItem({ msg, editTarget }: { msg: DisplayMessage; editTarget: AiEditTarget | null }) {
   const [openTools, setOpenTools] = useState<Set<number>>(new Set());
 
   if (msg.role === 'user') {
@@ -1090,16 +1091,32 @@ const MessageItem = memo(function MessageItem({ msg }: { msg: DisplayMessage }) 
               components={{
                 code(props) {
                   const { children, className, node, ...rest } = props;
-                  const match = /language-(\w+)/.exec(className || '');
-                  return match ? (
-                    <SyntaxHighlighter
-                      {...(rest as any)}
-                      PreTag="div"
-                      children={String(children).replace(/\n$/, '')}
-                      language={match[1]}
-                      style={vscDarkPlus}
-                      customStyle={{ margin: '8px 0', borderRadius: '8px', fontSize: '11px', padding: '12px' }}
-                    />
+                  const match = /language-([\w-]+)/.exec(className || '');
+                  const code = String(children).replace(/\n$/, '');
+                  // A fenced block (with or without a language) gets Review in Editor.
+                  return match || code.includes('\n') ? (
+                    <div className="relative">
+                      <SyntaxHighlighter
+                        {...(rest as any)}
+                        PreTag="div"
+                        children={code}
+                        language={match?.[1] ?? 'text'}
+                        style={vscDarkPlus}
+                        customStyle={{ margin: '8px 0', borderRadius: '8px', fontSize: '11px', padding: '12px', paddingTop: '28px' }}
+                      />
+                      <button
+                        onClick={() => useAiBridge.getState().review({ code, target: editTarget, language: match?.[1] })}
+                        className="absolute top-1.5 right-1.5 flex items-center gap-1 px-1.5 py-0.5 text-[10px] rounded bg-[var(--bg-tertiary)] hover:bg-[var(--border-strong)] border border-[var(--border)] text-[var(--text-primary)]"
+                        title={
+                          editTarget
+                            ? `Compare with the lines you asked about in ${editTarget.tabName}, then Apply or Discard`
+                            : 'Open this in a new editor tab'
+                        }
+                      >
+                        <FileDiff size={10} />
+                        {editTarget ? 'Review in Editor' : 'Open in Editor'}
+                      </button>
+                    </div>
                   ) : (
                     <code {...rest} className="px-1 py-0.5 bg-[var(--bg-primary)] border border-[var(--border)] rounded text-[var(--accent-warning)] text-[10px] font-mono">
                       {children}
@@ -1475,6 +1492,18 @@ export default function AiAssistant() {
   }, [messages, isLoading, settings, activeSession, activeAgent, hasKey]);
 
   // A question from the Config Editor (Ask AI): sent as soon as the panel is free.
+  const editTargets = useAiBridge((s) => s.targets);
+  // An answer's code goes back to the lines the conversation's latest Ask AI
+  // question was about.
+  const answerTargets = useMemo(() => {
+    const out = new Map<string, AiEditTarget>();
+    let target: AiEditTarget | undefined;
+    for (const msg of messages) {
+      if (msg.role === 'user') target = editTargets.get(msg.id) ?? target;
+      else if (target) out.set(msg.id, target);
+    }
+    return out;
+  }, [messages, editTargets]);
   const pendingAsk = useAiBridge((s) => s.pendingAsk);
   useEffect(() => {
     if (!pendingAsk || isLoading) return;
@@ -1662,7 +1691,7 @@ export default function AiAssistant() {
 
         {/* Messages */}
         {messages.map((msg) => (
-          <MessageItem key={msg.id} msg={msg} />
+          <MessageItem key={msg.id} msg={msg} editTarget={answerTargets.get(msg.id) ?? null} />
         ))}
 
         {/* Loading — only the standalone "Thinking…" pill until the assistant

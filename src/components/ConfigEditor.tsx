@@ -58,6 +58,7 @@ import { jobBlockFromEditor, vendorSteps } from '../utils/changeJobs';
 import { askMenu, buildAskPrompt, secretLinePairs, type AskKind } from '../utils/askAi';
 import { hideSecretsForCopy, hideSecretsInText } from '../utils/secrets/forCopy';
 import { useAiBridge } from '../store/aiBridgeStore';
+import { fenceDeviceLanguage, isOtherVendor, locateTarget, restoreSecrets, withSuggestion } from '../utils/aiReview';
 import { showSidePanel } from './sidePanelActions';
 import { timeAgo } from '../store/recentStore';
 import { useTheme } from '../hooks/useTheme';
@@ -646,9 +647,22 @@ export default function ConfigEditor() {
     const models = diffModelsRef.current.splice(0);
     if (models.length) setTimeout(() => models.forEach((m) => !m.isDisposed() && m.dispose()), 0);
   }, []);
+  // An AI suggestion under review (Review in Editor in the AI panel): your tab
+  // on the left, the suggestion on the right. Nothing changes until Apply.
+  const [aiReview, setAiReview] = useState<{
+    bufferId: string;
+    proposed: string;
+    where: string;
+    restored: number;
+    markersLeft: number;
+  } | null>(null);
+  const reviewRightRef = useRef<MonacoEditor.ICodeEditor | null>(null);
+  // An applied suggestion waits for the editor to come back, then goes in as
+  // an edit (so Ctrl+Z undoes it) instead of replacing the text outright.
+  const pendingApplyRef = useRef<{ bufferId: string; text: string } | null>(null);
   useEffect(() => {
-    if (!diffMode) disposeDiffModels();
-  }, [diffMode, disposeDiffModels]);
+    if (!diffMode && !aiReview) disposeDiffModels();
+  }, [diffMode, aiReview, disposeDiffModels]);
   // Running-configs pulled per device (deviceKey). The send preview only ever
   // diffs against the device it is sending to — one global baseline from
   // whichever switch was pulled last compared against the wrong box.
@@ -829,6 +843,64 @@ export default function ConfigEditor() {
       openInNewTab({ ...draft, filePath: null, dirty: true, langExplicit: false });
     }
   }, [inbox, openInNewTab]);
+
+  // Review in Editor: the suggestion as a diff against the lines you asked
+  // about, with the real secrets put back. It opens in a new tab instead when
+  // there is nothing to compare with: no question from the editor, the tab is
+  // closed, the lines changed since, or it is another vendor's config (Convert).
+  const pendingReview = useAiBridge((s) => s.pendingReview);
+  useEffect(() => {
+    if (!pendingReview) return;
+    const review = useAiBridge.getState().takeReview();
+    if (!review) return;
+    showSidePanel('editor');
+    const target = review.target;
+    const buffer = target ? buffersRef.current.find((b) => b.id === target.bufferId) : undefined;
+    const openAlone = (why: string) => {
+      const restoredCode = target ? restoreSecrets(review.code, target.secretLines).text : review.code;
+      const lang = fenceDeviceLanguage(review.language) ?? target?.language ?? 'plaintext';
+      openInNewTab({ name: 'AI suggestion', content: restoredCode, language: lang, filePath: null, dirty: true, langExplicit: lang !== 'plaintext' });
+      showStatus(why);
+    };
+    if (!target || !buffer) {
+      openAlone(target ? 'The tab you asked about is closed: the suggestion opened in a new tab' : 'The suggestion opened in a new tab');
+      return;
+    }
+    if (isOtherVendor(review.language, target.language)) {
+      openAlone('The converted config opened in a new tab');
+      return;
+    }
+    const span = locateTarget(buffer.content, target.original, target.span);
+    if (!span) {
+      openAlone('Those lines changed since you asked: the suggestion opened in a new tab');
+      return;
+    }
+    const { text, restored, markersLeft } = restoreSecrets(review.code, target.secretLines);
+    setDiffMode(false);
+    setActiveId(buffer.id);
+    setAiReview({
+      bufferId: buffer.id,
+      proposed: withSuggestion(buffer.content, span, text),
+      where: target.span ? (span.start === span.end ? `line ${span.start}` : `lines ${span.start}–${span.end}`) : 'the whole tab',
+      restored,
+      markersLeft,
+    });
+  }, [pendingReview, openInNewTab]);
+
+  const applyAiReview = () => {
+    if (!aiReview) return;
+    const next = reviewRightRef.current?.getValue() ?? aiReview.proposed;
+    if (next !== content) pendingApplyRef.current = { bufferId: aiReview.bufferId, text: next };
+    setAiReview(null);
+    reviewRightRef.current = null;
+    showStatus(next !== content ? 'Applied the AI suggestion (Ctrl+Z undoes it)' : 'Nothing to apply: no changes left');
+  };
+  const discardAiReview = () => {
+    setAiReview(null);
+    reviewRightRef.current = null;
+    showStatus('Discarded the AI suggestion');
+  };
+  const reviewing = !!aiReview && aiReview.bufferId === active.id;
 
   const newTab = useCallback(() => {
     openInNewTab({
@@ -1157,6 +1229,17 @@ export default function ConfigEditor() {
     // Device languages, themes and snippets are registered once in
     // setupMonaco (beforeMount) — this runs again after every Diff toggle.
     setEditorEpoch((n) => n + 1);
+
+    // An AI suggestion applied in the review: one undoable edit (onChange
+    // then saves it to the tab and marks it unsaved).
+    const apply = pendingApplyRef.current;
+    const model = ed.getModel();
+    if (apply && model && apply.bufferId === activeIdRef.current) {
+      pendingApplyRef.current = null;
+      ed.pushUndoStop();
+      ed.executeEdits('ai-suggestion', [{ range: model.getFullModelRange(), text: apply.text, forceMoveMarkers: true }]);
+      ed.pushUndoStop();
+    }
 
     // Keybindings
     ed.addAction({
@@ -1895,7 +1978,8 @@ export default function ConfigEditor() {
               }
               setShowCompareMenu(!showCompareMenu);
             }}
-            className={`flex items-center gap-1.5 px-2 py-1 text-xs rounded transition-colors ${
+            disabled={reviewing}
+            className={`flex items-center gap-1.5 px-2 py-1 text-xs rounded transition-colors disabled:opacity-40 ${
               diffMode ? 'text-[var(--accent)] bg-[var(--accent-soft)]' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
             }`}
             title="Compare the editor with what you pulled, or with a file"
@@ -2175,6 +2259,40 @@ export default function ConfigEditor() {
         </div>
       )}
 
+      {/* Reviewing an AI suggestion: what it covers, and Apply / Discard. */}
+      {reviewing && (
+        <div className="flex items-start gap-2 px-3 py-2 border-b border-[var(--bg-tertiary)] bg-[var(--accent-violet-soft)] text-xs flex-shrink-0">
+          <Sparkles size={13} className="text-[var(--accent-violet)] mt-0.5 flex-shrink-0" />
+          <div className="flex-1 min-w-0 text-[var(--text-primary)]">
+            <div className="font-medium">AI suggestion for {aiReview!.where}</div>
+            <div className="text-[11px] text-[var(--text-secondary)]">
+              Left: your tab · Right: the suggestion. The arrow beside a change drops it; you can also edit the right side.
+              {aiReview!.restored > 0 &&
+                ` ${aiReview!.restored} secret ${aiReview!.restored === 1 ? 'line was' : 'lines were'} put back from your tab.`}
+            </div>
+            {aiReview!.markersLeft > 0 && (
+              <div className="flex items-center gap-1 mt-0.5 text-[11px] text-[var(--accent-warning)]">
+                <AlertTriangle size={11} className="flex-shrink-0" />
+                {aiReview!.markersLeft} {aiReview!.markersLeft === 1 ? 'line still says' : 'lines still say'} &lt;secret hidden&gt;: put
+                the real value in before sending.
+              </div>
+            )}
+          </div>
+          <button
+            onClick={applyAiReview}
+            className="px-2.5 py-1 text-xs rounded bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-[var(--accent-fg)] flex-shrink-0"
+          >
+            Apply
+          </button>
+          <button
+            onClick={discardAiReview}
+            className="px-2.5 py-1 text-xs rounded text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] flex-shrink-0"
+          >
+            Discard
+          </button>
+        </div>
+      )}
+
       {/* What the diff compares against — and a warning when a pulled
           baseline is from a different device than the active session. */}
       {diffMode && diffSource && (
@@ -2193,7 +2311,37 @@ export default function ConfigEditor() {
 
       {/* Monaco Editor */}
       <div className="flex-1 overflow-hidden">
-        {diffMode ? (
+        {reviewing ? (
+          <DiffEditor
+            key={`review-${active.id}`}
+            original={content}
+            modified={aiReview!.proposed}
+            language={language}
+            theme={editorTheme}
+            beforeMount={setupMonaco}
+            keepCurrentOriginalModel
+            keepCurrentModifiedModel
+            onMount={(diffEditor) => {
+              disposeDiffModels();
+              const { original: leftModel, modified: rightModel } = diffEditor.getModel() ?? {};
+              if (leftModel && rightModel) diffModelsRef.current.push(leftModel, rightModel);
+              reviewRightRef.current = diffEditor.getModifiedEditor();
+            }}
+            options={{
+              readOnly: false,
+              originalEditable: false,
+              renderMarginRevertIcon: true,
+              fixedOverflowWidgets: true,
+              fontSize: fontSize,
+              fontFamily: 'JetBrains Mono, Consolas, "Courier New", monospace',
+              lineHeight: Math.round(fontSize * 1.5),
+              mouseWheelZoom: true,
+              minimap: { enabled: false },
+              scrollBeyondLastLine: false,
+              renderSideBySide: true,
+            }}
+          />
+        ) : diffMode ? (
           <DiffEditor
             // One per tab, so a tab switch never feeds one tab's text into another.
             key={active.id}
