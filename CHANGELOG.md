@@ -33,6 +33,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Plain-text passwords get a tip** in the editor: `password plaintext …`, `key plaintext …`,
   `auth-pass plaintext …` and the like are underlined in blue with a pointer to Copy with secrets
   hidden. It stays out of the Send dialog, since setting a password is what a send is for.
+- **Hover cards for Aruba CX and Junos**: hover a line in the Config Editor (VLAN, access or trunk
+  port, LAG, VLAN interface, static route, NTP, SNMP, RADIUS, commit confirmed …) to see what it
+  does in plain words and how the other vendor writes it.
 
 ### Fixed
 - Confirm dialogs kept their text on one line: the Send preview, the problem list and the SFTP
