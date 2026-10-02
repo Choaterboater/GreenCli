@@ -2663,6 +2663,23 @@ pub(crate) mod tests {
         client
     }
 
+    /// A saved stdio server that really connects: a small Perl script (a
+    /// shell is refused as an MCP command) that answers each request, with
+    /// no tools.
+    #[cfg(unix)]
+    pub(crate) fn fake_mcp_server_def(name: &str) -> McpServerDef {
+        const SERVER: &str = r#"$| = 1;
+while (<STDIN>) {
+  next unless /"id":(\d+)/;
+  my $id = $1;
+  my $r = '{}';
+  $r = '{"protocolVersion":"2025-06-18","capabilities":{},"serverInfo":{"name":"fake","version":"1"}}' if /"method":"initialize"/;
+  $r = '{"tools":[]}' if /"method":"tools\/list"/;
+  print qq({"jsonrpc":"2.0","id":$id,"result":$r}\n);
+}"#;
+        def(name, "perl", &["-e", SERVER])
+    }
+
     /// A login file for `name` in `app_dir`, as a connect writes it.
     #[cfg(unix)]
     pub(crate) fn test_creds_file(app_dir: &std::path::Path, name: &str) -> Arc<CredsFile> {

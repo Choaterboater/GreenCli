@@ -2847,8 +2847,15 @@ pub(crate) fn spawn_mcp_connect(handle: AppHandle, names: Option<Vec<String>>) {
 /// then shutdown_children.
 pub(crate) async fn stop_children_for_update(app: &AppHandle) -> Vec<String> {
     let state: State<AppState> = app.state();
-    let names = state.mcp_manager.lock().await.client_names();
-    shutdown_children_inner(&state.mcp_manager).await;
+    stop_children_for_update_inner(&state.mcp_manager).await
+}
+
+/// stop_children_for_update without Tauri. Each server's login file in
+/// mcp_creds goes with it; a reconnect (spawn_mcp_connect) reads the login
+/// from the password store again.
+pub(crate) async fn stop_children_for_update_inner(mcp: &AsyncMutex<McpManager>) -> Vec<String> {
+    let names = mcp.lock().await.client_names();
+    shutdown_children_inner(mcp).await;
     names
 }
 
@@ -3102,7 +3109,8 @@ fn main() {
 mod shutdown_tests {
     use super::*;
     use mcp::client::tests::{
-        fake_child_pid, fake_stdio_client, fake_stdio_client_with_creds, test_creds_file,
+        fake_child_pid, fake_mcp_server_def, fake_stdio_client, fake_stdio_client_with_creds,
+        test_creds_file,
     };
 
     /// `kill -0`: is there still a process (running or an unreaped zombie)?
@@ -3156,6 +3164,58 @@ mod shutdown_tests {
         assert!(path.exists());
         shutdown_children_inner(&mcp).await;
         assert!(!path.exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The login files in the run folders of `dir`'s mcp_creds.
+    fn login_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+        let mut out = Vec::new();
+        for run in std::fs::read_dir(dir.join("mcp_creds")).into_iter().flatten().flatten() {
+            if run.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                out.extend(std::fs::read_dir(run.path()).unwrap().flatten().map(|f| f.path()));
+            }
+        }
+        out
+    }
+
+    /// Windows update: the servers stop right before the installer starts,
+    /// and their login files go too. If the install then fails, the servers
+    /// that were stopped come back, each with its login read from the store
+    /// again (not an old file).
+    #[tokio::test]
+    async fn an_update_stop_deletes_the_login_files_and_a_reconnect_reads_the_store() {
+        let _serial = ai::CLI_RUNS_TEST_LOCK.lock().await;
+        let dir = std::env::temp_dir().join(format!("greencli-shutdown-{}", rand::random::<u64>()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let secrets = Arc::new(secret_store::SecretStore::files(&dir));
+        let mgr = McpManager::new(dir.clone(), McpCreds::new(secrets));
+        mgr.save_config(fake_mcp_server_def("central")).unwrap();
+        let creds = mgr.creds();
+        creds.set("central", "token: one").unwrap();
+        let mcp = AsyncMutex::new(mgr);
+        let none = || None;
+
+        mcp::connect_server(&mcp, "central", &none).await.unwrap();
+        let first = login_files(&dir);
+        assert_eq!(first.len(), 1);
+        assert_eq!(std::fs::read_to_string(&first[0]).unwrap(), "token: one");
+
+        let stopped = stop_children_for_update_inner(&mcp).await;
+        assert_eq!(stopped, vec!["central".to_string()]);
+        assert!(login_files(&dir).is_empty(), "a login file outlived the stop");
+
+        // The install failed: reconnect what was stopped (spawn_mcp_connect).
+        creds.set("central", "token: two").unwrap();
+        for name in &stopped {
+            mcp::connect_server(&mcp, name, &none).await.unwrap();
+        }
+        let second = login_files(&dir);
+        assert_eq!(second.len(), 1);
+        assert_ne!(second, first);
+        assert_eq!(std::fs::read_to_string(&second[0]).unwrap(), "token: two");
+
+        shutdown_children_inner(&mcp).await;
+        assert!(login_files(&dir).is_empty());
         let _ = std::fs::remove_dir_all(dir);
     }
 }
