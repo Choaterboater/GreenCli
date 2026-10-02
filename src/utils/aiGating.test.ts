@@ -90,7 +90,7 @@ describe('auditorAllowsCommand', () => {
     expect(auditorAllowsCommand('show running-config | include hostname')).toBe(true);
     expect(auditorAllowsCommand('sh run | inc vlan')).toBe(true);
     expect(auditorAllowsCommand('cat /var/log/messages | grep error | tail -n 20')).toBe(true);
-    expect(auditorAllowsCommand('ping 10.0.0.1')).toBe(true);
+    expect(auditorAllowsCommand('ping 10.0.0.1 count 5')).toBe(true);
     expect(auditorAllowsCommand('show version\nshow vlan')).toBe(true);
   });
 
@@ -130,6 +130,37 @@ describe('auditorAllowsCommand', () => {
     expect(auditorAllowsCommand('date -u +%F')).toBe(true);
     expect(auditorAllowsCommand('tail -n 50 /var/log/x')).toBe(true);
     expect(auditorAllowsCommand('show log messages | last 20')).toBe(true);
+  });
+
+  it('refuses ping without a count, which runs until Ctrl-C', () => {
+    for (const cmd of ['ping 8.8.8.8', 'do ping 8.8.8.8', 'ping -n 8.8.8.8', 'ping -c 0 8.8.8.8', 'ping 8.8.8.8 count', 'ping']) {
+      expect([cmd, auditorAllowsCommand(cmd)]).toEqual([cmd, false]);
+    }
+    for (const cmd of [
+      'ping -c 4 8.8.8.8',
+      'ping -c4 8.8.8.8',
+      'ping 8.8.8.8 -c 3',
+      'ping -n 4 8.8.8.8',
+      'ping 10.0.0.1 count 5',
+      'ping 10.0.0.1 repetitions 5',
+      'ping 10.0.0.1 repeat 5',
+      'do ping 10.0.0.1 repetitions 3',
+    ]) {
+      expect([cmd, auditorAllowsCommand(cmd)]).toEqual([cmd, true]);
+    }
+    // traceroute ends by itself.
+    expect(auditorAllowsCommand('traceroute 8.8.8.8')).toBe(true);
+  });
+
+  it('refuses cat, head and tail with no file, which wait on the keyboard', () => {
+    for (const cmd of ['cat', 'cat -', 'cat -n', 'head', 'head -n 20', 'tail', 'tail -n 50', 'tail -c 100 -', 'less']) {
+      expect([cmd, auditorAllowsCommand(cmd)]).toEqual([cmd, false]);
+    }
+    for (const cmd of ['cat /etc/hosts', 'cat -n /etc/hosts', 'head -n 20 /var/log/x', 'head -20 x', 'tail -n50 x', 'tail -- x']) {
+      expect([cmd, auditorAllowsCommand(cmd)]).toEqual([cmd, true]);
+    }
+    // As a pipe stage they read the pipe.
+    expect(auditorAllowsCommand('show log messages | tail -n 20')).toBe(true);
   });
 });
 

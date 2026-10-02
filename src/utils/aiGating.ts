@@ -77,21 +77,53 @@ function tailFollows(words: string[]): boolean {
   return words.some((w) => /^--(?:follow|retry)/i.test(w) || /^-[A-Za-z0-9]*[fF]/.test(w));
 }
 
-/** Plain reads only: date without a time to set, tail without follow (also as a pipe stage). */
+/** Words that set how many pings to send: Linux and macOS -c N, Windows -n N, Junos count N,
+ *  Aruba repetitions N, Cisco repeat N. */
+const PING_COUNT_WORDS: ReadonlySet<string> = new Set(['-c', '-n', 'count', 'repetitions', 'repeat']);
+const PING_COUNT = /^[1-9]\d*$/;
+
+/** ping with a count. Without one, Linux and Junos ping run until Ctrl-C, so the AI's next line
+ *  is typed into it. */
+function pingHasCount(words: string[]): boolean {
+  return words.some(
+    (w, i) => /^-c[1-9]\d*$/.test(w) || (PING_COUNT_WORDS.has(w.toLowerCase()) && PING_COUNT.test(words[i + 1] ?? ''))
+  );
+}
+
+/** cat, head or tail with a file to read. With none (or only "-") they wait on the keyboard, and
+ *  the AI's next line is typed into them. head and tail -n/-c take a value. */
+function readsAFile(verb: string, words: string[]): boolean {
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i]!;
+    if (w === '--') return i + 1 < words.length && words.slice(i + 1).some((f) => f !== '-');
+    if (w.startsWith('-') && w !== '-') {
+      if (verb !== 'cat' && /^-[nc]$/.test(w)) i++;
+      continue;
+    }
+    if (w !== '-') return true;
+  }
+  return false;
+}
+
+/** Plain reads that end: date without a time to set, ping with a count, cat/head/tail with a file,
+ *  tail without follow (also as a pipe stage). */
 function auditorWordsOk(line: string): boolean {
   const stages = line.split('|').map((stage) => stage.trim().split(/\s+/).filter(Boolean));
   const first = stages[0] ?? [];
-  const verb = (first[0] === 'do' ? first[1] : first[0])?.toLowerCase();
+  const verb = (first[0] === 'do' ? first[1] : first[0])?.toLowerCase() ?? '';
   const args = first.slice(first[0] === 'do' ? 2 : 1);
   if (verb === 'date' && !args.every((w) => DATE_SHOW_ARG.test(w))) return false;
+  if (verb === 'ping' && !pingHasCount(args)) return false;
+  if (['cat', 'head', 'tail'].includes(verb) && !readsAFile(verb, args)) return false;
   return stages.every((words) => (words[0] ?? '').toLowerCase() !== 'tail' || !tailFollows(words.slice(1)));
 }
 
 /**
  * The stricter check for the Read-only Auditor: every line must be a plain read. It starts with a
  * read word (show, display, get, ping, ...; not less, more or monitor), has no write word, no `;`,
- * `&`, `<`, `>`, backtick or `$(`, each `|` stage is in AUDITOR_PIPES, `date` sets no time and
- * `tail` doesn't follow. Anything else is refused, with no dialog.
+ * `&`, `<`, `>`, backtick or `$(`, each `|` stage is in AUDITOR_PIPES, `date` sets no time,
+ * `ping` has a count, `cat`/`head`/`tail` name a file and `tail` doesn't follow. Anything else is
+ * refused, with no dialog.
  */
 export function auditorAllowsCommand(cmd: string): boolean {
   if (CONTROL_CHARS.test(cmd)) return false;
