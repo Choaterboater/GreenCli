@@ -6,6 +6,7 @@ import {
   dailyCheckOn,
   getUpdateStatus,
   offText,
+  onWindows,
   restartToUpdate,
   setDailyCheck,
   updateErrorText,
@@ -18,8 +19,6 @@ type CheckState =
   | { kind: 'latest' }
   | { kind: 'ready'; version: string }
   | { kind: 'error'; message: string };
-
-const isWindows = typeof navigator !== 'undefined' && /Windows/i.test(navigator.userAgent);
 
 /** Settings → Updates: version, Check for updates, Restart to update, daily check. */
 export default function UpdateSettings() {
@@ -98,7 +97,7 @@ export default function UpdateSettings() {
             Check once a day
           </label>
           {moved && <p className="text-xs text-[var(--accent-warning)]">{UPDATE_TEXT.moveFirst}</p>}
-          {isWindows && <p className="text-xs text-[var(--text-muted)]">{UPDATE_TEXT.windows}</p>}
+          {onWindows() && <p className="text-xs text-[var(--text-muted)]">{UPDATE_TEXT.windows}</p>}
         </>
       )}
     </section>

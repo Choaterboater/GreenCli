@@ -319,7 +319,7 @@ export const HELP_TOPICS: HelpTopic[] = [
           isMac
             ? 'Run GreenCLI from **Applications**. From the disk image (or straight from Downloads) it offers no update.'
             : platform === 'windows'
-              ? 'Close Claude Code and Casper before you update. MCP servers stop only when the installer starts, and come back if it fails.'
+              ? 'Close Claude Code and Casper before you update (the **Restart to update** box reminds you). MCP servers stop only when the installer starts, and come back if it fails.'
               : 'There is no Linux release build, so updates are off on Linux.',
         ],
       },

@@ -40,6 +40,10 @@ export const UPDATE_TEXT = {
   dirtyEditor: 'The config editor has unsaved edits. They will be lost.',
 } as const;
 
+/** Windows, checked when asked (not when the module loads) so tests can stub it. */
+export const onWindows = (): boolean =>
+  typeof navigator !== 'undefined' && /Windows/i.test(navigator.userAgent);
+
 export const DAY_MS = 24 * 60 * 60 * 1000;
 const LAST_CHECK_KEY = 'greencli-update-last-check';
 const DAILY_KEY = 'greencli-update-daily';
@@ -166,6 +170,9 @@ export async function restartToUpdate(version: string): Promise<boolean> {
   const lines = [
     `GreenCLI ${version} installs, then opens again.`,
     open > 0 ? `${open} open session${open === 1 ? '' : 's'} will close.` : '',
+    // A running greencli-mcp.exe (from Claude Code or Casper) blocks the
+    // installer, which only checks for GreenCLI.exe itself.
+    onWindows() ? UPDATE_TEXT.windows : '',
     dirty ? UPDATE_TEXT.dirtyEditor : '',
   ].filter(Boolean);
   const ok = await askConfirm({

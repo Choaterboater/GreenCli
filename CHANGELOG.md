@@ -14,8 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Settings → **Updates** shows the version, **Check for updates** and **Check once a day** (on by
   default). When a new version is downloaded and checked, you see "GreenCLI X is ready." with
   **Restart to update**. Nothing installs until you tap it and say yes. The box says how many open
-  sessions will close and warns about unsaved Config Editor edits. It won't restart while a Change
-  Job or bulk run is going.
+  sessions will close, warns about unsaved Config Editor edits and, on Windows, reminds you to close
+  Claude Code and Casper. It won't restart while a Change Job or bulk run is going.
 - Every update is checked against its signature before it can install. Each release build signs
   its own files, so there is no signing key to keep and no secret to set.
 - On Windows, MCP servers stop only when the installer starts, and come back if the install fails.

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const invoke = vi.hoisted(() => vi.fn());
 vi.mock('@tauri-apps/api/core', () => ({ invoke }));
@@ -203,6 +203,34 @@ describe('restartToUpdate', () => {
     expect(opts.danger).toBe(true);
     expect(save).not.toHaveBeenCalled();
     expect(calls()).toEqual(['update_status']);
+  });
+
+  describe('on each system', () => {
+    let agent: ReturnType<typeof vi.spyOn> | undefined;
+    afterEach(() => {
+      agent?.mockRestore();
+      agent = undefined;
+    });
+
+    it('reminds Windows users to close Claude Code and Casper', async () => {
+      agent = vi
+        .spyOn(navigator, 'userAgent', 'get')
+        .mockReturnValue('Mozilla/5.0 (Windows NT 10.0; Win64; x64)');
+      askConfirm.mockResolvedValue(false);
+      answer({ update_status: ON });
+      await expect(restartToUpdate('2.0.1')).resolves.toBe(false);
+      expect(askConfirm.mock.calls[0][0].message).toContain(UPDATE_TEXT.windows);
+    });
+
+    it('leaves the reminder out on a Mac', async () => {
+      agent = vi
+        .spyOn(navigator, 'userAgent', 'get')
+        .mockReturnValue('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)');
+      askConfirm.mockResolvedValue(false);
+      answer({ update_status: ON });
+      await expect(restartToUpdate('2.0.1')).resolves.toBe(false);
+      expect(askConfirm.mock.calls[0][0].message).not.toContain(UPDATE_TEXT.windows);
+    });
   });
 
   it('refuses while a Change Job or bulk run is going', async () => {
