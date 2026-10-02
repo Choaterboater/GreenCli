@@ -3548,6 +3548,29 @@ while (<STDIN>) {
         assert!(mem.raw("mcp-creds:central").is_none());
     }
 
+    #[test]
+    fn a_login_still_waiting_in_the_19_file_reaches_the_server_and_the_export() {
+        use crate::secret_store::{mem::MemBackend, MoveOutcome, MCP_CREDS_FILE};
+        let dir = temp_dir();
+        let mem = MemBackend::new();
+        let file = dir.join(MCP_CREDS_FILE);
+        std::fs::write(&file, serde_json::json!({ "central": "client_secret: s3cr3t" }).to_string()).unwrap();
+        // A 2.0 start where the login fails to move, then the store works again.
+        *mem.fail_account.lock().unwrap() = Some("mcp-creds:central".into());
+        let store = Arc::new(SecretStore::open_with(&dir, mem.clone(), Duration::from_secs(3)));
+        assert_eq!(store.move_file(&file, MCP_CREDS_PREFIX), MoveOutcome::Failed);
+        *mem.fail_account.lock().unwrap() = None;
+        let mgr = McpManager::new(dir.clone(), McpCreds::new(store));
+        mgr.save_config(def("central", "uvx", &["centralmcp"])).unwrap();
+
+        // The export asks has(); connect_server reads it and writes the login file.
+        assert!(mgr.creds().has("central").unwrap());
+        let stored = mgr.creds().get("central").unwrap();
+        let resolved = mgr.resolve_connect_def("central", stored).unwrap();
+        let path = resolved.def.env.get("CREDS_PATH").expect("creds path");
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "client_secret: s3cr3t");
+    }
+
     #[tokio::test]
     async fn a_10kb_login_survives_split_storage_connect_and_export() {
         use crate::secret_store::mem::MemBackend;

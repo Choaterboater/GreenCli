@@ -21,9 +21,10 @@
 // when every entry checks out is the file deleted. A file that can't be read
 // is left alone, and Settings names it.
 //
-// A move that stops partway is tried again at the next start. The marker
-// keeps the files being moved (`moving`), the accounts the move already
-// copied (`moved`) and the accounts the user saved or removed since
+// A move that stops partway is tried again at the next start. Until then a
+// value still waiting in the file reads as saved, so it keeps working. The
+// marker keeps the files being moved (`moving`), the accounts the move
+// already copied (`moved`) and the accounts the user saved or removed since
 // (`done`). A retry skips the user's changes, so it never puts an old 1.9
 // value back over a 2.0 change. It skips a copied account only while the
 // store still holds the file's value: one changed in 1.9 since (going back
@@ -651,8 +652,10 @@ impl SecretStore {
 
     /// The value for `account` still waiting in an old file whose move is
     /// pending: not in the OS store yet, and not saved or removed in 2.0
-    /// since. None when there is none, or the file can't be read.
-    fn pending_value(&self, account: &str) -> Option<Zeroizing<String>> {
+    /// since. None when there is none, or the file can't be read. The caller
+    /// holds `ops`, so a save or remove can't land between its read of the
+    /// store and this one.
+    fn pending_value_locked(&self, account: &str) -> Option<Zeroizing<String>> {
         if !matches!(self.mode, Mode::Os(_)) || !self.move_pending.load(Ordering::Relaxed) {
             return None;
         }
@@ -662,7 +665,6 @@ impl SecretStore {
             .unwrap_or_else(|e| e.into_inner())
             .iter()
             .find_map(|(path, prefix)| Some((path.clone(), account.strip_prefix(prefix.as_str())?.to_string())))?;
-        let _ops = self.lock_ops();
         let marker = self.marker.as_deref().map(read_marker).unwrap_or_default();
         if list_of(&marker, DONE).iter().any(|a| a == account) {
             return None;
@@ -713,7 +715,9 @@ impl SecretStore {
         }
     }
 
-    /// The value saved for `account`, or None.
+    /// The value saved for `account`, or None. While a move from 1.9 is
+    /// pending, a value still waiting in the old file counts as saved, so a
+    /// key or login that didn't move yet keeps working until it does.
     pub fn get(&self, account: &str) -> Result<Option<Zeroizing<String>>, String> {
         if let Some(hit) = self.cache().get(account) {
             return Ok(hit.clone());
@@ -726,7 +730,8 @@ impl SecretStore {
             .read_backend(account)
             .map_err(|e| self.user_error(account, e))?;
         let value = match bytes {
-            None => None,
+            // Safe to cache: a save or remove takes `ops` and replaces it.
+            None => self.pending_value_locked(account),
             Some(b) => Some(Zeroizing::new(
                 String::from_utf8(b.to_vec()).map_err(|_| "A saved key isn't text.".to_string())?,
             )),
@@ -780,11 +785,12 @@ impl SecretStore {
     /// Copy `from` to `to` and check the copy reads back the same, through a
     /// new read. Ok(false) when `from` has nothing saved; `to` is left as it
     /// is then. `from` always stays; a copy that doesn't check out is removed.
-    /// A value for `from` still waiting in an old 1.9 file is copied too, so
-    /// a rename while a move is pending takes it along (deleting `from` then
-    /// marks it done, and the next start doesn't move it under the old name).
+    /// A value for `from` still waiting in an old 1.9 file is copied too (see
+    /// get), so a rename while a move is pending takes it along (deleting
+    /// `from` then marks it done, and the next start doesn't move it under
+    /// the old name).
     pub fn copy(&self, from: &str, to: &str) -> Result<bool, String> {
-        let Some(value) = self.get(from)?.or_else(|| self.pending_value(from)) else {
+        let Some(value) = self.get(from)? else {
             return Ok(false);
         };
         self.set(to, &value)?;
@@ -1438,6 +1444,48 @@ mod tests {
         assert!(path.exists());
         assert!(first.status().move_pending);
         first
+    }
+
+    #[test]
+    fn a_key_still_waiting_in_the_19_file_reads_as_saved_until_the_user_changes_it() {
+        let dir = temp_dir();
+        let mem = MemBackend::new();
+        let path = dir.join(AI_KEYS_FILE);
+        let body = r#"{"anthropic":"A1","moonshot":"M1","openai":"O1","openrouter":"R1"}"#;
+        // anthropic and moonshot move; openai fails, so it and openrouter wait in the file.
+        let first = partial_move(&dir, &mem, body);
+        assert!(mem.raw("ai-key:openai").is_none() && mem.raw("ai-key:openrouter").is_none());
+        let read = |s: &SecretStore, a: &str| s.get(a).unwrap().map(|v| v.to_string());
+        assert_eq!(read(&first, "ai-key:anthropic").as_deref(), Some("A1"));
+        assert_eq!(read(&first, "ai-key:openai").as_deref(), Some("O1"));
+        assert!(first.has("ai-key:openrouter").unwrap());
+        // Nothing for a name the file doesn't have, or another prefix.
+        assert!(!first.has("ai-key:mistral").unwrap());
+        assert!(!first.has("mcp-creds:openai").unwrap());
+
+        // The user changes openai and removes openrouter: the file no longer
+        // answers for them, from the cache or from a new read.
+        first.set("ai-key:openai", "O2").unwrap();
+        first.delete("ai-key:openrouter").unwrap();
+        for _ in 0..2 {
+            assert_eq!(read(&first, "ai-key:openai").as_deref(), Some("O2"));
+            assert_eq!(read(&first, "ai-key:openrouter"), None);
+            assert!(!first.has("ai-key:openrouter").unwrap());
+            first.cache().clear();
+        }
+        assert_eq!(fs::read(&path).unwrap(), body.as_bytes());
+        drop(first);
+
+        // Next start: the move finishes and none of the user's changes is undone.
+        let next = os_store(&dir, &mem);
+        assert_eq!(next.move_file(&path, AI_KEY_PREFIX), MoveOutcome::Moved(4));
+        assert!(!path.exists());
+        assert!(!next.status().move_pending);
+        assert_eq!(mem.raw("ai-key:openai").unwrap(), b"O2");
+        assert!(mem.raw("ai-key:openrouter").is_none());
+        assert_eq!(read(&next, "ai-key:openai").as_deref(), Some("O2"));
+        assert!(!next.has("ai-key:openrouter").unwrap());
+        assert_eq!(read(&next, "ai-key:moonshot").as_deref(), Some("M1"));
     }
 
     #[test]

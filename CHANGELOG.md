@@ -50,8 +50,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`ai_keys.json`, `mcp_creds.json`), reads each one back, and only then deletes the files. The AI
   key field and the MCP server form say where they are kept.
 - If an old key file can't be read, it stays where it is and Settings shows its path. If some keys
-  didn't move, Settings says so and GreenCLI tries again at the next start. Keys you change or
-  remove in the meantime stay as you set them.
+  didn't move, Settings says so, they keep working from the old file, and GreenCLI tries again at
+  the next start. Keys you change or remove in the meantime stay as you set them.
 - Without a system password store (some Linux setups), keys stay in the 1.9 private files.
 - **MCP login files only while a server runs**: a stdio server's saved login is written to a new
   private file in `mcp_creds/` when it connects, and deleted when the server stops, exits or fails
