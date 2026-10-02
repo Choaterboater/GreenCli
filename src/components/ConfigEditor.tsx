@@ -638,6 +638,17 @@ export default function ConfigEditor() {
   const [diffOriginal, setDiffOriginal] = useState('');
   // What the diff's left side is, and the device it came from (null = a file).
   const [diffSource, setDiffSource] = useState<{ label: string; device: string | null } | null>(null);
+  // The Diff view's text models. The React wrapper disposes them before
+  // Monaco lets go of them, which throws; so it keeps them and they are
+  // disposed here a moment after each Diff view closes.
+  const diffModelsRef = useRef<MonacoEditor.ITextModel[]>([]);
+  const disposeDiffModels = useCallback(() => {
+    const models = diffModelsRef.current.splice(0);
+    if (models.length) setTimeout(() => models.forEach((m) => !m.isDisposed() && m.dispose()), 0);
+  }, []);
+  useEffect(() => {
+    if (!diffMode) disposeDiffModels();
+  }, [diffMode, disposeDiffModels]);
   // Running-configs pulled per device (deviceKey). The send preview only ever
   // diffs against the device it is sending to — one global baseline from
   // whichever switch was pulled last compared against the wrong box.
@@ -2168,7 +2179,9 @@ export default function ConfigEditor() {
           baseline is from a different device than the active session. */}
       {diffMode && diffSource && (
         <div className="flex items-center gap-3 px-3 py-1 border-b border-[var(--bg-tertiary)] bg-[var(--bg-secondary)] text-[10px] text-[var(--text-muted)] flex-shrink-0">
-          <span className="truncate">Left: {diffSource.label} · Right: editor</span>
+          <span className="truncate">
+            Left: {diffSource.label} · Right: this tab (edit it here; the arrow beside a change takes the left side)
+          </span>
           {diffSource.device && activeSession && diffSource.device !== deviceKey(activeSession.config) && (
             <span className="flex items-center gap-1 text-[var(--accent-warning)] flex-shrink-0">
               <AlertTriangle size={10} />
@@ -2182,13 +2195,35 @@ export default function ConfigEditor() {
       <div className="flex-1 overflow-hidden">
         {diffMode ? (
           <DiffEditor
+            // One per tab, so a tab switch never feeds one tab's text into another.
+            key={active.id}
             original={diffOriginal}
             modified={content}
             language={language}
             theme={editorTheme}
             beforeMount={setupMonaco}
+            // The right side is the tab itself: edits there land in the tab,
+            // and the arrow beside a change takes the left side's lines.
+            keepCurrentOriginalModel
+            keepCurrentModifiedModel
+            onMount={(diffEditor) => {
+              disposeDiffModels(); // the view this one replaced (a tab switch)
+              const { original: leftModel, modified: rightModel } = diffEditor.getModel() ?? {};
+              if (leftModel && rightModel) diffModelsRef.current.push(leftModel, rightModel);
+              const bufferId = active.id;
+              const right = diffEditor.getModifiedEditor();
+              right.onDidChangeModelContent(() => {
+                const next = right.getValue();
+                setBuffers((prev) =>
+                  prev.map((b) => (b.id === bufferId && b.content !== next ? { ...b, content: next, dirty: true } : b))
+                );
+              });
+            }}
             options={{
-              readOnly: true,
+              readOnly: false,
+              originalEditable: false,
+              renderMarginRevertIcon: true,
+              fixedOverflowWidgets: true,
               fontSize: fontSize,
               fontFamily: 'JetBrains Mono, Consolas, "Courier New", monospace',
               lineHeight: Math.round(fontSize * 1.5),
