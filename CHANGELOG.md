@@ -76,6 +76,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   message. A failed login save keeps the server form open.
 - The AI panel stops asking for an API key once a key typed in Settings is saved. Before, closing
   Settings with Escape right after typing the key left "Add an API key" up until the next message.
+- A link in an AI answer opens in your browser. Before, clicking one loaded the website in place of
+  GreenCLI, and only quitting and starting again (which closes your sessions) brought the app back.
 
 ### Security
 - AI keys and MCP logins are no longer plain files in the data folder (on macOS and Windows, and

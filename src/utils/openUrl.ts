@@ -3,12 +3,12 @@ import { notify } from '../store/toastStore';
 import { isTauri } from './tauri';
 
 /**
- * Web links (a URL in terminal output or a Monaco editor, the API Explorer's
- * docs links) open in the system browser through the app's `open_url`
- * command, which takes only http and https links. The webview can't open
- * them itself: in Tauri 2 a
- * `window.open` or `target="_blank"` link opens nothing on Windows, and never
- * did on macOS.
+ * Web links (a URL in terminal output or a Monaco editor, a link in an AI
+ * answer, the API Explorer's docs links) open in the system browser through
+ * the app's `open_url` command, which takes only http and https links. The
+ * webview can't open them itself: in Tauri 2 a `window.open` or
+ * `target="_blank"` link opens nothing on Windows, and never did on macOS,
+ * and a plain link loads the site in place of the app.
  */
 export async function openWebLink(url: string): Promise<void> {
   if (!isTauri) {

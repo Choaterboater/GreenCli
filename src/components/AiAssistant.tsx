@@ -81,6 +81,7 @@ import { loginChoiceFor } from '../utils/logins';
 import { backendVault } from '../utils/vaultAccess';
 import { useAiBridge, type AiEditTarget } from '../store/aiBridgeStore';
 import { isTauri } from '../utils/tauri';
+import { openWebLink } from '../utils/openUrl';
 import { AI_KEY_CHANGED_EVENT, keyCheckError } from '../utils/secretStore';
 
 // ─── Anthropic API types (local) ───
@@ -1019,8 +1020,8 @@ function buildDeviceContext(activeSession: Session | undefined): string {
 // replaced (updateLast), so every other bubble keeps its identity and React.memo
 // skips it — markdown is re-parsed (useMemo) only when this message's content
 // changes. Tool-expansion state is local, so toggling one message's tool output
-// never re-renders the rest of the conversation.
-const MessageItem = memo(function MessageItem({ msg, editTarget }: { msg: DisplayMessage; editTarget: AiEditTarget | null }) {
+// never re-renders the rest of the conversation. Exported for its tests.
+export const MessageItem = memo(function MessageItem({ msg, editTarget }: { msg: DisplayMessage; editTarget: AiEditTarget | null }) {
   const [openTools, setOpenTools] = useState<Set<number>>(new Set());
 
   if (msg.role === 'user') {
@@ -1117,6 +1118,26 @@ const MessageItem = memo(function MessageItem({ msg, editTarget }: { msg: Displa
             <ReactMarkdown
               remarkPlugins={[remarkGfm]}
               components={{
+                a({ node: _node, children, href, ...rest }) {
+                  // A footnote's link jumps within the answer.
+                  if (href?.startsWith('#')) return <a {...rest} href={href}>{children}</a>;
+                  // A plain click would load the site in place of GreenCLI,
+                  // so a web link opens in the browser.
+                  return (
+                    <a
+                      {...rest}
+                      href={href}
+                      title={href}
+                      className="text-[var(--accent)] underline"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        if (href) void openWebLink(href);
+                      }}
+                    >
+                      {children}
+                    </a>
+                  );
+                },
                 code(props) {
                   const { children, className, node, ...rest } = props;
                   const match = /language-([\w-]+)/.exec(className || '');

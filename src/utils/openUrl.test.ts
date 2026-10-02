@@ -1,6 +1,7 @@
 // Web links open in the system browser through the app's open_url command:
 // in Tauri 2 the webview opens no window for window.open or target="_blank"
-// (on Windows wry marks WebView2's new-window request handled).
+// (on Windows wry marks WebView2's new-window request handled), and a plain
+// link loads the site in place of the app.
 
 import { readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -98,6 +99,26 @@ describe('the app sends its web links here', () => {
         ).toBe(true);
         seen += 1;
         at = text.indexOf('target="_blank"', at + 1);
+      }
+    }
+    expect(seen).toBeGreaterThan(0);
+  });
+
+  it('every ReactMarkdown sends its links to openWebLink (a plain click replaces the app)', () => {
+    let seen = 0;
+    for (const [file, text] of sources) {
+      let at = text.indexOf('<ReactMarkdown');
+      while (at !== -1) {
+        const end = text.indexOf('</ReactMarkdown>', at);
+        expect(end, file).toBeGreaterThan(at);
+        expect(
+          /\ba\(\{[^)]*\bhref\b[^)]*\}\) \{[^]*?onClick=\{\(e\) => \{\s*e\.preventDefault\(\);\s*if \(href\) void openWebLink\(href\);/.test(
+            text.slice(at, end),
+          ),
+          `${file}: a ReactMarkdown without an a component that calls openWebLink`,
+        ).toBe(true);
+        seen += 1;
+        at = text.indexOf('<ReactMarkdown', end);
       }
     }
     expect(seen).toBeGreaterThan(0);
