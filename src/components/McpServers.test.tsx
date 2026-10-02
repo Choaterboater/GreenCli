@@ -141,14 +141,14 @@ describe('McpServers writes switch', () => {
     render(<McpServers />);
     const box = await screen.findByRole('checkbox', { name: 'Allow writes' });
     expect(box).not.toBeChecked();
-    expect(screen.getByText(/^Writes are off\. Tools that change settings or delete things are hidden/)).toBeInTheDocument();
+    expect(screen.getByText(/^Writes are off\. The AI can't see or run tools that change settings, or delete, restart/)).toBeInTheDocument();
     expect(screen.getByText('Read-only settings sent: CENTRALMCP_READONLY=1')).toBeInTheDocument();
     fireEvent.click(box);
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('mcp_set_writes', { name: 'central', writes: 'on' }));
     expect(askConfirm).toHaveBeenCalledWith({
       title: 'Allow writes on central?',
       message:
-        "The AI will see this server's tools that change settings or delete things. Each one still asks you before it runs." +
+        "The AI will see this server's tools that change settings, or delete, restart or disconnect things. Each one still asks you before it runs." +
         '\n\nGreenCLI will restart central without its read-only settings: CENTRALMCP_READONLY=1.',
       confirmLabel: 'Allow writes',
       cancelLabel: 'Keep writes off',
@@ -189,8 +189,12 @@ describe('McpServers writes switch', () => {
     status = [st({ access: 'read-only', hiddenToolCount: 5 })];
     render(<McpServers />);
     expect(await screen.findByRole('checkbox', { name: 'Allow writes' })).toBeDisabled();
-    expect(screen.getByText("This login is read-only (checked by the server). Writes can't be turned on here.")).toBeInTheDocument();
-    expect(screen.getByText('Login: read-only (checked)')).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        'This login can only read (the server said so). To allow writes, use a login that can make changes, then reconnect.'
+      )
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/^Login/)).toBeNull();
     expect(screen.getByText('· 5 hidden')).toHaveAttribute('title', 'Hidden from the AI because the login is read-only');
   });
 
@@ -203,7 +207,7 @@ describe('McpServers writes switch', () => {
     expect(box).not.toBeDisabled();
     expect(
       screen.getByText(
-        'This login is read-only (checked by the server), so changes are blocked anyway. You can still turn writes off.'
+        'This login can only read (the server said so), so changes are blocked anyway. You can still turn writes off.'
       )
     ).toBeInTheDocument();
     fireEvent.click(box);
@@ -227,7 +231,7 @@ describe('McpServers writes switch', () => {
     expect(toastTitles()).not.toContain('central writes are on');
     const toast = useToastStore.getState().toasts.find((t) => t.title === 'central writes setting saved');
     expect(toast?.message).toBe(
-      'Writes are on for the next start, but the restart failed. Restart this server once it can connect.'
+      'The restart failed, so the server may still run with its read-only settings. Restart it once it can connect.'
     );
   });
 
@@ -243,8 +247,8 @@ describe('McpServers writes switch', () => {
       }),
     ];
     render(<McpServers />);
-    expect(await screen.findByText('Read-only settings sent: A=1, B=0 (the server confirmed them)')).toBeInTheDocument();
-    expect(screen.getByText('Login: can make changes (checked)')).toBeInTheDocument();
+    expect(await screen.findByText('Read-only settings sent: A=1, B=0 (the server said so)')).toBeInTheDocument();
+    expect(screen.getByText('Login can make changes (the server said so)')).toBeInTheDocument();
     expect(screen.getByText('· 2 hidden')).toHaveAttribute('title', 'Hidden from the AI because writes are off');
     expect(screen.getByText(/^Restart this server so its writes setting takes full effect\./)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Restart' }));
@@ -252,6 +256,32 @@ describe('McpServers writes switch', () => {
     expect(screen.getByText(/^New in 1\.9: writes are off for this server\./)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'OK' }));
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('mcp_set_writes', { name: 'central', writes: 'off' }));
+  });
+
+  it('says the read-only settings are for the next start while the server is stopped', async () => {
+    defs = [plainDef()];
+    status = [st({ connected: false, pins: { kind: 'pinned', shown: ['CENTRALMCP_READONLY=1'], confirmed: false } })];
+    render(<McpServers />);
+    expect(await screen.findByText('Read-only settings it gets when it starts: CENTRALMCP_READONLY=1')).toBeInTheDocument();
+    expect(screen.queryByText(/^Read-only settings sent/)).toBeNull();
+  });
+
+  it('says GreenCLI blocks writes now when turning them off but the restart fails', async () => {
+    defs = [plainDef({ writes: 'on' })];
+    status = [st({ writes: 'on' })];
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === 'mcp_list_servers') return defs;
+      if (cmd === 'mcp_status') return status;
+      if (cmd === 'mcp_connect') throw new Error('bad credentials');
+      return null;
+    });
+    render(<McpServers />);
+    fireEvent.click(await screen.findByRole('checkbox', { name: 'Allow writes' }));
+    await waitFor(() => expect(toastTitles()).toContain('central writes setting saved'));
+    const toast = useToastStore.getState().toasts.find((t) => t.title === 'central writes setting saved');
+    expect(toast?.message).toBe(
+      "GreenCLI blocks writes now. The restart failed, so the server's own read-only settings start next time. Restart it once it can connect."
+    );
   });
 
   it('explains a server it cannot pin', async () => {
@@ -328,7 +358,7 @@ describe('McpServers save', () => {
 describe('allowWritesMessage', () => {
   it('names the read-only settings only when a pinned server is connected', () => {
     const base =
-      "The AI will see this server's tools that change settings or delete things. Each one still asks you before it runs.";
+      "The AI will see this server's tools that change settings, or delete, restart or disconnect things. Each one still asks you before it runs.";
     expect(allowWritesMessage('c', undefined)).toBe(base);
     const pinned = st({ pins: { kind: 'pinned', shown: ['X=1'], confirmed: false } });
     expect(allowWritesMessage('c', { ...pinned, connected: false })).toBe(base);
@@ -338,7 +368,7 @@ describe('allowWritesMessage', () => {
 
 describe('writesOffHelp', () => {
   it('says what happens to command tools on each kind of server', () => {
-    const base = 'Writes are off. Tools that change settings or delete things are hidden from the AI and blocked.';
+    const base = "Writes are off. The AI can't see or run tools that change settings, or delete, restart or disconnect things.";
     expect(writesOffHelp('junos-mcp-server')).toBe(`${base} Command tools only run show commands.`);
     expect(writesOffHelp('netmiko-mcp')).toBe(
       `${base} On this server, every tool it doesn't mark as read-only is hidden too.`

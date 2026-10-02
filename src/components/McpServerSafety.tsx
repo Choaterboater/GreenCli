@@ -9,16 +9,19 @@ import type { McpPresetId, McpServerDef, McpStatus, McpWrites } from '../utils/m
 const clearAllowances = (name: string) => useMcpApprovalStore.getState().clearServer(name);
 
 const WRITES_ON_HELP = 'Writes are on. Tools that change things still ask you every time.';
-const READ_ONLY_LOGIN = "This login is read-only (checked by the server). Writes can't be turned on here.";
+const READ_ONLY_LOGIN =
+  'This login can only read (the server said so). To allow writes, use a login that can make changes, then reconnect.';
 const READ_ONLY_LOGIN_ON =
-  'This login is read-only (checked by the server), so changes are blocked anyway. You can still turn writes off.';
+  'This login can only read (the server said so), so changes are blocked anyway. You can still turn writes off.';
+/** What writes off hides: the write and destructive labels (mcpGate.ts LABEL_NOTES). */
+const CHANGE_TOOLS = 'tools that change settings, or delete, restart or disconnect things';
 
 /** Presets whose tools are all hidden while writes are off, unless the server marks them read-only. */
 const HIDES_UNMARKED: ReadonlySet<McpPresetId> = new Set(['central-mcp-server', 'netmiko-mcp', 'oxidized-librenms']);
 
 /** The help line while writes are off. What happens to command tools depends on the server. Exported for tests. */
 export function writesOffHelp(preset: McpPresetId | undefined): string {
-  const base = 'Writes are off. Tools that change settings or delete things are hidden from the AI and blocked.';
+  const base = `Writes are off. The AI can't see or run ${CHANGE_TOOLS}.`;
   if (preset === 'junos-mcp-server') return `${base} Command tools only run show commands.`;
   if (preset === 'hpe-networking-mcp') return `${base} Its invoke_tool and invoke_tools_batch tools are hidden too.`;
   if (preset && HIDES_UNMARKED.has(preset)) {
@@ -30,7 +33,7 @@ export function writesOffHelp(preset: McpPresetId | undefined): string {
 
 /** The confirm text before writes go on. Exported for tests. */
 export function allowWritesMessage(name: string, status: McpStatus | undefined): string {
-  const base = "The AI will see this server's tools that change settings or delete things. Each one still asks you before it runs.";
+  const base = `The AI will see this server's ${CHANGE_TOOLS}. Each one still asks you before it runs.`;
   const pins = status?.pins;
   if (status?.connected && pins?.kind === 'pinned') {
     return `${base}\n\nGreenCLI will restart ${name} without its read-only settings: ${pins.shown.join(', ')}.`;
@@ -96,15 +99,18 @@ export default function McpServerSafety({
       setWorking(false);
     }
     if (!restarted) {
-      // The old connection keeps running with the old setting.
+      // GreenCLI hides and blocks by the saved setting at once; only the server's own read-only
+      // settings wait for a restart.
       notify.warning(
         `${name} writes setting saved`,
-        `Writes are ${next} for the next start, but the restart failed. Restart this server once it can connect.`
+        next === 'off'
+          ? "GreenCLI blocks writes now. The restart failed, so the server's own read-only settings start next time. Restart it once it can connect."
+          : 'The restart failed, so the server may still run with its read-only settings. Restart it once it can connect.'
       );
     } else if (next === 'on') {
       notify.success(`${name} writes are on`, 'Tools that change things still ask you every time.');
     } else {
-      notify.info(`${name} writes are off`, 'Tools that change settings or delete things are hidden from the AI.');
+      notify.info(`${name} writes are off`, `The AI can't see or run ${CHANGE_TOOLS}.`);
     }
     await onChanged();
   };
@@ -170,7 +176,8 @@ export default function McpServerSafety({
 
       {status?.writesSet === false && (
         <p className="text-[var(--text-secondary)] leading-snug">
-          New in 1.9: writes are off for this server. Turn them on if the AI needs to make changes here.
+          New in 1.9: writes are off for this server.
+          {readOnlyLogin ? '' : ' Turn them on if the AI needs to make changes here.'}
           <button type="button" onClick={acknowledge} disabled={disabled} className={textButton}>
             OK
           </button>
@@ -179,8 +186,9 @@ export default function McpServerSafety({
 
       {writes === 'off' && pins?.kind === 'pinned' && (
         <p className="text-[var(--text-muted)] leading-snug break-words">
-          Read-only settings sent: {pins.shown.join(', ')}
-          {pins.confirmed ? ' (the server confirmed them)' : ''}
+          {status?.connected ? 'Read-only settings sent: ' : 'Read-only settings it gets when it starts: '}
+          {pins.shown.join(', ')}
+          {status?.connected && pins.confirmed ? ' (the server said so)' : ''}
         </p>
       )}
       {writes === 'off' && pins?.kind === 'cannot-pin' && (
@@ -189,8 +197,9 @@ export default function McpServerSafety({
         </p>
       )}
 
-      {status?.access === 'read-only' && <p className="text-[var(--text-muted)]">Login: read-only (checked)</p>}
-      {status?.access === 'read-write' && <p className="text-[var(--text-muted)]">Login: can make changes (checked)</p>}
+      {status?.access === 'read-write' && (
+        <p className="text-[var(--text-muted)]">Login can make changes (the server said so)</p>
+      )}
 
       {preset && status?.presetMismatch === true && (
         <p className="text-[var(--accent-warning)] leading-snug">

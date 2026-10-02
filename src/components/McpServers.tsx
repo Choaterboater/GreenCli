@@ -450,8 +450,8 @@ export default function McpServers() {
       <p className="text-[11px] text-[var(--text-secondary)] mb-3 leading-relaxed">
         Connect external <span className="text-[var(--text-primary)]">MCP servers</span> — stdio (launch a command)
         or Streamable HTTP (point at a running server) — to give the AI assistant real tools, e.g. your{' '}
-        <code className="text-[var(--accent)]">centralmcp</code> Aruba Central/GLP server. Tools are offered to{' '}
-        <em>every</em> AI provider, not just one.
+        <code className="text-[var(--accent)]">centralmcp</code> Aruba Central/GLP server. The AI can use these tools with
+        every provider except Local CLI and Casper.
       </p>
 
       {/* Export result: names and places only, never a secret value */}
