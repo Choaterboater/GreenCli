@@ -204,13 +204,56 @@ function looksLikeJson(text: string): boolean {
   return start === "{" || start === "[";
 }
 
+/** serde_json's recursion limit: it refuses JSON text nested 128 deep. */
+const SERDE_MAX_NESTING = 127;
+
+/** No lone surrogate (a \uD800-\uDFFF that is not half of a pair). */
+function wellFormed(text: string): boolean {
+  for (let i = 0; i < text.length; i++) {
+    const unit = text.charCodeAt(i);
+    if (unit >= 0xdc00 && unit <= 0xdfff) return false;
+    if (unit >= 0xd800 && unit <= 0xdbff) {
+      const next = text.charCodeAt(i + 1);
+      if (!(next >= 0xdc00 && next <= 0xdfff)) return false;
+      i++;
+    }
+  }
+  return true;
+}
+
+/**
+ * JSON that serde_json (the Rust side, read_json_text) reads too. JSON.parse takes text serde
+ * refuses: a number out of f64 range (1e400 parses to Infinity), a lone surrogate escape (\ud800 in
+ * a key or a value), and nesting deeper than serde's recursion limit. Such text counts as not
+ * parsing on both sides. Walks with a stack, so very deep JSON can't overflow it.
+ */
+function serdeReads(parsed: unknown): boolean {
+  const stack: [unknown, number][] = [[parsed, 0]];
+  while (stack.length > 0) {
+    const [value, nesting] = stack.pop()!;
+    if (typeof value === "number") {
+      if (!Number.isFinite(value)) return false;
+    } else if (typeof value === "string") {
+      if (!wellFormed(value)) return false;
+    } else if (typeof value === "object" && value !== null) {
+      if (nesting + 1 > SERDE_MAX_NESTING) return false;
+      for (const [key, item] of Object.entries(value)) {
+        if (!Array.isArray(value) && !wellFormed(key)) return false;
+        stack.push([item, nesting + 1]);
+      }
+    }
+  }
+  return true;
+}
+
 /**
  * The call's arguments with every JSON text read in place, at any depth, top-level parameters too.
  * FastMCP runs json.loads on any argument sent as a string when the parameter is not a str, so
  * {calls: '[{"name": "delete_vlan"}]'} runs delete_vlan. A string counts when it starts with { or [
- * (after JSON whitespace) and parses; the JSON it holds is read the same way, down to MAX_DEPTH.
- * unreadable: such a string did not parse, or its JSON goes deeper than MAX_DEPTH, so the search
- * can't see everything the server might read. Same as Rust read_json_text.
+ * (after JSON whitespace) and parses as serde_json would parse it (serdeReads); the JSON it holds is
+ * read the same way, down to MAX_DEPTH. unreadable: such a string did not parse, or its JSON goes
+ * deeper than MAX_DEPTH, so the search can't see everything the server might read. Same as Rust
+ * read_json_text.
  */
 function readJsonText(args: Record<string, unknown>): { value: Record<string, unknown>; unreadable: boolean } {
   let unreadable = false;
@@ -221,6 +264,10 @@ function readJsonText(args: Record<string, unknown>): { value: Record<string, un
       try {
         parsed = JSON.parse(value);
       } catch {
+        unreadable = true;
+        return value;
+      }
+      if (!serdeReads(parsed)) {
         unreadable = true;
         return value;
       }
@@ -314,13 +361,14 @@ function argsKeys(value: Record<string, unknown>): string[] {
   return Object.keys(value).filter((key) => ARGS_KEY_WORDS.has(keyWord(key)) && value[key] !== undefined && value[key] !== null);
 }
 
-/** Arguments sent as a JSON text (OpenAI tool_calls: arguments: '{"vlan": 10}') are read as the object they hold. */
+/** Arguments sent as a JSON text (OpenAI tool_calls: arguments: '{"vlan": 10}') are read as the
+ *  object they hold, when serde_json would read it too (serdeReads), as Rust args_object does. */
 function argsObject(value: unknown): Record<string, unknown> {
   if (isRecord(value)) return value;
   if (typeof value === "string") {
     try {
       const parsed: unknown = JSON.parse(value);
-      if (isRecord(parsed)) return parsed;
+      if (isRecord(parsed) && serdeReads(parsed)) return parsed;
     } catch {
       // Not JSON: no arguments GreenCLI can read.
     }

@@ -1542,5 +1542,152 @@
       "get_ports"
     ],
     "unclear": false
+  },
+  {
+    "tool": "call_tool",
+    "args": {
+      "name": "get_status",
+      "arguments": {},
+      "batch": "[{\"arguments\": {\"x\": 1e400}, \"name\": \"delete_vlan\"}]"
+    },
+    "routed": [
+      "get_status"
+    ],
+    "unclear": true
+  },
+  {
+    "tool": "call_tool",
+    "args": {
+      "name": "get_status",
+      "arguments": {},
+      "batch": "[{\"arguments\": {\"x\": -1e400}, \"name\": \"delete_vlan\"}]"
+    },
+    "routed": [
+      "get_status"
+    ],
+    "unclear": true
+  },
+  {
+    "tool": "call_tool",
+    "args": {
+      "name": "get_status",
+      "arguments": {},
+      "batch": "[{\"arguments\": {\"x\": \"\\ud800\"}, \"name\": \"delete_vlan\"}]"
+    },
+    "routed": [
+      "get_status"
+    ],
+    "unclear": true
+  },
+  {
+    "tool": "call_tool",
+    "args": {
+      "name": "get_status",
+      "arguments": {},
+      "batch": "[{\"arguments\": {\"x\": \"a\\udc00\"}, \"name\": \"delete_vlan\"}]"
+    },
+    "routed": [
+      "get_status"
+    ],
+    "unclear": true
+  },
+  {
+    "tool": "call_tool",
+    "args": {
+      "name": "get_status",
+      "arguments": {},
+      "batch": "[{\"arguments\": {\"\\ud800\": 1}, \"name\": \"delete_vlan\"}]"
+    },
+    "routed": [
+      "get_status"
+    ],
+    "unclear": true
+  },
+  {
+    "tool": "call_tool",
+    "args": {
+      "name": "get_status",
+      "arguments": {},
+      "batch": "[{\"arguments\": {\"x\": \"\\ud800\\u0041\"}, \"name\": \"delete_vlan\"}]"
+    },
+    "routed": [
+      "get_status"
+    ],
+    "unclear": true
+  },
+  {
+    "tool": "call_tool",
+    "args": {
+      "name": "get_status",
+      "arguments": {},
+      "batch": "[{\"arguments\": {\"x\": 1e308}, \"name\": \"delete_vlan\"}]"
+    },
+    "routed": [
+      "get_status",
+      "delete_vlan"
+    ],
+    "unclear": false
+  },
+  {
+    "tool": "call_tool",
+    "args": {
+      "name": "get_status",
+      "arguments": {},
+      "batch": "[{\"arguments\": {\"x\": \"\\ud83d\\ude00\"}, \"name\": \"delete_vlan\"}]"
+    },
+    "routed": [
+      "get_status",
+      "delete_vlan"
+    ],
+    "unclear": false
+  },
+  {
+    "tool": "call_tool",
+    "args": {
+      "name": "get_status",
+      "arguments": {},
+      "batch": "[{\"arguments\": {\"x\": \"\\\\ud800\"}, \"name\": \"delete_vlan\"}]"
+    },
+    "routed": [
+      "get_status",
+      "delete_vlan"
+    ],
+    "unclear": false
+  },
+  {
+    "tool": "call_tool",
+    "args": {
+      "name": "get_status",
+      "arguments": {},
+      "batch": "[{\"arguments\": {\"x\": [[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]}, \"name\": \"delete_vlan\"}]"
+    },
+    "routed": [
+      "get_status",
+      "delete_vlan"
+    ],
+    "unclear": true
+  },
+  {
+    "tool": "call_tool",
+    "args": {
+      "name": "get_status",
+      "arguments": {},
+      "batch": "[{\"arguments\": {\"x\": [[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]}, \"name\": \"delete_vlan\"}]"
+    },
+    "routed": [
+      "get_status"
+    ],
+    "unclear": true
+  },
+  {
+    "tool": "call_tool",
+    "args": {
+      "name": "get_status",
+      "arguments": "{\"x\": 1e400}"
+    },
+    "routed": [
+      "get_status"
+    ],
+    "unclear": true
   }
 ]

@@ -618,7 +618,9 @@ fn looks_like_json(text: &str) -> bool {
 /// or [ (after JSON whitespace) and parses; the JSON it holds is read the
 /// same way, down to MAX_DEPTH. The flag says such a string did not parse,
 /// or its JSON goes deeper than MAX_DEPTH, so the search can't see
-/// everything the server might read. Same as TS readJsonText.
+/// everything the server might read. Same as TS readJsonText, which also
+/// refuses what serde_json refuses: a number out of f64 range (1e400), a
+/// lone surrogate escape (\ud800) and nesting of 128 or more.
 fn read_json_text(args: &Value) -> (Value, bool) {
     fn read(value: &Value, depth: usize, from_text: bool, unreadable: &mut bool) -> Value {
         match value {
