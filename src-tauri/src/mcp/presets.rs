@@ -292,8 +292,10 @@ pub fn no_pin_reason(id: PresetId) -> Option<&'static str> {
     }
 }
 
-/// What connect does while writes are off.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// What connect does while writes are off. The export (mcp_export_pins)
+/// sends it to the settings page as {"kind": "pinned", "args", "env", "shown"}.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum PinPlan {
     None,
     Pinned {
@@ -846,6 +848,20 @@ mod tests {
         assert_eq!(shown, &vec!["CENTRALMCP_READONLY=1".to_string()]);
         apply_pins(&mut def, &plan);
         assert_eq!(def.env["CENTRALMCP_READONLY"], "1");
+        // The shape the export reads (mcpTypes.ts McpExportPins).
+        assert_eq!(
+            serde_json::to_value(&plan).unwrap(),
+            serde_json::json!({
+                "kind": "pinned",
+                "args": ["run", "centralmcp"],
+                "env": [["CENTRALMCP_READONLY", "1"]],
+                "shown": ["CENTRALMCP_READONLY=1"]
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(PinPlan::CannotPin { reason: "x".into() }).unwrap(),
+            serde_json::json!({ "kind": "cannot-pin", "reason": "x" })
+        );
     }
 
     #[test]

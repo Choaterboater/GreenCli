@@ -1604,6 +1604,13 @@ async fn mcp_list_servers(state: State<'_, AppState>) -> Result<serde_json::Valu
     serde_json::to_value(mgr.list_configs()).map_err(|e| e.to_string())
 }
 
+/// The read-only settings the export adds for servers whose writes are off.
+#[tauri::command]
+async fn mcp_export_pins(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let mgr = state.mcp_manager.lock().await;
+    serde_json::to_value(mgr.export_pins()).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 async fn mcp_save_server(def: McpServerDef, state: State<'_, AppState>) -> Result<(), String> {
     let mgr = state.mcp_manager.lock().await;
@@ -2902,6 +2909,7 @@ fn main() {
             ai_casper_check,
             ai_chat_stream,
             mcp_list_servers,
+            mcp_export_pins,
             mcp_save_server,
             mcp_rename_server,
             mcp_delete_server,

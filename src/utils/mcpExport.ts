@@ -10,6 +10,9 @@
 //   connectTimeout / callTimeout  Casper only (config.ts:117-129); Claude Code uses the MCP_TIMEOUT env var.
 //   type "sse"                    Claude Code only; Casper refuses it (config.ts:137, import.ts:115). GreenCLI has no SSE transport.
 //   "." in names                  Casper allows it (config.ts:132); Claude Code does not.
+//   writes off                    Neither file format has it. While a server's writes are off, the read-only
+//                                 settings GreenCLI adds at connect (mcp_export_pins) go in the file, and a note
+//                                 names the servers whose writes-off setting can't be kept.
 // Secrets become ${NAME}. Both tools expand ${NAME} in command, args, env and headers. Claude Code also
 // expands it in url; Casper does not (manager.ts:793), so we add a note when a url has one.
 // GreenCLI itself never expands ${...} (client.rs sends values verbatim), so a ${X} the user typed
@@ -23,6 +26,7 @@
 // with `await import(...)` only after secretFilterSupported() (as forCopy.ts does).
 
 import type { McpServerDef } from '../types';
+import type { McpExportPins } from './mcpTypes';
 import { isSecretName } from './secrets/assignments';
 import { isSecretKey, snakeKey } from './secrets/scrub';
 import { scrubForAi } from './secrets/engine';
@@ -75,6 +79,20 @@ export interface McpExportResult {
 export interface McpExportOptions {
   /** Names of stdio servers that have saved credentials (from mcp_has_credentials). */
   withCredentials?: ReadonlySet<string>;
+  /** mcp_export_pins: the read-only settings GreenCLI adds to each server whose writes are off. */
+  pins?: ReadonlyMap<string, McpExportPins>;
+}
+
+/** The server as GreenCLI starts it while writes are off: the pinned args, and the pinned env
+ *  (a user key equal to a pin key, ignoring case, is dropped first, as Rust apply_pins does). */
+function withPins(def: McpServerDef, pins: McpExportPins | undefined): McpServerDef {
+  if (def.writes === 'on' || def.transport === 'http' || pins?.kind !== 'pinned') return def;
+  const env = { ...(def.env ?? {}) };
+  for (const [key, value] of pins.env) {
+    for (const k of Object.keys(env)) if (k.toLowerCase() === key.toLowerCase()) delete env[k];
+    env[key] = value;
+  }
+  return { ...def, args: [...pins.args], env };
 }
 
 // ─── References ───
@@ -849,9 +867,9 @@ export function buildMcpExport(servers: readonly McpServerDef[], options: McpExp
   const notes: string[] = [];
   const book = new NameBook();
 
-  // Step 1: skips.
+  // Step 1: skips. A server whose writes are off is exported as GreenCLI starts it: with its pins.
   const kept: { def: McpServerDef; url?: URL }[] = [];
-  for (const def of servers) {
+  for (const def of servers.map((d) => withPins(d, options.pins?.get(d.name)))) {
     const quoted = `"${def.name}"`;
     if (def.transport === 'http') {
       const raw = (def.url ?? '').trim();
@@ -1046,6 +1064,7 @@ export function buildMcpExport(servers: readonly McpServerDef[], options: McpExp
 
   // Step 7: finish.
   const entries: [string, ExportedServer][] = [];
+  const writesLost: string[] = [];
   const keptNames = new Set<string>();
   for (const b of built) {
     const { s } = b;
@@ -1096,8 +1115,23 @@ export function buildMcpExport(servers: readonly McpServerDef[], options: McpExp
     if (b.def.enabled === false) {
       s.notes.push(`${s.name}: it is turned off in GreenCLI, but Claude Code and Casper will offer to start it. Remove it from the file if you don't want it.`);
     }
+    if (b.def.writes !== 'on') {
+      const pins = options.pins?.get(b.def.name);
+      if (b.def.transport !== 'http' && pins?.kind === 'pinned') {
+        s.notes.push(`${s.name}: writes are off in GreenCLI, so its read-only settings are in the file too (${pins.shown.join(', ')}).`);
+      } else {
+        writesLost.push(s.name);
+      }
+    }
     keptNames.add(s.name);
     notes.push(...s.notes);
+  }
+  if (writesLost.length) {
+    const one = writesLost.length === 1;
+    notes.push(
+      `Writes are off in GreenCLI for ${joinNames(writesLost)}, but the file can't keep that. ` +
+        `Claude Code will offer ${one ? 'its' : 'their'} tools that change things. Casper starts every server with writes off.`,
+    );
   }
 
   const count = entries.length;
@@ -1109,6 +1143,12 @@ export function buildMcpExport(servers: readonly McpServerDef[], options: McpExp
     .map((variable) => ({ ...variable, places: variable.places.filter((place) => keptNames.has(place.server)) }))
     .filter((variable) => variable.places.length > 0);
   return { file, text: JSON.stringify(file, null, 2) + '\n', count, variables, notes };
+}
+
+/** "a", "a and b", "a, b and c" */
+function joinNames(names: readonly string[]): string {
+  if (names.length <= 1) return names.join('');
+  return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
 }
 
 function referencePlaces(book: NameBook, s: Server, values: [string, string][], skip?: ReadonlySet<string>): void {

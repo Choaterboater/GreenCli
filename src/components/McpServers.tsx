@@ -20,7 +20,7 @@ import {
 import { notify } from '../store/toastStore';
 import { askConfirm } from '../store/dialogStore';
 import { useMcpApprovalStore } from '../store/mcpApprovalStore';
-import type { McpServerDef, McpStatus } from '../utils/mcpTypes';
+import type { McpExportPins, McpServerDef, McpStatus } from '../utils/mcpTypes';
 import { plainHttpWarning } from '../utils/urlSafety';
 import McpServerSafety from './McpServerSafety';
 
@@ -377,8 +377,11 @@ export default function McpServers() {
             if (await invoke<boolean>('mcp_has_credentials', { name: d.name }).catch(() => false)) withCredentials.add(d.name);
           }),
       );
+      // The read-only settings GreenCLI adds while a server's writes are off go in the file too.
+      const pinList = await invoke<Record<string, McpExportPins>>('mcp_export_pins').catch(() => ({}));
+      const pins = new Map(Object.entries(pinList ?? {}));
       const { buildMcpExport, exportSummary, refusedExportPath, EXPORT_FILE_NAME } = await import('../utils/mcpExport');
-      const result = buildMcpExport(defs, { withCredentials });
+      const result = buildMcpExport(defs, { withCredentials, pins });
       if (result.count === 0) {
         notify.warning('Nothing to export', result.notes.join(' ') || 'None of these servers can be exported.');
         return;

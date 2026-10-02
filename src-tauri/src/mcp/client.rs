@@ -1797,6 +1797,21 @@ impl McpManager {
         self.store.load()
     }
 
+    /// For the export: the read-only settings connect would add to each saved
+    /// server whose writes are off (keyed by name). Servers with writes on are
+    /// left out.
+    pub fn export_pins(&self) -> HashMap<String, PinPlan> {
+        self.store
+            .load()
+            .iter()
+            .filter(|d| !d.writes_on())
+            .map(|d| {
+                let plan = match_preset(d, None).map_or(PinPlan::None, |m| plan_pins(d, m.id));
+                (d.name.clone(), plan)
+            })
+            .collect()
+    }
+
     pub fn save_config(&self, def: McpServerDef) -> Result<(), AppError> {
         self.store.upsert(def)
     }

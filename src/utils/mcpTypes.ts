@@ -75,6 +75,13 @@ export type McpPins =
   | { kind: 'pinned'; shown: string[]; confirmed: boolean }
   | { kind: 'cannot-pin'; reason: string };
 
+/** What mcp_export_pins returns for one server whose writes are off: the read-only settings
+ *  GreenCLI adds when it starts the server (Rust presets.rs PinPlan). */
+export type McpExportPins =
+  | { kind: 'none' }
+  | { kind: 'pinned'; args: string[]; env: [string, string][]; shown: string[] }
+  | { kind: 'cannot-pin'; reason: string };
+
 /** One mcp_status item. */
 export interface McpStatus {
   name: string;

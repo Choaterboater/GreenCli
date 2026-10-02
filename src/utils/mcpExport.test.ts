@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { McpServerDef } from '../types';
+import type { McpExportPins } from './mcpTypes';
 import {
   buildMcpExport,
   CASPER_MAX_SERVERS,
@@ -29,6 +30,8 @@ function def(partial: Partial<McpServerDef> & { name: string }): McpServerDef {
     credentialsEnvVar: null,
     headers: {},
     enabled: true,
+    // Writes on unless a test says otherwise, so the writes-off note doesn't show in every test.
+    writes: 'on',
     ...partial,
   };
 }
@@ -761,6 +764,48 @@ describe('buildMcpExport: skipped servers and names', () => {
     expect(r.count).toBe(65);
     expect(r.notes).toContain('Casper uses at most 64 servers in total, from all its files together. This file alone has 65.');
     expect(build(many.slice(0, 64)).notes).toEqual([]);
+  });
+});
+
+describe('buildMcpExport: writes off', () => {
+  it("adds the read-only settings GreenCLI sends while writes are off", () => {
+    const central = def({
+      name: 'central',
+      command: 'uv',
+      args: ['run', 'centralmcp'],
+      env: { centralmcp_readonly: '0', OTHER: 'x' },
+      writes: 'off',
+    });
+    const grafana = def({ name: 'grafana', command: 'mcp-grafana', args: [], writes: undefined });
+    const pins = new Map<string, McpExportPins>([
+      ['central', { kind: 'pinned', args: ['run', 'centralmcp'], env: [['CENTRALMCP_READONLY', '1']], shown: ['CENTRALMCP_READONLY=1'] }],
+      ['grafana', { kind: 'pinned', args: ['--disable-write'], env: [], shown: ['--disable-write'] }],
+    ]);
+    const r = build([central, grafana], { pins });
+    expect(stdioOf(r.file.mcpServers.central).env).toEqual({ CENTRALMCP_READONLY: '1', OTHER: 'x' });
+    expect(stdioOf(r.file.mcpServers.grafana).args).toEqual(['--disable-write']);
+    expect(r.notes.filter((n) => /writes/i.test(n))).toEqual([
+      'central: writes are off in GreenCLI, so its read-only settings are in the file too (CENTRALMCP_READONLY=1).',
+      'grafana: writes are off in GreenCLI, so its read-only settings are in the file too (--disable-write).',
+    ]);
+  });
+
+  it("says when the file can't keep writes off", () => {
+    const pins = new Map<string, McpExportPins>([['junos', { kind: 'cannot-pin', reason: 'it has no read-only setting' }]]);
+    const r = build(
+      [
+        def({ name: 'junos', command: 'python3', args: ['jmcp.py'], writes: 'off' }),
+        http('mist', 'https://mist.example/mcp'),
+        def({ name: 'other', command: 'uvx', writes: undefined }),
+      ].map((d) => (d.name === 'mist' ? { ...d, writes: 'off' as const } : d)),
+      { pins },
+    );
+    expect(r.notes.filter((n) => /writes/i.test(n))).toEqual([
+      "Writes are off in GreenCLI for junos, mist and other, but the file can't keep that. Claude Code will offer their tools that change things. Casper starts every server with writes off.",
+    ]);
+    expect(build([def({ name: 's', command: 'uvx', writes: 'off' })]).notes).toEqual([
+      "Writes are off in GreenCLI for s, but the file can't keep that. Claude Code will offer its tools that change things. Casper starts every server with writes off.",
+    ]);
   });
 });
 
