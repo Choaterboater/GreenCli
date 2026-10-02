@@ -25,7 +25,7 @@ use api::{Aos8Client, ArubaCxClient, AossClient, JunosClient, MistClient};
 use central::CentralClient;
 use error::AppError;
 use local::{LocalConfig, LocalConnection};
-use mcp::{McpClient, McpManager, McpServerDef};
+use mcp::{McpClient, McpManager, McpServerDef, McpToolInfo};
 use serde::{Deserialize, Serialize};
 use serial::{client::SerialConfig, SerialConnection};
 use session::{SessionFolder, SessionManager, SessionStore, StoredSession};
@@ -83,7 +83,7 @@ struct AppState {
     /// out under a brief map lock and run the (up-to-30s) network round-trip
     /// WITHOUT holding it — holding the map lock across the await serialized
     /// every API command behind the slowest device (see mcp_call's
-    /// caller_for() pattern).
+    /// call_target() pattern).
     api_clients: Arc<AsyncMutex<HashMap<String, Arc<ArubaCxClient>>>>,
     aos8_clients: Arc<AsyncMutex<HashMap<String, Arc<Aos8Client>>>>,
     aoss_clients: Arc<AsyncMutex<HashMap<String, Arc<AossClient>>>>,
@@ -117,6 +117,9 @@ struct AppState {
     /// Cancellation flags for in-flight AI streams, keyed by stream id, so the
     /// frontend Stop button can actually abort the backend request/egress.
     ai_cancels: Arc<AsyncMutex<HashMap<String, Arc<std::sync::atomic::AtomicBool>>>>,
+    /// In-flight MCP tool calls the AI panel's Stop can cancel, keyed by the
+    /// call id the panel sends with `mcp_call`.
+    mcp_calls: Arc<mcp::cancel::CallRegistry>,
     app_dir: std::path::PathBuf,
 }
 
@@ -147,6 +150,7 @@ impl AppState {
             session_logs: Arc::new(AsyncMutex::new(HashMap::new())),
             forwards: Arc::new(AsyncMutex::new(HashMap::new())),
             ai_cancels: Arc::new(AsyncMutex::new(HashMap::new())),
+            mcp_calls: Arc::new(mcp::cancel::CallRegistry::new()),
             app_dir,
         })
     }
@@ -1662,22 +1666,54 @@ async fn mcp_all_tools(state: State<'_, AppState>) -> Result<serde_json::Value, 
     serde_json::to_value(mgr.all_tools()).map_err(|e| e.to_string())
 }
 
+/// One tool of a connected server, as the AI panel checks it right before a
+/// call. No network call; None when the server or tool is gone.
+#[tauri::command]
+async fn mcp_tool_info(
+    server: String,
+    tool: String,
+    state: State<'_, AppState>,
+) -> Result<Option<McpToolInfo>, String> {
+    let mgr = state.mcp_manager.lock().await;
+    Ok(mgr.tool_info(&server, &tool))
+}
+
 /// Invoke a tool on a connected MCP server (used by the AI assistant).
+/// `call_id` lets the panel's Stop cancel it (mcp_cancel_call).
 #[tauri::command]
 async fn mcp_call(
     server: String,
     tool: String,
     args: serde_json::Value,
+    call_id: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
-    // Clone the caller handle under a brief lock, then release it before the
-    // (up-to-60s) tool round-trip so MCP stays responsive / parallelisable.
-    let caller = {
-        let mgr = state.mcp_manager.lock().await;
-        mgr.caller_for(&server)
-    };
-    let caller = caller.ok_or_else(|| format!("MCP server '{}' is not connected", server))?;
-    caller.call_tool(&tool, args).await.map_err(|e| e.to_string())
+    // The caller handle is cloned under a brief lock, which is released before
+    // the tool round-trip so MCP stays responsive / parallelisable.
+    mcp::run_call(
+        &state.mcp_manager,
+        &state.mcp_calls,
+        &server,
+        &tool,
+        args,
+        call_id.as_deref(),
+    )
+    .await
+}
+
+/// Stop one MCP call (the AI panel's Stop). Always Ok: a call that already
+/// finished, or hasn't started yet, is handled by the registry.
+#[tauri::command]
+async fn mcp_cancel_call(call_id: String, state: State<'_, AppState>) -> Result<(), String> {
+    state.mcp_calls.cancel(&call_id);
+    Ok(())
+}
+
+/// Junos servers: run plain `show` commands without asking.
+#[tauri::command]
+async fn mcp_set_show_opt_in(name: String, on: bool, state: State<'_, AppState>) -> Result<(), String> {
+    let mgr = state.mcp_manager.lock().await;
+    mgr.set_show_opt_in(&name, on).map_err(|e| e.to_string())
 }
 
 /// Store the credentials-file content for an MCP server (kept in the app data
@@ -2737,7 +2773,10 @@ fn main() {
             mcp_disconnect,
             mcp_status,
             mcp_all_tools,
+            mcp_tool_info,
             mcp_call,
+            mcp_cancel_call,
+            mcp_set_show_opt_in,
             mcp_set_credentials,
             mcp_has_credentials,
             list_known_hosts,

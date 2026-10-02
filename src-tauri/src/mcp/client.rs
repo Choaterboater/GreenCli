@@ -17,18 +17,22 @@
 //     mirrors the stdio reader task, but many servers don't implement it
 //     (it's optional per spec), so its absence is tolerated, not an error.
 
+use super::cancel::{self, CallRegistry, Cancelled};
+use super::env;
+use super::presets::{call_timeout_secs, match_by_tools, match_preset, preset_label, PresetId};
 use crate::error::AppError;
 use futures::StreamExt;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
 use std::fs;
+use std::future::Future;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::{mpsc, oneshot, Mutex};
 
@@ -36,15 +40,50 @@ fn default_true() -> bool {
     true
 }
 
+/// Only a JSON `true` is true. A hand-edited "yes" or 1 loads as false instead
+/// of making the whole server list fail to parse.
+fn lenient_bool<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
+    Ok(matches!(Value::deserialize(d)?, Value::Bool(true)))
+}
+
+/// The MCP protocol version GreenCLI asks for.
+pub const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
+/// Versions GreenCLI knows. Another one still works; it is only logged.
+const KNOWN_PROTOCOL_VERSIONS: [&str; 3] = ["2024-11-05", "2025-03-26", MCP_PROTOCOL_VERSION];
+
+/// Stop pressed while the call was with the server.
+pub const MCP_STOPPED_IN_FLIGHT: &str =
+    "Stopped. GreenCLI asked the server to cancel the call, but it may have finished already.";
+/// Stop pressed before the call went out.
+pub const MCP_STOPPED_NOT_SENT: &str = "Stopped. The call was not sent.";
+
 /// The `initialize` request params — shared by the stdio/HTTP handshakes and
 /// the HTTP session-expiry re-initialize path, so the advertised protocol
 /// version and client identity live in exactly one place.
 fn initialize_params() -> Value {
     json!({
-        "protocolVersion": "2024-11-05",
+        "protocolVersion": MCP_PROTOCOL_VERSION,
         "capabilities": {},
         "clientInfo": { "name": "greencli", "version": env!("CARGO_PKG_VERSION") }
     })
+}
+
+/// The protocol version to send after `initialize`: the server's own answer,
+/// so GreenCLI only ever sends a version the server named. A server that
+/// names none gets 2024-11-05 (what GreenCLI always assumed).
+pub(crate) fn negotiated_version(init: &Value) -> String {
+    match init.get("protocolVersion").and_then(|v| v.as_str()) {
+        Some(v) if !v.is_empty() => {
+            if !KNOWN_PROTOCOL_VERSIONS.contains(&v) {
+                log::warn!(
+                    "MCP: the server answered with protocol version '{}', which GreenCLI doesn't know",
+                    v
+                );
+            }
+            v.to_string()
+        }
+        _ => "2024-11-05".to_string(),
+    }
 }
 
 /// How to reach an MCP server: spawn it (stdio) or connect to one already
@@ -95,6 +134,28 @@ pub struct McpServerDef {
     pub headers: HashMap<String, String>,
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// Junos only: plain `show` commands run without asking. A non-bool value
+    /// loads as false. Only `mcp_set_show_opt_in` turns it on; a save from the
+    /// form keeps the stored value (see `McpConfigStore::upsert`).
+    #[serde(
+        default,
+        deserialize_with = "lenient_bool",
+        skip_serializing_if = "std::ops::Not::not"
+    )]
+    pub show_opt_in: bool,
+}
+
+/// Same program: the same transport, command, args, URL and folder. Env and
+/// headers are left out, so a rotated token keeps the server's settings.
+fn same_program(a: &McpServerDef, b: &McpServerDef) -> bool {
+    fn trimmed(v: &Option<String>) -> &str {
+        v.as_deref().map(str::trim).unwrap_or("")
+    }
+    a.transport == b.transport
+        && a.command.trim() == b.command.trim()
+        && a.args == b.args
+        && trimmed(&a.url) == trimmed(&b.url)
+        && trimmed(&a.cwd) == trimmed(&b.cwd)
 }
 
 /// A discovered tool exposed by a connected MCP server.
@@ -105,7 +166,97 @@ pub struct McpToolInfo {
     pub name: String,
     #[serde(default)]
     pub description: String,
+    /// Always a JSON object with "type":"object" (forced by tool_from_json).
     pub input_schema: Value,
+    /// The server's raw annotations object (readOnlyHint, destructiveHint, ...).
+    /// Kept only when it is a JSON object.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub annotations: Option<Value>,
+    /// The server's raw _meta object. Kept only when it is a JSON object.
+    #[serde(rename = "_meta", default, skip_serializing_if = "Option::is_none")]
+    pub meta: Option<Value>,
+    /// Preset id when the server matches one. Filled by the manager at listing
+    /// time, never by the server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preset: Option<PresetId>,
+    /// The server's Junos plain-show opt-in, copied from its definition at
+    /// listing time.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub show_opt_in: bool,
+}
+
+/// One entry of tools/list -> McpToolInfo. None when `name` is missing, not a
+/// string, or empty.
+pub(crate) fn tool_from_json(server: &str, t: &Value) -> Option<McpToolInfo> {
+    let name = t
+        .get("name")
+        .and_then(|n| n.as_str())
+        .filter(|n| !n.is_empty())?;
+    let mut input_schema = match t.get("inputSchema") {
+        Some(Value::Object(o)) => Value::Object(o.clone()),
+        _ => json!({}),
+    };
+    // Providers reject a tool whose schema isn't an object schema.
+    input_schema["type"] = json!("object");
+    let object = |key: &str| t.get(key).filter(|v| v.is_object()).cloned();
+    Some(McpToolInfo {
+        server: server.to_string(),
+        name: name.to_string(),
+        description: t
+            .get("description")
+            .and_then(|d| d.as_str())
+            .unwrap_or("")
+            .to_string(),
+        input_schema,
+        annotations: object("annotations"),
+        meta: object("_meta"),
+        preset: None,
+        show_opt_in: false,
+    })
+}
+
+/// Drops EVERY copy of a tool name the server lists more than once. Copies can
+/// disagree (one says read-only, one doesn't) and GreenCLI can't tell which one
+/// the server will really run, so it offers neither.
+pub(crate) fn dedupe_tools(server: &str, tools: Vec<McpToolInfo>) -> Vec<McpToolInfo> {
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for t in &tools {
+        *counts.entry(t.name.clone()).or_default() += 1;
+    }
+    let mut dupes: Vec<&String> = counts
+        .iter()
+        .filter(|(_, n)| **n > 1)
+        .map(|(name, _)| name)
+        .collect();
+    dupes.sort();
+    for name in dupes {
+        log::warn!(
+            "MCP '{}': tool '{}' is listed twice; GreenCLI hides it.",
+            server,
+            name
+        );
+    }
+    tools
+        .into_iter()
+        .filter(|t| counts.get(&t.name) == Some(&1))
+        .collect()
+}
+
+/// Fills the listing-time fields of one tool: its preset (from the definition
+/// and the tool names, or from the tool names alone when there is no saved
+/// definition) and the Junos plain-show opt-in.
+pub fn decorate_a2(
+    def: Option<&McpServerDef>,
+    tool_names: &[&str],
+    mut tool: McpToolInfo,
+) -> McpToolInfo {
+    let found = match def {
+        Some(d) => match_preset(d, Some(tool_names)),
+        None => match_by_tools(tool_names),
+    };
+    tool.preset = found.map(|m| m.id);
+    tool.show_opt_in = def.is_some_and(|d| d.show_opt_in);
+    tool
 }
 
 // ─── On-disk config store ───
@@ -121,11 +272,33 @@ impl McpConfigStore {
         }
     }
 
+    /// Lenient, for read-only callers: any read or parse error gives an empty
+    /// list. Never use this before a save (see `load_checked`).
     pub fn load(&self) -> Vec<McpServerDef> {
         fs::read(&self.path)
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok())
             .unwrap_or_default()
+    }
+
+    /// For callers that save afterwards: a missing file is an empty list, but
+    /// a file GreenCLI can't read or parse is an error, so a save never wipes
+    /// the servers it couldn't read.
+    pub fn load_checked(&self) -> Result<Vec<McpServerDef>, AppError> {
+        const UNREADABLE: &str = "GreenCLI couldn't read mcp_servers.json, so it didn't change it. \
+                                  Fix or remove the file, then try again.";
+        let bytes = match fs::read(&self.path) {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => {
+                log::warn!("MCP: reading {}: {}", self.path.display(), e);
+                return Err(AppError::ConfigError(UNREADABLE.into()));
+            }
+        };
+        serde_json::from_slice(&bytes).map_err(|e| {
+            log::warn!("MCP: parsing {}: {}", self.path.display(), e);
+            AppError::ConfigError(UNREADABLE.into())
+        })
     }
 
     fn save(&self, defs: &[McpServerDef]) -> Result<(), AppError> {
@@ -138,18 +311,41 @@ impl McpConfigStore {
         crate::private_fs::write_private_atomic(&self.path, &bytes)
     }
 
-    pub fn upsert(&self, def: McpServerDef) -> Result<(), AppError> {
-        let mut all = self.load();
+    /// Save a definition from the form. The form can't change the safety
+    /// settings: an existing server keeps its Junos opt-in only while it runs
+    /// the same program, and a new server starts with it off.
+    pub fn upsert(&self, mut def: McpServerDef) -> Result<(), AppError> {
+        let mut all = self.load_checked()?;
         if let Some(existing) = all.iter_mut().find(|d| d.name == def.name) {
+            let same = same_program(existing, &def);
+            def.show_opt_in = same && existing.show_opt_in;
             *existing = def;
         } else {
+            def.show_opt_in = false;
             all.push(def);
         }
         self.save(&all)
     }
 
+    /// Change one saved server in place and save. Returns the updated definition.
+    pub fn update(
+        &self,
+        name: &str,
+        f: impl FnOnce(&mut McpServerDef),
+    ) -> Result<McpServerDef, AppError> {
+        let mut all = self.load_checked()?;
+        let def = all
+            .iter_mut()
+            .find(|d| d.name == name)
+            .ok_or_else(|| AppError::ApiError(format!("No MCP server named '{}'", name)))?;
+        f(def);
+        let updated = def.clone();
+        self.save(&all)?;
+        Ok(updated)
+    }
+
     pub fn remove(&self, name: &str) -> Result<(), AppError> {
-        let mut all = self.load();
+        let mut all = self.load_checked()?;
         all.retain(|d| d.name != name);
         self.save(&all)
     }
@@ -370,22 +566,7 @@ async fn fetch_all_tools(caller: &McpCaller, server_name: &str) -> Result<Vec<Mc
                 .cloned()
                 .unwrap_or_default()
                 .iter()
-                .filter_map(|t| {
-                    let name = t.get("name").and_then(|n| n.as_str())?.to_string();
-                    Some(McpToolInfo {
-                        server: server_name.to_string(),
-                        name,
-                        description: t
-                            .get("description")
-                            .and_then(|d| d.as_str())
-                            .unwrap_or("")
-                            .to_string(),
-                        input_schema: t
-                            .get("inputSchema")
-                            .cloned()
-                            .unwrap_or_else(|| json!({ "type": "object" })),
-                    })
-                }),
+                .filter_map(|t| tool_from_json(server_name, t)),
         );
         let next = tools_res
             .get("nextCursor")
@@ -398,7 +579,8 @@ async fn fetch_all_tools(caller: &McpCaller, server_name: &str) -> Result<Vec<Mc
             _ => break,
         }
     }
-    Ok(tools)
+    // After every page: a name can repeat across pages too.
+    Ok(dedupe_tools(server_name, tools))
 }
 
 /// Flexibly parse a JSON-RPC id (integer / float / numeric-string — servers vary).
@@ -576,6 +758,29 @@ async fn drain_sse(
     awaiting_id.map(|_| Err(AppError::ApiError("MCP stream ended without a response".into())))
 }
 
+/// Write and flush the whole line, then wait for `wait` or a Stop, whichever
+/// comes first. The write is outside the select on purpose: a Stop that comes
+/// during the write stays in the channel and takes effect right after it, so
+/// the server never gets half a line. Outer Err: the write failed.
+pub(crate) async fn send_then_wait<W: AsyncWrite + Unpin, T>(
+    w: &Mutex<W>,
+    line: &[u8],
+    wait: impl Future<Output = T>,
+    cancel: Option<oneshot::Receiver<()>>,
+) -> std::io::Result<Result<T, Cancelled>> {
+    {
+        let mut w = w.lock().await;
+        w.write_all(line).await?;
+        w.flush().await?;
+    }
+    tokio::select! {
+        // An answer that is already here wins over a Stop.
+        biased;
+        v = wait => Ok(Ok(v)),
+        _ = cancel::stop_signal(cancel) => Ok(Err(Cancelled)),
+    }
+}
+
 /// Refetches the tool list on `notifications/tools/list_changed`, shared by
 /// both transports. Debounced so a burst of notifications (a server flipping
 /// several capabilities at once) triggers one refetch, not one per
@@ -617,7 +822,16 @@ impl McpClient {
         validate_stdio_command(&def.command)?;
         let mut cmd = Command::new(&def.command);
         cmd.args(&def.args);
+        // Only a short list of basic variables from GreenCLI's own environment
+        // (see env.rs): API keys in the user's shell must not reach every
+        // server. vars_os, because vars panics on a non-UTF-8 value.
+        cmd.env_clear();
+        for (k, v) in env::inherited_env(std::env::vars_os(), cfg!(windows)) {
+            cmd.env(k, v);
+        }
         augment_path(&mut cmd);
+        // The server's own Env box (and the credentials file path) last, so
+        // they win.
         for (k, v) in &def.env {
             cmd.env(k, v);
         }
@@ -886,12 +1100,7 @@ impl McpClient {
         // carry the `MCP-Protocol-Version` header. (The initialize POST above
         // ran while protocol_version was still None, so it correctly omitted
         // the header.)
-        let negotiated = init
-            .get("protocolVersion")
-            .and_then(|v| v.as_str())
-            .unwrap_or("2024-11-05")
-            .to_string();
-        *protocol_version.lock().await = Some(negotiated);
+        *protocol_version.lock().await = Some(negotiated_version(&init));
         caller.notify("notifications/initialized", json!({})).await?;
 
         let tools = fetch_all_tools(&caller, &def.name).await?;
@@ -916,7 +1125,7 @@ impl McpClient {
                 // streams and, per the Streamable HTTP spec, the server MAY close
                 // it at any time without the session ending. So on close we
                 // re-establish rather than mark the client dead — real liveness
-                // comes from per-POST failures (see request_with_timeout).
+                // comes from per-POST failures (see request_cancellable).
                 let mut err_backoff = Duration::from_secs(1);
                 loop {
                     let sid = session_id.lock().await.clone();
@@ -989,6 +1198,24 @@ impl McpClient {
         self.caller.clone()
     }
 
+    /// One tool from the current list, cloned (no network call).
+    pub fn tool(&self, name: &str) -> Option<McpToolInfo> {
+        self.tools
+            .lock()
+            .ok()?
+            .iter()
+            .find(|t| t.name == name)
+            .cloned()
+    }
+
+    /// The names in the current tool list (no network call).
+    pub fn tool_names(&self) -> Vec<String> {
+        self.tools
+            .lock()
+            .map(|g| g.iter().map(|t| t.name.clone()).collect())
+            .unwrap_or_default()
+    }
+
     /// True once the server is known gone (see the `dead` field doc on
     /// McpCaller for what that means per-transport). The client stays in the
     /// manager map until the user reconnects/removes it, but must no longer
@@ -1017,23 +1244,57 @@ impl McpCaller {
     }
 
     async fn request(&self, method: &str, params: Value) -> Result<Value, AppError> {
-        self.request_with_timeout(method, params, 60).await
+        self.request_cancellable(method, params, 60, None).await
     }
 
-    async fn request_with_timeout(
+    async fn next_request_id(&self) -> i64 {
+        let mut n = self.next_id.lock().await;
+        *n += 1;
+        *n
+    }
+
+    /// Tell the server the user stopped request `id`. Runs as a detached task,
+    /// so the Stop itself never waits on the server. Errors are ignored: the
+    /// call may have finished already.
+    fn send_cancelled(&self, id: i64) {
+        let c = self.clone();
+        tokio::spawn(async move {
+            let params = json!({ "requestId": id, "reason": "The user pressed Stop in GreenCLI." });
+            if matches!(c.io, ClientIo::Stdio { .. }) {
+                // No timeout around a stdio write: dropping it part-way would
+                // leave half a line on the server's stdin.
+                let _ = c.notify("notifications/cancelled", params).await;
+            } else {
+                let _ = tokio::time::timeout(
+                    Duration::from_secs(5),
+                    c.notify("notifications/cancelled", params),
+                )
+                .await;
+            }
+        });
+    }
+
+    /// One JSON-RPC request. `cancel` is the Stop signal from the call
+    /// registry (None: can't be stopped). A Stop before anything is sent sends
+    /// nothing; a Stop after that sends `notifications/cancelled` and returns
+    /// MCP_STOPPED_IN_FLIGHT. A stdio request line is always written in full
+    /// first, so a Stop can never leave half a line on the server's stdin.
+    async fn request_cancellable(
         &self,
         method: &str,
         params: Value,
         timeout_secs: u64,
+        mut cancel: Option<oneshot::Receiver<()>>,
     ) -> Result<Value, AppError> {
         if self.dead.load(Ordering::Relaxed) {
             return Err(self.exited_error());
         }
-        let id = {
-            let mut n = self.next_id.lock().await;
-            *n += 1;
-            *n
-        };
+        if let Some(rx) = cancel.as_mut() {
+            if rx.try_recv().is_ok() {
+                return Err(AppError::ApiError(MCP_STOPPED_NOT_SENT.into()));
+            }
+        }
+        let id = self.next_request_id().await;
 
         match &self.io {
             ClientIo::Stdio { stdin } => {
@@ -1041,35 +1302,45 @@ impl McpCaller {
                 self.pending.lock().await.insert(id, tx);
 
                 let msg = json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
-                let line = format!("{}\n", serde_json::to_string(&msg)?);
-                let write_res: std::io::Result<()> = {
-                    let mut stdin = stdin.lock().await;
-                    match stdin.write_all(line.as_bytes()).await {
-                        Ok(()) => stdin.flush().await,
-                        Err(e) => Err(e),
+                let line = match serde_json::to_string(&msg) {
+                    Ok(s) => format!("{}\n", s),
+                    Err(e) => {
+                        self.pending.lock().await.remove(&id);
+                        return Err(e.into());
                     }
                 };
-                if let Err(e) = write_res {
-                    // The request never reached the server, so no response will
-                    // ever arrive — drop the waiter or it leaks in the pending map.
-                    self.pending.lock().await.remove(&id);
-                    return Err(if self.dead.load(Ordering::Relaxed) {
-                        self.exited_error()
-                    } else {
-                        AppError::from(e)
-                    });
-                }
+                let wait = tokio::time::timeout(Duration::from_secs(timeout_secs), rx);
+                let outcome = match send_then_wait(stdin, line.as_bytes(), wait, cancel).await {
+                    Ok(outcome) => outcome,
+                    Err(e) => {
+                        // The request never reached the server, so no response will
+                        // ever arrive — drop the waiter or it leaks in the pending map.
+                        self.pending.lock().await.remove(&id);
+                        return Err(if self.dead.load(Ordering::Relaxed) {
+                            self.exited_error()
+                        } else {
+                            AppError::from(e)
+                        });
+                    }
+                };
 
-                match tokio::time::timeout(Duration::from_secs(timeout_secs), rx).await {
-                    Ok(Ok(Ok(v))) => Ok(v),
-                    Ok(Ok(Err(e))) => Err(AppError::ApiError(format!("MCP '{}': {}", method, e))),
-                    Ok(Err(_)) => Err(AppError::ApiError("MCP response channel dropped".into())),
-                    Err(_) => {
+                match outcome {
+                    Ok(Ok(Ok(Ok(v)))) => Ok(v),
+                    Ok(Ok(Ok(Err(e)))) => {
+                        Err(AppError::ApiError(format!("MCP '{}': {}", method, e)))
+                    }
+                    Ok(Ok(Err(_))) => Err(AppError::ApiError("MCP response channel dropped".into())),
+                    Ok(Err(_)) => {
                         self.pending.lock().await.remove(&id);
                         Err(AppError::ApiError(format!(
                             "MCP '{}' timed out after {}s",
                             method, timeout_secs
                         )))
+                    }
+                    Err(Cancelled) => {
+                        self.pending.lock().await.remove(&id);
+                        self.send_cancelled(id);
+                        Err(AppError::ApiError(MCP_STOPPED_IN_FLIGHT.into()))
                     }
                 }
             }
@@ -1162,7 +1433,7 @@ impl McpCaller {
                             {
                                 reinit_attempted = true;
                                 *session_id.lock().await = None;
-                                // Boxed: request -> request_with_timeout -> this
+                                // Boxed: request -> request_cancellable -> this
                                 // future would otherwise be an infinitely-sized
                                 // (recursive) async type.
                                 Box::pin(self.request("initialize", initialize_params())).await?;
@@ -1208,12 +1479,22 @@ impl McpCaller {
                         };
                     }
                 };
-                match tokio::time::timeout(Duration::from_secs(timeout_secs), fut).await {
-                    Ok(r) => r,
-                    Err(_) => Err(AppError::ApiError(format!(
-                        "MCP '{}' timed out after {}s",
-                        method, timeout_secs
-                    ))),
+                // Dropping a reqwest future part-way is safe. If a Stop drops a
+                // transparent re-initialize, the next request's 404 path redoes it.
+                let timed = tokio::time::timeout(Duration::from_secs(timeout_secs), fut);
+                tokio::select! {
+                    biased;
+                    r = timed => match r {
+                        Ok(r) => r,
+                        Err(_) => Err(AppError::ApiError(format!(
+                            "MCP '{}' timed out after {}s",
+                            method, timeout_secs
+                        ))),
+                    },
+                    _ = cancel::stop_signal(cancel) => {
+                        self.send_cancelled(id);
+                        Err(AppError::ApiError(MCP_STOPPED_IN_FLIGHT.into()))
+                    }
                 }
             }
         }
@@ -1272,18 +1553,40 @@ impl McpCaller {
         }
     }
 
+    /// Call a tool and return the raw `result` object.
+    pub async fn call_tool_raw(
+        &self,
+        name: &str,
+        args: Value,
+        timeout_secs: u64,
+        cancel: Option<oneshot::Receiver<()>>,
+    ) -> Result<Value, AppError> {
+        self.request_cancellable(
+            "tools/call",
+            json!({ "name": name, "arguments": args }),
+            timeout_secs,
+            cancel,
+        )
+        .await
+    }
+
     /// Call a tool and return its text content. A tool-level failure is an MCP
     /// `result` with `isError: true` (NOT a JSON-RPC error), so we check that
     /// and surface it as an Err instead of feeding the error text back as a
     /// valid answer.
     ///
-    /// Uses a longer timeout than the handshake/list requests: real tools proxy
-    /// slow cloud APIs (Aruba Central reports, firmware queries) that
-    /// legitimately run past 60s.
-    pub async fn call_tool(&self, name: &str, args: Value) -> Result<String, AppError> {
-        let res = self
-            .request_with_timeout("tools/call", json!({ "name": name, "arguments": args }), 300)
-            .await?;
+    /// Uses a longer timeout than the handshake/list requests (the caller
+    /// passes it, from the server's preset): real tools proxy slow cloud APIs
+    /// (Aruba Central reports, firmware queries) that legitimately run past
+    /// 60s. `cancel` is the Stop signal (see `request_cancellable`).
+    pub async fn call_tool(
+        &self,
+        name: &str,
+        args: Value,
+        timeout_secs: u64,
+        cancel: Option<oneshot::Receiver<()>>,
+    ) -> Result<String, AppError> {
+        let res = self.call_tool_raw(name, args, timeout_secs, cancel).await?;
         // Extract text from content blocks: plain `text` blocks, embedded
         // resources carrying inline text, and placeholders for binary blocks
         // (dumping base64 image/audio at the model would burn its context).
@@ -1433,7 +1736,7 @@ impl McpManager {
         if from == to {
             return Ok(());
         }
-        let mut all = self.store.load();
+        let mut all = self.store.load_checked()?;
         if all.iter().any(|d| d.name == to) {
             return Err(AppError::ApiError(format!(
                 "An MCP server named '{}' already exists",
@@ -1549,14 +1852,48 @@ impl McpManager {
         self.clients.drain().map(|(_, c)| c).collect()
     }
 
+    /// Every tool of every live server, with the listing-time fields filled.
+    /// `server` is always the clients-map key: a refresh after a rename
+    /// rebuilds the tools with the old name (spawn_refresher keeps the name it
+    /// was started with), so the key is the only reliable name.
     pub fn all_tools(&self) -> Vec<McpToolInfo> {
+        let defs = self.store.load();
+        let by_name: HashMap<&str, &McpServerDef> =
+            defs.iter().map(|d| (d.name.as_str(), d)).collect();
         // Skip dead clients: advertising a crashed server's tools to the AI
         // just produces doomed tool calls.
         self.clients
-            .values()
-            .filter(|c| !c.is_dead())
-            .flat_map(|c| c.tools.lock().map(|g| g.clone()).unwrap_or_default())
+            .iter()
+            .filter(|(_, c)| !c.is_dead())
+            .flat_map(|(key, c)| {
+                let tools = c.tools.lock().map(|g| g.clone()).unwrap_or_default();
+                let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+                let def = by_name.get(key.as_str()).copied();
+                tools
+                    .iter()
+                    .map(|t| {
+                        let mut t = decorate_a2(def, &names, t.clone());
+                        t.server = key.clone();
+                        t
+                    })
+                    .collect::<Vec<McpToolInfo>>()
+            })
             .collect()
+    }
+
+    /// One tool of a live server, decorated like `all_tools`. No network call.
+    /// None when the server isn't connected, its client is dead, or the tool
+    /// isn't in its current list.
+    pub fn tool_info(&self, server: &str, tool: &str) -> Option<McpToolInfo> {
+        let client = self.clients.get(server).filter(|c| !c.is_dead())?;
+        let found = client.tool(tool)?;
+        let names = client.tool_names();
+        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+        let defs = self.store.load();
+        let def = defs.iter().find(|d| d.name == server);
+        let mut found = decorate_a2(def, &names, found);
+        found.server = server.to_string();
+        Some(found)
     }
 
     pub fn status(&self) -> Vec<Value> {
@@ -1567,25 +1904,516 @@ impl McpManager {
                 // A client whose process has exited is NOT connected, even if it
                 // is still sitting in the map awaiting a reconnect.
                 let live = self.clients.get(&d.name).filter(|c| !c.is_dead());
-                json!({
+                let names = live.map(|c| c.tool_names());
+                let name_refs: Option<Vec<&str>> =
+                    names.as_ref().map(|n| n.iter().map(String::as_str).collect());
+                // Matches on the definition even while disconnected; once
+                // connected the tool list is checked too.
+                let found = match_preset(d, name_refs.as_deref());
+                let mut item = json!({
                     "name": d.name,
                     "enabled": d.enabled,
                     "connected": live.is_some(),
-                    "toolCount": live
-                        .map(|c| c.tools.lock().map(|g| g.len()).unwrap_or(0))
-                        .unwrap_or(0),
-                })
+                    "toolCount": names.as_ref().map(|n| n.len()).unwrap_or(0),
+                    "preset": found.map(|m| json!({ "id": m.id, "label": preset_label(m.id) })),
+                    "presetMismatch": found.is_some_and(|m| m.mismatch),
+                });
+                if let Some(m) = found {
+                    item["presetBy"] = json!(m.by);
+                }
+                item
             })
             .collect()
     }
 
-    /// Clone a caller handle for a connected server so the command can drop the
-    /// manager lock before awaiting the (up-to-60s) tool round-trip.
+    /// The caller handle and call timeout for a connected server, so the
+    /// command can drop the manager lock before awaiting the tool round-trip.
     ///
     /// Dead clients are deliberately NOT filtered here: the caller's own dead
     /// check in `request()` yields the precise "server has exited — reconnect"
     /// error, which beats the generic "not connected" the command would emit.
-    pub fn caller_for(&self, server: &str) -> Option<McpCaller> {
-        self.clients.get(server).map(|c| c.caller())
+    pub fn call_target(&self, server: &str) -> Result<(McpCaller, u64), String> {
+        let client = self
+            .clients
+            .get(server)
+            .ok_or_else(|| format!("MCP server '{}' is not connected", server))?;
+        let names = client.tool_names();
+        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+        let defs = self.store.load();
+        let found = match defs.iter().find(|d| d.name == server) {
+            Some(d) => match_preset(d, Some(&names)),
+            None => match_by_tools(&names),
+        };
+        Ok((client.caller(), call_timeout_secs(found.map(|m| m.id))))
+    }
+
+    /// Turn the Junos plain-show opt-in on or off for a saved server.
+    pub fn set_show_opt_in(&self, name: &str, on: bool) -> Result<(), AppError> {
+        self.store.update(name, |d| d.show_opt_in = on).map(|_| ())
+    }
+}
+
+/// The `mcp_call` command without Tauri: look the server up under a brief
+/// lock, then run the call unlocked, stoppable through `calls` when the AI
+/// panel gave it an id. A Stop gives one of the two MCP_STOPPED_* texts,
+/// unprefixed, so the panel can tell the model exactly what happened.
+pub async fn run_call(
+    manager: &Mutex<McpManager>,
+    calls: &CallRegistry,
+    server: &str,
+    tool: &str,
+    args: Value,
+    call_id: Option<&str>,
+) -> Result<String, String> {
+    let (caller, timeout_secs) = {
+        let mgr = manager.lock().await;
+        mgr.call_target(server)?
+    };
+    let (rx, owned) = match call_id.map(|id| calls.register(id)) {
+        None => (None, false),
+        Some(Err(Cancelled)) => return Err(MCP_STOPPED_NOT_SENT.to_string()),
+        Some(Ok(rx)) => {
+            // Ok(None): the id was unusable or already live; this call runs
+            // without Stop and must not finish() the other call's entry.
+            let owned = rx.is_some();
+            (rx, owned)
+        }
+    };
+    let res = caller.call_tool(tool, args, timeout_secs, rx).await;
+    if let (true, Some(id)) = (owned, call_id) {
+        calls.finish(id);
+    }
+    res.map_err(|e| match e {
+        AppError::ApiError(m) if m == MCP_STOPPED_IN_FLIGHT || m == MCP_STOPPED_NOT_SENT => m,
+        other => other.to_string(),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_dir() -> PathBuf {
+        let mut p = std::env::temp_dir();
+        p.push(format!("greencli-mcp-test-{}", rand::random::<u64>()));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn def(name: &str, command: &str, args: &[&str]) -> McpServerDef {
+        McpServerDef {
+            name: name.into(),
+            transport: McpTransport::Stdio,
+            command: command.into(),
+            args: args.iter().map(|a| a.to_string()).collect(),
+            env: HashMap::new(),
+            cwd: None,
+            url: None,
+            credentials_env_var: None,
+            headers: HashMap::new(),
+            enabled: true,
+            show_opt_in: false,
+        }
+    }
+
+    fn tool(server: &str, name: &str) -> McpToolInfo {
+        tool_from_json(server, &json!({ "name": name })).unwrap()
+    }
+
+    /// A client with a fixed tool list and no server behind it.
+    fn fake_client(server: &str, tools: Vec<McpToolInfo>) -> McpClient {
+        let (tools_changed_tx, _rx) = mpsc::unbounded_channel();
+        let caller = McpCaller {
+            server: Arc::from(server),
+            io: ClientIo::Http {
+                http: reqwest::Client::new(),
+                url: Arc::from("http://127.0.0.1:9/mcp"),
+                session_id: Arc::new(Mutex::new(None)),
+                protocol_version: Arc::new(Mutex::new(None)),
+                headers: Arc::new(HashMap::new()),
+            },
+            pending: Arc::new(Mutex::new(HashMap::new())),
+            next_id: Arc::new(Mutex::new(0)),
+            tools_changed_tx,
+            dead: Arc::new(AtomicBool::new(false)),
+            http_connect_failures: Arc::new(AtomicU32::new(0)),
+        };
+        McpClient {
+            child: None,
+            caller,
+            tools: Arc::new(std::sync::Mutex::new(tools)),
+            server_info: Value::Null,
+            reader: tokio::spawn(async {}),
+            refresher: tokio::spawn(async {}),
+        }
+    }
+
+    // ─── tools/list parsing ───
+
+    #[test]
+    fn tool_from_json_keeps_annotations_and_meta() {
+        let t = tool_from_json(
+            "s",
+            &json!({
+                "name": "get_device",
+                "description": "Get one device",
+                "inputSchema": { "type": "object", "properties": { "serial": { "type": "string" } } },
+                "annotations": { "readOnlyHint": true },
+                "_meta": { "casper/safety": "diagnostic" }
+            }),
+        )
+        .unwrap();
+        assert_eq!(t.description, "Get one device");
+        assert_eq!(t.annotations, Some(json!({ "readOnlyHint": true })));
+        assert_eq!(t.meta, Some(json!({ "casper/safety": "diagnostic" })));
+        let v = serde_json::to_value(&t).unwrap();
+        assert_eq!(v["_meta"], json!({ "casper/safety": "diagnostic" }));
+        assert!(v.get("meta").is_none());
+    }
+
+    #[test]
+    fn tool_from_json_drops_non_object_hints() {
+        let t = tool_from_json("s", &json!({ "name": "x", "annotations": true, "_meta": [1] }))
+            .unwrap();
+        assert!(t.annotations.is_none());
+        assert!(t.meta.is_none());
+    }
+
+    #[test]
+    fn tool_from_json_needs_a_name() {
+        assert!(tool_from_json("s", &json!({ "description": "no name" })).is_none());
+        assert!(tool_from_json("s", &json!({ "name": "" })).is_none());
+        assert!(tool_from_json("s", &json!({ "name": 7 })).is_none());
+    }
+
+    #[test]
+    fn tool_from_json_forces_an_object_schema() {
+        assert_eq!(tool("s", "x").input_schema, json!({ "type": "object" }));
+        let t = tool_from_json("s", &json!({ "name": "x", "inputSchema": { "properties": {} } }))
+            .unwrap();
+        assert_eq!(t.input_schema, json!({ "type": "object", "properties": {} }));
+        let t = tool_from_json("s", &json!({ "name": "x", "inputSchema": { "type": "string" } }))
+            .unwrap();
+        assert_eq!(t.input_schema, json!({ "type": "object" }));
+        let t = tool_from_json("s", &json!({ "name": "x", "inputSchema": "nope" })).unwrap();
+        assert_eq!(t.input_schema, json!({ "type": "object" }));
+    }
+
+    #[test]
+    fn dedupe_drops_every_copy_of_a_repeated_name() {
+        let tools = vec![tool("s", "a"), tool("s", "b"), tool("s", "a"), tool("s", "c")];
+        let names: Vec<String> = dedupe_tools("s", tools).into_iter().map(|t| t.name).collect();
+        assert_eq!(names, vec!["b", "c"]);
+    }
+
+    #[test]
+    fn tool_info_serialises_camel_case_without_empty_fields() {
+        let v = serde_json::to_value(tool("s", "x")).unwrap();
+        assert!(v.get("inputSchema").is_some());
+        assert!(v.get("preset").is_none());
+        assert!(v.get("showOptIn").is_none());
+        assert!(v.get("annotations").is_none());
+        let mut t = tool("s", "x");
+        t.preset = Some(PresetId::JunosMcpServer);
+        t.show_opt_in = true;
+        let v = serde_json::to_value(&t).unwrap();
+        assert_eq!(v["preset"], "junos-mcp-server");
+        assert_eq!(v["showOptIn"], true);
+        let back: McpToolInfo = serde_json::from_value(v).unwrap();
+        assert_eq!(back.preset, Some(PresetId::JunosMcpServer));
+    }
+
+    // ─── protocol ───
+
+    #[test]
+    fn negotiated_version_echoes_the_server() {
+        let v = |init: Value| negotiated_version(&init);
+        assert_eq!(v(json!({ "protocolVersion": "2025-03-26" })), "2025-03-26");
+        assert_eq!(v(json!({ "protocolVersion": "2099-01-01" })), "2099-01-01");
+        assert_eq!(v(json!({})), "2024-11-05");
+        assert_eq!(v(json!({ "protocolVersion": "" })), "2024-11-05");
+        assert_eq!(v(json!({ "protocolVersion": 5 })), "2024-11-05");
+    }
+
+    #[test]
+    fn initialize_asks_for_2025_06_18() {
+        assert_eq!(initialize_params()["protocolVersion"], "2025-06-18");
+    }
+
+    // ─── Stop never cuts a stdio line ───
+
+    #[tokio::test]
+    async fn send_then_wait_writes_the_whole_line_before_a_stop() {
+        use tokio::io::AsyncReadExt;
+        let (writer, mut reader) = tokio::io::duplex(16);
+        let writer = Arc::new(Mutex::new(writer));
+        let mut line = vec![b'x'; 1023];
+        line.push(b'\n');
+        let (tx, rx) = oneshot::channel();
+        let w = writer.clone();
+        let sent = line.clone();
+        let task = tokio::spawn(async move {
+            send_then_wait(&w, &sent, std::future::pending::<()>(), Some(rx)).await
+        });
+        // Stop before the reader has drained anything: the write is stuck on
+        // the 16-byte pipe, and must not give up part-way.
+        tx.send(()).unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!task.is_finished(), "returned before the line was written");
+        let mut got = vec![0u8; line.len()];
+        reader.read_exact(&mut got).await.unwrap();
+        let out = task.await.unwrap().unwrap();
+        assert_eq!(out, Err(Cancelled));
+        assert_eq!(got, line);
+        assert_eq!(got.last(), Some(&b'\n'));
+        // Nothing more than the one line.
+        drop(writer);
+        let mut rest = Vec::new();
+        reader.read_to_end(&mut rest).await.unwrap();
+        assert!(rest.is_empty());
+    }
+
+    #[tokio::test]
+    async fn send_then_wait_prefers_an_answer_that_is_already_here() {
+        let (writer, _reader) = tokio::io::duplex(64);
+        let writer = Mutex::new(writer);
+        let (tx, rx) = oneshot::channel();
+        tx.send(()).unwrap();
+        let out = send_then_wait(&writer, b"{}\n", async { 7 }, Some(rx))
+            .await
+            .unwrap();
+        assert_eq!(out, Ok(7));
+    }
+
+    // ─── config store ───
+
+    #[test]
+    fn upsert_keeps_the_opt_in_for_the_same_program() {
+        let store = McpConfigStore::new(temp_dir());
+        store.upsert(def("junos", "python3", &["jmcp.py"])).unwrap();
+        store.update("junos", |d| d.show_opt_in = true).unwrap();
+        // An env-only change (a rotated token) keeps it.
+        let mut same = def("junos", "python3 ", &["jmcp.py"]);
+        same.env.insert("TOKEN".into(), "new".into());
+        store.upsert(same).unwrap();
+        assert!(store.load()[0].show_opt_in);
+        assert_eq!(store.load()[0].env["TOKEN"], "new");
+    }
+
+    #[test]
+    fn upsert_resets_the_opt_in_when_the_program_changes() {
+        type Change = Box<dyn Fn(&mut McpServerDef)>;
+        let changes: Vec<Change> = vec![
+            Box::new(|d| d.command = "python3.12".into()),
+            Box::new(|d| d.args.push("--debug".into())),
+            Box::new(|d| d.cwd = Some("/other".into())),
+            Box::new(|d| d.url = Some("http://127.0.0.1:8010/mcp".into())),
+            Box::new(|d| d.transport = McpTransport::Http),
+        ];
+        for change in changes {
+            let store = McpConfigStore::new(temp_dir());
+            store.upsert(def("junos", "python3", &["jmcp.py"])).unwrap();
+            store.update("junos", |d| d.show_opt_in = true).unwrap();
+            let mut changed = def("junos", "python3", &["jmcp.py"]);
+            change(&mut changed);
+            changed.show_opt_in = true; // even if the caller sends true
+            store.upsert(changed).unwrap();
+            assert!(!store.load()[0].show_opt_in);
+        }
+    }
+
+    #[test]
+    fn same_program_trims_and_treats_none_as_empty() {
+        let mut a = def("h", "", &[]);
+        a.transport = McpTransport::Http;
+        a.url = Some(" http://x/mcp ".into());
+        let mut b = a.clone();
+        b.url = Some("http://x/mcp".into());
+        assert!(same_program(&a, &b));
+        b.url = Some("http://y/mcp".into());
+        assert!(!same_program(&a, &b));
+        let mut c = def("c", "uvx", &[]);
+        let mut d = c.clone();
+        c.cwd = Some("  ".into());
+        d.cwd = None;
+        assert!(same_program(&c, &d));
+        d.headers.insert("Authorization".into(), "Bearer new".into());
+        assert!(same_program(&c, &d));
+    }
+
+    #[test]
+    fn a_new_server_starts_with_the_opt_in_off() {
+        let store = McpConfigStore::new(temp_dir());
+        let mut d = def("new", "uvx", &["x"]);
+        d.show_opt_in = true;
+        store.upsert(d).unwrap();
+        assert!(!store.load()[0].show_opt_in);
+    }
+
+    #[test]
+    fn legacy_and_odd_opt_in_values_load_false() {
+        let dir = temp_dir();
+        std::fs::write(
+            dir.join("mcp_servers.json"),
+            r#"[{"name":"old","command":"uvx","args":[]},
+                {"name":"odd","command":"uvx","args":[],"showOptIn":"yes"},
+                {"name":"on","command":"uvx","args":[],"showOptIn":true}]"#,
+        )
+        .unwrap();
+        let store = McpConfigStore::new(dir);
+        let all = store.load_checked().unwrap();
+        assert_eq!(all.len(), 3);
+        assert!(!all[0].show_opt_in);
+        assert!(!all[1].show_opt_in);
+        assert!(all[2].show_opt_in);
+        // false is not written out at all.
+        let v = serde_json::to_value(&all[0]).unwrap();
+        assert!(v.get("showOptIn").is_none());
+    }
+
+    #[test]
+    fn update_errors_on_an_unknown_name() {
+        let store = McpConfigStore::new(temp_dir());
+        store.upsert(def("a", "uvx", &[])).unwrap();
+        let err = store.update("nope", |d| d.show_opt_in = true).unwrap_err();
+        assert!(err.to_string().contains("No MCP server named 'nope'"));
+        let updated = store.update("a", |d| d.show_opt_in = true).unwrap();
+        assert!(updated.show_opt_in);
+    }
+
+    #[test]
+    fn a_corrupt_file_is_never_overwritten() {
+        let dir = temp_dir();
+        let path = dir.join("mcp_servers.json");
+        let bytes = b"[{\"name\":\"a\",\"command\":\"uvx\"},".to_vec();
+        std::fs::write(&path, &bytes).unwrap();
+        let store = McpConfigStore::new(dir);
+        let err = store.upsert(def("b", "uvx", &[])).unwrap_err();
+        assert!(err.to_string().contains("couldn't read mcp_servers.json"));
+        assert!(store.remove("a").is_err());
+        assert!(store.update("a", |d| d.enabled = false).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        // Read-only callers still get an empty list.
+        assert!(store.load().is_empty());
+    }
+
+    #[test]
+    fn a_missing_file_is_an_empty_list() {
+        let store = McpConfigStore::new(temp_dir());
+        assert!(store.load_checked().unwrap().is_empty());
+    }
+
+    // ─── manager ───
+
+    #[tokio::test]
+    async fn all_tools_reports_the_map_key_after_a_rename() {
+        let mut mgr = McpManager::new(temp_dir());
+        mgr.save_config(def("old", "uvx", &["x"])).unwrap();
+        mgr.install_client("old".into(), fake_client("old", vec![tool("old", "get_device")]));
+        mgr.rename_server("old", "new").unwrap();
+        // A tools/list_changed refresh rebuilds the list with the name the
+        // refresher was started with.
+        if let Some(c) = mgr.clients.get("new") {
+            for t in c.tools.lock().unwrap().iter_mut() {
+                t.server = "old".into();
+            }
+        }
+        let all = mgr.all_tools();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].server, "new");
+        assert_eq!(mgr.tool_info("new", "get_device").unwrap().server, "new");
+        assert!(mgr.tool_info("old", "get_device").is_none());
+        assert!(mgr.tool_info("new", "nope").is_none());
+    }
+
+    #[tokio::test]
+    async fn a_client_without_a_definition_gets_a_tools_only_preset() {
+        let mut mgr = McpManager::new(temp_dir());
+        let tools = vec![
+            tool("ghost", "find_tool"),
+            tool("ghost", "invoke_read_tool"),
+            tool("ghost", "invoke_tool"),
+        ];
+        mgr.install_client("ghost".into(), fake_client("ghost", tools));
+        let t = mgr.tool_info("ghost", "invoke_tool").unwrap();
+        assert_eq!(t.preset, Some(PresetId::HpeNetworkingMcp));
+        assert!(!t.show_opt_in);
+        let all = mgr.all_tools();
+        assert_eq!(all.len(), 3);
+        assert!(all.iter().all(|t| !t.show_opt_in && t.server == "ghost"));
+        // Not saved, so not listed in status.
+        assert!(mgr.status().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_dead_client_offers_nothing() {
+        let mut mgr = McpManager::new(temp_dir());
+        mgr.save_config(def("s", "uvx", &[])).unwrap();
+        let client = fake_client("s", vec![tool("s", "get_x")]);
+        client.caller.dead.store(true, Ordering::Relaxed);
+        mgr.install_client("s".into(), client);
+        assert!(mgr.all_tools().is_empty());
+        assert!(mgr.tool_info("s", "get_x").is_none());
+        assert_eq!(mgr.status()[0]["connected"], false);
+    }
+
+    #[tokio::test]
+    async fn listing_copies_the_opt_in_and_status_names_the_preset() {
+        let mut mgr = McpManager::new(temp_dir());
+        mgr.save_config(def("srx", "python3", &["jmcp.py"])).unwrap();
+        mgr.set_show_opt_in("srx", true).unwrap();
+        // Disconnected: matched by the definition.
+        let st = mgr.status();
+        assert_eq!(st[0]["preset"], json!({ "id": "junos-mcp-server", "label": "Junos" }));
+        assert_eq!(st[0]["presetBy"], "definition");
+        assert_eq!(st[0]["presetMismatch"], false);
+        assert_eq!(st[0]["connected"], false);
+        // Connected without the Junos signature tools: a mismatch.
+        mgr.install_client("srx".into(), fake_client("srx", vec![tool("srx", "get_router_list")]));
+        let st = mgr.status();
+        assert_eq!(st[0]["presetMismatch"], true);
+        assert_eq!(st[0]["toolCount"], 1);
+        let t = mgr.tool_info("srx", "get_router_list").unwrap();
+        assert_eq!(t.preset, Some(PresetId::JunosMcpServer));
+        assert!(t.show_opt_in);
+        let (_, timeout) = mgr.call_target("srx").unwrap();
+        assert_eq!(timeout, 400);
+        assert_eq!(
+            mgr.call_target("other").err().unwrap(),
+            "MCP server 'other' is not connected"
+        );
+        // A plain server has no preset.
+        mgr.save_config(def("plain", "uvx", &["x"])).unwrap();
+        let st = mgr.status();
+        let plain = st.iter().find(|s| s["name"] == "plain").unwrap();
+        assert!(plain["preset"].is_null());
+        assert!(plain.get("presetBy").is_none());
+        assert!(mgr.set_show_opt_in("missing", true).is_err());
+    }
+
+    #[tokio::test]
+    async fn rename_keeps_every_field() {
+        let mut mgr = McpManager::new(temp_dir());
+        mgr.save_config(def("a", "python3", &["jmcp.py"])).unwrap();
+        mgr.set_show_opt_in("a", true).unwrap();
+        mgr.rename_server("a", "b").unwrap();
+        let all = mgr.list_configs();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].name, "b");
+        assert!(all[0].show_opt_in);
+    }
+
+    #[tokio::test]
+    async fn run_call_refuses_a_call_stopped_before_it_was_sent() {
+        let mut mgr = McpManager::new(temp_dir());
+        mgr.save_config(def("s", "uvx", &[])).unwrap();
+        mgr.install_client("s".into(), fake_client("s", vec![tool("s", "get_x")]));
+        let manager = Mutex::new(mgr);
+        let calls = CallRegistry::new();
+        calls.cancel("mcp-1");
+        let r = run_call(&manager, &calls, "s", "get_x", json!({}), Some("mcp-1")).await;
+        assert_eq!(r.unwrap_err(), MCP_STOPPED_NOT_SENT);
+        let r = run_call(&manager, &calls, "nope", "get_x", json!({}), None).await;
+        assert_eq!(r.unwrap_err(), "MCP server 'nope' is not connected");
     }
 }
