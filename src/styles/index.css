@@ -452,3 +452,16 @@ input[type='checkbox'] { accent-color: var(--accent); }
 .monaco-editor .peekview-widget .peekview-title .filename {
   display: none;
 }
+
+/* Config Editor: how far each line of the last Send got (bars beside the
+   line numbers; the colors match SEND_MARK_COLOR in ConfigEditor). */
+.monaco-editor .send-mark {
+  width: 3px !important;
+  margin-left: 3px;
+  border-radius: 1px;
+}
+.monaco-editor .send-mark-ok { background: var(--accent-success); }
+.monaco-editor .send-mark-rejected { background: var(--accent-danger); }
+.monaco-editor .send-mark-question,
+.monaco-editor .send-mark-after-error { background: var(--accent-warning); }
+.monaco-editor .send-mark-not-sent { background: var(--text-muted); opacity: 0.6; }

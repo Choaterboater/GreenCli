@@ -50,6 +50,7 @@ import {
 } from '../utils/configProblems';
 import { vendorMismatch } from '../utils/editorStatus';
 import { tabLabel } from '../utils/tabs';
+import { SEND_MARK_TEXT, sendMarkCounts, sendMarkSummary, sendMarks, type SendMark, type SendMarkState } from '../utils/sendMarks';
 import { timeAgo } from '../store/recentStore';
 import { useTheme } from '../hooks/useTheme';
 import { isTauri, tauriOpen, tauriSave, tauriReadText, tauriWriteText, browserOpen, browserSave } from '../utils/fileSystem';
@@ -523,6 +524,15 @@ function buildOutline(text: string): OutlineItem[] {
   return items.slice(0, 100);
 }
 
+/** The bar colors (the same as the .send-mark-* classes in index.css). */
+const SEND_MARK_COLOR: Record<SendMarkState, string> = {
+  ok: 'var(--accent-success)',
+  rejected: 'var(--accent-danger)',
+  question: 'var(--accent-warning)',
+  'after-error': 'var(--accent-warning)',
+  'not-sent': 'var(--text-muted)',
+};
+
 // ─── Component ───
 
 export default function ConfigEditor() {
@@ -654,6 +664,9 @@ export default function ConfigEditor() {
   const baselinesRef = useRef(new Map<string, Baseline>());
   const lastBaselineRef = useRef<Baseline | undefined>(undefined);
   const [sendReport, setSendReport] = useState<SendReport | null>(null);
+  // How far each line of the last send got: bars beside the line numbers.
+  const [lastSend, setLastSend] = useState<{ bufferId: string; target: string; at: number; marks: SendMark[] } | null>(null);
+  const sendMarkIdsRef = useRef(new Map<string, string[]>());
   const [sendProgress, setSendProgress] = useState<{ sent: number; total: number } | null>(null);
   // Config archive panel (NW-16): store-lifted so Tools / palette can open it.
   const showArchive = useSessionStore((s) => s.showArchive);
@@ -670,19 +683,51 @@ export default function ConfigEditor() {
   // path={buffer.id} gives each tab its own Monaco model, but the library never
   // disposes detached models — without this, every closed tab's full text stays
   // in monaco's global registry for the app's lifetime.
-  const disposeBufferModel = useCallback((id: string) => {
+  const modelForBuffer = useCallback((id: string) => {
+    const monaco = monacoRef.current;
+    if (!monaco) return null;
+    return (
+      monaco.editor.getModel(monaco.Uri.parse(id)) ??
+      monaco.editor.getModels().find((m) => m.uri.path === `/${id}` || m.uri.toString() === id) ??
+      null
+    );
+  }, []);
+  const disposeBufferModel = useCallback(
+    (id: string) => {
+      try {
+        modelForBuffer(id)?.dispose();
+      } catch {
+        // best effort — a leaked model is preferable to a crash on close
+      }
+    },
+    [modelForBuffer]
+  );
+
+  // Draw the last send's bars on the model of the tab it came from (models
+  // outlive tab switches and the Diff view, so the bars do too). A new send,
+  // or Clear, removes them.
+  useEffect(() => {
     const monaco = monacoRef.current;
     if (!monaco) return;
-    try {
-      const model =
-        monaco.editor.getModel(monaco.Uri.parse(id)) ??
-        monaco.editor.getModels().find((m) => m.uri.path === `/${id}` || m.uri.toString() === id) ??
-        null;
-      model?.dispose();
-    } catch {
-      // best effort — a leaked model is preferable to a crash on close
-    }
-  }, []);
+    for (const [id, ids] of sendMarkIdsRef.current) modelForBuffer(id)?.deltaDecorations(ids, []);
+    sendMarkIdsRef.current.clear();
+    const model = lastSend ? modelForBuffer(lastSend.bufferId) : null;
+    if (!lastSend || !model) return;
+    const ids = model.deltaDecorations(
+      [],
+      lastSend.marks
+        .filter((mark) => mark.lineNumber <= model.getLineCount())
+        .map((mark) => ({
+          range: new monaco.Range(mark.lineNumber, 1, mark.lineNumber, 1),
+          options: {
+            linesDecorationsClassName: `send-mark send-mark-${mark.state}`,
+            linesDecorationsTooltip: SEND_MARK_TEXT[mark.state],
+            stickiness: monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges,
+          },
+        }))
+    );
+    sendMarkIdsRef.current.set(lastSend.bufferId, ids);
+  }, [lastSend, modelForBuffer]);
 
   // Panel close unmounts the component; Monaco only disposes the attached
   // model, so sweep the rest here.
@@ -1215,6 +1260,7 @@ export default function ConfigEditor() {
       // leaves a PARTIAL config on the device, so every outcome says exactly
       // how far it got.
       setSendReport(null);
+      setLastSend(null);
       cancelSendRef.current = false;
       watcher = await watchSessionOutput(sid);
       setSendProgress({ sent: 0, total: lines.length });
@@ -1226,6 +1272,7 @@ export default function ConfigEditor() {
         now: () => Date.now(),
         onProgress: (sent) => setSendProgress({ sent, total: lines.length }),
       });
+      setLastSend({ bufferId, target, at: Date.now(), marks: sendMarks(prepared, result) });
       const plural = (n: number) => `${n} line${n === 1 ? '' : 's'}`;
       if (result.kind === 'done') {
         showStatus(`Sent ${plural(lines.length)}`);
@@ -1880,6 +1927,35 @@ export default function ConfigEditor() {
             aria-label="Dismiss send report"
           >
             <X size={12} />
+          </button>
+        </div>
+      )}
+
+      {/* How far the last send got, matching the bars beside the line numbers. */}
+      {lastSend && lastSend.bufferId === active.id && (
+        <div
+          className="flex items-center gap-2 px-3 py-1 border-b border-[var(--bg-tertiary)] bg-[var(--bg-secondary)] text-[10px] flex-shrink-0"
+          title={sendMarkSummary(lastSend.marks)}
+        >
+          <span className="text-[var(--text-muted)] flex-shrink-0">
+            Last send to {lastSend.target},{' '}
+            {new Date(lastSend.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}:
+          </span>
+          <span className="flex items-center gap-2 min-w-0 flex-wrap">
+            {sendMarkCounts(lastSend.marks).map(({ state, count, words }) => (
+              <span key={state} className="flex items-center gap-1 text-[var(--text-secondary)]">
+                <span className="inline-block w-[3px] h-2.5 rounded-sm" style={{ background: SEND_MARK_COLOR[state] }} />
+                {count} {words}
+              </span>
+            ))}
+          </span>
+          <span className="flex-1" />
+          <button
+            onClick={() => setLastSend(null)}
+            className="px-1.5 py-0.5 rounded text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] flex-shrink-0"
+            title="Remove the bars beside the line numbers"
+          >
+            Clear marks
           </button>
         </div>
       )}

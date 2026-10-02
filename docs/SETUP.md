@@ -298,6 +298,9 @@ live compliance:
     problem with its line, filterable by kind; a click selects it. **F8** / **Shift+F8** steps
     through them. A line the switch rejected on Send shows in red with the switch's own words.
     Comment lines are never flagged. The Send dialog lists them too ("1 error, 2 warnings").
+  - **After a Send**, a bar beside each line shows how far it got: green went out with no
+    error, red was rejected, amber is a question or a line sent after the error, grey was never
+    sent. **Clear marks** removes them.
   - **Status line** under the editor: where Send goes (the terminal tab's name), that device's
     CLI, **CONFIG MODE** when its prompt shows it, and how long ago you pulled its
     running-config. A tab for another vendor (a Junos tab with an Aruba CX session) gets a red
