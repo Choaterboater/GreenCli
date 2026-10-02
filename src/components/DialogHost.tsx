@@ -81,7 +81,9 @@ export default function DialogHost() {
       >
         <h3 className="text-[15px] font-semibold text-[var(--text-primary)]">{current.title}</h3>
         {current.message && (
-          <p className="mt-1.5 text-[13px] text-[var(--text-secondary)] leading-relaxed">
+          // Keeps the message's own line breaks and indents (a config preview,
+          // a list of problems), and scrolls when it is long.
+          <p className="mt-1.5 max-h-[50vh] overflow-y-auto whitespace-pre-wrap break-words text-[13px] text-[var(--text-secondary)] leading-relaxed">
             {current.message}
           </p>
         )}

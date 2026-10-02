@@ -1,6 +1,8 @@
 import { useState, useRef, useEffect, useCallback, useMemo, useDeferredValue } from 'react';
 import Editor, { DiffEditor, OnMount } from '@monaco-editor/react';
 import ConfigArchive from './ConfigArchive';
+import ProblemsPanel from './ProblemsPanel';
+import EditorStatusBar from './EditorStatusBar';
 import { copyText } from '../utils/clipboard';
 import type { editor as MonacoEditor } from 'monaco-editor';
 import {
@@ -37,12 +39,21 @@ import { profileForSession } from '../utils/deviceProfiles';
 import { setupMonaco } from '../editor/setup';
 import { detectConfigLanguage, wordSeparatorsFor } from '../editor/networkLanguages';
 import { CONFIG_SNIPPETS, toMonacoSnippet } from '../editor/snippets';
-import { MAX_PROBLEMS, buildProblems, problemSummary, rejectedLineProblem, type ConfigProblem } from '../utils/configProblems';
+import {
+  MAX_PROBLEMS,
+  NETWORK_LANGUAGES,
+  buildProblems,
+  problemSummary,
+  rejectedLineProblem,
+  sendProblemNote,
+  type ConfigProblem,
+} from '../utils/configProblems';
+import { vendorMismatch } from '../utils/editorStatus';
+import { tabLabel } from '../utils/tabs';
 import { timeAgo } from '../store/recentStore';
 import { useTheme } from '../hooks/useTheme';
 import { isTauri, tauriOpen, tauriSave, tauriReadText, tauriWriteText, browserOpen, browserSave } from '../utils/fileSystem';
 import {
-  isDangerousLine,
   prepareSendLines,
   runConfigSend,
   watchSessionOutput,
@@ -689,6 +700,7 @@ export default function ConfigEditor() {
   // updates synchronously, so typing stays responsive on multi-thousand-line configs.
   const deferredContent = useDeferredValue(content);
   const outlineItems = useMemo(() => buildOutline(deferredContent), [deferredContent]);
+  const lineCount = useMemo(() => deferredContent.split('\n').length, [deferredContent]);
   const baseProblems = useMemo(() => buildProblems(deferredContent, language), [deferredContent, language]);
   // The line the switch rejected on the last Send joins the list (red), quoting the switch.
   const problems = useMemo(() => {
@@ -902,11 +914,10 @@ export default function ConfigEditor() {
     showStatus(`Inserted ${label} — Tab moves to the next blank`);
   }, []);
 
-  // Select a problem's text and show it (from the problem list).
+  // Select a problem's text and show it (from the Problems panel, which stays open).
   const jumpToProblem = useCallback((problem: ConfigProblem) => {
     const editor = editorRef.current;
     const model = editor?.getModel();
-    setShowProblems(false);
     if (!editor || !model || problem.lineNumber > model.getLineCount()) return;
     editor.revealLineInCenter(problem.lineNumber);
     editor.setSelection({
@@ -1129,6 +1140,12 @@ export default function ConfigEditor() {
       keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyO],
       run: () => openFileRef.current?.(),
     });
+    ed.addAction({
+      id: 'toggle-problems',
+      label: 'Show or Hide Problems',
+      keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyM],
+      run: () => setShowProblems((open) => !open),
+    });
   };
 
   // ─── Send to terminal ───
@@ -1151,10 +1168,18 @@ export default function ConfigEditor() {
       return;
     }
 
-    const target = activeSession.config.name || activeSession.config.host || 'device';
-    const risky = lines.filter(isDangerousLine);
-    // From the live text, not the deferred copy the toolbar uses: a blank typed a moment ago still counts.
-    const unfilled = buildProblems(content, language).filter((p) => p.severity === 'error');
+    // The name on its terminal tab, so the dialog and the status line match it.
+    const target = tabLabel(activeSession);
+    // From the live text, not the deferred copy the panel uses: a blank typed a
+    // moment ago still counts. A code-language tab still gets the device checks,
+    // since it is going to a device.
+    const sendProblems = buildProblems(content, NETWORK_LANGUAGES.has(language) ? language : 'generic');
+    const risky = sendProblems.some((p) => p.severity === 'error' || p.code === 'danger');
+    const mismatch = vendorMismatch(
+      language,
+      profileForSession(activeSession.config, customDeviceProfiles).deviceType,
+      target
+    );
     const diffSummary = describeSendBaseline(
       content,
       target,
@@ -1171,14 +1196,17 @@ export default function ConfigEditor() {
     try {
       const ok = await askConfirm({
         title: `Send ${lines.length} line${lines.length === 1 ? '' : 's'} to ${target}?`,
-        message:
-          `${unfilled.length ? `${unfilled.length} line${unfilled.length === 1 ? ' still has a blank' : 's still have blanks'} or a hidden-secret marker (see the problem list): the switch would get that text as it is.\n\n` : ''}` +
-          `${risky.length ? `Potentially dangerous lines detected: ${risky.slice(0, 5).join(' | ')}\n\n` : ''}` +
-          `${diffSummary}\n\n` +
-          `Sending stops at the first error the device reports.\n\n` +
+        message: [
+          mismatch,
+          sendProblemNote(sendProblems),
+          diffSummary,
+          'Sending stops at the first error the device reports.',
           `Preview:\n${preview}${lines.length > 12 ? '\n…' : ''}`,
+        ]
+          .filter(Boolean)
+          .join('\n\n'),
         confirmLabel: 'Send',
-        danger: risky.length > 0 || unfilled.length > 0,
+        danger: risky || mismatch !== undefined,
       });
       if (!ok) return;
 
@@ -1309,6 +1337,17 @@ export default function ConfigEditor() {
       PULL_MENU.generic
     : PULL_MENU.generic;
   const currentLangLabel = LANGUAGE_LIST.find((l) => l.id === language)?.label || language;
+  // Where Send goes, for the status line under the editor.
+  const sendTarget = activeSession
+    ? {
+        name: tabLabel(activeSession),
+        connected: activeSession.connected,
+        configMode: !!activeSession.configMode,
+        deviceType: profileForSession(activeSession.config, customDeviceProfiles).deviceType,
+      }
+    : null;
+  const pulledForTarget = activeSession ? baselinesRef.current.get(deviceKey(activeSession.config)) : undefined;
+  const sendTargetPull = pulledForTarget ? { at: pulledForTarget.pulledAt, truncated: pulledForTarget.truncated } : undefined;
   const filteredLangs = LANGUAGE_LIST.filter((l) =>
     l.label.toLowerCase().includes(langSearch.toLowerCase()) ||
     l.id.toLowerCase().includes(langSearch.toLowerCase())
@@ -1323,6 +1362,14 @@ export default function ConfigEditor() {
       aria-labelledby="side-tab-editor"
       className={`${showConfigEditor ? '' : 'hidden '}absolute inset-0 flex flex-col bg-[var(--bg-primary)] overflow-hidden`}
       aria-hidden={!showConfigEditor}
+      onKeyDown={(e) => {
+        // Ctrl+Shift+M anywhere in the panel. Monaco handles it itself (and
+        // stops it) when the text has focus.
+        if (!e.defaultPrevented && (e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'm') {
+          e.preventDefault();
+          setShowProblems((open) => !open);
+        }
+      }}
     >
       {/* Buffer tabs */}
       <div
@@ -1734,65 +1781,36 @@ export default function ConfigEditor() {
 
         <div className="flex-1" />
 
-        {/* Problems: counts by kind; opens a list that jumps to each one. F8 steps through them in the editor. */}
+        {/* Problems: counts by kind; opens the Problems panel (Ctrl+Shift+M). F8 steps through them in the editor. */}
         {problems.length > 0 && (
-          <div className="relative mr-1">
-            <button
-              onClick={() => setShowProblems(!showProblems)}
-              className="flex items-center gap-2 px-1.5 py-0.5 text-[10px] rounded hover:bg-[var(--bg-tertiary)]"
-              title={`${problemSummary(problems)} — click for the list, F8 for the next one`}
-              aria-label={`Problems: ${problemSummary(problems)}`}
-            >
-              {problemCounts.error > 0 && (
-                <span className="flex items-center gap-0.5 text-[var(--accent-danger)]">
-                  <XCircle size={11} />
-                  {problemCounts.error}
-                </span>
-              )}
-              {problemCounts.warning > 0 && (
-                <span className="flex items-center gap-0.5 text-[var(--accent-warning)]">
-                  <AlertTriangle size={11} />
-                  {problemCounts.warning}
-                </span>
-              )}
-              {problemCounts.info > 0 && (
-                <span className="flex items-center gap-0.5 text-[var(--accent-info)]">
-                  <Info size={11} />
-                  {problemCounts.info}
-                </span>
-              )}
-            </button>
-            {showProblems && (
-              <>
-                <div className="fixed inset-0 z-20" onClick={() => setShowProblems(false)} />
-                <div className="absolute top-full right-0 mt-1 z-30 w-[26rem] max-w-[80vw] bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg shadow-xl py-1">
-                  <div className="max-h-72 overflow-y-auto">
-                    {problems.map((problem, index) => (
-                      <button
-                        key={`${problem.lineNumber}-${problem.startColumn}-${problem.code}-${index}`}
-                        onClick={() => jumpToProblem(problem)}
-                        disabled={diffMode}
-                        className="grid grid-cols-[1rem_2.75rem_1fr] items-start gap-1 w-full px-3 py-1.5 text-xs text-left hover:bg-[var(--bg-tertiary)] disabled:hover:bg-transparent"
-                      >
-                        {problem.severity === 'error' ? (
-                          <XCircle size={12} className="mt-0.5 text-[var(--accent-danger)]" />
-                        ) : problem.severity === 'warning' ? (
-                          <AlertTriangle size={12} className="mt-0.5 text-[var(--accent-warning)]" />
-                        ) : (
-                          <Info size={12} className="mt-0.5 text-[var(--accent-info)]" />
-                        )}
-                        <span className="text-[var(--text-muted)]">L{problem.lineNumber}</span>
-                        <span className="text-[var(--text-primary)]">{problem.message}</span>
-                      </button>
-                    ))}
-                  </div>
-                  <p className="px-3 pt-1.5 mt-1 border-t border-[var(--border)] text-[10px] text-[var(--text-muted)]">
-                    {baseProblems.length >= MAX_PROBLEMS ? `Showing the first ${MAX_PROBLEMS}. ` : ''}F8 next · Shift+F8 previous
-                  </p>
-                </div>
-              </>
+          <button
+            onClick={() => setShowProblems(!showProblems)}
+            aria-pressed={showProblems}
+            className={`flex items-center gap-2 mr-1 px-1.5 py-0.5 text-[10px] rounded hover:bg-[var(--bg-tertiary)] ${
+              showProblems ? 'bg-[var(--bg-tertiary)]' : ''
+            }`}
+            title={`${problemSummary(problems)}. Click for the Problems panel (Ctrl+Shift+M), F8 for the next one`}
+            aria-label={`Problems: ${problemSummary(problems)}`}
+          >
+            {problemCounts.error > 0 && (
+              <span className="flex items-center gap-0.5 text-[var(--accent-danger)]">
+                <XCircle size={11} />
+                {problemCounts.error}
+              </span>
             )}
-          </div>
+            {problemCounts.warning > 0 && (
+              <span className="flex items-center gap-0.5 text-[var(--accent-warning)]">
+                <AlertTriangle size={11} />
+                {problemCounts.warning}
+              </span>
+            )}
+            {problemCounts.info > 0 && (
+              <span className="flex items-center gap-0.5 text-[var(--accent-info)]">
+                <Info size={11} />
+                {problemCounts.info}
+              </span>
+            )}
+          </button>
         )}
         {statusMsg && <span className="text-[10px] text-[var(--text-secondary)] mr-1">{statusMsg}</span>}
 
@@ -1953,6 +1971,21 @@ export default function ConfigEditor() {
         />
         )}
       </div>
+      {showProblems && (
+        <ProblemsPanel
+          problems={problems}
+          capped={baseProblems.length >= MAX_PROBLEMS}
+          disabled={diffMode}
+          onJump={jumpToProblem}
+          onClose={() => setShowProblems(false)}
+        />
+      )}
+      <EditorStatusBar
+        session={sendTarget}
+        pulled={sendTargetPull}
+        editorLanguage={language}
+        lineCount={lineCount}
+      />
       {/* Config archive modal (NW-16) — history, golden mark, current/golden +
           current/previous diffs via the same Monaco DiffEditor as the panel */}
       {showArchive && (
