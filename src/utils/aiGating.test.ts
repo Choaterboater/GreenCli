@@ -5,8 +5,8 @@ import {
   auditorAllowsCommand,
   CONTROL_CHARS,
   isReadOnlyAgent,
+  auditorStages,
   normalizeLineBreaks,
-  shellWords,
 } from './aiGating';
 import { BUILTIN_AGENTS } from '../types';
 
@@ -132,7 +132,8 @@ describe('auditorAllowsCommand', () => {
     }
     // Plain shows of the same words still pass.
     expect(auditorAllowsCommand('date')).toBe(true);
-    expect(auditorAllowsCommand('date -u +%F')).toBe(true);
+    expect(auditorAllowsCommand('date -u')).toBe(true);
+    expect(auditorAllowsCommand('date -u +%F')).toBe(false);
     expect(auditorAllowsCommand('tail -n 50 /var/log/x')).toBe(true);
     expect(auditorAllowsCommand('show log messages | last 20')).toBe(true);
   });
@@ -200,7 +201,8 @@ describe('auditorAllowsCommand', () => {
       expect([cmd, auditorAllowsCommand(cmd)]).toEqual([cmd, false]);
     }
     expect(auditorAllowsCommand('cat /dev/null')).toBe(true);
-    expect(auditorAllowsCommand('cat /var/log/*.log')).toBe(true);
+    // A pattern is the shell's to expand, so the check can't see the files: refused.
+    expect(auditorAllowsCommand('cat /var/log/*.log')).toBe(false);
     expect(auditorAllowsCommand('cat /proc/cpuinfo')).toBe(true);
   });
 
@@ -300,7 +302,6 @@ describe('auditorAllowsCommand', () => {
       'tail "+2" /var/log/x',
       'cat "/etc/hosts"',
       'ping -c "4" 8.8.8.8',
-      'date "+%F"',
       'show log | match "error"',
       'show log | tail "-n" 5',
     ]) {
@@ -331,6 +332,54 @@ describe('auditorAllowsCommand', () => {
     }
   });
 
+  it('holds the raw text to a short list of characters, so the shell has nothing to interpret', () => {
+    for (const cmd of [
+      'tail$IFS-f /var/log/messages',
+      'cat$IFS/dev/zero',
+      'ping$IFS10.0.0.1',
+      'date$IFS-s 2020',
+      "sh''utdown -h now",
+      'sh\\utdown -h now',
+      "do sh''utdown -h now",
+      'sh""red -u /etc/passwd',
+      'show version | include "a$b"',
+      'show version | include "a\\b"',
+      "show version | include 'it\"s'",
+      'show version # comment',
+      'show version!',
+      'show ~',
+      'show version\u00a0| tee x',
+      'show version\nsh""utdown -h now',
+      '?',
+    ]) {
+      expect([cmd, auditorAllowsCommand(cmd)]).toEqual([cmd, false]);
+    }
+    for (const cmd of [
+      'show running-config | include "vlan 10"',
+      'show interfaces terse | match ge-0/0/1',
+      'show log messages | last 20',
+      'ping 10.1.1.1 count 3',
+      'ping -c 3 10.1.1.1',
+      'do show vlan',
+      'show version\n\nshow vlan',
+      "  show interface 1/1/1 | include 'up'  ",
+      'show ip interface brief | exclude unassigned',
+      'SHOW VERSION',
+    ]) {
+      expect([cmd, auditorAllowsCommand(cmd)]).toEqual([cmd, true]);
+    }
+  });
+
+  it('takes only an exact read verb first, and an allowed filter first in every later stage', () => {
+    for (const cmd of ['shutdown -h now', 'showx', 'show-tech', 'shred -u x', 'do', 'do do show version', 'cat.exe /etc/hosts',
+      'show version | sort -o x', 'show version | uniq', 'show version || reboot', 'show version |', '| show version', 'show version | "tee" x']) {
+      expect([cmd, auditorAllowsCommand(cmd)]).toEqual([cmd, false]);
+    }
+    for (const cmd of ['PING.EXE -n 4 8.8.8.8', 'tracert 8.8.8.8', 'whoami', 'show version | "include" Junos', 'show version|count']) {
+      expect([cmd, auditorAllowsCommand(cmd)]).toEqual([cmd, true]);
+    }
+  });
+
   it('refuses sh when it runs a shell rather than meaning show', () => {
     for (const cmd of ['sh -c "id"', 'sh script.sh', 'sh /tmp/x', 'do sh -c id']) {
       expect([cmd, auditorAllowsCommand(cmd)]).toEqual([cmd, false]);
@@ -340,21 +389,21 @@ describe('auditorAllowsCommand', () => {
   });
 });
 
-describe('shellWords', () => {
-  it('removes quotes, backslashes and empty quotes as a POSIX shell does', () => {
-    expect(shellWords('tail "+1f" x')).toEqual(['tail', '+1f', 'x']);
-    expect(shellWords("tail '-F' x")).toEqual(['tail', '-F', 'x']);
-    expect(shellWords('tail \\-f x')).toEqual(['tail', '-f', 'x']);
-    expect(shellWords('tail ""+1f x')).toEqual(['tail', '+1f', 'x']);
-    expect(shellWords('tail "--follow" x')).toEqual(['tail', '--follow', 'x']);
-    expect(shellWords('cat "a b" \'c\'d ""')).toEqual(['cat', 'a b', 'cd', '']);
-    expect(shellWords('echo "a\\"b" "c\\d"')).toEqual(['echo', 'a"b', 'c\\d']);
+describe('auditorStages', () => {
+  it('splits stages and words, and drops the quotes of a whole quoted word', () => {
+    expect(auditorStages('show running-config | include "vlan 10"')).toEqual([['show', 'running-config'], ['include', 'vlan 10']]);
+    expect(auditorStages("tail '-n' 20 x|grep a")).toEqual([['tail', '-n', '20', 'x'], ['grep', 'a']]);
+    expect(auditorStages('cat ""')).toEqual([['cat', '']]);
+    expect(auditorStages('show x |')).toEqual([['show', 'x'], []]);
   });
-  it('gives up on words it cannot read for sure', () => {
-    for (const stage of ['tail "x', "tail 'x", 'tail x\\', "tail $'x'", 'tail $"x"', 'tail `x`', 'tail $(x)', 'tail ${x}', 'tail {a,b}', 'cat #x']) {
-      expect([stage, shellWords(stage)]).toEqual([stage, null]);
+  it('refuses any character outside the list, and quotes glued to a word', () => {
+    for (const line of [
+      'tail$IFS-f x', 'cat x; id', 'cat x & id', 'echo `id`', 'cat \\x', 'cat (x)', 'cat {a,b}', 'cat [x]', 'cat #',
+      'cat *', 'cat ?', 'cat !x', 'cat ~/x', 'cat ^x', 'date +%F', 'cat > x', 'cat < x', "sh''utdown", 'tail"" -f',
+      'tail -""f', '"a""b"', 'cat "a$b"', "cat 'a\\b'", 'cat "a\'b"', 'cat "x', 'show\u00a0version',
+    ]) {
+      expect([line, auditorStages(line)]).toEqual([line, null]);
     }
-    expect(shellWords('cat a#b')).toEqual(['cat', 'a#b']);
   });
 });
 
