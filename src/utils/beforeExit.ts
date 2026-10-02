@@ -2,7 +2,7 @@
 // A window close or reload has `beforeunload`; an update restart doesn't wait
 // for it, so anything that saves late (the debounced vault save) registers
 // here too. Long jobs that must not be cut off (a Change Job, a bulk run, a
-// Config Editor send) hold the exit while they run.
+// Config Editor send, an SFTP upload or download) hold the exit while they run.
 
 type ExitHandler = () => void | Promise<unknown>;
 

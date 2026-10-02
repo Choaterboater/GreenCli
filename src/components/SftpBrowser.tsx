@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { askPrompt, askConfirm } from '../store/dialogStore';
 import { notify } from '../store/toastStore';
+import { holdExit } from '../utils/beforeExit';
 
 interface SftpEntry {
   name: string;
@@ -82,6 +83,9 @@ export default function SftpBrowser({ sessionId, onClose }: Props) {
       const fileName = basename(localPath);
       const remotePath = join(cwd, fileName);
       setBusy(true);
+      // Restart to update waits: an exit mid-upload leaves a cut-short file
+      // at the device path (the upload's own cleanup never runs).
+      const release = holdExit('A file upload is running.');
       try {
         try {
           // Try without overwriting; the backend returns EEXIST if it would clobber.
@@ -102,6 +106,7 @@ export default function SftpBrowser({ sessionId, onClose }: Props) {
       } catch (e) {
         notify.error('Upload failed', String(e));
       } finally {
+        release();
         setBusy(false);
       }
     },
@@ -165,12 +170,15 @@ export default function SftpBrowser({ sessionId, onClose }: Props) {
     const localPath = await save({ defaultPath: entry.name });
     if (!localPath) return;
     setBusy(true);
+    // An exit mid-download leaves a cut-short local file.
+    const release = holdExit('A file download is running.');
     try {
       await invoke('sftp_download', { sessionId, remotePath: join(cwd, entry.name), localPath });
       notify.success('Downloaded', entry.name);
     } catch (e) {
       notify.error('Download failed', String(e));
     } finally {
+      release();
       setBusy(false);
     }
   };

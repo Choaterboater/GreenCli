@@ -315,7 +315,7 @@ export const HELP_TOPICS: HelpTopic[] = [
         kind: 'bullets',
         items: [
           'A check downloads a newer version and checks its signature, but never installs it. When it is ready you see “GreenCLI X is ready.” with **Restart to update**.',
-          '**Restart to update** asks first, says how many open sessions will close, and warns about unsaved Config Editor edits. It says when an AI answer is still running, and won’t restart while a Change Job, bulk run or Config Editor send is going.',
+          '**Restart to update** asks first, says how many open sessions will close, and warns about unsaved Config Editor edits. It says when an AI answer is still running, and won’t restart while a Change Job, bulk run, Config Editor send or SFTP upload or download is going.',
           'Updates come only from GreenCLI releases on GitHub. Each release build signs its own files, and the app checks the signature before it installs.',
           isMac
             ? 'Run GreenCLI from **Applications**. From the disk image (or straight from Downloads) it offers no update.'

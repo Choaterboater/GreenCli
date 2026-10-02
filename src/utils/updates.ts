@@ -191,10 +191,10 @@ export async function dailyUpdateCheck(now = Date.now()): Promise<void> {
 
 /**
  * Install the downloaded update and restart, after the user confirms. Not
- * while a Change Job, bulk run or Config Editor send is going (they hold the
- * exit). `version` is what the toast or button showed; the confirm names the
- * update waiting now. Resolves false when nothing was installed (refused,
- * nothing waiting, cancelled or failed).
+ * while a Change Job, bulk run, Config Editor send or SFTP upload or download
+ * is going (they hold the exit). `version` is what the toast or button
+ * showed; the confirm names the update waiting now. Resolves false when
+ * nothing was installed (refused, nothing waiting, cancelled or failed).
  */
 export async function restartToUpdate(version: string): Promise<boolean> {
   const busy = () => {

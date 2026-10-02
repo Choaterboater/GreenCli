@@ -95,8 +95,8 @@ There is no Linux release build, so Linux gets no updates.
   ready you see "GreenCLI X is ready." with **Restart to update**.
 - **Restart to update** asks first ("Restart now?"), says how many open sessions will close, and
   warns when the Config Editor has unsaved edits or an AI answer is still running. It saves the
-  vault before the app closes. It won't start while a Change Job, bulk run or Config Editor send is
-  going.
+  vault before the app closes. It won't start while a Change Job, bulk run, Config Editor send or
+  SFTP upload or download is going.
 - Other messages: "You have the latest version.", "Couldn't check for updates. Check your internet
   connection.", and in a build with no updates (a dev build, or Linux) "Updates are off …".
 - **Mac**: run GreenCLI from Applications. From the disk image (or straight from Downloads) it says
