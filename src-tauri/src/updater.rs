@@ -470,10 +470,24 @@ mod tests {
             .filter_map(|(o, a)| platform_key(o, a))
             .collect();
         assert_eq!(mapped, SHIPPED_PLATFORMS);
-        // On a shipped system, the name is the one the updater plugin itself
-        // looks up in latest.json.
-        if let Some(p) = current_platform() {
-            assert_eq!(Some(p.to_string()), tauri_plugin_updater::target());
+        // The updater plugin (2.13, `target()`) names a system
+        // `<updater_os>-<arch>`: Rust's arch names, and "darwin" for macOS
+        // (Rust's "macos"). Checked here without depending on the host.
+        let plugin_name = |os: &str, arch: &str| {
+            let os = if os == "macos" { "darwin" } else { os };
+            format!("{os}-{arch}")
+        };
+        for (os, arch) in [("macos", "aarch64"), ("macos", "x86_64"), ("windows", "x86_64")] {
+            assert_eq!(platform_key(os, arch).map(str::to_string), Some(plugin_name(os, arch)));
+        }
+        // Linux, where CI runs the Rust tests, has no release build; the
+        // check against the plugin's own target() runs on macOS and Windows
+        // hosts only (ci.yml runs the updater tests on Windows).
+        match current_platform() {
+            Some(p) => assert_eq!(Some(p.to_string()), tauri_plugin_updater::target()),
+            // No mapping here, and the plugin doesn't name it a shipped one.
+            None => assert!(tauri_plugin_updater::target()
+                .is_none_or(|t| !SHIPPED_PLATFORMS.contains(&t.as_str()))),
         }
     }
 
