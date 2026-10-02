@@ -114,12 +114,10 @@ struct AppState {
     session_logs: SessionLogs,
     /// Active SSH port-forwards keyed by forward id (meta + listener task).
     forwards: ForwardsMap,
-    /// Cancellation flags for in-flight AI streams, keyed by stream id, so the
-    /// frontend Stop button can actually abort the backend request/egress.
-    ai_cancels: Arc<AsyncMutex<HashMap<String, Arc<std::sync::atomic::AtomicBool>>>>,
-    /// Stop pressed for an id the backend hasn't registered yet (the request
-    /// is still on its way): the run starts already stopped. Kept 30 s.
-    ai_cancel_tombstones: Arc<AsyncMutex<HashMap<String, std::time::Instant>>>,
+    /// Cancellation flags for in-flight AI streams and CLI runs, keyed by id,
+    /// so the frontend Stop button can actually abort the backend
+    /// request/egress, even when Stop arrives before the run is registered.
+    ai_cancels: Arc<AsyncMutex<ai::cancel::CancelBook>>,
     app_dir: std::path::PathBuf,
 }
 
@@ -149,8 +147,7 @@ impl AppState {
             last_input: Arc::new(AsyncMutex::new(HashMap::new())),
             session_logs: Arc::new(AsyncMutex::new(HashMap::new())),
             forwards: Arc::new(AsyncMutex::new(HashMap::new())),
-            ai_cancels: Arc::new(AsyncMutex::new(HashMap::new())),
-            ai_cancel_tombstones: Arc::new(AsyncMutex::new(HashMap::new())),
+            ai_cancels: Arc::new(AsyncMutex::new(ai::cancel::CancelBook::default())),
             app_dir,
         })
     }
@@ -2475,30 +2472,17 @@ async fn ai_chat(
         .map_err(|e| e.to_string())
 }
 
-/// How long a Stop for a not-yet-registered id is remembered.
-const AI_CANCEL_TOMBSTONE_TTL: std::time::Duration = std::time::Duration::from_secs(30);
-
-/// Register a cancel flag the Stop button (ai_cancel_stream) can trip.
-/// An id Stop already asked for (a tombstone) gets a flag that is already
-/// tripped. A reused id must not silently replace a live run's flag (the
-/// displaced run would leak, uncancellable, running to completion and being
-/// billed): the OLD flag is tripped so that run aborts before we swap in.
+/// Register a cancel flag the Stop button (ai_cancel_stream) can trip. A Stop
+/// that came first gives a flag that is already tripped; a reused id trips
+/// the displaced run's flag (see ai::cancel::CancelBook).
 async fn register_ai_cancel(
     state: &AppState,
     id: &str,
     who: &str,
 ) -> Arc<std::sync::atomic::AtomicBool> {
-    let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    // Lock order: ai_cancels, then tombstones (as in ai_cancel_stream), so a
-    // Stop can't fall between the two checks.
-    let mut cancels = state.ai_cancels.lock().await;
-    let mut tombstones = state.ai_cancel_tombstones.lock().await;
-    if tombstones.remove(id).is_some() {
-        cancel.store(true, std::sync::atomic::Ordering::Relaxed);
-    }
-    if let Some(displaced) = cancels.insert(id.to_string(), cancel.clone()) {
+    let (cancel, displaced) = state.ai_cancels.lock().await.register(id);
+    if displaced {
         log::warn!("{who}: id '{id}' reused — cancelling the displaced run");
-        displaced.store(true, std::sync::atomic::Ordering::Relaxed);
     }
     cancel
 }
@@ -2585,12 +2569,12 @@ async fn ai_cli(
         work_folder,
         as_casper.unwrap_or(false),
         log_folder,
-        cancel,
+        cancel.clone(),
     )
     .await;
     let result = ai::cli_passthrough(&command, &prompt, ctx).await;
-    if let Some(id) = &run_id {
-        state.ai_cancels.lock().await.remove(id);
+    if let (Some(id), Some(flag)) = (&run_id, &cancel) {
+        state.ai_cancels.lock().await.finish(id, flag);
     }
     result.map_err(|e| e.to_string())
 }
@@ -2620,10 +2604,10 @@ async fn ai_chat_stream(
     // Register a cancel flag the Stop button (ai_cancel_stream) can trip.
     let cancel = register_ai_cancel(&state, &stream_id, "ai_chat_stream").await;
 
-    let result = ai::chat_stream(&state.ai_keys, request, &app, &stream_id, cancel).await;
+    let result = ai::chat_stream(&state.ai_keys, request, &app, &stream_id, cancel.clone()).await;
 
     // Always deregister the flag, success or failure.
-    state.ai_cancels.lock().await.remove(&stream_id);
+    state.ai_cancels.lock().await.finish(&stream_id, &cancel);
 
     if let Err(e) = result {
         let _ = app.emit_all(
@@ -2639,17 +2623,13 @@ async fn ai_chat_stream(
 /// provider request/egress instead of running to completion (and being billed).
 #[tauri::command]
 async fn ai_cancel_stream(stream_id: String, state: State<'_, AppState>) -> Result<(), String> {
-    let cancels = state.ai_cancels.lock().await;
-    if let Some(flag) = cancels.get(&stream_id) {
-        flag.store(true, std::sync::atomic::Ordering::Relaxed);
-        return Ok(());
-    }
-    // Not registered yet (Stop pressed while the request was on its way):
-    // remember it, so the run starts already stopped.
-    let mut tombstones = state.ai_cancel_tombstones.lock().await;
-    let now = std::time::Instant::now();
-    tombstones.retain(|_, at| now.duration_since(*at) < AI_CANCEL_TOMBSTONE_TTL);
-    tombstones.insert(stream_id, now);
+    // Not registered yet (Stop pressed while the request was on its way)?
+    // The book remembers it, so the run starts already stopped.
+    state
+        .ai_cancels
+        .lock()
+        .await
+        .cancel(&stream_id, std::time::Instant::now());
     Ok(())
 }
 

@@ -15,6 +15,7 @@
 // The CLI providers live in cli.rs (dispatch), cli_run.rs (spawn, Stop,
 // timeout, quit) and casper.rs (Casper's pure rules).
 
+pub mod cancel;
 pub mod casper;
 mod cli;
 mod cli_run;
@@ -264,6 +265,12 @@ pub async fn chat_stream(
 ) -> Result<(), AppError> {
     use tauri::Manager;
 
+    // Stop pressed before this run was registered: send nothing at all.
+    if cancel.load(Ordering::Relaxed) {
+        let _ = app.emit_all("ai_done", serde_json::json!({ "streamId": stream_id }));
+        return Ok(());
+    }
+
     // Use an IDLE (between-bytes) read timeout rather than an overall deadline:
     // a stream that keeps producing tokens must never be cut off mid-response,
     // but a genuinely stalled connection still fails. (reqwest 0.12 read_timeout.)
@@ -282,11 +289,13 @@ pub async fn chat_stream(
     }
 
     let rb = build_request(&client, &req.provider, &key, &req.base_url)?;
-    let mut resp = rb
-        .json(&req.body)
-        .send()
-        .await
-        .map_err(|e| AppError::ApiError(format!("Could not reach '{}': {}", req.provider, e)))?;
+    // A Stop while waiting for the provider's first byte drops the request.
+    let Some(sent) = cancel::until_cancelled(rb.json(&req.body).send(), &cancel).await else {
+        let _ = app.emit_all("ai_done", serde_json::json!({ "streamId": stream_id }));
+        return Ok(());
+    };
+    let mut resp =
+        sent.map_err(|e| AppError::ApiError(format!("Could not reach '{}': {}", req.provider, e)))?;
 
     let status = resp.status();
     if !status.is_success() {

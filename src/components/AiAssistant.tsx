@@ -56,6 +56,7 @@ import {
   normalizeLineBreaks,
 } from '../utils/aiGating';
 import { pickAiSession } from '../utils/aiSession';
+import { activeStreamIds, cancelActiveAiStreams, nextStreamId, runStoppable } from '../utils/aiRuns';
 import { hiddenSecretGate } from '../utils/secrets/gate';
 import {
   prepareToolResult,
@@ -555,22 +556,7 @@ async function executeToolRaw(
 
 // ─── Streaming (token-by-token via Tauri events) ───
 
-// Ids are unique per page load: a reload restarts the counter, and an old
-// id must never reach a run started after it (see ai_cancel_stream).
-const LOAD_ID = Math.random().toString(36).slice(2, 8);
-let streamCounter = 0;
-const nextStreamId = () => `aistream-${LOAD_ID}-${++streamCounter}`;
-
-// Stream ids currently in flight, so Stop can actually abort the backend egress
-// (ai_cancel_stream), which then emits ai_done and lets each stream clean up its
-// listeners. Without this, Stop only stopped the UI from reading while Rust kept
-// generating (and being billed) and the event listeners leaked.
-const activeStreamIds = new Set<string>();
-function cancelActiveAiStreams() {
-  for (const id of activeStreamIds) {
-    invoke('ai_cancel_stream', { streamId: id }).catch(() => {});
-  }
-}
+// Stream and run ids, and Stop for them, live in utils/aiRuns.
 
 interface AnthropicStreamResult {
   text: string;
@@ -982,21 +968,19 @@ async function callLocalCli(
   const prompt = buildCliPrompt(device, question, { preface: opts.preface, instructions: opts.instructions });
 
   // Stop reaches the run through its id, like a streamed answer.
-  const runId = nextStreamId();
-  activeStreamIds.add(runId);
   try {
-    return await invoke<string>('ai_cli', {
-      command,
-      prompt,
-      runId,
-      workFolder: opts.workFolder || null,
-      asCasper: !!opts.asCasper,
-      logFolder: opts.logFolder || null,
-    });
+    return await runStoppable((runId) =>
+      invoke<string>('ai_cli', {
+        command,
+        prompt,
+        runId,
+        workFolder: opts.workFolder || null,
+        asCasper: !!opts.asCasper,
+        logFolder: opts.logFolder || null,
+      })
+    );
   } catch (e) {
     throw new Error(plainCliError(e));
-  } finally {
-    activeStreamIds.delete(runId);
   }
 }
 
