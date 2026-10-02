@@ -321,7 +321,7 @@
     "args": {
       "confirm": "no"
     },
-    "skipped": false
+    "skipped": true
   },
   {
     "args": {
@@ -345,7 +345,7 @@
     "args": {
       "force": 2
     },
-    "skipped": false
+    "skipped": true
   },
   {
     "args": {
@@ -414,7 +414,7 @@
     "args": {
       "confirm": "yes"
     },
-    "skipped": false
+    "skipped": true
   },
   {
     "args": {
@@ -422,7 +422,7 @@
         "yes"
       ]
     },
-    "skipped": false
+    "skipped": true
   },
   {
     "args": {
@@ -464,11 +464,49 @@
     "args": {
       "force": "f"
     },
-    "skipped": false
+    "skipped": true
   },
   {
     "args": {
       "force": "tt"
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "confirm": "false"
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "force": {}
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "confirmed": [
+        1
+      ]
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "force": 0
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "force": null
+    },
+    "skipped": false
+  },
+  {
+    "args": {
+      "confirmation": false
     },
     "skipped": false
   }

@@ -1,12 +1,19 @@
 // Partly copied from casper src/capabilities/approval.ts @ ad678b6 (MIT). Kept: router, confirm and preview-switch checks. Keep in step by hand.
-// Changed here: the imports point at ./mcpLabels and ./mcpTypes, ApprovalPlan has no `hint`, and
-// MAX_DEPTH is exported (mcpGate.ts refuses arguments nested deeper than walk() looks), a router
-// call that names two different tools (name, tool, tool_name) counts as unclear, and saysYes also
-// takes "t" (pydantic v2 reads it as true).
+// Changed here: the imports point at ./mcpLabels and ./mcpTypes, ApprovalPlan has no `hint` and
+// says whether the tool is a router, and MAX_DEPTH is exported (mcpGate.ts refuses arguments nested
+// deeper than walk() looks).
+// GreenCLI is stricter than Casper in three places (the Rust side, src-tauri/src/mcp/labels.rs, matches):
+// - A router is found by its name words (callTool, call-tool, tool_call, use_tool, proxy_tool) and by
+//   its shape (a tool-name key next to an arguments key, in its input schema or in the call), not only
+//   by /invoke|dispatch|call_tool|run_tool/.
+// - Every key that may hold the tool's name counts, in any spelling (name, tool, tool_name, toolName,
+//   tool_id, method, function). Two different names make the call unclear.
+// - Any confirm value but false or null counts as the AI saying yes: servers that read confirm or
+//   force loosely (JS `if (args.force)`) treat 2, "no" or {} as yes.
 // Left out: the call modes, the preview, secret masking and box formatting (approval.ts:171-437);
 // GreenCLI cleans the box text itself (mcpShow.ts).
 import type { MCPTool } from "./mcpTypes";
-import { nameLabel, strictest, type CapabilitySafety } from "./mcpLabels";
+import { nameLabel, strictest, toolWords, type CapabilitySafety } from "./mcpLabels";
 
 export interface RoutedCall { name: string; arguments: Record<string, unknown> }
 
@@ -20,7 +27,9 @@ export interface ApprovalPlan {
   arguments: Record<string, unknown>;
   /** The real tools behind a router call; empty for a direct call. */
   routed: RoutedCall[];
-  /** The tool looks like a router, but Casper could not tell which tool it runs. */
+  /** The tool is a router: by its name, or by a tool-name key next to an arguments key. */
+  router: boolean;
+  /** The tool looks like a router, but GreenCLI could not tell which tool it runs. */
   routerUnclear: boolean;
 }
 
@@ -36,16 +45,51 @@ function isPreviewKey(key: string): boolean { return PREVIEW_WORDS.has(keyWord(k
 export const MAX_DEPTH = 32;
 
 const ROUTER_NAME = /invoke|dispatch|call_tool|run_tool/i;
-const INNER_NAME_KEYS = ["name", "tool", "tool_name"] as const;
+/** A name with one of these words is a router (invokeTool, tool-dispatch). */
+const ROUTER_WORDS = new Set(["invoke", "dispatch"]);
+/** "tool" plus one of these words is a router too (callTool, call-tool, tool_call, use_tool, proxy_tool, call_read_tool). */
+const TOOL_WORDS = new Set(["tool", "tools"]);
+const ROUTER_VERBS = new Set(["call", "run", "use", "execute", "exec", "proxy"]);
+/** Keys (after keyWord) that may hold the name of the tool a router runs. */
+const INNER_NAME_WORDS = new Set(["name", "tool", "toolname", "toolid", "method", "function"]);
+/** Keys (after keyWord) that only a router has: a tool-name key next to an arguments key. */
+const TOOL_KEY_WORDS = new Set(["tool", "toolname", "toolid"]);
+const ARGS_KEY_WORDS = new Set(["arguments", "args", "params"]);
 const INNER_ARGS_KEYS = ["arguments", "args", "params"] as const;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** The different non-empty tool names in name, tool and tool_name. */
+/** A tool whose name says it runs other tools. */
+export function isRouterName(tool: string): boolean {
+  if (ROUTER_NAME.test(tool)) return true;
+  const words = toolWords(tool);
+  return words.some((word) => ROUTER_WORDS.has(word))
+    || (words.some((word) => TOOL_WORDS.has(word)) && words.some((word) => ROUTER_VERBS.has(word)));
+}
+
+/** Keys shaped like a router call: a tool-name key next to an arguments key ({tool, args}),
+ *  or the MCP call shape itself ({name, arguments}). */
+function routerKeys(keys: string[]): boolean {
+  const words = new Set(keys.map(keyWord));
+  if (![...ARGS_KEY_WORDS].some((word) => words.has(word))) return false;
+  return [...TOOL_KEY_WORDS].some((word) => words.has(word)) || (words.has("name") && words.has("arguments"));
+}
+
+/** A router by its name, or by its shape in the input schema or in the call's arguments. */
+export function isRouter(tool: string, schema?: unknown, args?: Record<string, unknown>): boolean {
+  if (isRouterName(tool)) return true;
+  const properties = isRecord(schema) && isRecord(schema.properties) ? Object.keys(schema.properties) : [];
+  return routerKeys(properties) || (isRecord(args) && routerKeys(Object.keys(args)));
+}
+
+/** The different non-empty tool names in every key that may hold one (name, tool, tool_name, toolName, tool_id, ...). */
 function innerNames(value: Record<string, unknown>): string[] {
-  const names = INNER_NAME_KEYS.map((key) => value[key]).filter((name): name is string => typeof name === "string" && name !== "");
+  const names = Object.entries(value)
+    .filter(([key]) => INNER_NAME_WORDS.has(keyWord(key)))
+    .map(([, name]) => name)
+    .filter((name): name is string => typeof name === "string" && name !== "");
   return [...new Set(names)];
 }
 
@@ -63,9 +107,9 @@ function innerCall(value: unknown): RoutedCall | undefined {
   return { name: names[0]!, arguments: argsKey ? value[argsKey] as Record<string, unknown> : {} };
 }
 
-/** The real tools a router-shaped call runs: {name, arguments} or calls[] of the same. */
-export function routedCalls(tool: string, args: Record<string, unknown>): RoutedCall[] {
-  if (!ROUTER_NAME.test(tool)) return [];
+/** The real tools a router call runs: {name, arguments} or calls[] of the same. */
+export function routedCalls(tool: string, args: Record<string, unknown>, schema?: unknown): RoutedCall[] {
+  if (!isRouter(tool, schema, args)) return [];
   const calls: RoutedCall[] = [];
   const single = innerCall(args);
   if (single) calls.push(single);
@@ -76,18 +120,17 @@ export function routedCalls(tool: string, args: Record<string, unknown>): Routed
   return calls;
 }
 
-export function isRouterName(tool: string): boolean { return ROUTER_NAME.test(tool); }
-
 export function buildPlan(input: {
   server: string; tool: string; label: CapabilitySafety; schema: MCPTool["inputSchema"];
   arguments: Record<string, unknown>;
 }): ApprovalPlan {
-  const routed = routedCalls(input.tool, input.arguments);
+  const router = isRouter(input.tool, input.schema, input.arguments);
+  const routed = routedCalls(input.tool, input.arguments, input.schema);
   const batch = Array.isArray(input.arguments.calls) ? input.arguments.calls.length : 0;
-  const routerUnclear = isRouterName(input.tool)
+  const routerUnclear = router
     && (routed.length === 0 || namesClash(input.arguments)
       || (batch > 0 && routed.length !== batch + (innerCall(input.arguments) ? 1 : 0)));
-  return { ...input, routed, routerUnclear };
+  return { ...input, router, routed, routerUnclear };
 }
 
 /** The label the call is judged by: the tool's own, the real tools' names, and "not read" for an unclear router. */
@@ -107,12 +150,12 @@ function walk(value: unknown, visit: (key: string, value: unknown, path: string)
 }
 
 /**
- * A confirm value that a server may read as yes. Many servers turn "true", "t", "yes", "on" or 1
- * into true (Python's pydantic v2 does), so those count as the AI saying yes too.
+ * A confirm value that a server may read as yes: anything but a plain false or null. pydantic v2
+ * reads "t", "yes" or 1 as true, and a server that checks `if (args.force)` reads 2, "no" or {} as
+ * true, so only false and null are safe to ignore.
  */
 function saysYes(value: unknown): boolean {
-  if (value === true || value === 1) return true;
-  return typeof value === "string" && ["true", "t", "1", "yes", "y", "on"].includes(value.trim().toLowerCase());
+  return value !== undefined && value !== null && value !== false;
 }
 
 /** A preview switch that is set, but not to a plain true or false: servers read "false" or 0 differently. */
@@ -120,7 +163,7 @@ function unclearSwitch(value: unknown): boolean {
   return value !== undefined && value !== null && typeof value !== "boolean";
 }
 
-/** Paths where confirm, confirmed or force says yes, anywhere in the arguments (router inner arguments too). */
+/** Paths where confirm, confirmed or force is set to anything but false or null, anywhere in the arguments (router inner arguments too). */
 export function aiConfirm(args: Record<string, unknown>): string[] {
   const paths: string[] = [];
   walk(args, (key, value, path) => { if (isConfirmKey(key) && saysYes(value)) paths.push(path); });
@@ -138,7 +181,7 @@ export function previewSwitchedOff(args: Record<string, unknown>): string[] {
 
 /**
  * True when the user must say yes: the call is not read, or the AI tried to skip a check itself
- * (confirm/confirmed/force true, or a preview switch set to false). A read label never overrides that.
+ * (confirm/confirmed/force set, or a preview switch set to false). A read label never overrides that.
  */
 export function needsApproval(plan: ApprovalPlan): boolean {
   return planLabel(plan) !== "read" || aiConfirm(plan.arguments).length > 0 || previewSwitchedOff(plan.arguments).length > 0;

@@ -6,8 +6,18 @@
 // vocabulary (actlint 0.3.0, vocabulary 0.5.0, by Formael, Apache-2.0,
 // https://github.com/formael/actlint); see THIRD_PARTY_NOTICES.txt.
 //
-// GreenCLI changes: a router call that names two different tools counts as
-// unclear, and says_yes also takes "t" (pydantic v2 reads it as true).
+// GreenCLI is stricter than Casper (the TS side, mcpApproval.ts and
+// mcpGate.ts, matches):
+// - A router is found by its name words (callTool, tool_call, use_tool,
+//   proxy_tool) and by its shape (a tool-name key next to an arguments key, in
+//   its input schema or in the call), not only by invoke/dispatch/call_tool/
+//   run_tool.
+// - Every key that may hold the routed tool's name counts, in any spelling
+//   (name, tool, tool_name, toolName, tool_id, method, function). Two
+//   different names make the call unclear.
+// - Any confirm value but false or null counts as the AI saying yes.
+// - read_named and writes off look for a change word anywhere in the name
+//   (names_a_change), so get_and_apply_config is not a read for them.
 //
 // The TypeScript side (src/utils/mcpLabels.ts, mcpApproval.ts, mcpGate.ts)
 // must give the same answers. testdata/*.json holds cases both test suites
@@ -299,8 +309,25 @@ pub fn tool_label(name: &str, annotations: Option<&Value>, meta: Option<&Value>)
     label
 }
 
+/// A change, run or delete word anywhere in the name, apart from the
+/// NOUN_USES words for that exact name and a change word just before a read
+/// noun ending (get_write_status). Same as TS namesAChange.
+pub fn names_a_change(name: &str) -> bool {
+    let words = action_words(name);
+    let describing = match words.last() {
+        Some(last) if words.len() >= 3 && has(READ_NOUN_ENDINGS, last) => Some(words.len() - 2),
+        _ => None,
+    };
+    words.iter().enumerate().any(|(i, w)| {
+        has(DESTRUCTIVE_WORDS, w)
+            || has(EXEC_WORDS, w)
+            || (Some(i) != describing && has(WRITE_WORDS, w))
+    })
+}
+
 /// "Clearly reads by its name": not a router, the first action word is a read
-/// word, and nothing in the name says otherwise. Same rule as TS readNamed.
+/// word, and nothing in the name says otherwise (no change word later either:
+/// get_and_apply_config doesn't count). Same rule as TS readNamed.
 pub fn read_named(name: &str) -> bool {
     if is_router_name(name) {
         return false;
@@ -308,27 +335,71 @@ pub fn read_named(name: &str) -> bool {
     let words = action_words(name);
     first_action(&words).is_some_and(|w| has(READ_WORDS, w))
         && name_label(name) == SafetyLabel::Read
+        && !names_a_change(name)
+}
+
+/// With writes off: a write or destructive label, or an unmarked tool
+/// (ExternalAction) whose name has a change word. Same as TS writesOffHides.
+pub fn writes_off_hides(label: SafetyLabel, name: &str) -> bool {
+    matches!(label, SafetyLabel::Write | SafetyLabel::Destructive)
+        || (label == SafetyLabel::ExternalAction && names_a_change(name))
 }
 
 // ─── Router calls (approval.ts:75-121) ───
 
-/// `/invoke|dispatch|call_tool|run_tool/i`
+/// A tool whose name says it runs other tools: `/invoke|dispatch|call_tool|run_tool/i`,
+/// a word invoke or dispatch, or "tool" with call, run, use, execute, exec or
+/// proxy (callTool, tool_call, use_tool, proxy_tool, call_read_tool).
 pub fn is_router_name(tool: &str) -> bool {
     let lower = tool.to_ascii_lowercase();
-    ["invoke", "dispatch", "call_tool", "run_tool"]
+    if ["invoke", "dispatch", "call_tool", "run_tool"]
         .iter()
         .any(|needle| lower.contains(needle))
+    {
+        return true;
+    }
+    let words = tool_words(tool);
+    let any = |list: &[&str]| words.iter().any(|w| list.contains(&w.as_str()));
+    any(&["invoke", "dispatch"])
+        || (any(&["tool", "tools"]) && any(&["call", "run", "use", "execute", "exec", "proxy"]))
 }
 
-const INNER_NAME_KEYS: [&str; 3] = ["name", "tool", "tool_name"];
+/// Keys shaped like a router call: a tool-name key next to an arguments key
+/// ({tool, args}), or the MCP call shape itself ({name, arguments}).
+fn router_keys<'a>(keys: impl Iterator<Item = &'a String>) -> bool {
+    let words: Vec<String> = keys.map(|k| key_word(k)).collect();
+    let has_word = |w: &str| words.iter().any(|k| k == w);
+    if !["arguments", "args", "params"].iter().any(|w| has_word(w)) {
+        return false;
+    }
+    ["tool", "toolname", "toolid"].iter().any(|w| has_word(w))
+        || (has_word("name") && has_word("arguments"))
+}
+
+/// A router by its name, or by its shape in the input schema or the call's
+/// arguments. Same as TS isRouter.
+pub fn is_router(tool: &str, schema: &Value, args: &Value) -> bool {
+    if is_router_name(tool) {
+        return true;
+    }
+    let in_schema = schema
+        .get("properties")
+        .and_then(Value::as_object)
+        .is_some_and(|props| router_keys(props.keys()));
+    in_schema || args.as_object().is_some_and(|a| router_keys(a.keys()))
+}
+
+/// Keys (after key_word) that may hold the name of the tool a router runs.
+const INNER_NAME_WORDS: [&str; 6] = ["name", "tool", "toolname", "toolid", "method", "function"];
 const INNER_ARGS_KEYS: [&str; 3] = ["arguments", "args", "params"];
 
-/// The different non-empty tool names in name, tool and tool_name.
+/// The different non-empty tool names in every key that may hold one.
 fn inner_names(obj: &Map<String, Value>) -> Vec<&str> {
     let mut names: Vec<&str> = Vec::new();
-    for name in INNER_NAME_KEYS
+    for name in obj
         .iter()
-        .filter_map(|k| obj.get(*k).and_then(Value::as_str))
+        .filter(|(k, _)| INNER_NAME_WORDS.contains(&key_word(k).as_str()))
+        .filter_map(|(_, v)| v.as_str())
     {
         if !name.is_empty() && !names.contains(&name) {
             names.push(name);
@@ -361,9 +432,9 @@ fn inner_call(value: &Value) -> Option<(String, Value)> {
     Some((name.to_string(), args))
 }
 
-/// The real tools a router-shaped call runs: {name, arguments} or calls[] of the same.
-pub fn routed_calls(tool: &str, args: &Value) -> Vec<(String, Value)> {
-    if !is_router_name(tool) {
+/// The real tools a router call runs: {name, arguments} or calls[] of the same.
+pub fn routed_calls(tool: &str, schema: &Value, args: &Value) -> Vec<(String, Value)> {
+    if !is_router(tool, schema, args) {
         return Vec::new();
     }
     let mut calls: Vec<(String, Value)> = inner_call(args).into_iter().collect();
@@ -374,11 +445,11 @@ pub fn routed_calls(tool: &str, args: &Value) -> Vec<(String, Value)> {
 }
 
 /// The tool looks like a router, but GreenCLI can't tell every tool it runs.
-pub fn router_unclear(tool: &str, args: &Value) -> bool {
-    if !is_router_name(tool) {
+pub fn router_unclear(tool: &str, schema: &Value, args: &Value) -> bool {
+    if !is_router(tool, schema, args) {
         return false;
     }
-    let routed = routed_calls(tool, args).len();
+    let routed = routed_calls(tool, schema, args).len();
     let batch = args
         .get("calls")
         .and_then(Value::as_array)
@@ -389,14 +460,14 @@ pub fn router_unclear(tool: &str, args: &Value) -> bool {
 
 /// The label a call is judged by: the tool's own, the real tools' names, and
 /// "not read" for an unclear router.
-pub fn plan_label(base: SafetyLabel, tool: &str, args: &Value) -> SafetyLabel {
+pub fn plan_label(base: SafetyLabel, tool: &str, schema: &Value, args: &Value) -> SafetyLabel {
     let mut labels = vec![base];
     labels.extend(
-        routed_calls(tool, args)
+        routed_calls(tool, schema, args)
             .iter()
             .map(|(name, _)| name_label(name)),
     );
-    if router_unclear(tool, args) {
+    if router_unclear(tool, schema, args) {
         labels.push(SafetyLabel::ExternalAction);
     }
     strictest(&labels)
@@ -404,9 +475,9 @@ pub fn plan_label(base: SafetyLabel, tool: &str, args: &Value) -> SafetyLabel {
 
 /// plan_label, raised to at least ExternalAction for each routed name that is
 /// not read_named (= TS callLabel).
-pub fn call_label(base: SafetyLabel, tool: &str, args: &Value) -> SafetyLabel {
-    let label = plan_label(base, tool, args);
-    if routed_calls(tool, args)
+pub fn call_label(base: SafetyLabel, tool: &str, schema: &Value, args: &Value) -> SafetyLabel {
+    let label = plan_label(base, tool, schema, args);
+    if routed_calls(tool, schema, args)
         .iter()
         .any(|(name, _)| !read_named(name))
     {
@@ -465,23 +536,10 @@ fn is_preview_key(key: &str) -> bool {
     )
 }
 
-/// String.prototype.trim: JS white space and line ends, which include U+FEFF
-/// but not U+0085.
-fn js_trim(s: &str) -> &str {
-    s.trim_matches(|c: char| c != '\u{85}' && (c.is_whitespace() || c == '\u{feff}'))
-}
-
-/// A confirm value a server may read as yes (pydantic v2 also takes "t").
+/// A confirm value a server may read as yes: anything but false or null
+/// (`if (args.force)` reads 2, "no" or {} as yes).
 fn says_yes(value: &Value) -> bool {
-    match value {
-        Value::Bool(b) => *b,
-        Value::Number(n) => n.as_f64() == Some(1.0),
-        Value::String(s) => matches!(
-            js_trim(s).to_lowercase().as_str(),
-            "true" | "t" | "1" | "yes" | "y" | "on"
-        ),
-        _ => false,
-    }
+    !matches!(value, Value::Null | Value::Bool(false))
 }
 
 /// A preview switch set to something that is not plain true or false.
@@ -563,7 +621,8 @@ mod tests {
         assert!(cases.len() >= 10);
         for case in &cases {
             let tool = case["tool"].as_str().unwrap();
-            let names: Vec<String> = routed_calls(tool, &case["args"])
+            let schema = case.get("schema").cloned().unwrap_or(Value::Null);
+            let names: Vec<String> = routed_calls(tool, &schema, &case["args"])
                 .into_iter()
                 .map(|(name, _)| name)
                 .collect();
@@ -575,7 +634,7 @@ mod tests {
                 .collect();
             assert_eq!(names, want, "routed of {}", case);
             assert_eq!(
-                router_unclear(tool, &case["args"]),
+                router_unclear(tool, &schema, &case["args"]),
                 case["unclear"].as_bool().unwrap(),
                 "unclear of {}",
                 case
@@ -642,15 +701,17 @@ mod tests {
 
     #[test]
     fn routers() {
+        let none = Value::Null;
         let args = json!({ "name": "delete_site" });
         assert_eq!(
-            plan_label(SafetyLabel::Read, "invoke_read_tool", &args),
+            plan_label(SafetyLabel::Read, "invoke_read_tool", &none, &args),
             SafetyLabel::Destructive
         );
         assert_eq!(
             call_label(
                 SafetyLabel::Read,
                 "invoke_read_tool",
+                &none,
                 &json!({ "name": "cycle_port" })
             ),
             SafetyLabel::ExternalAction
@@ -659,38 +720,97 @@ mod tests {
             call_label(
                 SafetyLabel::Read,
                 "invoke_read_tool",
+                &none,
                 &json!({ "name": "get_device" })
             ),
             SafetyLabel::Read
         );
-        assert!(router_unclear("invoke_tool", &json!({})));
-        assert!(!router_unclear("get_device", &json!({})));
+        assert!(router_unclear("invoke_tool", &none, &json!({})));
+        assert!(!router_unclear("get_device", &none, &json!({})));
         assert!(router_unclear(
             "invoke_read_tool",
-            &json!({ "tool_id": "x" })
+            &none,
+            &json!({ "target": "x" })
         ));
+        // tool_id holds a tool name too.
+        assert_eq!(
+            routed_calls(
+                "invoke_read_tool",
+                &none,
+                &json!({ "tool_id": "update_site" })
+            )
+            .len(),
+            1
+        );
         let batch = json!({ "calls": [{ "name": "get_a" }, { "nope": 1 }] });
-        assert_eq!(routed_calls("invoke_tools_batch", &batch).len(), 1);
-        assert!(router_unclear("invoke_tools_batch", &batch));
+        assert_eq!(routed_calls("invoke_tools_batch", &none, &batch).len(), 1);
+        assert!(router_unclear("invoke_tools_batch", &none, &batch));
         let shapes = json!({ "tool": "port_bounce", "args": { "serial_number": "SG1" } });
-        let routed = routed_calls("Invoke_Tool", &shapes);
+        let routed = routed_calls("Invoke_Tool", &none, &shapes);
         assert_eq!(
             routed,
             vec![("port_bounce".to_string(), json!({ "serial_number": "SG1" }))]
         );
-        assert!(routed_calls("get_device", &shapes).is_empty());
+        // A tool-name key next to an arguments key is a router, whatever the name.
+        assert_eq!(routed_calls("get_device", &none, &shapes).len(), 1);
+        assert!(routed_calls("get_device", &none, &json!({ "name": "core1" })).is_empty());
         assert!(is_router_name("my_dispatcher"));
         assert!(is_router_name("RUN_TOOL"));
+        for name in [
+            "call_read_tool",
+            "callTool",
+            "call-tool",
+            "tool_call",
+            "use_tool",
+            "proxy_tool",
+            "callReadTool",
+        ] {
+            assert!(is_router_name(name), "{name}");
+        }
+        for name in [
+            "get_route",
+            "get_proxy_config",
+            "list_tools",
+            "show_call_log",
+        ] {
+            assert!(!is_router_name(name), "{name}");
+        }
+        let schema = json!({ "properties": { "toolName": {}, "params": {} } });
+        assert!(is_router("helper", &schema, &json!({})));
+        assert!(!is_router(
+            "helper",
+            &json!({ "properties": { "name": {}, "params": {} } }),
+            &json!({})
+        ));
     }
 
     #[test]
     fn read_named_rule() {
         assert!(read_named("get_device"));
         assert!(read_named("list_sites"));
+        assert!(read_named("get_sync_status"));
         assert!(!read_named("cycle_port"));
         assert!(!read_named("get_and_delete_site"));
         assert!(!read_named("invoke_read_tool_x"));
         assert!(!read_named("glp_write_status"));
+        for name in [
+            "get_and_apply_config",
+            "list_and_disable_ports",
+            "verify_and_commit",
+            "get_or_add_vlan",
+            "show_and_push_config",
+            "fetch_and_sync_inventory",
+            "check_then_enable_port",
+        ] {
+            assert!(!read_named(name), "{name}");
+            assert!(names_a_change(name), "{name}");
+            assert!(
+                writes_off_hides(SafetyLabel::ExternalAction, name),
+                "{name}"
+            );
+            assert!(!writes_off_hides(SafetyLabel::Read, name), "{name}");
+        }
+        assert!(!writes_off_hides(SafetyLabel::ExternalAction, "get_device"));
     }
 
     #[test]
@@ -712,9 +832,12 @@ mod tests {
         assert!(too_deep(&deeper));
         assert!(skipped_check(&deeper));
         assert!(skipped_check(&json!({ "Confirm": " YES\u{feff}" })));
-        assert!(!skipped_check(&json!({ "Confirm": "yes\u{85}" })));
+        assert!(skipped_check(&json!({ "Confirm": "no" })));
         assert!(skipped_check(&json!({ "force": 1.0 })));
-        assert!(!skipped_check(&json!({ "force": 2 })));
+        assert!(skipped_check(&json!({ "force": 2 })));
+        assert!(skipped_check(&json!({ "force": {} })));
+        assert!(!skipped_check(&json!({ "force": false })));
+        assert!(!skipped_check(&json!({ "confirm": null })));
         assert!(skipped_check(&json!({ "DryRun": 0 })));
         assert!(!skipped_check(&json!({ "dry_run": null })));
         assert!(skipped_check(

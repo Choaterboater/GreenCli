@@ -9,7 +9,7 @@
 //   (a check such as ping), except Junos plain show commands.
 // - Only a read runs without asking (Casper's needsApproval): a diagnostic
 //   tool, a call that might write, run commands or delete, any router call
-//   (invoke_tool and friends) and any call where the AI set confirm=true or
+//   (invoke_tool and friends) and any call where the AI set confirm or
 //   turned off a preview switch all ask.
 // - Only a tool whose name clearly reads, and that the server just doesn't
 //   mark read-only, can be allowed for the session.
@@ -26,7 +26,10 @@ import {
   type ApprovalPlan,
 } from './mcpApproval';
 import {
+  DESTRUCTIVE_WORDS,
+  EXEC_WORDS,
   NOUN_USES,
+  READ_NOUN_ENDINGS,
   READ_WORDS,
   SAFETY_RANK,
   WRITE_WORDS,
@@ -70,8 +73,26 @@ export function effectiveLabel(tool: McpToolInfo): CapabilitySafety {
 }
 
 /**
+ * A change, run or delete word anywhere in the name. Skipped, as in Casper's wordLabel: the
+ * NOUN_USES words for that exact name, and a change word just before a read noun ending
+ * (get_write_status reads the write status). Casper's labels skip every change word after a
+ * read word (get_and_apply_config reads as `read`); GreenCLI doesn't when deciding what writes off
+ * hides and what can be allowed for the session.
+ */
+export function namesAChange(name: string): boolean {
+  const skipped = new Set(NOUN_USES.get(name) ?? []);
+  const words = toolWords(name).filter((word) => !skipped.has(word));
+  const describing = words.length >= 3 && READ_NOUN_ENDINGS.has(words.at(-1)!) ? words.length - 2 : -1;
+  return words.some(
+    (word, index) =>
+      DESTRUCTIVE_WORDS.has(word) || EXEC_WORDS.has(word) || (index !== describing && WRITE_WORDS.has(word))
+  );
+}
+
+/**
  * "Clearly reads by its name": the first action word of the name is a read word (get, list,
- * show, ...), nothing in the name says otherwise (nameLabel is read), and it is not a router.
+ * show, ...), nothing in the name says otherwise (nameLabel is read, and no change word comes
+ * later: get_and_apply_config doesn't count), and it is not a router.
  * GreenCLI addition to the spec rule: a router name (invoke_read_tool_x) never counts, since
  * what it runs is decided by its arguments.
  */
@@ -80,7 +101,15 @@ export function readNamed(name: string): boolean {
   const skipped = new Set(NOUN_USES.get(name) ?? []);
   const words = toolWords(name).filter((word) => !skipped.has(word));
   const firstAction = words.find((word) => READ_WORDS.has(word) || WRITE_WORDS.has(word));
-  return firstAction !== undefined && READ_WORDS.has(firstAction) && nameLabel(name) === 'read';
+  return (
+    firstAction !== undefined && READ_WORDS.has(firstAction) && nameLabel(name) === 'read' && !namesAChange(name)
+  );
+}
+
+/** With writes off, an unmarked tool whose name has a change word is treated as a write: hidden
+ *  and refused (the Rust policy hides it too). A tool the server marks read-only keeps its label. */
+export function writesOffHides(label: CapabilitySafety, name: string): boolean {
+  return label === 'write' || label === 'destructive' || (label === 'external-action' && namesAChange(name));
 }
 
 /** planLabel(plan), raised to at least 'external-action' for each routed call whose name is not readNamed. */
@@ -160,7 +189,7 @@ export function decideMcpCall(input: McpGateInput): McpGateDecision {
   if (argsDepth(args) > MAX_DEPTH) return { kind: 'refuse', text: TOO_DEEP };
   const skipped = aiConfirm(args).length + previewSwitchedOff(args).length > 0;
   const js = tool.preset === JUNOS_PRESET ? junosShow(tool.name, args) : 'n/a';
-  const router = isRouterName(tool.name);
+  const router = plan.router;
 
   // 6. A read-only login (the server's own access_check said so).
   if (tool.access === 'read-only' && rank(label) > rank('diagnostic')) {
@@ -171,7 +200,9 @@ export function decideMcpCall(input: McpGateInput): McpGateDecision {
     if (tool.preset === JUNOS_PRESET && (JUNOS_COMMIT_TOOLS.has(tool.name) || js === 'not-show')) {
       return { kind: 'refuse', text: JUNOS_WRITES_OFF_TEXT };
     }
-    if (label === 'write' || label === 'destructive') return { kind: 'refuse', text: writesOffText(tool.server) };
+    if (writesOffHides(label, tool.name) || writesOffHides(plan.label, tool.name)) {
+      return { kind: 'refuse', text: writesOffText(tool.server) };
+    }
     // A router must not reach a hidden tool by a name GreenCLI can't judge.
     if (router && (plan.routerUnclear || plan.routed.some((call) => !readNamed(call.name)))) {
       return { kind: 'refuse', text: writesOffText(tool.server) };
@@ -259,9 +290,9 @@ export function approvalNotes(plan: ApprovalPlan, tool: McpToolInfo, label: Capa
     notes.push(`Runs a tool GreenCLI can't see, through ${through}`);
   }
 
-  const confirms = [...new Set(aiConfirm(plan.arguments).map((path) => `${showName(lastKey(path))}=true`))];
+  const confirms = [...new Set(aiConfirm(plan.arguments).map((path) => showName(lastKey(path))))];
   if (confirms.length) {
-    notes.push(`The AI set ${joinWords(confirms)}. That skips the server's own check, so only your Yes lets it run`);
+    notes.push(`The AI set ${joinWords(confirms)} by itself. That can skip the server's own check, so it runs only if you say Yes`);
   }
   const previews = [...new Set(previewSwitchedOff(plan.arguments).map((path) => showName(lastKey(path))))];
   if (previews.length) {

@@ -1207,5 +1207,125 @@
     },
     "label": "external-action",
     "readNamed": true
+  },
+  {
+    "name": "get_and_apply_config",
+    "label": "external-action",
+    "readNamed": false
+  },
+  {
+    "name": "get_and_apply_config",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "read",
+    "readNamed": false
+  },
+  {
+    "name": "list_and_disable_ports",
+    "label": "external-action",
+    "readNamed": false
+  },
+  {
+    "name": "list_and_disable_ports",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "read",
+    "readNamed": false
+  },
+  {
+    "name": "verify_and_commit",
+    "label": "external-action",
+    "readNamed": false
+  },
+  {
+    "name": "verify_and_commit",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "read",
+    "readNamed": false
+  },
+  {
+    "name": "get_or_add_vlan",
+    "label": "external-action",
+    "readNamed": false
+  },
+  {
+    "name": "get_or_add_vlan",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "read",
+    "readNamed": false
+  },
+  {
+    "name": "show_and_push_config",
+    "label": "external-action",
+    "readNamed": false
+  },
+  {
+    "name": "show_and_push_config",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "read",
+    "readNamed": false
+  },
+  {
+    "name": "fetch_and_sync_inventory",
+    "label": "external-action",
+    "readNamed": false
+  },
+  {
+    "name": "fetch_and_sync_inventory",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "read",
+    "readNamed": false
+  },
+  {
+    "name": "check_then_enable_port",
+    "label": "external-action",
+    "readNamed": false
+  },
+  {
+    "name": "check_then_enable_port",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "read",
+    "readNamed": false
+  },
+  {
+    "name": "get_sync_status",
+    "label": "external-action",
+    "readNamed": true
+  },
+  {
+    "name": "call_read_tool",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "read",
+    "readNamed": false
+  },
+  {
+    "name": "callTool",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "read",
+    "readNamed": false
+  },
+  {
+    "name": "tool_call",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "read",
+    "readNamed": false
   }
 ]

@@ -57,12 +57,17 @@ describe('MCP label fixtures shared with Rust', () => {
   });
 
   it('router calls: the tools they name, and when GreenCLI cannot tell', () => {
-    const cases = fixture<{ tool: string; args: Record<string, unknown>; routed: string[]; unclear: boolean }>(
-      'router_cases.json'
-    );
+    const cases = fixture<{
+      tool: string;
+      schema?: Record<string, unknown>;
+      args: Record<string, unknown>;
+      routed: string[];
+      unclear: boolean;
+    }>('router_cases.json');
     expect(cases.length).toBeGreaterThanOrEqual(10);
     for (const c of cases) {
-      const plan = buildPlan({ server: 's', tool: c.tool, label: 'read', schema: { type: 'object' }, arguments: c.args });
+      const schema = (c.schema ?? { type: 'object' }) as Parameters<typeof buildPlan>[0]['schema'];
+      const plan = buildPlan({ server: 's', tool: c.tool, label: 'read', schema, arguments: c.args });
       expect([c.tool, c.args, plan.routed.map((call) => call.name), plan.routerUnclear]).toEqual([
         c.tool,
         c.args,

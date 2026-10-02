@@ -5,6 +5,7 @@ import {
   decideMcpCall,
   effectiveLabel,
   JUNOS_WRITES_OFF_TEXT,
+  namesAChange,
   readNamed,
   readOnlyLoginText,
   toolFingerprint,
@@ -80,7 +81,7 @@ describe('decideMcpCall', () => {
   it('describes batches and routers it cannot read', () => {
     const batch = asked(decide(tool('invoke_tools_batch'), { calls: [{ name: 'get_a' }, { name: 'get_b' }, { x: 1 }] }));
     expect(batch.notes).toContain("Runs 2 tools through invoke_tools_batch: get_a, get_b, and tools GreenCLI can't see");
-    const unclear = asked(decide(tool('invoke_read_tool', { annotations: READ_ONLY }), { tool_id: 'x' }));
+    const unclear = asked(decide(tool('invoke_read_tool', { annotations: READ_ONLY }), { target: 'x' }));
     expect(unclear.notes).toContain("Runs a tool GreenCLI can't see, through invoke_read_tool");
   });
 
@@ -94,12 +95,21 @@ describe('decideMcpCall', () => {
     const d = asked(decide(tool('get_device', { annotations: READ_ONLY }), { confirm: true }));
     expect(d.choices).toEqual(['no', 'once']);
     expect(d.notes).toContain(
-      "The AI set confirm=true. That skips the server's own check, so only your Yes lets it run"
+      "The AI set confirm by itself. That can skip the server's own check, so it runs only if you say Yes"
     );
     const two = asked(decide(tool('get_device', { annotations: READ_ONLY }), { confirm: 'yes', opts: { force: 1 } }));
     expect(two.notes).toContain(
-      "The AI set confirm=true and force=true. That skips the server's own check, so only your Yes lets it run"
+      "The AI set confirm and force by itself. That can skip the server's own check, so it runs only if you say Yes"
     );
+    // Any value but false or null: a server may read 2 or "false" as yes.
+    expect(asked(decide(tool('get_device'), { confirm: 2 }, true)).choices).toEqual(['no', 'once']);
+    const auditor = decideMcpCall({
+      tool: tool('get_device', { annotations: READ_ONLY }),
+      args: { force: 'false' },
+      allowedForSession: false,
+      readOnlyAgent: true,
+    });
+    expect(auditor).toEqual({ kind: 'refuse', text: AUDITOR_REFUSAL });
   });
 
   it('asks when the AI turned off a preview switch', () => {
@@ -203,6 +213,25 @@ describe('readNamed', () => {
     expect(readNamed('get_and_delete_site')).toBe(false);
     expect(readNamed('invoke_read_tool_x')).toBe(false);
     expect(readNamed('set_status')).toBe(false);
+    expect(readNamed('get_sync_status')).toBe(true);
+  });
+
+  it('is false when a change word comes after the read word', () => {
+    for (const name of [
+      'get_and_apply_config',
+      'list_and_disable_ports',
+      'verify_and_commit',
+      'get_or_add_vlan',
+      'show_and_push_config',
+      'fetch_and_sync_inventory',
+      'check_then_enable_port',
+    ]) {
+      expect(readNamed(name)).toBe(false);
+      expect(namesAChange(name)).toBe(true);
+      // Never offered for the session, and refused while writes are off.
+      expect(asked(decide(tool(name), {}, true)).choices).toEqual(['no', 'once']);
+      expect(decide(tool(name, { writes: 'off' }), {}, true)).toEqual({ kind: 'refuse', text: writesOffText('srv') });
+    }
   });
 });
 
@@ -244,6 +273,34 @@ describe('writes off, read-only login and the Read-only Auditor', () => {
     expect(asked(decide(tool('call_tool', { writes: 'on' }), { name: 'get_status', tool_name: 'get_status' })).notes).toContain(
       'Runs get_status through call_tool'
     );
+  });
+
+  it('treats a decoy name in any tool-name key as unclear', () => {
+    const t = off('call_tool', { annotations: READ_ONLY });
+    for (const key of ['toolName', 'tool_id', 'toolId', 'method', 'function']) {
+      const args = { name: 'get_status', [key]: 'delete_vlan', arguments: { vlan: 10 } };
+      expect(decide(t, args)).toEqual(refused(writesOffText('srv')));
+      expect(auditor(tool('call_tool', { annotations: READ_ONLY, writes: 'on' }), args)).toEqual(refused(AUDITOR_REFUSAL));
+    }
+  });
+
+  it('finds routers by name words and by shape', () => {
+    const args = { name: 'delete_site', arguments: { id: 1 } };
+    for (const name of ['call_read_tool', 'callTool', 'call-tool', 'tool_call', 'use_tool', 'proxy_tool', 'callReadTool']) {
+      const t = off(name, { annotations: READ_ONLY });
+      expect(decide(t, args)).toEqual(refused(writesOffText('srv')));
+      expect(auditor(tool(name, { annotations: READ_ONLY, writes: 'on' }), args)).toEqual(refused(AUDITOR_REFUSAL));
+      // A routed read still asks: a router call never runs without the box.
+      expect(asked(decide(tool(name, { annotations: READ_ONLY, writes: 'on' }), { name: 'get_device' })).choices).toEqual([
+        'no',
+        'once',
+      ]);
+    }
+    const shaped = off('helper', {
+      annotations: READ_ONLY,
+      inputSchema: { type: 'object', properties: { tool_name: {}, args: {} } },
+    });
+    expect(decide(shaped, { tool_name: 'delete_site', args: {} })).toEqual(refused(writesOffText('srv')));
   });
 
   it('counts force="t" as the AI skipping a check (pydantic reads it as true)', () => {

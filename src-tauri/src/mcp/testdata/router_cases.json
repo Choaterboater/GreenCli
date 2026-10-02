@@ -140,5 +140,188 @@
     },
     "routed": [],
     "unclear": false
+  },
+  {
+    "tool": "call_read_tool",
+    "args": {
+      "name": "delete_site",
+      "arguments": {
+        "id": 1
+      }
+    },
+    "routed": [
+      "delete_site"
+    ],
+    "unclear": false
+  },
+  {
+    "tool": "callTool",
+    "args": {
+      "name": "delete_site",
+      "arguments": {
+        "id": 1
+      }
+    },
+    "routed": [
+      "delete_site"
+    ],
+    "unclear": false
+  },
+  {
+    "tool": "call-tool",
+    "args": {
+      "name": "delete_site"
+    },
+    "routed": [
+      "delete_site"
+    ],
+    "unclear": false
+  },
+  {
+    "tool": "tool_call",
+    "args": {
+      "tool": "delete_site"
+    },
+    "routed": [
+      "delete_site"
+    ],
+    "unclear": false
+  },
+  {
+    "tool": "use_tool",
+    "args": {},
+    "routed": [],
+    "unclear": true
+  },
+  {
+    "tool": "proxy_tool",
+    "args": {
+      "toolName": "delete_site"
+    },
+    "routed": [
+      "delete_site"
+    ],
+    "unclear": false
+  },
+  {
+    "tool": "helper",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "tool_name": {},
+        "args": {}
+      }
+    },
+    "args": {
+      "tool_name": "delete_site"
+    },
+    "routed": [
+      "delete_site"
+    ],
+    "unclear": false
+  },
+  {
+    "tool": "helper",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "name": {},
+        "arguments": {}
+      }
+    },
+    "args": {},
+    "routed": [],
+    "unclear": true
+  },
+  {
+    "tool": "helper",
+    "args": {
+      "tool": "delete_site",
+      "params": {
+        "id": 1
+      }
+    },
+    "routed": [
+      "delete_site"
+    ],
+    "unclear": false
+  },
+  {
+    "tool": "get_route",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "name": {},
+        "params": {}
+      }
+    },
+    "args": {
+      "name": "core1",
+      "params": {}
+    },
+    "routed": [],
+    "unclear": false
+  },
+  {
+    "tool": "call_tool",
+    "args": {
+      "name": "get_status",
+      "toolName": "delete_vlan",
+      "arguments": {
+        "vlan": 10
+      }
+    },
+    "routed": [],
+    "unclear": true
+  },
+  {
+    "tool": "call_tool",
+    "args": {
+      "name": "get_status",
+      "method": "delete_vlan"
+    },
+    "routed": [],
+    "unclear": true
+  },
+  {
+    "tool": "call_tool",
+    "args": {
+      "name": "get_status",
+      "tool_id": "delete_vlan"
+    },
+    "routed": [],
+    "unclear": true
+  },
+  {
+    "tool": "call_tool",
+    "args": {
+      "name": "get_status",
+      "toolId": "delete_vlan"
+    },
+    "routed": [],
+    "unclear": true
+  },
+  {
+    "tool": "call_tool",
+    "args": {
+      "Tool-Name": "delete_vlan"
+    },
+    "routed": [
+      "delete_vlan"
+    ],
+    "unclear": false
+  },
+  {
+    "tool": "invoke_tools_batch",
+    "args": {
+      "calls": [
+        {
+          "name": "get_a",
+          "function": "delete_b"
+        }
+      ]
+    },
+    "routed": [],
+    "unclear": true
   }
 ]

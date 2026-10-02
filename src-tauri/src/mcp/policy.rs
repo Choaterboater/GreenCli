@@ -15,8 +15,8 @@ use super::access::{
 };
 use super::client::{McpServerDef, McpToolInfo, McpWrites};
 use super::labels::{
-    call_label, is_router_name, read_named, routed_calls, router_unclear, skipped_check, too_deep,
-    tool_label, SafetyLabel,
+    call_label, is_router, read_named, routed_calls, router_unclear, skipped_check, too_deep,
+    tool_label, writes_off_hides, SafetyLabel,
 };
 use super::presets::{
     hide_when_writes_off, junos_guard, junos_show, match_by_tools, match_preset, tighten,
@@ -90,7 +90,7 @@ pub fn hidden_reason(
         return None;
     }
     let preset_hides = preset_id(p).is_some_and(|id| hide_when_writes_off(id, tool));
-    if matches!(label, SafetyLabel::Write | SafetyLabel::Destructive) || preset_hides {
+    if writes_off_hides(label, &tool.name) || preset_hides {
         return Some(writes_off_reason(server));
     }
     None
@@ -115,18 +115,19 @@ pub fn call_refusal(
         return Some(reason);
     }
     // 3. The call as a whole: a write behind a router counts (Casper refuseByPolicy).
-    let cl = call_label(own, tool_name, args);
+    let schema = &tool.input_schema;
+    let cl = call_label(own, tool_name, schema, args);
     if p.access == AccessState::ReadOnly && cl > SafetyLabel::Diagnostic {
         return Some(read_only_login_reason(server));
     }
-    if !p.writes_on && matches!(cl, SafetyLabel::Write | SafetyLabel::Destructive) {
+    if !p.writes_on && writes_off_hides(cl, tool_name) {
         return Some(writes_off_reason(server));
     }
     // 4. A router must not reach a hidden tool by a name GreenCLI can't judge.
     if !p.writes_on
-        && is_router_name(tool_name)
-        && (router_unclear(tool_name, args)
-            || routed_calls(tool_name, args)
+        && is_router(tool_name, schema, args)
+        && (router_unclear(tool_name, schema, args)
+            || routed_calls(tool_name, schema, args)
                 .iter()
                 .any(|(name, _)| !read_named(name)))
     {
@@ -342,6 +343,50 @@ mod tests {
         assert_eq!(refuse(&p, &router, decoy.clone(), false), None);
         assert_eq!(
             refuse(&p, &router, decoy, true),
+            Some(AUDITOR_REFUSAL.to_string())
+        );
+    }
+
+    #[test]
+    fn writes_off_catches_decoys_hidden_routers_and_late_change_words() {
+        let d = def("uvx", &["x"], None);
+        let p = policy(&d, &[]);
+        let off = Some(writes_off_reason("s"));
+        // A decoy read name next to the real tool name in another spelling.
+        for key in ["toolName", "tool_id", "toolId", "method", "function"] {
+            let mut args = json!({ "name": "get_status", "arguments": { "vlan": 10 } });
+            args[key] = json!("delete_vlan");
+            assert_eq!(
+                refuse(&p, &read_tool("call_tool"), args, false),
+                off,
+                "{key}"
+            );
+        }
+        // A read-only-hinted router under another name.
+        let args = json!({ "name": "delete_site", "arguments": { "id": 1 } });
+        for name in [
+            "call_read_tool",
+            "callTool",
+            "tool_call",
+            "use_tool",
+            "proxy_tool",
+        ] {
+            assert_eq!(
+                refuse(&p, &read_tool(name), args.clone(), false),
+                off,
+                "{name}"
+            );
+        }
+        // A read word first, then a change word: hidden while unmarked.
+        let late = tool("get_and_apply_config");
+        assert_eq!(hidden(&p, &late), off);
+        assert_eq!(refuse(&p, &late, json!({}), false), off);
+        assert_eq!(hidden(&p, &read_tool("get_and_apply_config")), None);
+        // The Auditor refuses the hidden router with writes on too.
+        let on = def("uvx", &["x"], Some(McpWrites::On));
+        let p = policy(&on, &[]);
+        assert_eq!(
+            refuse(&p, &read_tool("call_read_tool"), args, true),
             Some(AUDITOR_REFUSAL.to_string())
         );
     }
