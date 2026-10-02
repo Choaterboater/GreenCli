@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Problems panel in the Config Editor** (Ctrl+Shift+M, or click the problem count): every problem
+  in the tab with its line and column, filterable by errors / warnings / tips. A click selects it
+  and the panel stays open while you work down the list. It replaces the drop-down list.
+- **Editor status line**: "Send to: core-sw1 · Aruba CX · CONFIG MODE · pulled 12 min ago", named
+  like the terminal tab. When the tab is for another vendor than the device (a Junos tab with an
+  Aruba CX session) a red line says so.
+- **The Send dialog counts the problems** ("1 error, 2 warnings") and lists the first five with their
+  lines, errors first, plus the vendor warning. It names the device like its terminal tab. A tab in
+  a code language still gets the device checks, since it is going to a device.
+
+### Fixed
+- Confirm dialogs kept their text on one line: the Send preview, the problem list and the SFTP
+  upload list ran together. Line breaks and indents now show, and a long message scrolls.
+
 ## [1.6.1] - 2026-10-01
 
 ### Security
