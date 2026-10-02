@@ -189,6 +189,30 @@ function isSecretFlagName(flag: string): boolean {
  *  letter and a digit or symbol. Not host:port, versions or image tags (redis:alpine, python:3.12). */
 const USER_PASS = /^[A-Za-z][\w.@-]{0,63}:(?=[^\s:/]*[A-Za-z])(?=[^\s:/]*[^A-Za-z\s:/])[^\s:/]{4,}$/;
 
+/** A lowercase image or package name (node, postgres, my-app). */
+const IMAGE_NAME = /^[a-z0-9]+(?:[._-][a-z0-9]+)*$/;
+/** One part of an image tag: a number (20, v1), or a common tag word, maybe with a number (alpine3). */
+const TAG_PART =
+  /^(?:v?\d+|(?:latest|stable|lts|alpine|slim|bookworm|bullseye|buster|trixie|jammy|focal|noble|ubuntu|debian|edge|nightly|beta|alpha|rc|dev|jdk|jre|management|fpm|cli|apache|nanoserver|windowsservercore)\d*)$/;
+
+/** An image or package reference that USER_PASS would take for user:password: node:20-alpine,
+ *  postgres:16-alpine, nginx:1.25-alpine, node:lts-alpine. The tag must be
+ *  lowercase and made only of numbers and common tag words, so admin:Hunter22 and user:pass1 stay
+ *  secret. (host:port has no letter after the colon, and ghcr.io/x/y:1.2 has a "/", so USER_PASS
+ *  never matches those.) */
+function isImageOrPackageRef(value: string): boolean {
+  const colon = value.indexOf(':');
+  const name = value.slice(0, colon);
+  const tag = value.slice(colon + 1);
+  if (!IMAGE_NAME.test(name)) return false;
+  return tag.split(/[._-]/).every((part) => TAG_PART.test(part));
+}
+
+/** user:password typed as one value, and not an image or package reference. */
+function looksLikeUserPass(value: string): boolean {
+  return USER_PASS.test(value) && !isImageOrPackageRef(value);
+}
+
 function isPublicKeyName(name: string): boolean {
   const key = snakeKey(name);
   return key === 'public_key' || key.endsWith('_public_key');
@@ -1101,7 +1125,7 @@ export function buildMcpExport(servers: readonly McpServerDef[], options: McpExp
   // Step 6b: a user:password value under a harmless env name that the sweep didn't already replace.
   for (const b of built) {
     if (b.env) {
-      b.env = b.env.map(([k, v]) => [k, USER_PASS.test(v) ? guessed(b.s, v, { raw: k, where: `env ${k}`, prefix: false }) : v]);
+      b.env = b.env.map(([k, v]) => [k, looksLikeUserPass(v) ? guessed(b.s, v, { raw: k, where: `env ${k}`, prefix: false }) : v]);
     }
   }
 

@@ -955,6 +955,29 @@ describe('buildMcpExport: network logins', () => {
     expect(s.env?.PY).toBe('python:3.12');
     expect(s.env?.HOST).toBe('switch1:830');
   });
+
+  it('keeps image tags and package references plain, but still hides user:password', () => {
+    const plain = {
+      IMAGE: 'node:20-alpine',
+      DB_IMAGE: 'postgres:16-alpine',
+      WEB: 'nginx:1.25-alpine',
+      LTS: 'node:lts-alpine',
+      PYTHON: 'python:3.12-slim-bookworm',
+      REDIS: 'redis:7.2.4-alpine3.19',
+      GHCR: 'ghcr.io/x/y:1.2',
+      DB: 'db.example.com:5432',
+      PORT: 'localhost:8080',
+    };
+    const hidden = { LOGIN: 'admin:Hunter22', OPS: 'ops:hunter22', SVC: 'svc:2024-Spring', U: 'user:pass1' };
+    const r = build([def({ name: 's', command: 'uvx', args: ['x'], env: { ...plain, ...hidden } })]);
+    const s = stdioOf(r.file.mcpServers.s);
+    for (const [key, value] of Object.entries(plain)) expect([key, s.env?.[key]]).toEqual([key, value]);
+    for (const [key, value] of Object.entries(hidden)) {
+      expect(s.env?.[key]).toMatch(/^\$\{[A-Z_]+\}$/);
+      expect(r.text).not.toContain(value);
+    }
+    expect(r.notes.join('\n')).not.toContain('env IMAGE');
+  });
 });
 
 describe('exportSummary', () => {
