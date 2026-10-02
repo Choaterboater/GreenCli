@@ -281,7 +281,7 @@ export const HELP_TOPICS: HelpTopic[] = [
     title: 'Tunnels, SFTP & tools',
     icon: Waypoints,
     summary: 'Port forwarding, file transfer, triggers, config editor, bulk runner.',
-    keywords: ['tunnel', 'forward', 'socks', 'sftp', 'file', 'upload', 'download', 'trigger', 'bulk', 'editor', 'problems', 'snippet', 'f8', 'ctrl+shift+m', 'status', 'send to', 'vendor', 'diff', 'compare', 'comment'],
+    keywords: ['tunnel', 'forward', 'socks', 'sftp', 'file', 'upload', 'download', 'trigger', 'bulk', 'editor', 'problems', 'snippet', 'f8', 'ctrl+shift+m', 'status', 'send to', 'vendor', 'copy', 'secrets', 'hidden', 'share', 'ticket', 'diff', 'compare', 'comment'],
     blocks: [
       {
         kind: 'bullets',
@@ -296,6 +296,7 @@ export const HELP_TOPICS: HelpTopic[] = [
         kind: 'bullets',
         items: [
           '**Config Editor problems**: risky lines, blanks to fill in, terminal junk and a Junos edit with no commit are underlined and counted in the toolbar. Click the count (or **Ctrl+Shift+M**) for the Problems panel; **F8** jumps to the next one. A line the switch rejected shows in red.',
+          '**Copy with secrets hidden**: the eye button next to Copy copies the tab with passwords, keys and SNMP communities hidden, safe for a ticket or chat.',
           '**Editor status line**: where Send goes, the device\'s CLI, **CONFIG MODE**, and when you pulled its config. It warns in red when the tab is for another vendor than the device.',
           '**Config Editor smarts**: **Ctrl+/** comments a line (`!` Aruba, `#` Junos); a double-click picks `1/1/5` or `ge-0/0/0.100` whole.',
           '**Snippets**: type `cx-access`, `junos-trunk`, … at the start of a line, or pick from *Snippets*; **Tab** moves to the next blank.',

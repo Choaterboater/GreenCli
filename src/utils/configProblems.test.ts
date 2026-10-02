@@ -125,3 +125,38 @@ describe('sendProblemNote', () => {
     expect(sendProblemNote([])).toBe('');
   });
 });
+
+describe('plain-text secrets', () => {
+  it('marks the value of a plaintext password, key or pass phrase as a tip', () => {
+    const text = [
+      'user admin group administrators password plaintext Sup3r!',
+      'radius-server host 10.1.1.10 key plaintext "Rad Key" vrf mgmt',
+      'snmpv3 user ops auth sha auth-pass plaintext A1 priv aes priv-pass plaintext P2',
+    ].join('\n');
+    const tips = buildProblems(text, 'aruba-cx').filter((p) => p.code === 'plaintext-secret');
+    expect(tips.map((p) => [p.lineNumber, text.split('\n')[p.lineNumber - 1].slice(p.startColumn - 1, p.endColumn - 1)])).toEqual([
+      [1, 'Sup3r!'],
+      [2, '"Rad Key"'],
+      [3, 'A1'],
+      [3, 'P2'],
+    ]);
+    expect(tips.every((p) => p.severity === 'info')).toBe(true);
+    expect(tips[0].message).toContain('Copy with secrets hidden');
+  });
+
+  it('leaves hashes, blanks, markers, comments and other words alone', () => {
+    const text = [
+      'user admin password ciphertext AQBapZ1x',
+      'radius-server host 10.1.1.10 key plaintext ${radius_key}',
+      'radius-server host 10.1.1.11 key plaintext <secret hidden>',
+      '! password plaintext example',
+      'description plaintext cutover notes',
+      'set system root-authentication plain-text-password',
+    ].join('\n');
+    expect(buildProblems(text, 'aruba-cx').filter((p) => p.code === 'plaintext-secret')).toEqual([]);
+  });
+
+  it('only checks device configs', () => {
+    expect(buildProblems('password = "plaintext hunter2"', 'python')).toEqual([]);
+  });
+});
