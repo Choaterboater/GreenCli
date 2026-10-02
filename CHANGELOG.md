@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Casper tab**: Quick Connect → Local → **Casper** starts Casper in a terminal tab, in the
+  **Start folder** you pick (your project). The folder is the tab's working directory, never a
+  command-line argument.
 - **Problems panel in the Config Editor** (Ctrl+Shift+M, or click the problem count): every problem
   in the tab with its line and column, filterable by errors / warnings / tips. A click selects it
   and the panel stays open while you work down the list. It replaces the drop-down list.
