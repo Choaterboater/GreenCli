@@ -9,12 +9,15 @@
 // GreenCLI is stricter than Casper (the TS side, mcpApproval.ts and
 // mcpGate.ts, matches):
 // - A router is found by its name words (callTool, tool_call, use_tool,
-//   proxy_tool) and by its shape (a tool-name key next to an arguments key, in
-//   its input schema or in the call), not only by invoke/dispatch/call_tool/
-//   run_tool.
-// - Every key that may hold the routed tool's name counts, in any spelling
-//   (name, tool, tool_name, toolName, tool_id, method, function). Two
-//   different names make the call unclear.
+//   proxy_tool) and by its shape, not only by invoke/dispatch/call_tool/
+//   run_tool. The shape is a tool-name key (name, tool, tool_name, toolName,
+//   tool_id, method, function) next to an arguments key (arguments, args,
+//   params, parameters, input), in its input schema or in the call, at the
+//   top level or in a batch list (calls, requests, items, steps, or any list
+//   of such objects).
+// - Every key that may hold the routed tool's name counts, in any spelling.
+//   Two different names make the call unclear, and so does a batch entry
+//   GreenCLI can't read or a routed tool that is a router itself.
 // - Any confirm value but false or null counts as the AI saying yes.
 // - read_named and writes off look for a change word anywhere in the name
 //   (names_a_change), so get_and_apply_config is not a read for them.
@@ -364,34 +367,74 @@ pub fn is_router_name(tool: &str) -> bool {
         || (any(&["tool", "tools"]) && any(&["call", "run", "use", "execute", "exec", "proxy"]))
 }
 
+/// Keys (after key_word) that may hold the name of the tool a router runs.
+const INNER_NAME_WORDS: [&str; 6] = ["name", "tool", "toolname", "toolid", "method", "function"];
+/// Keys (after key_word) that may hold the arguments for that tool.
+const ARGS_KEY_WORDS: [&str; 5] = ["arguments", "args", "params", "parameters", "input"];
+/// List keys (after key_word) that hold a batch of calls in a router call.
+const BATCH_KEY_WORDS: [&str; 4] = ["calls", "requests", "items", "steps"];
+
 /// Keys shaped like a router call: a tool-name key next to an arguments key
-/// ({tool, args}), or the MCP call shape itself ({name, arguments}).
+/// ({tool, args}, {name, arguments}, {method, params}, {function, arguments}).
 fn router_keys<'a>(keys: impl Iterator<Item = &'a String>) -> bool {
     let words: Vec<String> = keys.map(|k| key_word(k)).collect();
-    let has_word = |w: &str| words.iter().any(|k| k == w);
-    if !["arguments", "args", "params"].iter().any(|w| has_word(w)) {
-        return false;
-    }
-    ["tool", "toolname", "toolid"].iter().any(|w| has_word(w))
-        || (has_word("name") && has_word("arguments"))
+    words.iter().any(|w| INNER_NAME_WORDS.contains(&w.as_str()))
+        && words.iter().any(|w| ARGS_KEY_WORDS.contains(&w.as_str()))
+}
+
+fn router_shaped(value: &Value) -> bool {
+    value.as_object().is_some_and(|o| router_keys(o.keys()))
+}
+
+fn schema_properties(schema: &Value) -> Option<&Map<String, Value>> {
+    schema.get("properties").and_then(Value::as_object)
+}
+
+/// A schema property that is a list of router-shaped objects (calls: [{name, arguments}]).
+fn schema_batch_key(schema: &Value, key: &str) -> bool {
+    schema_properties(schema)
+        .and_then(|props| props.get(key))
+        .and_then(|prop| prop.get("items"))
+        .and_then(schema_properties)
+        .is_some_and(|items| router_keys(items.keys()))
+}
+
+/// The lists in a router call that hold a batch of calls: calls, requests,
+/// items or steps, a list the schema says holds router-shaped objects, or any
+/// list with a router-shaped object in it. Same as TS batchLists.
+fn batch_lists<'a>(args: &'a Value, schema: &Value) -> Vec<&'a Vec<Value>> {
+    let Some(obj) = args.as_object() else {
+        return Vec::new();
+    };
+    obj.iter()
+        .filter_map(|(key, value)| {
+            let list = value.as_array()?;
+            (BATCH_KEY_WORDS.contains(&key_word(key).as_str())
+                || schema_batch_key(schema, key)
+                || list.iter().any(router_shaped))
+            .then_some(list)
+        })
+        .collect()
 }
 
 /// A router by its name, or by its shape in the input schema or the call's
-/// arguments. Same as TS isRouter.
+/// arguments, at the top level or inside a list (a batch). Same as TS isRouter.
 pub fn is_router(tool: &str, schema: &Value, args: &Value) -> bool {
     if is_router_name(tool) {
         return true;
     }
-    let in_schema = schema
-        .get("properties")
-        .and_then(Value::as_object)
-        .is_some_and(|props| router_keys(props.keys()));
-    in_schema || args.as_object().is_some_and(|a| router_keys(a.keys()))
+    let in_schema = schema_properties(schema).is_some_and(|props| {
+        router_keys(props.keys()) || props.keys().any(|key| schema_batch_key(schema, key))
+    });
+    in_schema
+        || args.as_object().is_some_and(|a| {
+            router_keys(a.keys())
+                || a.values().any(|v| {
+                    v.as_array()
+                        .is_some_and(|list| list.iter().any(router_shaped))
+                })
+        })
 }
-
-/// Keys (after key_word) that may hold the name of the tool a router runs.
-const INNER_NAME_WORDS: [&str; 6] = ["name", "tool", "toolname", "toolid", "method", "function"];
-const INNER_ARGS_KEYS: [&str; 3] = ["arguments", "args", "params"];
 
 /// The different non-empty tool names in every key that may hold one.
 fn inner_names(obj: &Map<String, Value>) -> Vec<&str> {
@@ -424,38 +467,43 @@ fn inner_call(value: &Value) -> Option<(String, Value)> {
         [only] => *only,
         _ => return None,
     };
-    let args = INNER_ARGS_KEYS
+    let args = obj
         .iter()
-        .find_map(|k| obj.get(*k).filter(|v| v.is_object()))
-        .cloned()
+        .find(|(k, v)| ARGS_KEY_WORDS.contains(&key_word(k).as_str()) && v.is_object())
+        .map(|(_, v)| v.clone())
         .unwrap_or_else(|| Value::Object(Map::new()));
     Some((name.to_string(), args))
 }
 
-/// The real tools a router call runs: {name, arguments} or calls[] of the same.
+/// The real tools a router call runs: {name, arguments}, and every entry of
+/// a batch list.
 pub fn routed_calls(tool: &str, schema: &Value, args: &Value) -> Vec<(String, Value)> {
     if !is_router(tool, schema, args) {
         return Vec::new();
     }
     let mut calls: Vec<(String, Value)> = inner_call(args).into_iter().collect();
-    if let Some(batch) = args.get("calls").and_then(Value::as_array) {
-        calls.extend(batch.iter().filter_map(inner_call));
+    for list in batch_lists(args, schema) {
+        calls.extend(list.iter().filter_map(inner_call));
     }
     calls
 }
 
-/// The tool looks like a router, but GreenCLI can't tell every tool it runs.
+/// The tool looks like a router, but GreenCLI can't tell every tool it runs:
+/// it names none, or two different ones; a batch entry names none or two; or
+/// a tool it runs is itself a router. Same as TS routerUnclear.
 pub fn router_unclear(tool: &str, schema: &Value, args: &Value) -> bool {
     if !is_router(tool, schema, args) {
         return false;
     }
-    let routed = routed_calls(tool, schema, args).len();
-    let batch = args
-        .get("calls")
-        .and_then(Value::as_array)
-        .map_or(0, Vec::len);
-    let single = usize::from(inner_call(args).is_some());
-    routed == 0 || names_clash(args) || (batch > 0 && routed != batch + single)
+    let routed = routed_calls(tool, schema, args);
+    routed.is_empty()
+        || names_clash(args)
+        || batch_lists(args, schema)
+            .iter()
+            .any(|list| list.iter().any(|entry| inner_call(entry).is_none()))
+        || routed
+            .iter()
+            .any(|(name, inner)| is_router(name, &Value::Null, inner))
 }
 
 /// The label a call is judged by: the tool's own, the real tools' names, and
@@ -777,11 +825,64 @@ mod tests {
         }
         let schema = json!({ "properties": { "toolName": {}, "params": {} } });
         assert!(is_router("helper", &schema, &json!({})));
-        assert!(!is_router(
+        assert!(is_router(
             "helper",
             &json!({ "properties": { "name": {}, "params": {} } }),
             &json!({})
         ));
+        assert!(!is_router(
+            "helper",
+            &json!({ "properties": { "name": {}, "title": {} } }),
+            &json!({})
+        ));
+    }
+
+    #[test]
+    fn batch_and_shaped_routers() {
+        let none = Value::Null;
+        // A read-only hint on the router never lowers what it runs.
+        let batch = json!({ "calls": [
+            { "name": "get_a", "arguments": {} },
+            { "name": "delete_b", "arguments": {} }
+        ] });
+        assert_eq!(
+            call_label(SafetyLabel::Read, "helper", &none, &batch),
+            SafetyLabel::Destructive
+        );
+        assert!(!router_unclear("helper", &none, &batch));
+        for args in [
+            json!({ "method": "reboot_ap", "params": {} }),
+            json!({ "name": "reboot_ap", "args": {} }),
+            json!({ "function": "reboot_ap", "arguments": {} }),
+            json!({ "tool": "reboot_ap", "input": {} }),
+            json!({ "name": "reboot_ap", "parameters": {} }),
+        ] {
+            assert_eq!(
+                call_label(SafetyLabel::Read, "helper", &none, &args),
+                SafetyLabel::Destructive,
+                "{args}"
+            );
+        }
+        let unclear = json!({ "requests": [{ "method": "get_a", "params": {} }, { "op": "x" }] });
+        assert!(router_unclear("helper", &none, &unclear));
+        assert_eq!(
+            call_label(SafetyLabel::Read, "helper", &none, &unclear),
+            SafetyLabel::ExternalAction
+        );
+        let schema = json!({ "properties": { "ops": {
+            "type": "array",
+            "items": { "properties": { "tool": {}, "input": {} } }
+        } } });
+        assert!(is_router("helper", &schema, &json!({})));
+        assert_eq!(
+            routed_calls(
+                "helper",
+                &schema,
+                &json!({ "ops": [{ "tool": "delete_x" }] })
+            )
+            .len(),
+            1
+        );
     }
 
     #[test]

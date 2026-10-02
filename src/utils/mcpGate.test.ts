@@ -303,6 +303,27 @@ describe('writes off, read-only login and the Read-only Auditor', () => {
     expect(decide(shaped, { tool_name: 'delete_site', args: {} })).toEqual(refused(writesOffText('srv')));
   });
 
+  it('never runs a read-only-hinted batch or {method, params} router without a box', () => {
+    const on = (extra: Partial<McpToolInfo> = {}) => tool('helper', { annotations: READ_ONLY, writes: 'on', ...extra });
+    const batch = { calls: [{ name: 'get_a', arguments: {} }, { name: 'delete_b', arguments: {} }] };
+    const d = asked(decide(on(), batch));
+    expect(d.label).toBe('destructive');
+    expect(d.danger).toBe(true);
+    expect(d.choices).toEqual(['no', 'once']);
+    expect(asked(decide(on(), { method: 'reboot_ap', params: {} })).label).toBe('destructive');
+    expect(asked(decide(on(), { function: 'get_device', arguments: {} })).choices).toEqual(['no', 'once']);
+    expect(decide(off('helper', { annotations: READ_ONLY }), batch)).toEqual(refused(writesOffText('srv')));
+    expect(auditor(on(), batch)).toEqual(refused(AUDITOR_REFUSAL));
+    // A batch entry GreenCLI can't read: refused with writes off and for the Auditor, asks otherwise.
+    const unclear = { requests: [{ method: 'get_a', params: {} }, { op: 'x' }] };
+    expect(decide(off('helper', { annotations: READ_ONLY }), unclear)).toEqual(refused(writesOffText('srv')));
+    expect(auditor(on(), unclear)).toEqual(refused(AUDITOR_REFUSAL));
+    expect(asked(decide(on(), unclear)).notes.join('\n')).toContain("tools GreenCLI can't see");
+    // A batch of reads that each clearly read: the Auditor lets it through, but it still asks.
+    const reads = { calls: [{ name: 'get_a', arguments: {} }, { name: 'list_b', arguments: {} }] };
+    expect(auditor(on(), reads).kind).toBe('ask');
+  });
+
   it('counts force="t" as the AI skipping a check (pydantic reads it as true)', () => {
     expect(decide(tool('list_sessions'), { force: 'true' }, true).kind).toBe('ask');
     expect(decide(tool('list_sessions'), { force: 't' }, true).kind).toBe('ask');

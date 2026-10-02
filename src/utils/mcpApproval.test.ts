@@ -46,7 +46,7 @@ describe('routedCalls', () => {
 
   it('is empty for a tool that is not a router', () => {
     expect(routedCalls('get_device', { name: 'delete_site' })).toEqual([]);
-    expect(routedCalls('get_route', { name: 'core1', params: {} })).toEqual([]);
+    expect(routedCalls('get_device', { items: [{ name: 'a' }] })).toEqual([]);
   });
 
   it('finds a router by its name words or its shape', () => {
@@ -58,7 +58,33 @@ describe('routedCalls', () => {
     }
     expect(isRouter('helper', { type: 'object', properties: { toolName: {}, params: {} } })).toBe(true);
     expect(isRouter('helper', { type: 'object' }, { name: 'delete_site', arguments: {} })).toBe(true);
-    expect(isRouter('helper', { type: 'object', properties: { name: {}, params: {} } })).toBe(false);
+    expect(isRouter('helper', { type: 'object', properties: { name: {}, title: {} } })).toBe(false);
+  });
+
+  it('finds a router by any tool-name key next to any arguments key', () => {
+    expect(isRouter('helper', { type: 'object', properties: { name: {}, params: {} } })).toBe(true);
+    for (const args of [
+      { method: 'delete_site', params: {} },
+      { name: 'delete_site', args: {} },
+      { function: 'delete_site', arguments: {} },
+      { tool: 'delete_site', parameters: {} },
+      { name: 'delete_site', input: {} },
+    ]) {
+      expect(routedCalls('helper', args)).toEqual([{ name: 'delete_site', arguments: {} }]);
+    }
+  });
+
+  it('finds a batch router inside a list, by its entries or its schema', () => {
+    expect(routedCalls('helper', { requests: [{ method: 'get_a', params: { x: 1 } }, { method: 'reboot_b' }] })).toEqual([
+      { name: 'get_a', arguments: { x: 1 } },
+      { name: 'reboot_b', arguments: {} },
+    ]);
+    const batchSchema = {
+      type: 'object' as const,
+      properties: { ops: { type: 'array', items: { type: 'object', properties: { tool: {}, input: {} } } } },
+    };
+    expect(isRouter('helper', batchSchema)).toBe(true);
+    expect(routedCalls('helper', { ops: [{ tool: 'delete_x' }] }, batchSchema)).toEqual([{ name: 'delete_x', arguments: {} }]);
   });
 
   it('reads the tool name from any key that may hold it', () => {
@@ -85,6 +111,47 @@ describe('buildPlan and planLabel', () => {
     });
     expect(plan.routed).toHaveLength(1);
     expect(plan.routerUnclear).toBe(true);
+  });
+
+  it('marks a batch unclear when an entry names nothing, and judges the rest', () => {
+    const plan = buildPlan({
+      server: 's',
+      tool: 'helper',
+      label: 'read',
+      schema,
+      arguments: { steps: [{ tool: 'get_a', input: {} }, { foo: 1 }] },
+    });
+    expect(plan.router).toBe(true);
+    expect(plan.routerUnclear).toBe(true);
+    const clear = buildPlan({
+      server: 's',
+      tool: 'helper',
+      label: 'read',
+      schema,
+      arguments: { calls: [{ name: 'get_a', arguments: {} }, { name: 'delete_b', arguments: {} }] },
+    });
+    expect(clear.routerUnclear).toBe(false);
+    // The strictest routed tool wins, whatever the router's own label says.
+    expect(planLabel(clear)).toBe('destructive');
+  });
+
+  it('marks a router that runs another router as unclear', () => {
+    const plan = buildPlan({
+      server: 's',
+      tool: 'invoke_tool',
+      label: 'read',
+      schema,
+      arguments: { name: 'invoke_tools_batch', arguments: { calls: [{ name: 'delete_x' }] } },
+    });
+    expect(plan.routerUnclear).toBe(true);
+    const shaped = buildPlan({
+      server: 's',
+      tool: 'call_tool',
+      label: 'read',
+      schema,
+      arguments: { name: 'get_status', arguments: { method: 'delete_x', params: {} } },
+    });
+    expect(shaped.routerUnclear).toBe(true);
   });
 
   it('judges a router call by the tool it runs', () => {

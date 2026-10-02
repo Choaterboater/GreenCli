@@ -259,7 +259,9 @@
       "name": "core1",
       "params": {}
     },
-    "routed": [],
+    "routed": [
+      "core1"
+    ],
     "unclear": false
   },
   {
@@ -323,5 +325,269 @@
     },
     "routed": [],
     "unclear": true
+  },
+  {
+    "tool": "helper",
+    "args": {
+      "method": "delete_site",
+      "params": {
+        "id": 1
+      }
+    },
+    "routed": [
+      "delete_site"
+    ],
+    "unclear": false
+  },
+  {
+    "tool": "helper",
+    "args": {
+      "name": "delete_site",
+      "args": {}
+    },
+    "routed": [
+      "delete_site"
+    ],
+    "unclear": false
+  },
+  {
+    "tool": "helper",
+    "args": {
+      "function": "delete_site",
+      "arguments": {}
+    },
+    "routed": [
+      "delete_site"
+    ],
+    "unclear": false
+  },
+  {
+    "tool": "helper",
+    "args": {
+      "name": "reboot_ap",
+      "parameters": {
+        "id": 1
+      }
+    },
+    "routed": [
+      "reboot_ap"
+    ],
+    "unclear": false
+  },
+  {
+    "tool": "helper",
+    "args": {
+      "tool": "reboot_ap",
+      "input": {}
+    },
+    "routed": [
+      "reboot_ap"
+    ],
+    "unclear": false
+  },
+  {
+    "tool": "helper",
+    "args": {
+      "calls": [
+        {
+          "name": "get_a",
+          "arguments": {}
+        },
+        {
+          "name": "delete_b",
+          "arguments": {}
+        }
+      ]
+    },
+    "routed": [
+      "get_a",
+      "delete_b"
+    ],
+    "unclear": false
+  },
+  {
+    "tool": "helper",
+    "args": {
+      "requests": [
+        {
+          "method": "get_a",
+          "params": {}
+        },
+        {
+          "method": "reboot_b"
+        }
+      ]
+    },
+    "routed": [
+      "get_a",
+      "reboot_b"
+    ],
+    "unclear": false
+  },
+  {
+    "tool": "helper",
+    "args": {
+      "steps": [
+        {
+          "tool": "get_a",
+          "input": {}
+        },
+        {
+          "foo": 1
+        }
+      ]
+    },
+    "routed": [
+      "get_a"
+    ],
+    "unclear": true
+  },
+  {
+    "tool": "helper",
+    "args": {
+      "batch": [
+        {
+          "name": "delete_x",
+          "arguments": {}
+        }
+      ]
+    },
+    "routed": [
+      "delete_x"
+    ],
+    "unclear": false
+  },
+  {
+    "tool": "helper",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {},
+              "arguments": {}
+            }
+          }
+        }
+      }
+    },
+    "args": {
+      "items": []
+    },
+    "routed": [],
+    "unclear": true
+  },
+  {
+    "tool": "helper",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "ops": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "method": {},
+              "params": {}
+            }
+          }
+        }
+      }
+    },
+    "args": {
+      "ops": [
+        {
+          "method": "delete_x"
+        }
+      ]
+    },
+    "routed": [
+      "delete_x"
+    ],
+    "unclear": false
+  },
+  {
+    "tool": "helper",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "ops": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "method": {},
+              "params": {}
+            }
+          }
+        }
+      }
+    },
+    "args": {
+      "ops": [
+        {
+          "method": "get_a"
+        },
+        "delete_x"
+      ]
+    },
+    "routed": [
+      "get_a"
+    ],
+    "unclear": true
+  },
+  {
+    "tool": "invoke_tool",
+    "args": {
+      "name": "invoke_tools_batch",
+      "arguments": {
+        "calls": [
+          {
+            "name": "delete_x"
+          }
+        ]
+      }
+    },
+    "routed": [
+      "invoke_tools_batch"
+    ],
+    "unclear": true
+  },
+  {
+    "tool": "call_tool",
+    "args": {
+      "name": "get_status",
+      "arguments": {
+        "method": "delete_x",
+        "params": {}
+      }
+    },
+    "routed": [
+      "get_status"
+    ],
+    "unclear": true
+  },
+  {
+    "tool": "helper",
+    "args": {
+      "items": [
+        {
+          "name": "a"
+        }
+      ]
+    },
+    "routed": [],
+    "unclear": false
+  },
+  {
+    "tool": "get_device",
+    "args": {
+      "name": "core1"
+    },
+    "routed": [],
+    "unclear": false
   }
 ]

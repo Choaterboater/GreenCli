@@ -4,10 +4,12 @@
 // deeper than walk() looks).
 // GreenCLI is stricter than Casper in three places (the Rust side, src-tauri/src/mcp/labels.rs, matches):
 // - A router is found by its name words (callTool, call-tool, tool_call, use_tool, proxy_tool) and by
-//   its shape (a tool-name key next to an arguments key, in its input schema or in the call), not only
-//   by /invoke|dispatch|call_tool|run_tool/.
-// - Every key that may hold the tool's name counts, in any spelling (name, tool, tool_name, toolName,
-//   tool_id, method, function). Two different names make the call unclear.
+//   its shape, not only by /invoke|dispatch|call_tool|run_tool/. The shape is a tool-name key (name,
+//   tool, tool_name, toolName, tool_id, method, function) next to an arguments key (arguments, args,
+//   params, parameters, input), in its input schema or in the call, at the top level or in a batch
+//   list (calls, requests, items, steps, or any list of such objects).
+// - Every key that may hold the tool's name counts, in any spelling. Two different names make the
+//   call unclear, and so does a batch entry GreenCLI can't read or a routed tool that is a router.
 // - Any confirm value but false or null counts as the AI saying yes: servers that read confirm or
 //   force loosely (JS `if (args.force)`) treat 2, "no" or {} as yes.
 // Left out: the call modes, the preview, secret masking and box formatting (approval.ts:171-437);
@@ -27,7 +29,7 @@ export interface ApprovalPlan {
   arguments: Record<string, unknown>;
   /** The real tools behind a router call; empty for a direct call. */
   routed: RoutedCall[];
-  /** The tool is a router: by its name, or by a tool-name key next to an arguments key. */
+  /** The tool is a router: by its name, or by a tool-name key next to an arguments key (also in a batch list). */
   router: boolean;
   /** The tool looks like a router, but GreenCLI could not tell which tool it runs. */
   routerUnclear: boolean;
@@ -52,10 +54,10 @@ const TOOL_WORDS = new Set(["tool", "tools"]);
 const ROUTER_VERBS = new Set(["call", "run", "use", "execute", "exec", "proxy"]);
 /** Keys (after keyWord) that may hold the name of the tool a router runs. */
 const INNER_NAME_WORDS = new Set(["name", "tool", "toolname", "toolid", "method", "function"]);
-/** Keys (after keyWord) that only a router has: a tool-name key next to an arguments key. */
-const TOOL_KEY_WORDS = new Set(["tool", "toolname", "toolid"]);
-const ARGS_KEY_WORDS = new Set(["arguments", "args", "params"]);
-const INNER_ARGS_KEYS = ["arguments", "args", "params"] as const;
+/** Keys (after keyWord) that may hold the arguments for that tool. */
+const ARGS_KEY_WORDS = new Set(["arguments", "args", "params", "parameters", "input"]);
+/** List keys (after keyWord) that hold a batch of calls in a router call. */
+const BATCH_KEY_WORDS = new Set(["calls", "requests", "items", "steps"]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -69,19 +71,43 @@ export function isRouterName(tool: string): boolean {
     || (words.some((word) => TOOL_WORDS.has(word)) && words.some((word) => ROUTER_VERBS.has(word)));
 }
 
-/** Keys shaped like a router call: a tool-name key next to an arguments key ({tool, args}),
- *  or the MCP call shape itself ({name, arguments}). */
+/** Keys shaped like a router call: a tool-name key next to an arguments key ({tool, args},
+ *  {name, arguments}, {method, params}, {function, arguments}, ...). */
 function routerKeys(keys: string[]): boolean {
-  const words = new Set(keys.map(keyWord));
-  if (![...ARGS_KEY_WORDS].some((word) => words.has(word))) return false;
-  return [...TOOL_KEY_WORDS].some((word) => words.has(word)) || (words.has("name") && words.has("arguments"));
+  const words = keys.map(keyWord);
+  return words.some((word) => INNER_NAME_WORDS.has(word)) && words.some((word) => ARGS_KEY_WORDS.has(word));
 }
 
-/** A router by its name, or by its shape in the input schema or in the call's arguments. */
+function schemaProperties(schema: unknown): Record<string, unknown> {
+  return isRecord(schema) && isRecord(schema.properties) ? schema.properties : {};
+}
+
+/** A schema property that is a list of router-shaped objects (calls: [{name, arguments}]). */
+function schemaBatchKey(schema: unknown, key: string): boolean {
+  const property = schemaProperties(schema)[key];
+  return isRecord(property) && routerKeys(Object.keys(schemaProperties(property.items)));
+}
+
+/** The lists in a router call that hold a batch of calls: calls, requests, items or steps, a list
+ *  the schema says holds router-shaped objects, or any list with a router-shaped object in it. */
+function batchLists(args: Record<string, unknown>, schema?: unknown): unknown[][] {
+  return Object.entries(args)
+    .filter(([key, value]) => Array.isArray(value) && (BATCH_KEY_WORDS.has(keyWord(key))
+      || schemaBatchKey(schema, key)
+      || value.some((entry) => isRecord(entry) && routerKeys(Object.keys(entry)))))
+    .map(([, value]) => value as unknown[]);
+}
+
+/** A router by its name, or by its shape in the input schema or in the call's arguments, at the top
+ *  level or inside a list (a batch: calls: [{name, arguments}, ...]). */
 export function isRouter(tool: string, schema?: unknown, args?: Record<string, unknown>): boolean {
   if (isRouterName(tool)) return true;
-  const properties = isRecord(schema) && isRecord(schema.properties) ? Object.keys(schema.properties) : [];
-  return routerKeys(properties) || (isRecord(args) && routerKeys(Object.keys(args)));
+  const properties = schemaProperties(schema);
+  if (routerKeys(Object.keys(properties)) || Object.keys(properties).some((key) => schemaBatchKey(schema, key))) return true;
+  if (!isRecord(args)) return false;
+  return routerKeys(Object.keys(args))
+    || Object.values(args).some((value) => Array.isArray(value)
+      && value.some((entry) => isRecord(entry) && routerKeys(Object.keys(entry))));
 }
 
 /** The different non-empty tool names in every key that may hold one (name, tool, tool_name, toolName, tool_id, ...). */
@@ -103,21 +129,31 @@ function innerCall(value: unknown): RoutedCall | undefined {
   if (!isRecord(value)) return undefined;
   const names = innerNames(value);
   if (names.length !== 1) return undefined;
-  const argsKey = INNER_ARGS_KEYS.find((key) => isRecord(value[key]));
+  const argsKey = Object.keys(value).find((key) => ARGS_KEY_WORDS.has(keyWord(key)) && isRecord(value[key]));
   return { name: names[0]!, arguments: argsKey ? value[argsKey] as Record<string, unknown> : {} };
 }
 
-/** The real tools a router call runs: {name, arguments} or calls[] of the same. */
+/** The real tools a router call runs: {name, arguments}, and every entry of a batch list. */
 export function routedCalls(tool: string, args: Record<string, unknown>, schema?: unknown): RoutedCall[] {
   if (!isRouter(tool, schema, args)) return [];
   const calls: RoutedCall[] = [];
   const single = innerCall(args);
   if (single) calls.push(single);
-  if (Array.isArray(args.calls)) for (const entry of args.calls) {
+  for (const list of batchLists(args, schema)) for (const entry of list) {
     const call = innerCall(entry);
     if (call) calls.push(call);
   }
   return calls;
+}
+
+/**
+ * The router call can't be judged: it names no tool, or two different ones; a batch entry names
+ * none or two; or a tool it runs is itself a router (invoke_tool running invoke_tools_batch).
+ */
+function routerUnclear(args: Record<string, unknown>, schema: unknown, routed: RoutedCall[]): boolean {
+  return routed.length === 0 || namesClash(args)
+    || batchLists(args, schema).some((list) => list.some((entry) => !innerCall(entry)))
+    || routed.some((call) => isRouter(call.name, undefined, call.arguments));
 }
 
 export function buildPlan(input: {
@@ -126,11 +162,7 @@ export function buildPlan(input: {
 }): ApprovalPlan {
   const router = isRouter(input.tool, input.schema, input.arguments);
   const routed = routedCalls(input.tool, input.arguments, input.schema);
-  const batch = Array.isArray(input.arguments.calls) ? input.arguments.calls.length : 0;
-  const routerUnclear = router
-    && (routed.length === 0 || namesClash(input.arguments)
-      || (batch > 0 && routed.length !== batch + (innerCall(input.arguments) ? 1 : 0)));
-  return { ...input, router, routed, routerUnclear };
+  return { ...input, router, routed, routerUnclear: router && routerUnclear(input.arguments, input.schema, routed) };
 }
 
 /** The label the call is judged by: the tool's own, the real tools' names, and "not read" for an unclear router. */

@@ -236,6 +236,44 @@ mod tests {
     }
 
     #[test]
+    fn read_hinted_batch_and_method_routers_are_judged_by_what_they_run() {
+        let d = def("uvx", &["some-server"], None);
+        let p = policy(&d, &[]);
+        let helper = read_tool("helper");
+        let batch = json!({ "calls": [
+            { "name": "get_a", "arguments": {} },
+            { "name": "delete_b", "arguments": {} }
+        ] });
+        assert_eq!(
+            refuse(&p, &helper, batch.clone(), false),
+            Some(writes_off_reason("s"))
+        );
+        assert_eq!(
+            refuse(
+                &p,
+                &helper,
+                json!({ "method": "cycle_port", "params": {} }),
+                false
+            ),
+            Some(writes_off_reason("s"))
+        );
+        let unclear = json!({ "requests": [{ "method": "get_a", "params": {} }, { "op": 1 }] });
+        assert_eq!(
+            refuse(&p, &helper, unclear.clone(), false),
+            Some(writes_off_reason("s"))
+        );
+        let on = def("uvx", &["some-server"], Some(McpWrites::On));
+        let p = policy(&on, &[]);
+        assert_eq!(refuse(&p, &helper, batch, false), None);
+        assert_eq!(
+            refuse(&p, &helper, unclear, true),
+            Some(AUDITOR_REFUSAL.to_string())
+        );
+        let reads = json!({ "calls": [{ "name": "get_a", "arguments": {} }, { "name": "list_b", "arguments": {} }] });
+        assert_eq!(refuse(&p, &helper, reads, true), None);
+    }
+
+    #[test]
     fn writes_off_hides_writes_but_not_exec() {
         let d = def("uvx", &["some-server"], None);
         let p = policy(&d, &[]);
