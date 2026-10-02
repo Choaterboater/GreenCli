@@ -220,6 +220,10 @@ GreenCLI 2.0 keeps AI keys and MCP logins in the system password store, not in f
 
 - Each one is saved under the service name `com.choatelabs.greencli`, with the account
   `ai-key:<provider>` or `mcp-creds:<server>`. On a Mac you can see them in Keychain Access.
+  Windows ignores case in Credential Manager item names, so there a capital letter or any
+  character other than `a-z`, `0-9` and `-_.: ` is written as `%` and two hex digits in the
+  item name (`mcp-creds:%43entral.com.choatelabs.greencli` for the server "Central"). The user
+  name field shows the account as it is.
   Credential Manager holds at most 2560 bytes per item, so a longer login is split into parts
   (`part1a:…`, `part2a:…`; the next save uses `part1b:…`, `part2b:…`, so a save that stops partway
   leaves the old login whole).

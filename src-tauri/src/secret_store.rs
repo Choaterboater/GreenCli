@@ -3,6 +3,8 @@
 // 2.0 keeps them in macOS Keychain, Windows Credential Manager or the Linux
 // Secret Service (the "OS store"), each under the service name of the app's
 // identifier and an account of `ai-key:<provider>` or `mcp-creds:<server>`.
+// Windows ignores case in an item's target name, so there the target spells
+// capitals and other characters as `%xx` (see windows_target).
 //
 // Where they are kept is decided once per start:
 // - `secret_store.json` (the marker) exists: the OS store, with no probe. A
@@ -111,8 +113,40 @@ impl KeyringBackend {
     }
 
     fn entry(&self, account: &str) -> Result<keyring::Entry, String> {
-        keyring::Entry::new(&self.service, account).map_err(|e| e.to_string())
+        #[cfg(windows)]
+        let entry = keyring::Entry::new_with_target(&windows_target(&self.service, account), &self.service, account);
+        #[cfg(not(windows))]
+        let entry = keyring::Entry::new(&self.service, account);
+        entry.map_err(|e| e.to_string())
     }
+}
+
+/// The Credential Manager target name for `account`. Windows compares target
+/// names without regard to case, but server names that differ only in case
+/// are different servers, so keyring's default `<account>.<service>` would
+/// let "Central" and "central" share one item. The username field still
+/// holds the account as it is, which is what Credential Manager shows.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn windows_target(service: &str, account: &str) -> String {
+    format!("{}.{}", win_target(account), service)
+}
+
+/// `account` with no capital letters, one to one: `a-z`, `0-9` and `-_.: `
+/// stay as they are (so `ai-key:anthropic` still reads), and every other
+/// UTF-8 byte, `%` and capitals included, becomes `%` and two lowercase hex
+/// digits. Two different accounts never match even when case is ignored.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn win_target(account: &str) -> String {
+    use std::fmt::Write;
+    let mut out = String::with_capacity(account.len());
+    for b in account.bytes() {
+        if matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b':' | b' ') {
+            out.push(b as char);
+        } else {
+            let _ = write!(out, "%{:02x}", b);
+        }
+    }
+    out
 }
 
 impl SecretBackend for KeyringBackend {
@@ -1526,6 +1560,34 @@ mod tests {
         put(&mem, "part3a:ai-key:long", b"short");
         let fresh = SecretStore::os_for_tests(mem.clone());
         assert_eq!(fresh.get("ai-key:long").unwrap_err(), UNAVAILABLE);
+    }
+
+    #[test]
+    fn windows_target_names_never_match_when_case_is_ignored() {
+        const SERVICE: &str = "com.choatelabs.greencli";
+        // Credential Manager compares target names without regard to case.
+        let same_item = |a: &str, b: &str| {
+            windows_target(SERVICE, a).to_lowercase() == windows_target(SERVICE, b).to_lowercase()
+        };
+        for (a, b) in [
+            ("mcp-creds:Central", "mcp-creds:central"),
+            ("part1a:mcp-creds:Central", "part1a:mcp-creds:central"),
+            ("mcp-creds:\u{c9}", "mcp-creds:\u{e9}"),
+            ("mcp-creds:%41", "mcp-creds:A"),
+            ("mcp-creds:%41", "mcp-creds:a"),
+            ("mcp-creds:\u{212a}", "mcp-creds:k"),
+        ] {
+            assert!(!same_item(a, b), "{} and {} share one item", a, b);
+        }
+        for account in ["mcp-creds:Central", "mcp-creds:\u{c9}t\u{e9} 2", "ai-key:A%B"] {
+            let t = windows_target(SERVICE, account);
+            assert!(t.is_ascii() && !t.bytes().any(|b| b.is_ascii_uppercase()), "{}", t);
+        }
+        // Lower-case names stay readable in Credential Manager.
+        assert_eq!(windows_target(SERVICE, "ai-key:anthropic"), "ai-key:anthropic.com.choatelabs.greencli");
+        assert_eq!(win_target("mcp-creds:my server_2.x"), "mcp-creds:my server_2.x");
+        assert_eq!(win_target("mcp-creds:Central"), "mcp-creds:%43entral");
+        assert_eq!(win_target("100%"), "100%25");
     }
 
     #[test]
