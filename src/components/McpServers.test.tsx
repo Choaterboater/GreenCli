@@ -2,12 +2,12 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { invoke } from '@tauri-apps/api/tauri';
 import McpServers from './McpServers';
-import { tauriSave, tauriWriteText } from '../utils/fileSystem';
+import { tauriSave } from '../utils/fileSystem';
 import { notify } from '../store/toastStore';
 import type { McpServerDef } from '../types';
 
 vi.mock('@tauri-apps/api/tauri', () => ({ invoke: vi.fn() }));
-vi.mock('../utils/fileSystem', () => ({ isTauri: true, tauriSave: vi.fn(), tauriWriteText: vi.fn() }));
+vi.mock('../utils/fileSystem', () => ({ isTauri: true, tauriSave: vi.fn() }));
 vi.mock('../store/toastStore', () => ({ notify: { success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() } }));
 
 const SERVERS: McpServerDef[] = [
@@ -37,14 +37,22 @@ const SERVERS: McpServerDef[] = [
   },
 ];
 
-function backend(servers: McpServerDef[]) {
+function backend(servers: McpServerDef[], writeError?: string) {
   vi.mocked(invoke).mockImplementation(async (cmd: string, args?: Record<string, unknown>) => {
     if (cmd === 'mcp_list_servers') return servers;
     if (cmd === 'mcp_status') return [];
     if (cmd === 'mcp_has_credentials') return args?.name === 'central';
+    if (cmd === 'mcp_export_write' && writeError) throw writeError;
     return undefined;
   });
 }
+
+/** The (path, contents) of every export write sent to Rust. */
+const writes = () =>
+  vi
+    .mocked(invoke)
+    .mock.calls.filter(([cmd]) => cmd === 'mcp_export_write')
+    .map(([, args]) => args as { path: string; contents: string });
 
 const exportButton = () => screen.getByRole('button', { name: /Export for Casper \/ Claude/ });
 
@@ -52,7 +60,6 @@ describe('McpServers export', () => {
   beforeEach(() => {
     vi.mocked(invoke).mockReset();
     vi.mocked(tauriSave).mockReset();
-    vi.mocked(tauriWriteText).mockReset();
     vi.mocked(notify.success).mockReset();
     vi.mocked(notify.error).mockReset();
   });
@@ -73,8 +80,8 @@ describe('McpServers export', () => {
 
     await screen.findByText('Saved 2 servers to /Users/me/proj/.mcp.json');
     expect(tauriSave).toHaveBeenCalledWith('.mcp.json', 'Export MCP servers');
-    expect(tauriWriteText).toHaveBeenCalledTimes(1);
-    const [path, text] = vi.mocked(tauriWriteText).mock.calls[0];
+    expect(writes()).toHaveLength(1);
+    const { path, contents: text } = writes()[0];
     expect(path).toBe('/Users/me/proj/.mcp.json');
     expect(text).not.toMatch(/tok-SECRET|hdr-SECRET/);
     const file = JSON.parse(text);
@@ -95,6 +102,7 @@ describe('McpServers export', () => {
     expect(panel.textContent).toContain('REMOTE_AUTHORIZATION_SECRET');
     expect(panel.textContent).toContain('CENTRAL_CREDS_PATH');
     expect(panel.textContent).not.toContain('SECRET-');
+    expect(panel.textContent).toContain('remote: it is turned off in GreenCLI');
     expect(notify.success).toHaveBeenCalledWith('MCP servers exported', '2 servers saved');
 
     fireEvent.click(screen.getByRole('button', { name: 'Done' }));
@@ -108,7 +116,7 @@ describe('McpServers export', () => {
     await screen.findByText('central');
     fireEvent.click(exportButton());
     await waitFor(() => expect(notify.error).toHaveBeenCalledWith('Not saved', expect.stringContaining("other apps' own settings")));
-    expect(tauriWriteText).not.toHaveBeenCalled();
+    expect(writes()).toEqual([]);
     expect(screen.queryByRole('status')).toBeNull();
   });
 
@@ -120,20 +128,30 @@ describe('McpServers export', () => {
     fireEvent.click(exportButton());
     await waitFor(() => expect(tauriSave).toHaveBeenCalled());
     await waitFor(() => expect(exportButton()).not.toBeDisabled());
-    expect(tauriWriteText).not.toHaveBeenCalled();
+    expect(writes()).toEqual([]);
     expect(notify.error).not.toHaveBeenCalled();
   });
 
   it('shows the Rust error when the write fails', async () => {
-    backend(SERVERS);
+    backend(SERVERS, 'Failed to write /p/.mcp.json: Permission denied');
     vi.mocked(tauriSave).mockResolvedValue('/p/.mcp.json');
-    vi.mocked(tauriWriteText).mockRejectedValue('Failed to write /p/.mcp.json: Permission denied');
     render(<McpServers />);
     await screen.findByText('central');
     fireEvent.click(exportButton());
     await waitFor(() =>
       expect(notify.error).toHaveBeenCalledWith('Could not export MCP servers', 'Failed to write /p/.mcp.json: Permission denied'),
     );
+  });
+
+  it('shows the Rust refusal when the file is a link', async () => {
+    const linked = 'That file is a link to another file, so GreenCLI did not write it. Pick another place, or remove the link first.';
+    backend(SERVERS, linked);
+    vi.mocked(tauriSave).mockResolvedValue('/p/.mcp.json');
+    render(<McpServers />);
+    await screen.findByText('central');
+    fireEvent.click(exportButton());
+    await waitFor(() => expect(notify.error).toHaveBeenCalledWith('Could not export MCP servers', linked));
+    expect(screen.queryByRole('status')).toBeNull();
   });
 
   it('opens no dialog when every server is left out', async () => {

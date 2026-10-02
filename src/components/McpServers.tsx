@@ -21,7 +21,7 @@ import { notify } from '../store/toastStore';
 import { askConfirm } from '../store/dialogStore';
 import type { McpServerDef, McpTransport } from '../types';
 import type { ExportSummary } from '../utils/mcpExport';
-import { isTauri, tauriSave, tauriWriteText } from '../utils/fileSystem';
+import { isTauri, tauriSave } from '../utils/fileSystem';
 import { secretFilterSupported } from '../utils/secrets/support';
 
 interface McpStatus {
@@ -366,7 +366,8 @@ export default function McpServers() {
         notify.error('Not saved', refused);
         return;
       }
-      await tauriWriteText(path, result.text);
+      // Rust checks the real path again (links, other apps' files) and writes it owner-only.
+      await invoke('mcp_export_write', { path, contents: result.text });
       setExportDone(exportSummary(result, path));
       notify.success('MCP servers exported', `${result.count} server${result.count === 1 ? '' : 's'} saved`);
     } catch (e) {
