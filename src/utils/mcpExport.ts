@@ -164,6 +164,31 @@ const EXTRA_SECRET_LAST = new Set([
   'pw', 'pwd', 'passwd', 'pass', 'privkey', 'cookie',
 ]);
 
+// Network logins: SWITCH_LOGIN, ARUBA_CREDS, SNMP_V3_PRIV, ENABLE (the enable password), RADIUS and
+// TACACS secrets, SNMP communities. A plain true/false or number under these names stays
+// (FEATURE_ENABLE=true): those are switches, not logins.
+const NETWORK_SECRET_LAST = new Set(['creds', 'login', 'priv', 'enable', 'radius', 'tacacs', 'community']);
+const PLAIN_SWITCH = /^(?:true|false|yes|no|on|off|\d{1,5})$/i;
+
+function isNetworkSecretName(name: string): boolean {
+  const key = snakeKey(name);
+  return NETWORK_SECRET_LAST.has(lastPart(key)) || key.split('_').includes('community');
+}
+
+/** A network login name (isNetworkSecretName) whose value is a plain true/false or number. */
+function plainSwitchValue(name: string, value: string): boolean {
+  return isNetworkSecretName(name) && !isSecretName(name) && !isSecretKey(name) && PLAIN_SWITCH.test(value.trim());
+}
+
+/** For flags: isSecretFieldName, but not --enable (--enable tools turns a feature on). */
+function isSecretFlagName(flag: string): boolean {
+  return isSecretFieldName(flag) && lastPart(snakeKey(flag)) !== 'enable';
+}
+
+/** user:password typed as one value (admin:Hunter22): a user name, a colon, then a password with a
+ *  letter and a digit or symbol. Not host:port, versions or image tags (redis:alpine, python:3.12). */
+const USER_PASS = /^[A-Za-z][\w.@-]{0,63}:(?=[^\s:/]*[A-Za-z])(?=[^\s:/]*[^A-Za-z\s:/])[^\s:/]{4,}$/;
+
 function isPublicKeyName(name: string): boolean {
   const key = snakeKey(name);
   return key === 'public_key' || key.endsWith('_public_key');
@@ -172,7 +197,9 @@ function isPublicKeyName(name: string): boolean {
 /** For env keys, flag names and arg names. */
 export function isSecretFieldName(name: string): boolean {
   if (isPublicKeyName(name)) return false;
-  return isSecretName(name) || isSecretKey(name) || EXTRA_SECRET_LAST.has(lastPart(snakeKey(name)));
+  return (
+    isSecretName(name) || isSecretKey(name) || EXTRA_SECRET_LAST.has(lastPart(snakeKey(name))) || isNetworkSecretName(name)
+  );
 }
 
 /** For env keys: isSecretFieldName, but never a variable every shell has (PWD is the working folder). */
@@ -625,11 +652,11 @@ function hideInUrl(s: Server, raw: string, o: UrlOptions): string {
           : hideUrlPart(s, password, { raw: `${o.owner}_PASSWORD`, where: loginWhere, prefix: o.ownerPrefix });
         authority = `${user}:${hidden}@${host}`;
       }
-    } else if (userinfo && ['http', 'https', 'ws', 'wss'].includes(last)) {
+    } else if (userinfo && (['http', 'https', 'ws', 'wss'].includes(last) || last.startsWith('snmp'))) {
+      // snmp://public@10.0.0.1: the user part is the community.
       const v = stripDefaults(s, userinfo, true);
-      const hidden = onlyReferences(v)
-        ? v
-        : hideUrlPart(s, userinfo, { raw: `${o.owner}_TOKEN`, where: loginWhere, prefix: o.ownerPrefix });
+      const raw = last.startsWith('snmp') ? `${o.owner}_COMMUNITY` : `${o.owner}_TOKEN`;
+      const hidden = onlyReferences(v) ? v : hideUrlPart(s, userinfo, { raw, where: loginWhere, prefix: o.ownerPrefix });
       authority = `${hidden}@${host}`;
     }
   }
@@ -729,7 +756,7 @@ function exportArgs(s: Server, command: string, args: readonly string[]): string
   const secretFlag = (dashes: string, flag: string, value: string | undefined, at: number): boolean =>
     isShortPasswordFlag(dashes, flag)
       ? at >= runnerEnd && value !== undefined && !PORT_OR_VERSION.test(value)
-      : isSecretFieldName(flag) && !isNoOrStdin(flag);
+      : isSecretFlagName(flag) && !isNoOrStdin(flag) && !(value !== undefined && plainSwitchValue(flag, value));
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     const n = i + 1;
@@ -747,7 +774,7 @@ function exportArgs(s: Server, command: string, args: readonly string[]): string
       const [, dashes, name, value] = m;
       out.push(
         `${dashes}${name}=` +
-          ((isShortPasswordFlag(dashes, name) ? secretFlag(dashes, name, value, i) : isSecretFieldName(name))
+          (secretFlag(dashes, name, value, i)
             ? hideKeepingScheme(s, value, { raw: name, where: `argument ${dashes}${name}=`, prefix: true })
             : argValue(s, value, { n, base: name, headerPosition: HEADER_FLAG.test(name), checkHeader: true })),
       );
@@ -759,7 +786,7 @@ function exportArgs(s: Server, command: string, args: readonly string[]): string
       const [, name, value] = m;
       out.push(
         `${name}=` +
-          (isArgHeaderName(name)
+          (isArgHeaderName(name) && !plainSwitchValue(name, value)
             ? hideKeepingScheme(s, value, { raw: name, where: `argument ${name}=`, prefix: true })
             : argValue(s, value, { n, base: name, headerPosition: false, checkHeader: true })),
       );
@@ -783,7 +810,14 @@ function exportArgs(s: Server, command: string, args: readonly string[]): string
       out.push(header);
       continue;
     }
-    // 6. --token, then its value in the next arg (even one starting with "-", unless it is a real flag).
+    // 6. -pPASSWORD glued together (mysql style), after the package runner's own flags. Only when the
+    //    rest has a letter and a digit or symbol, so -port and -p8080 stay.
+    const glued = /^-([pP])(\S{3,})$/.exec(arg);
+    if (glued && i >= runnerEnd && /[A-Za-z]/.test(glued[2]) && /[^A-Za-z]/.test(glued[2]) && !PORT_OR_VERSION.test(glued[2])) {
+      out.push(`-${glued[1]}` + hideWhole(s, glued[2], { raw: 'p', where: `argument -${glued[1]}…`, prefix: true }));
+      continue;
+    }
+    // 7. --token, then its value in the next arg (even one starting with "-", unless it is a real flag).
     const flag = FLAG.exec(arg)?.[1];
     const next = args[i + 1];
     if (flag !== undefined && secretFlag(arg.startsWith('--') ? '--' : '-', flag, next, i)) {
@@ -794,7 +828,7 @@ function exportArgs(s: Server, command: string, args: readonly string[]): string
       }
       continue;
     }
-    // 7 and 8. An address, or a value that looks secret.
+    // 8 and 9. An address, or a value that looks secret.
     out.push(argValue(s, arg, { n, base: prevFlag ?? `ARG_${n}`, headerPosition, checkHeader: false }));
   }
   return out;
@@ -802,7 +836,9 @@ function exportArgs(s: Server, command: string, args: readonly string[]): string
 
 function exportEnvValue(s: Server, key: string, value: string): string {
   if (value === '') return value;
-  if (isSecretEnvKey(key)) return hideKeepingScheme(s, value, { raw: key, where: `env ${key}`, prefix: false });
+  if (isSecretEnvKey(key) && !plainSwitchValue(key, value)) {
+    return hideKeepingScheme(s, value, { raw: key, where: `env ${key}`, prefix: false });
+  }
   if (onlyReferences(stripDefaults(s, value, false))) return value;
   const m = SCHEME.exec(value);
   if (m && m[2].length >= 8) return hideKeepingScheme(s, value, { raw: key, where: `env ${key}`, prefix: false }, 8);
@@ -1062,6 +1098,13 @@ export function buildMcpExport(servers: readonly McpServerDef[], options: McpExp
     }
   }
 
+  // Step 6b: a user:password value under a harmless env name that the sweep didn't already replace.
+  for (const b of built) {
+    if (b.env) {
+      b.env = b.env.map(([k, v]) => [k, USER_PASS.test(v) ? guessed(b.s, v, { raw: k, where: `env ${k}`, prefix: false }) : v]);
+    }
+  }
+
   // Step 7: finish.
   const entries: [string, ExportedServer][] = [];
   const writesLost: string[] = [];
@@ -1202,11 +1245,19 @@ export function exportSummary(result: McpExportResult, savedTo: string): ExportS
   return {
     title: `Saved ${result.count} server${result.count === 1 ? '' : 's'} to ${savedTo}`,
     variablesIntro: result.variables.length
-      ? "Secrets are not in the file. Each one is now a ${NAME} variable that you set yourself. Set them only in the terminal you start Claude Code or Casper from: put lines like export NAME='value' in a private file (chmod 600) and run source on that file first. (Typing them into the terminal works too, but saves them in your shell history.) Don't put them in ~/.zshrc. Programs started from that terminal, including the AI's own shell commands, can read them."
-      : 'No secrets were found, so there is nothing to set.',
+      ? [
+          'GreenCLI replaced the passwords and tokens it found with ${NAME} variables, listed below. Check the file for any it missed.',
+          "To set them, put export NAME='value' lines in a file only you can read (chmod 600). Then run source on that file in the terminal you start Claude Code or Casper from.",
+          "Typing them in works too, but saves them in your shell history. Don't put them in ~/.zshrc: every program you start would see them.",
+          "Programs started from that terminal, including the AI's own shell commands, can read them.",
+        ].join('\n')
+      : 'GreenCLI found no passwords or tokens, so there is nothing to set.',
     variables: result.variables.map((v) => ({ name: v.name, text: variableText(v) })),
     whereToPut:
-      'Claude Code reads .mcp.json in the folder you start it in. Casper reads .mcp.json in your project folder, and ~/.mcp.json in your home folder. If a file was already there, it was replaced, not merged. On a Mac, Finder hides names that start with a dot; press Command-Shift-. to see them.',
+      'Claude Code reads .mcp.json in the folder you start it in. Casper reads .mcp.json in your project folder, and ~/.mcp.json in your home folder. ' +
+      'In Casper, type /mcp connect NAME once for each server. ' +
+      "GreenCLI's approval box doesn't go with the file: Claude Code and Casper ask in their own way. " +
+      'If a file was already there, it was replaced, not merged. On a Mac, Finder hides names that start with a dot; press Command-Shift-. to see them.',
     notes: result.notes,
     check: 'Values that look like passwords, keys or tokens were replaced, but check the file before you share it.',
   };

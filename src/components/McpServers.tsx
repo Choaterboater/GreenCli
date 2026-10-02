@@ -458,7 +458,7 @@ export default function McpServers() {
           className="mb-3 p-3 rounded-[var(--radius)] border border-[var(--border-strong)] bg-[var(--bg-secondary)] text-[11px] text-[var(--text-secondary)] space-y-2 leading-relaxed"
         >
           <div className="text-[12px] font-medium text-[var(--text-primary)] break-all">{exportDone.title}</div>
-          <p>{exportDone.variablesIntro}</p>
+          <p className="whitespace-pre-line">{exportDone.variablesIntro}</p>
           {exportDone.variables.length > 0 && (
             <ul className="list-disc pl-4 space-y-1">
               {exportDone.variables.map((v) => (

@@ -526,7 +526,8 @@ describe('buildMcpExport: a login in the server url used elsewhere', () => {
       def({ name: 'b', command: 'uvx', args: ['--login', 'admin:Secret99', '--note', 'Secret99'], env: { SWITCH_USERPASS: 'admin:Secret99' } }),
     ]);
     const b = stdioOf(r.file.mcpServers.b);
-    expect(b.args).toEqual(['--login', '${H_LOGIN_SECRET}', '--note', '${H_PASSWORD}']);
+    // --login is a login flag, so its value gets a variable of its own before the sweep.
+    expect(b.args).toEqual(['--login', '${B_LOGIN_SECRET}', '--note', '${H_PASSWORD}']);
     expect(b.env?.SWITCH_USERPASS).toBe('${H_LOGIN_SECRET}');
     expect(variable(r, 'H_AUTHORIZATION_SECRET')?.places).toEqual([
       { server: 'h', where: 'header Authorization', origin: 'https://mcp.example.com' },
@@ -920,6 +921,42 @@ describe('refusedExportPath', () => {
   });
 });
 
+describe('buildMcpExport: network logins', () => {
+  it('hides short passwords under network login names and shapes', () => {
+    const r = build([
+      def({
+        name: 's',
+        command: 'uvx',
+        args: ['junos-mcp', '-ppassw0rd', '--login', 'admin:Hunter22', 'snmp://public@10.0.0.1', '-port', '-p8080', '--enable', 'true'],
+        env: {
+          DEVICE_LOGIN: 'admin:Hunter22',
+          ARUBA_CREDS: 'admin/Hunter22',
+          SNMP_V3_PRIV: 'privpass1',
+          RADIUS: 'radsecret',
+          ENABLE: 'enablepw',
+          TACACS: 'tacsecret',
+          SNMP_COMMUNITY_RO: 'public',
+          NOTE: 'netops:Lab2024!',
+          FEATURE_ENABLE: 'true',
+          CACHE: 'redis:alpine',
+          PY: 'python:3.12',
+          HOST: 'switch1:830',
+        },
+      }),
+    ]);
+    for (const secret of ['passw0rd', 'Hunter22', 'privpass1', 'radsecret', 'enablepw', 'tacsecret', 'public', 'Lab2024']) {
+      expect(r.text).not.toContain(secret);
+    }
+    const s = stdioOf(r.file.mcpServers.s);
+    expect(s.args[1]).toMatch(/^-p\$\{[A-Z_]+\}$/);
+    expect(s.args.slice(5)).toEqual(['-port', '-p8080', '--enable', 'true']);
+    expect(s.env?.FEATURE_ENABLE).toBe('true');
+    expect(s.env?.CACHE).toBe('redis:alpine');
+    expect(s.env?.PY).toBe('python:3.12');
+    expect(s.env?.HOST).toBe('switch1:830');
+  });
+});
+
 describe('exportSummary', () => {
   it('counts servers in the title', () => {
     expect(exportSummary(build([def({ name: 'a' })]), '/p/.mcp.json').title).toBe('Saved 1 server to /p/.mcp.json');
@@ -928,11 +965,15 @@ describe('exportSummary', () => {
 
   it('explains how to set variables only when there are some', () => {
     const none = exportSummary(build([def({ name: 'a' })]), '/x');
-    expect(none.variablesIntro).toBe('No secrets were found, so there is nothing to set.');
+    expect(none.variablesIntro).toBe('GreenCLI found no passwords or tokens, so there is nothing to set.');
     expect(none.variables).toEqual([]);
     const some = exportSummary(build([def({ name: 'a', env: { TOKEN: 'abc' } })]), '/x');
     expect(some.variablesIntro).toContain("export NAME='value'");
-    expect(some.variablesIntro).toContain("Don't put them in ~/.zshrc");
+    expect(some.variablesIntro).toContain("Don't put them in ~/.zshrc: every program you start would see them");
+    expect(some.variablesIntro).toContain('shell history');
+    expect(some.variablesIntro).toContain("the AI's own shell commands");
+    // It no longer promises that nothing secret is left.
+    expect(some.variablesIntro).not.toContain('Secrets are not in the file');
     expect(some.variablesIntro).not.toMatch(/add (them|it) to ~\/\.zshrc/i);
   });
 
@@ -963,7 +1004,10 @@ describe('exportSummary', () => {
   it('says where the file goes and to check it', () => {
     const summary = exportSummary(build([def({ name: 'a' })]), '/x');
     expect(summary.whereToPut).toBe(
-      'Claude Code reads .mcp.json in the folder you start it in. Casper reads .mcp.json in your project folder, and ~/.mcp.json in your home folder. If a file was already there, it was replaced, not merged. On a Mac, Finder hides names that start with a dot; press Command-Shift-. to see them.',
+      'Claude Code reads .mcp.json in the folder you start it in. Casper reads .mcp.json in your project folder, and ~/.mcp.json in your home folder. ' +
+        'In Casper, type /mcp connect NAME once for each server. ' +
+        "GreenCLI's approval box doesn't go with the file: Claude Code and Casper ask in their own way. " +
+        'If a file was already there, it was replaced, not merged. On a Mac, Finder hides names that start with a dot; press Command-Shift-. to see them.',
     );
     expect(summary.check).toBe('Values that look like passwords, keys or tokens were replaced, but check the file before you share it.');
   });
