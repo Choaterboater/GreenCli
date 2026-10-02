@@ -37,6 +37,11 @@ export async function tauriReadText(path: string): Promise<string> {
   return invoke<string>('read_file_text', { path });
 }
 
+/** A file from the folder view: plain files only, at most 5 MB (checked again in Rust). */
+export async function tauriReadFolderFile(path: string): Promise<string> {
+  return invoke<string>('read_folder_file', { path });
+}
+
 export async function tauriWriteText(path: string, data: string): Promise<void> {
   await invoke('write_file_text', { path, contents: data });
 }

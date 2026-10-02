@@ -64,7 +64,7 @@ import { fenceDeviceLanguage, isOtherVendor, locateTarget, restoreSecrets, withS
 import { showSidePanel } from './sidePanelActions';
 import { timeAgo } from '../store/recentStore';
 import { useTheme } from '../hooks/useTheme';
-import { isTauri, tauriOpen, tauriOpenFolder, tauriListFolder, tauriSave, tauriReadText, tauriWriteText, browserOpen, browserSave } from '../utils/fileSystem';
+import { isTauri, tauriOpen, tauriOpenFolder, tauriListFolder, tauriReadFolderFile, tauriSave, tauriReadText, tauriWriteText, browserOpen, browserSave } from '../utils/fileSystem';
 import { cannotOpen, joinPath, relativeTo, type FolderEntry, type FolderListing } from '../utils/folderTree';
 import {
   prepareSendLines,
@@ -1079,7 +1079,7 @@ export default function ConfigEditor() {
         return;
       }
       try {
-        ingest(basename(path), path, await tauriReadText(path));
+        ingest(basename(path), path, await tauriReadFolderFile(path));
       } catch (e) {
         showStatus(`Open failed: ${e}`);
       }

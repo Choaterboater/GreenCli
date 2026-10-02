@@ -1348,9 +1348,23 @@ async fn read_file_text(path: String) -> Result<String, String> {
     // async: sync commands run on the main thread, and a multi-MB log/capture
     // read froze the whole UI for its duration.
     tauri::async_runtime::spawn_blocking(move || {
+        // A pipe or a device (/dev/zero) would block or never end.
+        if let Some(why) = folder::not_a_plain_file(std::path::Path::new(&path)) {
+            return Err(why);
+        }
         std::fs::read(&path)
             .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
             .map_err(|e| format!("Failed to read {}: {}", path, e))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Read a file the folder view opens: plain files only, at most 5 MB.
+#[tauri::command]
+async fn read_folder_file(path: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        folder::read_text_file(std::path::Path::new(&path), folder::MAX_OPEN_BYTES)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -2862,6 +2876,7 @@ fn main() {
             read_file_text,
             write_file_text,
             list_folder,
+            read_folder_file,
             generate_keypair,
             api_login,
             api_get_interfaces,
