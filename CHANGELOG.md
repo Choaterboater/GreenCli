@@ -93,8 +93,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   runs from the disk image or straight from Downloads.
 - **Back up your keys first.** At first start your AI keys and MCP logins move into the password
   store and the old files are deleted. 1.9 can't read the password store, so going back to 1.9
-  loses them. Before you install, copy `ai_keys.json` and `mcp_creds.json` from the data folder to
-  a private place, or be ready to enter the keys again.
+  loses them. Before you install, copy `ai_keys.json` and `mcp_creds.json` from the data folder
+  (macOS `~/Library/Application Support/com.choatelabs.greencli/`, Windows
+  `%APPDATA%\com.choatelabs.greencli\`, Linux `~/.local/share/com.choatelabs.greencli/`; see
+  docs/SETUP.md §3) to a private place, or be ready to enter the keys again.
 - **Copying only the data folder to another computer does not copy your keys.** They stay in this
   computer's password store. Enter them again on the new one.
 
