@@ -27,6 +27,7 @@ import {
   XCircle,
   Info,
   EyeOff,
+  Sparkles,
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/tauri';
 import { useSessionStore } from '../store/sessionStore';
@@ -50,11 +51,14 @@ import {
   type ConfigProblem,
 } from '../utils/configProblems';
 import { vendorMismatch } from '../utils/editorStatus';
-import { hideSecretsForCopy } from '../utils/secrets/forCopy';
 import { tabLabel } from '../utils/tabs';
 import { SEND_MARK_TEXT, sendMarkCounts, sendMarkSummary, sendMarks, type SendMark, type SendMarkState } from '../utils/sendMarks';
 import { linesInSpan, selectedLines, spanText, type LineSpan } from '../utils/sendSelection';
 import { jobBlockFromEditor, vendorSteps } from '../utils/changeJobs';
+import { askMenu, buildAskPrompt, secretLinePairs, type AskKind } from '../utils/askAi';
+import { hideSecretsForCopy, hideSecretsInText } from '../utils/secrets/forCopy';
+import { useAiBridge } from '../store/aiBridgeStore';
+import { showSidePanel } from './sidePanelActions';
 import { timeAgo } from '../store/recentStore';
 import { useTheme } from '../hooks/useTheme';
 import { isTauri, tauriOpen, tauriSave, tauriReadText, tauriWriteText, browserOpen, browserSave } from '../utils/fileSystem';
@@ -647,6 +651,7 @@ export default function ConfigEditor() {
   // The whole lines the editor selection covers (Send selected lines, Ask AI).
   const [selection, setSelection] = useState<LineSpan | null>(null);
   const [showSendMenu, setShowSendMenu] = useState(false);
+  const [showAskMenu, setShowAskMenu] = useState(false);
   // Config archive panel (NW-16): store-lifted so Tools / palette can open it.
   const showArchive = useSessionStore((s) => s.showArchive);
   const setShowArchive = useSessionStore((s) => s.setShowArchive);
@@ -658,9 +663,10 @@ export default function ConfigEditor() {
   const [editorEpoch, setEditorEpoch] = useState(0);
   const saveFileRef = useRef<(forcePicker?: boolean) => Promise<void>>();
   // Monaco actions are added once per mount; they call the latest handlers through this.
-  const editorCommandsRef = useRef<{ sendSelection: () => void; sendSafely: () => void }>({
+  const editorCommandsRef = useRef<{ sendSelection: () => void; sendSafely: () => void; askAi: (kind: AskKind) => void }>({
     sendSelection: () => {},
     sendSafely: () => {},
+    askAi: () => {},
   });
   const openFileRef = useRef<() => Promise<void>>();
 
@@ -1182,6 +1188,21 @@ export default function ConfigEditor() {
       run: () => editorCommandsRef.current.sendSafely(),
     });
 
+    ed.addAction({
+      id: 'greencli-ask-explain',
+      label: 'Ask AI: Explain These Lines',
+      contextMenuGroupId: '0_greencli',
+      contextMenuOrder: 3,
+      run: () => editorCommandsRef.current.askAi('explain'),
+    });
+    ed.addAction({
+      id: 'greencli-ask-custom',
+      label: 'Ask AI About These Lines…',
+      contextMenuGroupId: '0_greencli',
+      contextMenuOrder: 4,
+      run: () => editorCommandsRef.current.askAi('custom'),
+    });
+
     setSelection(selectedLines(ed.getSelection()));
     ed.onDidChangeCursorSelection((e) => setSelection(selectedLines(e.selection)));
     ed.onDidChangeModel(() => setSelection(selectedLines(ed.getSelection())));
@@ -1333,14 +1354,78 @@ export default function ConfigEditor() {
     useSessionStore.getState().openChangeJobWith({ block, sessionId: activeSession.sessionId, removed });
   };
 
-  editorCommandsRef.current = {
-    sendSelection: () => {
-      const span = selectedLines(editorRef.current?.getSelection());
-      if (span) void sendToTerminal(span);
-      else showStatus('Select the lines to send first');
-    },
-    sendSafely: () => sendSafely(selectedLines(editorRef.current?.getSelection())),
+  /** Ask AI about the selected lines (or the whole tab). Secrets are hidden
+   *  first (nothing goes if that can't run); the editor keeps the real lines
+   *  so an answer can come back as a diff to review. */
+  const askAi = async (kind: AskKind) => {
+    setShowAskMenu(false);
+    const span = selectedLines(editorRef.current?.getSelection());
+    const text = span ? spanText(content, span) : content;
+    if (!text.trim()) {
+      showStatus('Nothing to ask about');
+      return;
+    }
+    let question: string | undefined;
+    if (kind === 'custom') {
+      question = (
+        await askPrompt({
+          title: span ? 'Ask the AI about these lines' : 'Ask the AI about this tab',
+          placeholder: 'What does this do? What is missing?',
+          confirmLabel: 'Ask',
+        })
+      )?.trim();
+      if (!question) return;
+    }
+    const hidden = await hideSecretsInText(text);
+    if (!hidden.ok) {
+      showStatus(
+        hidden.reason === 'too-big'
+          ? 'Not sent to the AI: too big to check for secrets (over 1 MB)'
+          : 'Not sent to the AI: GreenCLI could not check it for secrets on this system'
+      );
+      return;
+    }
+    const inSpan = (n: number) => !span || (n >= span.start && n <= span.end);
+    const found =
+      kind === 'fix' || kind === 'check'
+        ? buildProblems(content, language)
+            .filter((p) => p.severity !== 'info' && inSpan(p.lineNumber))
+            .map((p) => ({ lineNumber: p.lineNumber, message: p.message }))
+        : undefined;
+    const prompt = buildAskPrompt({
+      kind,
+      question,
+      text: hidden.text,
+      language,
+      languageName: LANGUAGE_LIST.find((l) => l.id === language)?.label,
+      tabName: active.name,
+      span,
+      hidden: hidden.hidden,
+      problems: found,
+    });
+    useAiBridge.getState().ask(prompt, {
+      bufferId: active.id,
+      tabName: active.name,
+      language,
+      span,
+      original: text,
+      secretLines: secretLinePairs(text, hidden.text),
+    });
+    showSidePanel('ai');
   };
+
+  // After each render, like saveFileRef: the right-click items reach the latest handlers.
+  useEffect(() => {
+    editorCommandsRef.current = {
+      askAi: (kind) => void askAi(kind),
+      sendSelection: () => {
+        const span = selectedLines(editorRef.current?.getSelection());
+        if (span) void sendToTerminal(span);
+        else showStatus('Select the lines to send first');
+      },
+      sendSafely: () => sendSafely(selectedLines(editorRef.current?.getSelection())),
+    };
+  });
 
   // Select a line in the editor (from the send-error banner).
   const jumpToLine = (lineNumber: number) => {
@@ -1849,6 +1934,41 @@ export default function ConfigEditor() {
                   <FolderOpen size={12} />
                   A file…
                 </button>
+              </div>
+            </>
+          )}
+        </div>
+
+        {/* Ask AI about the selected lines (or the tab): secrets hidden first. */}
+        <div className="relative">
+          <button
+            onClick={() => setShowAskMenu((open) => !open)}
+            disabled={!content.trim()}
+            className="flex items-center gap-1.5 px-2 py-1 text-xs rounded transition-colors disabled:opacity-40 text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]"
+            title={selection ? 'Ask the AI about the selected lines' : 'Ask the AI about this tab'}
+          >
+            <Sparkles size={12} />
+            Ask AI
+            <ChevronDown size={10} />
+          </button>
+          {showAskMenu && (
+            <>
+              <div className="fixed inset-0 z-20" onClick={() => setShowAskMenu(false)} />
+              <div className="absolute top-full left-0 mt-1 z-30 w-60 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg shadow-xl py-1">
+                <p className="px-3 py-1 text-[10px] text-[var(--text-muted)]">
+                  {selection
+                    ? `About ${selection.start === selection.end ? `line ${selection.start}` : `lines ${selection.start}–${selection.end}`}. Secrets are hidden first.`
+                    : 'About the whole tab (select lines to narrow it). Secrets are hidden first.'}
+                </p>
+                {askMenu(language, problemCounts.error + problemCounts.warning > 0).map((item) => (
+                  <button
+                    key={item.kind}
+                    onClick={() => void askAi(item.kind)}
+                    className="flex items-center w-full px-3 py-1.5 text-xs text-left text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]"
+                  >
+                    {item.label}
+                  </button>
+                ))}
               </div>
             </>
           )}

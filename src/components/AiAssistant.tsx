@@ -69,6 +69,7 @@ import { useSidePanelStore } from '../store/sidePanelStore';
 import { resolveSshLogin } from '../utils/connect';
 import { loginChoiceFor } from '../utils/logins';
 import { backendVault } from '../utils/vaultAccess';
+import { useAiBridge, type AiEditTarget } from '../store/aiBridgeStore';
 
 // ─── Anthropic API types (local) ───
 
@@ -1234,10 +1235,13 @@ export default function AiAssistant() {
       });
   }, [settings.aiUseMcp, showSettings, showAiAssistant]);
 
-  const sendMessage = useCallback(async (content: string) => {
+  /** `target`: the editor lines this question is about (Ask AI), so a code
+   *  block in the answer can be reviewed as a diff against them. */
+  const sendMessage = useCallback(async (content: string, target?: AiEditTarget) => {
     if (!content.trim() || isLoading) return;
 
     const userMsg: DisplayMessage = { id: nextMsgId(), role: 'user', content: content.trim(), timestamp: Date.now() };
+    if (target) useAiBridge.getState().setTarget(userMsg.id, target);
     setMessages((prev) => [...prev, userMsg]);
     setInput('');
     setIsLoading(true);
@@ -1469,6 +1473,14 @@ export default function AiAssistant() {
       if (requestSeq.current === myReq) setIsLoading(false);
     }
   }, [messages, isLoading, settings, activeSession, activeAgent, hasKey]);
+
+  // A question from the Config Editor (Ask AI): sent as soon as the panel is free.
+  const pendingAsk = useAiBridge((s) => s.pendingAsk);
+  useEffect(() => {
+    if (!pendingAsk || isLoading) return;
+    const ask = useAiBridge.getState().takeAsk();
+    if (ask) void sendMessage(ask.prompt, ask.target);
+  }, [pendingAsk, isLoading, sendMessage]);
 
   // Abandon the in-flight request: bump the guard, abort the backend stream(s) so
   // the provider stops generating, and drop a trailing empty assistant bubble left

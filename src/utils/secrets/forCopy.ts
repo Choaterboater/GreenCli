@@ -10,10 +10,13 @@ export type HiddenCopy =
   | { ok: true; text: string; hidden: number; message: string }
   | { ok: false; message: string };
 
-export async function hideSecretsForCopy(text: string): Promise<HiddenCopy> {
-  if (text.length > MAX_SCRUB_CHARS) {
-    return { ok: false, message: 'Not copied: the tab is too big to check for secrets (over 1 MB).' };
-  }
+export type HiddenText =
+  | { ok: true; text: string; hidden: number; words: string[] }
+  | { ok: false; reason: 'too-big' | 'unsupported' };
+
+/** Editor text with its secrets hidden (Copy with secrets hidden, Ask AI). Fails closed. */
+export async function hideSecretsInText(text: string): Promise<HiddenText> {
+  if (text.length > MAX_SCRUB_CHARS) return { ok: false, reason: 'too-big' };
   try {
     if (!secretFilterSupported()) throw new Error('secret filter unsupported');
     const engine = await import('./engine');
@@ -21,12 +24,26 @@ export async function hideSecretsForCopy(text: string): Promise<HiddenCopy> {
     // selection from a session), so a first line may sit inside a RADIUS or
     // SNMP block. It only ever hides more.
     const result = engine.scrubForAi(text, { cutHead: true });
-    const words = result.kinds.map((kind) => KIND_WORDS[kind]);
-    const message = result.hidden
-      ? `Copied with ${result.hidden} ${result.hidden === 1 ? 'secret' : 'secrets'} hidden${words.length ? ` (${words.join(', ')})` : ''}`
-      : 'Copied: no secrets found';
-    return { ok: true, text: result.text, hidden: result.hidden, message };
+    return { ok: true, text: result.text, hidden: result.hidden, words: result.kinds.map((kind) => KIND_WORDS[kind]) };
   } catch {
-    return { ok: false, message: 'Not copied: GreenCLI could not check this text for secrets on this system.' };
+    return { ok: false, reason: 'unsupported' };
   }
+}
+
+export async function hideSecretsForCopy(text: string): Promise<HiddenCopy> {
+  const result = await hideSecretsInText(text);
+  if (!result.ok) {
+    return {
+      ok: false,
+      message:
+        result.reason === 'too-big'
+          ? 'Not copied: the tab is too big to check for secrets (over 1 MB).'
+          : 'Not copied: GreenCLI could not check this text for secrets on this system.',
+    };
+  }
+  const { hidden, words } = result;
+  const message = hidden
+    ? `Copied with ${hidden} ${hidden === 1 ? 'secret' : 'secrets'} hidden${words.length ? ` (${words.join(', ')})` : ''}`
+    : 'Copied: no secrets found';
+  return { ok: true, text: result.text, hidden, message };
 }
