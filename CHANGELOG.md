@@ -82,8 +82,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   key from the same release, and checks the download's signature before it shows **Restart to
   update**. It never goes back to an older version, and drafts don't count.
 - greencli-mcp reads only the data folder, and shows configs only with secrets hidden.
-- The app window may call only a short list of app functions: the same as 1.9, plus showing a
-  window and listing windows.
+- The app window may use only a short list of Tauri's built-in functions (windows, dialogs,
+  clipboard, events): the same as 1.9, plus showing a window and listing windows. GreenCLI's own
+  functions are not limited by this list, as in 1.9.
 
 ### Upgrade notes
 - **Install 2.0.0 by hand once.** 1.9 has no updater: get 2.0.0 from the GitHub Releases page and
