@@ -62,10 +62,11 @@ rsa-keys = []
 # [2.0 updater] updater dependency table goes below.
 #
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
-# Automatic updates (src/updater.rs). The owner's public key is built in
-# (tauri.conf.json plugins.updater.pubkey); updates are off while it is empty.
+# Automatic updates (src/updater.rs). The public key is not in tauri.conf.json:
+# each release build makes a one-time key pair, and the app fetches the key
+# from the same release as the update at check time.
 tauri-plugin-updater = "2.13"
-# Check that the built-in update key is a real minisign public key.
+# Check that a fetched update key is a real minisign public key.
 minisign-verify = "0.2"
 # Version compare for updates (already used by Tauri).
 semver = "1"

@@ -12,9 +12,9 @@ import { useSessionStore } from '../store/sessionStore';
 import { useSidePanelStore } from '../store/sidePanelStore';
 import { exitHolds, runBeforeExit } from './beforeExit';
 
-/** Why updates are off: a dev build, a system with no release build, the
- * updater didn't start, or no update key is built in yet. */
-export type UpdateOffReason = 'dev' | 'platform' | 'setup' | 'noKey';
+/** Why updates are off: a dev build, a system with no release build, or the
+ * updater didn't start. */
+export type UpdateOffReason = 'dev' | 'platform' | 'setup';
 export type InstallPlace = 'normal' | 'translocated' | 'diskImage';
 
 /** update_status (Rust UpdateStatus). */

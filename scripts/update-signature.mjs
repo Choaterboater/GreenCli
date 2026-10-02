@@ -6,26 +6,25 @@
 // Ed25519 over the BLAKE2b-512 hash of the file ("ED"), plus a second
 // signature over the first one and the trusted comment.
 //
-// The key is always the owner's public key built into the app
-// (tauri.conf.json plugins.updater.pubkey), never one from a release.
+// Each release build signs with its own one-time key and publishes the public
+// half as update-key-<os>-<arch>.pub in the same release (release.yml).
 //
-//   node scripts/update-signature.mjs config-key <tauri.conf.json>
-//       Prints the built-in public key, or nothing when it is empty (updates
-//       off). Fails when it is set but is not a minisign public key.
 //   node scripts/update-signature.mjs verify-dir <dir> <key.pub>
 //       Every *.sig under <dir> must match its file and the key. Fails when
-//       there is no .sig at all.
+//       there is no .sig at all. (Each build job, before it publishes its key.)
 //   node scripts/update-signature.mjs release-files <latest.json> <assets.json> <owner/repo> <tag>
 //       Prints the release file names latest.json points to, one per line.
 //       <assets.json> is the release's asset list from the GitHub API.
-//   node scripts/update-signature.mjs check-release <dir> <key.pub> <assets.json> <owner/repo> <tag> <platform>...
-//       <dir> holds latest.json and the files it points to. Every listed
-//       platform must be in latest.json, every entry's url must be a file of
-//       this release, and every entry's signature must match its file, the
-//       key and the release version.
+//   node scripts/update-signature.mjs check-release <dir> <assets.json> <owner/repo> <tag> <platform>...
+//       <dir> holds latest.json, the files it points to and the
+//       update-key-<os>-<arch>.pub files of the same release. latest.json must
+//       be for <tag> (v<version>: the app builds its URLs that way), every
+//       listed platform must be in it, every entry's url must be a file of
+//       this release, and every entry's signature must match its file, its
+//       platform's key and the version. (The update-files job.)
 
 import { createHash, createPublicKey, verify } from 'node:crypto';
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -88,13 +87,12 @@ export function verifyUpdateSignature(data, sigText, pubText) {
   return sig.trusted;
 }
 
-/** The built-in public key from tauri.conf.json text: '' when unset. */
-export function configKey(confText) {
-  const key = JSON.parse(confText)?.plugins?.updater?.pubkey ?? '';
-  if (typeof key !== 'string') throw new Error('plugins.updater.pubkey is not text');
-  if (key.trim() === '') return '';
-  parsePublicKey(key);
-  return key.trim();
+/** 2.0.1, or 2.1.0-beta.1: numbers with no leading zeros, no build part. */
+const PLAIN_VERSION = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$/;
+
+/** `darwin-aarch64-app` → `darwin-aarch64` (the key file's platform). */
+export function keyPlatform(entry) {
+  return entry.split('-').slice(0, 2).join('-');
 }
 
 /**
@@ -156,18 +154,28 @@ export function verifyDir(dir, pubText) {
   return sigs.length;
 }
 
-export function checkRelease(dir, pubText, release, platforms) {
+export function checkRelease(dir, release, platforms) {
   const manifest = JSON.parse(readFileSync(join(dir, 'latest.json'), 'utf8'));
   if (!manifest.version) throw new Error('latest.json has no version');
+  // The app only uses a release whose version is plain semver (src-tauri/src/updater.rs).
+  if (!PLAIN_VERSION.test(String(manifest.version))) {
+    throw new Error(`latest.json version ${manifest.version} is not a plain version like 2.0.1`);
+  }
   if (`v${manifest.version}` !== release.tag) {
-    throw new Error(`latest.json is for version ${manifest.version}, not ${release.tag}`);
+    throw new Error(
+      `latest.json is for version ${manifest.version}, but the release tag is ${release.tag}. ` +
+        `The app looks for the tag v${manifest.version}.`,
+    );
   }
   for (const p of platforms) {
     if (!manifest.platforms?.[p]) throw new Error(`latest.json has no ${p} entry`);
   }
   const entries = entryFiles(manifest, release);
   for (const { entry, name, signature } of entries) {
-    const trusted = verifyUpdateSignature(readFileSync(join(dir, name)), signature, pubText);
+    const keyName = `update-key-${keyPlatform(entry)}.pub`;
+    if (!existsSync(join(dir, keyName))) throw new Error(`${entry}: the release has no ${keyName}`);
+    const pub = readFileSync(join(dir, keyName), 'utf8');
+    const trusted = verifyUpdateSignature(readFileSync(join(dir, name)), signature, pub);
     if (!trusted.split('\t').includes(`version:${manifest.version}`)) {
       throw new Error(`${entry}: the signature is not for version ${manifest.version}`);
     }
@@ -178,24 +186,19 @@ export function checkRelease(dir, pubText, release, platforms) {
 
 function main(argv) {
   const [cmd, ...args] = argv;
-  if (cmd === 'config-key' && args.length === 1) {
-    const key = configKey(readFileSync(args[0], 'utf8'));
-    if (key) console.log(key);
-  } else if (cmd === 'verify-dir' && args.length === 2) {
+  if (cmd === 'verify-dir' && args.length === 2) {
     verifyDir(args[0], readFileSync(args[1], 'utf8'));
   } else if (cmd === 'release-files' && args.length === 4) {
     const manifest = JSON.parse(readFileSync(args[0], 'utf8'));
     const release = releaseInfo(args[1], args[2], args[3]);
     for (const n of new Set(entryFiles(manifest, release).map((f) => f.name))) console.log(n);
-  } else if (cmd === 'check-release' && args.length >= 6) {
-    const pub = readFileSync(args[1], 'utf8');
-    checkRelease(args[0], pub, releaseInfo(args[2], args[3], args[4]), args.slice(5));
+  } else if (cmd === 'check-release' && args.length >= 5) {
+    checkRelease(args[0], releaseInfo(args[1], args[2], args[3]), args.slice(4));
   } else {
     console.error(
-      'usage: update-signature.mjs config-key <tauri.conf.json>' +
-        ' | verify-dir <dir> <key.pub>' +
+      'usage: update-signature.mjs verify-dir <dir> <key.pub>' +
         ' | release-files <latest.json> <assets.json> <owner/repo> <tag>' +
-        ' | check-release <dir> <key.pub> <assets.json> <owner/repo> <tag> <platform>...',
+        ' | check-release <dir> <assets.json> <owner/repo> <tag> <platform>...',
     );
     process.exit(2);
   }

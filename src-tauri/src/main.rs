@@ -2896,8 +2896,8 @@ fn main() {
             }
 
             // [2.0 updater] Updates are on only in release builds for the
-            // systems release.yml builds, with the owner's public key built in
-            // (tauri.conf.json plugins.updater.pubkey); otherwise off (updater.rs).
+            // systems release.yml builds; each check takes the public key
+            // from the same release as the update (updater.rs).
             updater::register(app);
 
             spawn_mcp_connect(app.handle().clone(), None);

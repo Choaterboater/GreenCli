@@ -1,12 +1,20 @@
 //! Automatic updates from GreenCLI's GitHub releases.
 //!
-//! The owner holds one signing key pair. Its public half is built into the
-//! app (`plugins.updater.pubkey` in tauri.conf.json) and is never downloaded;
-//! release.yml signs update files with the private half from the
-//! TAURI_SIGNING_PRIVATE_KEY repo secret. The updater checks every downloaded
-//! file against the built-in key, so a file someone else signed is refused
-//! even when it sits in a GreenCLI release. Until the owner's public key is
-//! in tauri.conf.json, updates are off (`OffReason::NoKey`).
+//! How updates are trusted. Nobody keeps a signing key:
+//! - Each release build makes its own one-time key pair, signs its update
+//!   files with it, and puts the public half in the same release as
+//!   `update-key-<os>-<arch>.pub` (release.yml). The private half never
+//!   leaves the build job and is deleted right after the build.
+//! - A check reads only the version from the latest release's latest.json,
+//!   then takes the manifest and the key from that one release
+//!   (`releases/download/v<version>/`), so they always belong together.
+//! - The signature catches a broken, cut-short or swapped download, and a
+//!   file from anywhere else. It trusts the GitHub account that publishes the
+//!   releases: the same trust as downloading GreenCLI from the Releases page.
+//!   So keep two-factor login on that account.
+//!
+//! All requests are HTTPS to GitHub's release hosts only. Drafts are not
+//! visible at /releases/latest, so only published releases count.
 //!
 //! Checking downloads the update but never installs it: only `update_install`
 //! does, and the app calls that only when the user taps "Restart to update".
@@ -25,8 +33,9 @@ use tauri_plugin_updater::{Update, UpdaterExt};
 
 use crate::app_location::{install_place, InstallPlace};
 
-/// The update manifest tauri-action writes into each release. Everything the
-/// updater fetches starts here.
+/// GreenCLI's releases. Everything the updater fetches starts here.
+pub const RELEASES: &str = "https://github.com/Choaterboater/GreenCli/releases";
+/// The latest published release's manifest. The app reads only its version.
 pub const LATEST_JSON_URL: &str =
     "https://github.com/Choaterboater/GreenCli/releases/latest/download/latest.json";
 /// Update files must be assets of a GreenCLI release: tauri-action writes
@@ -43,7 +52,12 @@ pub const ALLOWED_HOSTS: [&str; 4] = [
     "objects.githubusercontent.com",
     "release-assets.githubusercontent.com",
 ];
+/// A minisign public key file is about 150 bytes.
+const MAX_KEY_BYTES: usize = 4096;
+/// latest.json is a few KB (five entries and the release notes).
+const MAX_MANIFEST_BYTES: usize = 1024 * 1024;
 const MAX_REDIRECTS: usize = 5;
+const FETCH_TIMEOUT: Duration = Duration::from_secs(20);
 const CHECK_TIMEOUT: Duration = Duration::from_secs(30);
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
@@ -67,8 +81,6 @@ pub enum OffReason {
     Platform,
     /// The updater plugin failed to start (logged).
     Setup,
-    /// No public key is built in yet (tauri.conf.json `plugins.updater.pubkey`).
-    NoKey,
 }
 
 /// The `<os>-<arch>` name Tauri uses in latest.json for a shipped build, from
@@ -88,34 +100,59 @@ pub fn current_platform() -> Option<&'static str> {
 }
 
 /// Whether updates run in this build: a release build, for a system
-/// release.yml builds, with a real public key built in.
-pub fn updates_enabled<'a>(
-    is_dev: bool,
-    platform: Option<&'a str>,
-    pubkey: &str,
-) -> Result<&'a str, OffReason> {
+/// release.yml builds.
+pub fn updates_enabled(is_dev: bool, platform: Option<&str>) -> Result<&str, OffReason> {
     if is_dev {
         return Err(OffReason::Dev);
     }
-    let platform = platform.ok_or(OffReason::Platform)?;
-    if !pubkey_valid(pubkey) {
-        return Err(OffReason::NoKey);
-    }
-    Ok(platform)
+    platform.ok_or(OffReason::Platform)
 }
 
-/// The public key built into this app: tauri.conf.json `plugins.updater.pubkey`
-/// ("" when it isn't set).
-fn builtin_pubkey(app: &tauri::App) -> String {
-    app.config()
-        .plugins
-        .0
-        .get("updater")
-        .and_then(|u| u.get("pubkey"))
-        .and_then(|k| k.as_str())
-        .unwrap_or("")
-        .trim()
-        .to_string()
+/// The version in a release's latest.json, when it is plain semver: numbers
+/// like 2.0.1, maybe with a pre-release part like -beta.1, nothing else. A
+/// leading "v" is dropped, as the updater does. The version becomes part of
+/// the release URLs, so anything odd means "not a release we can use".
+pub fn plain_version(text: &str) -> Option<Version> {
+    let text = text.strip_prefix('v').unwrap_or(text);
+    let plain = !text.is_empty()
+        && text.len() <= 64
+        && text
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-');
+    if !plain {
+        return None;
+    }
+    let version = Version::parse(text).ok()?;
+    // Exactly as written: the tag must be v<this text>.
+    (version.to_string() == text).then_some(version)
+}
+
+/// The `version` field of a latest.json body (nothing else is read).
+pub fn manifest_version(body: &[u8]) -> Option<Version> {
+    let manifest: serde_json::Value = serde_json::from_slice(body).ok()?;
+    plain_version(manifest.as_object()?.get("version")?.as_str()?)
+}
+
+/// Where one release keeps its files. release.yml tags a release
+/// `v<version>` (tauri-action's `v__VERSION__`), and its update-files job
+/// fails when latest.json's version doesn't match the tag.
+fn release_dir(version: &Version) -> String {
+    format!("{RELEASES}/download/v{version}")
+}
+
+/// One release's update manifest (written by tauri-action).
+pub fn manifest_url(version: &Version) -> String {
+    format!("{}/latest.json", release_dir(version))
+}
+
+/// The release asset that holds a platform's public key.
+pub fn key_asset_name(platform: &str) -> String {
+    format!("update-key-{platform}.pub")
+}
+
+/// Where one release keeps a platform's public key.
+pub fn key_url(version: &Version, platform: &str) -> String {
+    format!("{}/{}", release_dir(version), key_asset_name(platform))
 }
 
 /// HTTPS on the standard port, no user name or password, and one of
@@ -163,6 +200,12 @@ pub fn is_newer(current: &Version, remote: &Version) -> bool {
     remote.cmp_precedence(current) == Ordering::Greater
 }
 
+/// Offer the release's update only when its manifest has the version the
+/// check started from (the same release the key came from) and it is newer.
+pub fn should_offer(current: &Version, release: &Version, remote: &Version) -> bool {
+    remote == release && is_newer(current, remote)
+}
+
 /// The contents of a Tauri `.pub` file: base64 of a minisign public key.
 pub fn pubkey_valid(pubkey: &str) -> bool {
     use base64::Engine;
@@ -175,8 +218,114 @@ pub fn pubkey_valid(pubkey: &str) -> bool {
     minisign_verify::PublicKey::decode(&text).is_ok()
 }
 
+/// A downloaded key file: the key text when it is a real public key.
+fn parse_key(body: &[u8]) -> Option<String> {
+    let text = std::str::from_utf8(body).ok()?.trim();
+    pubkey_valid(text).then(|| text.to_string())
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum FetchError {
+    Network,
+    TooBig,
+}
+
+/// The client for the small files the app fetches itself (latest.json and
+/// the key): HTTPS only, GitHub's release hosts only, with a time limit.
+fn small_client() -> reqwest::Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .https_only(true)
+        .redirect(reqwest::redirect::Policy::custom(|a| {
+            if redirect_allowed(a.url(), a.previous().len()) {
+                a.follow()
+            } else {
+                a.error("redirect to a host GreenCLI doesn't use for updates")
+            }
+        }))
+        .timeout(FETCH_TIMEOUT)
+        .user_agent(concat!("GreenCLI/", env!("CARGO_PKG_VERSION")))
+        .build()
+}
+
+/// Fetch a small release file, at most `max` bytes. `Ok(None)` when the
+/// release has no such file (HTTP 404).
+async fn fetch_small(
+    client: &reqwest::Client,
+    url: &str,
+    max: usize,
+) -> Result<Option<Vec<u8>>, FetchError> {
+    let net = |e: reqwest::Error| {
+        log::warn!("Update file download failed: {}", e.without_url());
+        FetchError::Network
+    };
+    let url = Url::parse(url).map_err(|_| FetchError::Network)?;
+    if !url_allowed(&url) {
+        return Err(FetchError::Network);
+    }
+    let mut resp = client.get(url).send().await.map_err(net)?;
+    if !url_allowed(resp.url()) {
+        return Err(FetchError::Network);
+    }
+    if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    if !resp.status().is_success() {
+        log::warn!("Update file download failed: HTTP {}", resp.status());
+        return Err(FetchError::Network);
+    }
+    if resp.content_length().is_some_and(|n| n > max as u64) {
+        return Err(FetchError::TooBig);
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = resp.chunk().await.map_err(net)? {
+        if body.len() + chunk.len() > max {
+            return Err(FetchError::TooBig);
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(Some(body))
+}
+
+/// The latest published release's version, from its latest.json. `Ok(None)`
+/// when there is no such file (no release with update files yet).
+async fn latest_release(client: &reqwest::Client) -> Result<Option<Version>, &'static str> {
+    let body = match fetch_small(client, LATEST_JSON_URL, MAX_MANIFEST_BYTES).await {
+        Ok(Some(body)) => body,
+        Ok(None) => return Ok(None),
+        Err(_) => return Err(ERR_NETWORK),
+    };
+    match manifest_version(&body) {
+        Some(version) => Ok(Some(version)),
+        None => {
+            log::warn!("Update check failed: latest.json has no plain version");
+            Err(ERR_NETWORK)
+        }
+    }
+}
+
+/// One release's public key for `platform`. `Ok(None)` when that release has
+/// no key for it (no update for this system).
+async fn release_key(
+    client: &reqwest::Client,
+    release: &Version,
+    platform: &str,
+) -> Result<Option<String>, &'static str> {
+    match fetch_small(client, &key_url(release, platform), MAX_KEY_BYTES).await {
+        Ok(Some(body)) => parse_key(&body).map(Some).ok_or_else(|| {
+            log::warn!("Update refused: the release's key file is not a public key");
+            ERR_SIGNATURE
+        }),
+        Ok(None) => Ok(None),
+        Err(FetchError::TooBig) => {
+            log::warn!("Update refused: the release's key file is too big");
+            Err(ERR_SIGNATURE)
+        }
+        Err(FetchError::Network) => Err(ERR_NETWORK),
+    }
+}
+
 /// Keep the updater plugin's own requests (latest.json and the update file)
-/// on HTTPS and on GitHub's release hosts.
+/// on HTTPS and on GitHub's release hosts, like the app's own fetches.
 fn limit_client(b: reqwest_updater::ClientBuilder) -> reqwest_updater::ClientBuilder {
     b.https_only(true)
         .redirect(reqwest_updater::redirect::Policy::custom(|a| {
@@ -200,11 +349,14 @@ fn is_signature_error(e: &tauri_plugin_updater::Error) -> bool {
     )
 }
 
-/// The latest release has nothing for this system (no manifest, or no entry
-/// for this platform): treat it as "no update".
+/// The release has nothing for this system (no manifest, or no entry for
+/// this platform): treat it as "no update".
 fn is_no_release(e: &tauri_plugin_updater::Error) -> bool {
     use tauri_plugin_updater::Error as E;
-    matches!(e, E::ReleaseNotFound | E::TargetNotFound(_) | E::TargetsNotFound(_))
+    matches!(
+        e,
+        E::ReleaseNotFound | E::TargetNotFound(_) | E::TargetsNotFound(_)
+    )
 }
 
 /// A downloaded update whose signature passed, waiting for "Restart to update".
@@ -238,15 +390,12 @@ impl UpdaterState {
 /// UpdaterState so the commands can answer. A plugin that fails to start
 /// turns updates off instead of stopping the app.
 pub fn register(app: &tauri::App) {
-    let pubkey = builtin_pubkey(app);
-    let off = match updates_enabled(cfg!(debug_assertions), current_platform(), &pubkey) {
-        Err(reason) => {
-            if reason == OffReason::NoKey && !pubkey.is_empty() {
-                log::warn!("Updates are off: the built-in update key is not a valid public key");
-            }
-            Some(reason)
-        }
-        Ok(_) => match app.handle().plugin(tauri_plugin_updater::Builder::new().build()) {
+    let off = match updates_enabled(cfg!(debug_assertions), current_platform()) {
+        Err(reason) => Some(reason),
+        Ok(_) => match app
+            .handle()
+            .plugin(tauri_plugin_updater::Builder::new().build())
+        {
             Ok(()) => None,
             Err(e) => {
                 log::warn!("Updates are off: the updater didn't start: {e}");
@@ -302,18 +451,38 @@ pub async fn update_check(
     if state.off.is_some() {
         return Err(ERR_OFF.into());
     }
+    let platform = current_platform().ok_or(ERR_OFF)?;
     let _one_at_a_time = state.checking.lock().await;
     if let Some(version) = state.pending_version() {
         return Ok(Some(version));
     }
 
-    let endpoint = Url::parse(LATEST_JSON_URL).map_err(|_| ERR_NETWORK)?;
+    let client = small_client().map_err(|e| {
+        log::warn!("Update check setup failed: {}", e.without_url());
+        ERR_NETWORK
+    })?;
+    // 1. Which release: the latest one's version. Nothing newer, nothing more
+    // to fetch.
+    let Some(release) = latest_release(&client).await? else {
+        return Ok(None);
+    };
+    if !is_newer(&app.package_info().version, &release) {
+        return Ok(None);
+    }
+    // 2. That release's key for this system, and 3. that release's manifest:
+    // both from the same tag, so a release published in between can't mix
+    // one release's key with another's files.
+    let Some(pubkey) = release_key(&client, &release, platform).await? else {
+        return Ok(None);
+    };
+    let endpoint = Url::parse(&manifest_url(&release)).map_err(|_| ERR_NETWORK)?;
     // The plugin is registered (state.off is None), so updater_builder has
-    // its state, with the built-in public key from the config.
+    // its state. The key fetched above replaces the empty one in the config.
     let stopped = state.stopped_mcp.clone();
     let hook_app = app.clone();
     let updater = app
         .updater_builder()
+        .pubkey(pubkey)
         // Windows: runs after the update file is unpacked, just before the
         // installer starts and the app exits (no RunEvent::Exit there), so
         // MCP servers and CLI runs stop only when the install really goes
@@ -325,7 +494,12 @@ pub async fn update_check(
         .endpoints(vec![endpoint])
         .and_then(|b| {
             b.timeout(CHECK_TIMEOUT)
-                .version_comparator(|current, release| is_newer(&current, &release.version))
+                .version_comparator(move |current, remote| {
+                    if remote.version != release {
+                        log::warn!("Update refused: the release's latest.json has another version");
+                    }
+                    should_offer(&current, &release, &remote.version)
+                })
                 .configure_client(limit_client)
                 .build()
         })
@@ -444,7 +618,7 @@ mod tests {
     const TEST_PUB: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDg2Q0EzNTY5MkZFMzg0NzAKUldSd2hPTXZhVFhLaHE3bDdsNmdqQnpkS3FzUEF0c1pQM1JFdmZicTR1SkFZY1huZDNoMlBtakMK";
 
     /// The platforms release.yml builds, in the `<os>-<arch>` form Tauri uses
-    /// in latest.json.
+    /// in latest.json. Each has its own key file.
     const SHIPPED_PLATFORMS: [&str; 3] = ["darwin-aarch64", "darwin-x86_64", "windows-x86_64"];
 
     fn url(s: &str) -> Url {
@@ -461,14 +635,23 @@ mod tests {
         assert_eq!(platform_key("macos", "x86_64"), Some("darwin-x86_64"));
         assert_eq!(platform_key("windows", "x86_64"), Some("windows-x86_64"));
         // No release build for these, so no updates.
-        for (os, arch) in [("linux", "x86_64"), ("windows", "aarch64"), ("windows", "x86"), ("freebsd", "x86_64")] {
+        for (os, arch) in [
+            ("linux", "x86_64"),
+            ("windows", "aarch64"),
+            ("windows", "x86"),
+            ("freebsd", "x86_64"),
+        ] {
             assert_eq!(platform_key(os, arch), None, "{os}-{arch}");
         }
         // Every shipped platform has a mapping, and nothing else does.
-        let mapped: Vec<&str> = [("macos", "aarch64"), ("macos", "x86_64"), ("windows", "x86_64")]
-            .iter()
-            .filter_map(|(o, a)| platform_key(o, a))
-            .collect();
+        let mapped: Vec<&str> = [
+            ("macos", "aarch64"),
+            ("macos", "x86_64"),
+            ("windows", "x86_64"),
+        ]
+        .iter()
+        .filter_map(|(o, a)| platform_key(o, a))
+        .collect();
         assert_eq!(mapped, SHIPPED_PLATFORMS);
         // The updater plugin (2.13, `target()`) names a system
         // `<updater_os>-<arch>`: Rust's arch names, and "darwin" for macOS
@@ -477,8 +660,15 @@ mod tests {
             let os = if os == "macos" { "darwin" } else { os };
             format!("{os}-{arch}")
         };
-        for (os, arch) in [("macos", "aarch64"), ("macos", "x86_64"), ("windows", "x86_64")] {
-            assert_eq!(platform_key(os, arch).map(str::to_string), Some(plugin_name(os, arch)));
+        for (os, arch) in [
+            ("macos", "aarch64"),
+            ("macos", "x86_64"),
+            ("windows", "x86_64"),
+        ] {
+            assert_eq!(
+                platform_key(os, arch).map(str::to_string),
+                Some(plugin_name(os, arch))
+            );
         }
         // Linux, where CI runs the Rust tests, has no release build; the
         // check against the plugin's own target() runs on macOS and Windows
@@ -492,10 +682,118 @@ mod tests {
     }
 
     #[test]
-    fn manifest_url() {
-        let manifest = url(LATEST_JSON_URL);
-        assert!(url_allowed(&manifest));
-        assert_eq!(manifest.path(), "/Choaterboater/GreenCli/releases/latest/download/latest.json");
+    fn release_urls() {
+        let latest = url(LATEST_JSON_URL);
+        assert!(url_allowed(&latest));
+        assert_eq!(
+            latest.as_str(),
+            format!("{RELEASES}/latest/download/latest.json")
+        );
+        assert_eq!(
+            key_asset_name("darwin-aarch64"),
+            "update-key-darwin-aarch64.pub"
+        );
+        let release = v("2.0.1");
+        assert_eq!(
+            manifest_url(&release),
+            "https://github.com/Choaterboater/GreenCli/releases/download/v2.0.1/latest.json"
+        );
+        assert_eq!(
+            key_url(&release, "windows-x86_64"),
+            "https://github.com/Choaterboater/GreenCli/releases/download/v2.0.1/update-key-windows-x86_64.pub"
+        );
+        // The key and the manifest always come from the same release.
+        let dir = |u: &str| u.rsplit_once('/').unwrap().0.to_string();
+        for p in SHIPPED_PLATFORMS {
+            let key = key_url(&release, p);
+            assert_eq!(dir(&key), dir(&manifest_url(&release)), "{p}");
+            let k = url(&key);
+            assert!(url_allowed(&k), "{k}");
+            assert!(k
+                .path()
+                .starts_with("/Choaterboater/GreenCli/releases/download/v2.0.1/"));
+        }
+        let pre = v("2.1.0-beta.1");
+        assert_eq!(
+            manifest_url(&pre),
+            "https://github.com/Choaterboater/GreenCli/releases/download/v2.1.0-beta.1/latest.json"
+        );
+    }
+
+    #[test]
+    fn only_plain_versions_pick_a_release() {
+        for (text, want) in [
+            ("2.0.1", "2.0.1"),
+            ("v2.0.1", "2.0.1"),
+            ("10.20.30", "10.20.30"),
+            ("2.1.0-beta.1", "2.1.0-beta.1"),
+            ("0.0.0", "0.0.0"),
+        ] {
+            assert_eq!(plain_version(text), Some(v(want)), "{text}");
+        }
+        for bad in [
+            "",
+            "v",
+            "vv2.0.1",
+            "2.0",
+            "2",
+            "02.0.1",
+            "2.0.1+build.5",
+            "2.0.1 ",
+            " 2.0.1",
+            "2.0.1\n",
+            "2.0.1/../../x",
+            "../2.0.1",
+            "2.0.1?x=1",
+            "2.0.1#x",
+            "2.0.1%2F",
+            "2.0.1/latest.json",
+            "\u{ff12}.0.1",
+            "2.0.1-",
+            "latest",
+        ] {
+            assert_eq!(plain_version(bad), None, "{bad:?}");
+        }
+        assert_eq!(plain_version(&format!("2.0.1-{}", "a".repeat(80))), None);
+    }
+
+    #[test]
+    fn reads_only_the_version_from_latest_json() {
+        let body = br#"{"version":"2.0.1","notes":"x","platforms":{"darwin-aarch64":{"url":"https://example.com/x","signature":"s"}}}"#;
+        assert_eq!(manifest_version(body), Some(v("2.0.1")));
+        assert_eq!(
+            manifest_version(br#"{"version":"v2.0.2"}"#),
+            Some(v("2.0.2"))
+        );
+        for bad in [
+            &br#"{"version":"2.0.1/../../x"}"#[..],
+            br#"{"version":2}"#,
+            br#"{"version":null}"#,
+            br#"{"platforms":{}}"#,
+            br#"["2.0.1"]"#,
+            b"<html>Not Found</html>",
+            b"",
+            &[0xff, 0xfe, 0x00],
+        ] {
+            assert_eq!(
+                manifest_version(bad),
+                None,
+                "{:?}",
+                String::from_utf8_lossy(bad)
+            );
+        }
+    }
+
+    #[test]
+    fn offers_only_the_release_it_checked() {
+        let (current, release) = (v("2.0.0"), v("2.0.1"));
+        assert!(should_offer(&current, &release, &v("2.0.1")));
+        // The release's manifest names another version: not offered.
+        assert!(!should_offer(&current, &release, &v("2.0.2")));
+        assert!(!should_offer(&current, &release, &v("2.0.0")));
+        // Never the same version or a downgrade.
+        assert!(!should_offer(&v("2.0.1"), &release, &v("2.0.1")));
+        assert!(!should_offer(&v("2.1.0"), &release, &v("2.0.1")));
     }
 
     #[test]
@@ -534,7 +832,10 @@ mod tests {
         assert!(redirect_allowed(&asset, MAX_REDIRECTS));
         assert!(!redirect_allowed(&asset, MAX_REDIRECTS + 1));
         assert!(!redirect_allowed(&url("https://example.com/a"), 1));
-        assert!(!redirect_allowed(&url("http://objects.githubusercontent.com/a"), 1));
+        assert!(!redirect_allowed(
+            &url("http://objects.githubusercontent.com/a"),
+            1
+        ));
     }
 
     #[test]
@@ -578,8 +879,14 @@ mod tests {
         assert!(is_newer(&v("2.0.0-beta.1"), &v("2.0.0-beta.2")));
         assert!(!is_newer(&v("2.0.0"), &v("2.0.0")), "same version");
         assert!(!is_newer(&v("2.0.0"), &v("1.9.0")), "never a downgrade");
-        assert!(!is_newer(&v("2.0.0"), &v("2.0.0-rc.1")), "a pre-release is older");
-        assert!(!is_newer(&v("2.0.0"), &v("2.0.0+build.5")), "build metadata is not newer");
+        assert!(
+            !is_newer(&v("2.0.0"), &v("2.0.0-rc.1")),
+            "a pre-release is older"
+        );
+        assert!(
+            !is_newer(&v("2.0.0"), &v("2.0.0+build.5")),
+            "build metadata is not newer"
+        );
         assert!(!is_newer(&v("10.0.0"), &v("9.9.9")));
     }
 
@@ -590,40 +897,46 @@ mod tests {
         for bad in ["", "   ", "junk", "dW50cnVzdGVkIGNvbW1lbnQ6IGhp", "!!!!"] {
             assert!(!pubkey_valid(bad), "{bad:?}");
         }
+        assert_eq!(
+            parse_key(format!("{TEST_PUB}\n").as_bytes()).as_deref(),
+            Some(TEST_PUB)
+        );
+        assert_eq!(parse_key(b"<html>Not Found</html>"), None);
+        assert_eq!(parse_key(&[0xff, 0xfe, 0x00]), None);
     }
 
     #[test]
-    fn updates_on_only_in_release_builds_of_shipped_systems_with_a_key() {
-        let mac = Some("darwin-aarch64");
-        assert_eq!(updates_enabled(false, mac, TEST_PUB), Ok("darwin-aarch64"));
-        assert_eq!(updates_enabled(true, mac, TEST_PUB), Err(OffReason::Dev));
-        assert_eq!(updates_enabled(false, None, TEST_PUB), Err(OffReason::Platform));
-        assert_eq!(updates_enabled(true, None, TEST_PUB), Err(OffReason::Dev));
-        // No built-in key (the owner hasn't sent it yet), or a broken one: off.
-        assert_eq!(updates_enabled(false, mac, ""), Err(OffReason::NoKey));
-        assert_eq!(updates_enabled(false, mac, "  "), Err(OffReason::NoKey));
-        assert_eq!(updates_enabled(false, mac, "junk"), Err(OffReason::NoKey));
-        assert_eq!(serde_json::to_value(OffReason::Platform).unwrap(), "platform");
-        assert_eq!(serde_json::to_value(OffReason::NoKey).unwrap(), "noKey");
-    }
-
-    #[test]
-    fn this_build_has_updates_off_until_the_key_is_built_in() {
-        let key = conf()["plugins"]["updater"]["pubkey"].as_str().unwrap().to_string();
-        let r = updates_enabled(false, Some("darwin-aarch64"), &key);
-        if key.trim().is_empty() {
-            assert_eq!(r, Err(OffReason::NoKey));
-        } else {
-            assert_eq!(r, Ok("darwin-aarch64"));
-        }
+    fn updates_on_only_in_release_builds_of_shipped_systems() {
+        assert_eq!(
+            updates_enabled(false, Some("darwin-aarch64")),
+            Ok("darwin-aarch64")
+        );
+        assert_eq!(
+            updates_enabled(true, Some("darwin-aarch64")),
+            Err(OffReason::Dev)
+        );
+        assert_eq!(updates_enabled(false, None), Err(OffReason::Platform));
+        assert_eq!(updates_enabled(true, None), Err(OffReason::Dev));
+        assert_eq!(
+            serde_json::to_value(OffReason::Platform).unwrap(),
+            "platform"
+        );
+        assert_eq!(serde_json::to_value(OffReason::Setup).unwrap(), "setup");
     }
 
     #[test]
     fn a_failed_install_reconnects_only_what_the_hook_stopped() {
         let stopped = Mutex::new(None);
-        assert_eq!(take_stopped(&stopped), None, "the hook didn't run: nothing to reconnect");
+        assert_eq!(
+            take_stopped(&stopped),
+            None,
+            "the hook didn't run: nothing to reconnect"
+        );
         *stopped.lock().unwrap() = Some(vec!["aruba".to_string(), "mist".to_string()]);
-        assert_eq!(take_stopped(&stopped), Some(vec!["aruba".to_string(), "mist".to_string()]));
+        assert_eq!(
+            take_stopped(&stopped),
+            Some(vec!["aruba".to_string(), "mist".to_string()])
+        );
         assert_eq!(take_stopped(&stopped), None, "only once");
     }
 
@@ -632,14 +945,13 @@ mod tests {
     }
 
     #[test]
-    fn config_key_and_the_github_endpoint() {
+    fn config_has_no_key_and_the_github_endpoint() {
         let c = conf();
         let u = &c["plugins"]["updater"];
-        // The owner's public key, built into the app; empty until he sends it
-        // (updates stay off). Never a private key or anything else.
-        let key = u["pubkey"].as_str().expect("pubkey is text");
-        assert!(key.is_empty() || pubkey_valid(key), "pubkey must be empty or a minisign public key");
-        assert_eq!(key, key.trim(), "no spaces or line breaks around the key");
+        // Each check takes the key from the release it updates to, never
+        // from the config (a release build's --config carries its own key
+        // only so the bundler can sign).
+        assert_eq!(u["pubkey"], "", "no public key in tauri.conf.json");
         assert_eq!(u["endpoints"], serde_json::json!([LATEST_JSON_URL]));
         assert_eq!(u["requireSignedVersion"], true);
         assert!(u.get("dangerousInsecureTransportProtocol").is_none());
@@ -656,9 +968,10 @@ mod tests {
         assert_eq!(parsed.endpoints, vec![url(LATEST_JSON_URL)]);
     }
 
-    /// A file signed the way release builds sign update files (a key from
-    /// `tauri signer generate`, then `tauri signer sign --app-version 2.0.1`);
-    /// the private key was deleted.
+    /// A file signed the way release builds sign update files (a one-time
+    /// key from `tauri signer generate --ci`, then `tauri signer sign
+    /// --app-version 2.0.1`); the private key was deleted.
+    /// src/utils/updateSignatureScript.test.ts uses the same three.
     const SIGNED_PUB: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDZEMDdBRjE0NDk5M0ZEQ0YKUldUUC9aTkpGSzhIYlVnRGd4UjJJOWRMeVRoUVMvZytOTC9FRWFVNSs5RExnYmFsWmdsY1pWcjkK";
     const SIGNED_SIG: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUUC9aTkpGSzhIYlEyemFrNWo5SFB0RHpoOFkwWDVqcnVFOGpxeTBPc3MvRUhERjROQ3NoVzJoUFgrTjlEQzBtckJMZDJrQnZDVHM4enZxazVDTFA3elFMbytqOVA1dUE0PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkwOTQ5MTU0CWZpbGU6Zml4dHVyZS50eHQJdmVyc2lvbjoyLjAuMQpXN1ZzeHBISzVxRWgwbExWYVEreGhmdHM5UUczUUNBK2lMTVJzcFk0bkFqdTEveWdzb3BhNDZBTTZWQ2dpbWNHbVVHeWhZZ3R0cG9ORmUyOXM3NlZEUT09Cg==";
     const SIGNED_DATA: &[u8] = b"GreenCLI update test\n";
@@ -669,38 +982,59 @@ mod tests {
     }
 
     /// The updater plugin checks downloads like this (minisign-verify, with
-    /// the built-in key); a release build's signature must pass, and only for
+    /// the fetched key); a release build's signature must pass, and only for
     /// its own file and key.
     #[test]
-    fn release_signatures_verify_with_the_builtin_key() {
+    fn release_signatures_verify_with_the_fetched_key() {
         use minisign_verify::{PublicKey, Signature};
         assert!(pubkey_valid(SIGNED_PUB));
+        assert_eq!(
+            parse_key(SIGNED_PUB.as_bytes()).as_deref(),
+            Some(SIGNED_PUB)
+        );
         let key = PublicKey::decode(&b64_text(SIGNED_PUB)).unwrap();
         let sig = Signature::decode(&b64_text(SIGNED_SIG)).unwrap();
         key.verify(SIGNED_DATA, &sig, false).unwrap();
         // The signed version requireSignedVersion compares with latest.json.
-        assert!(sig.trusted_comment().split('\t').any(|f| f == "version:2.0.1"));
+        assert!(sig
+            .trusted_comment()
+            .split('\t')
+            .any(|f| f == "version:2.0.1"));
         assert!(key.verify(b"GreenCLI update test!\n", &sig, false).is_err());
         let other = PublicKey::decode(&b64_text(TEST_PUB)).unwrap();
         assert!(other.verify(SIGNED_DATA, &sig, false).is_err());
     }
 
-    /// release.yml signs with the owner's key from the repo secrets, makes
-    /// update files only when that key and the built-in public key are both
-    /// there, and never makes or downloads a key of its own.
+    /// A line of release.yml that names the private key file (`updkey`, not
+    /// the public `updkey.pub`).
+    fn names_private_key(line: &str) -> bool {
+        line.match_indices("updkey")
+            .any(|(i, m)| !line[i + m.len()..].starts_with(".pub"))
+    }
+
+    /// release.yml: each build makes its own key with the Tauri CLI that
+    /// `npm ci` installed, names its public key like the app, and keeps the
+    /// private key in one file that only tauri-action reads, as a path, and
+    /// that is deleted even when the build fails.
     #[test]
-    fn release_workflow_signs_with_the_owner_key() {
+    fn release_workflow_signs_automatically() {
         let yml = include_str!("../../.github/workflows/release.yml");
         // The platforms release.yml builds have the app's names.
         let mut pairs = Vec::new();
         let mut target = None;
         for line in yml.lines().map(str::trim) {
-            if let Some(t) = line.strip_prefix("target: ").or_else(|| line.strip_prefix("- target: ")) {
+            if let Some(t) = line
+                .strip_prefix("target: ")
+                .or_else(|| line.strip_prefix("- target: "))
+            {
                 if !t.contains("${{") {
                     target = Some(t.trim().to_string());
                 }
             } else if let Some(p) = line.strip_prefix("updater: ") {
-                pairs.push((target.take().expect("target before updater"), p.trim().to_string()));
+                pairs.push((
+                    target.take().expect("target before updater"),
+                    p.trim().to_string(),
+                ));
             }
         }
         assert_eq!(pairs.len(), SHIPPED_PLATFORMS.len(), "{pairs:?}");
@@ -715,17 +1049,81 @@ mod tests {
             };
             assert_eq!(platform_key(os, arch), Some(platform.as_str()), "{target}");
         }
-        assert!(yml.contains("TAURI_SIGNING_PRIVATE_KEY: ${{ steps.upd.outputs.on == 'true' && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}"));
-        assert!(yml.contains("TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ steps.upd.outputs.on == 'true' && secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}"));
-        assert!(yml.contains("uploadUpdaterJson: ${{ steps.upd.outputs.on == 'true' }}"));
-        assert!(yml.contains("config-key src-tauri/tauri.conf.json"));
-        for gone in ["signer generate", "update-key-", "npx -y", "@tauri-apps/cli@"] {
-            assert!(!yml.contains(gone), "release.yml still has {gone:?}");
+        assert!(yml.contains(&format!(
+            "KEY_NAME: {}",
+            key_asset_name("${{ matrix.updater }}")
+        )));
+        assert!(yml.contains("uploadUpdaterJson: true"));
+        // The app builds release URLs from v<version>.
+        assert!(yml.contains("'v__VERSION__'"));
+
+        // The key is made by the locked Tauri CLI (package-lock.json, put in
+        // place by `npm ci`), never one fetched at run time. No secrets.
+        assert!(yml.contains("npx --no-install tauri signer generate --ci -w \"$dir/updkey\""));
+        for bad in [
+            "npx -y",
+            "npx --yes",
+            "@tauri-apps/cli@",
+            "secrets.TAURI_SIGNING",
+            "add-mask",
+            "GITHUB_ENV",
+        ] {
+            assert!(!yml.contains(bad), "release.yml has {bad:?}");
         }
-        // The private key only ever goes to tauri-action through env.
-        for line in yml.lines().filter(|l| l.contains("TAURI_SIGNING_PRIVATE_KEY")) {
-            assert!(!line.contains("GITHUB_ENV") && !line.contains("GITHUB_OUTPUT"), "{line}");
-            assert!(!line.contains("echo"), "{line}");
+        // The key folder is under $RUNNER_TEMP, outside the checkout.
+        assert!(yml.contains("dir=\"${RUNNER_TEMP//\\\\//}/greencli-update-key\""));
+        // tauri-action gets the private key as a path, with no password
+        // (the Tauri CLI makes and reads it with an empty one in CI).
+        let signing: Vec<&str> = yml
+            .lines()
+            .map(str::trim)
+            .filter(|l| l.contains("TAURI_SIGNING"))
+            .collect();
+        assert_eq!(
+            signing,
+            [
+                "TAURI_SIGNING_PRIVATE_KEY: ${{ steps.keygen.outputs.dir }}/updkey",
+                "TAURI_SIGNING_PRIVATE_KEY_PASSWORD: \"\"",
+            ]
+        );
+        // Every line that names the private key file: it is made, handed to
+        // tauri-action, and deleted. Nothing else reads, prints, stores or
+        // uploads it.
+        let lines: Vec<&str> = yml.lines().map(str::trim).collect();
+        let private: Vec<usize> = (0..lines.len())
+            .filter(|&i| names_private_key(lines[i]))
+            .collect();
+        assert_eq!(
+            private.len(),
+            3,
+            "{:#?}",
+            private.iter().map(|&i| lines[i]).collect::<Vec<_>>()
+        );
+        assert!(lines[private[0]].starts_with("npx --no-install tauri signer generate"));
+        assert!(lines[private[0]].ends_with("> /dev/null"));
+        assert!(lines[private[1]].starts_with("TAURI_SIGNING_PRIVATE_KEY: "));
+        let delete = private[2];
+        assert_eq!(
+            lines[delete],
+            "run: rm -f \"${RUNNER_TEMP//\\\\//}/greencli-update-key/updkey\""
+        );
+        // The delete step runs even when a step before it failed, right
+        // after the build: before the key's public half is checked or
+        // published.
+        assert!(
+            lines[delete.saturating_sub(3)..delete].contains(&"if: always()"),
+            "the key delete step needs if: always()"
+        );
+        let after = |what: &str| lines.iter().position(|l| l.contains(what)).unwrap();
+        assert!(after("uses: tauri-apps/tauri-action") < delete);
+        assert!(delete < after("name: Check the update signatures"));
+        assert!(delete < after("name: Publish the update key"));
+        // Outputs carry only the key folder, never a key.
+        for line in lines.iter().filter(|l| l.contains("GITHUB_OUTPUT")) {
+            for bad in ["updkey", "TAURI_SIGNING", "$("] {
+                assert!(!line.contains(bad), "{line}");
+            }
         }
+        assert!(yml.contains("echo \"dir=$dir\" >> \"$GITHUB_OUTPUT\""));
     }
 }

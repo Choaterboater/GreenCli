@@ -68,7 +68,7 @@ describe('update helpers', () => {
     expect(offText(ON)).toBeNull();
     expect(offText({ ...ON, enabled: false, reason: 'dev' })).toBe(UPDATE_TEXT.offDev);
     expect(offText({ ...ON, enabled: false, reason: 'platform' })).toBe(UPDATE_TEXT.off);
-    expect(offText({ ...ON, enabled: false, reason: 'noKey' })).toBe(UPDATE_TEXT.off);
+    expect(offText({ ...ON, enabled: false, reason: 'setup' })).toBe(UPDATE_TEXT.off);
     expect(offText(null)).toBe(UPDATE_TEXT.off);
   });
 
@@ -119,8 +119,8 @@ describe('dailyUpdateCheck', () => {
     expect(toasts()).toEqual([]);
   });
 
-  it('never checks when no update key is built in', async () => {
-    answer({ update_status: { ...ON, enabled: false, reason: 'noKey' }, update_check: '2.0.1' });
+  it('never checks when the updater did not start', async () => {
+    answer({ update_status: { ...ON, enabled: false, reason: 'setup' }, update_check: '2.0.1' });
     await dailyUpdateCheck(NOW);
     expect(calls()).toEqual(['update_status']);
   });
