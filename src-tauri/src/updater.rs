@@ -349,14 +349,13 @@ fn is_signature_error(e: &tauri_plugin_updater::Error) -> bool {
     )
 }
 
-/// The release has nothing for this system (no manifest, or no entry for
-/// this platform): treat it as "no update".
+/// The release has no entry for this system: treat it as "no update".
+/// ReleaseNotFound is not here: the plugin returns it for any non-2xx answer,
+/// and the pinned manifest is known to exist (step 1 read it via
+/// /releases/latest/download/).
 fn is_no_release(e: &tauri_plugin_updater::Error) -> bool {
     use tauri_plugin_updater::Error as E;
-    matches!(
-        e,
-        E::ReleaseNotFound | E::TargetNotFound(_) | E::TargetsNotFound(_)
-    )
+    matches!(e, E::TargetNotFound(_) | E::TargetsNotFound(_))
 }
 
 /// A downloaded update whose signature passed, waiting for "Restart to update".
@@ -938,6 +937,19 @@ mod tests {
             Some(vec!["aruba".to_string(), "mist".to_string()])
         );
         assert_eq!(take_stopped(&stopped), None, "only once");
+    }
+
+    #[test]
+    fn only_a_missing_platform_entry_means_no_update() {
+        use tauri_plugin_updater::Error as E;
+        assert!(is_no_release(&E::TargetNotFound("darwin-aarch64".into())));
+        assert!(is_no_release(&E::TargetsNotFound(vec![
+            "windows-x86_64".into()
+        ])));
+        // The plugin returns ReleaseNotFound for any non-2xx answer (a 403,
+        // 429 or 5xx), and the pinned manifest is known to exist: a failed
+        // check, not "You have the latest version."
+        assert!(!is_no_release(&E::ReleaseNotFound));
     }
 
     fn conf() -> Value {
