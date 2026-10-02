@@ -6,6 +6,7 @@ mod api;
 mod central;
 mod config_archive;
 mod error;
+mod export_file;
 mod folder;
 mod intent;
 mod local;
@@ -1360,6 +1361,17 @@ async fn read_file_text(path: String) -> Result<String, String> {
 async fn write_file_text(path: String, contents: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         std::fs::write(&path, contents).map_err(|e| format!("Failed to write {}: {}", path, e))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// MCP export: write the .mcp.json the user picked. Owner-only, never through
+/// a link, never over another app's settings file (see export_file.rs).
+#[tauri::command]
+async fn mcp_export_write(path: String, contents: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        export_file::write_export(std::path::Path::new(&path), contents.as_bytes())
     })
     .await
     .map_err(|e| e.to_string())?
@@ -2904,6 +2916,7 @@ fn main() {
             mcp_set_writes,
             mcp_set_credentials,
             mcp_has_credentials,
+            mcp_export_write,
             list_known_hosts,
             remove_known_host,
             import_ssh_config,

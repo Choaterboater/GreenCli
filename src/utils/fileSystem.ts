@@ -24,9 +24,9 @@ export async function tauriListFolder(path: string): Promise<FolderListing> {
   return invoke<FolderListing>('list_folder', { path });
 }
 
-export async function tauriSave(defaultName: string): Promise<string | null> {
+export async function tauriSave(defaultName: string, title = 'Save File'): Promise<string | null> {
   const result = await saveDialog({
-    title: 'Save File',
+    title,
     defaultPath: defaultName,
     filters: [{ name: 'All Files', extensions: ['*'] }],
   });

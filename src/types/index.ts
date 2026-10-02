@@ -949,12 +949,10 @@ export interface ChatMessage {
   toolCalls?: McpToolCall[];
 }
 
-export interface McpServerConfig {
-  name: string;
-  command: string;
-  args: string[];
-  env?: Record<string, string>;
-}
+// The saved MCP server shape lives in utils/mcpTypes (shared with the Rust contract).
+export type { McpServerDef } from '../utils/mcpTypes';
+/** MCP server transport as the Rust McpTransport serializes it (client.rs McpTransport). */
+export type McpTransport = import('../utils/mcpTypes').McpServerDef['transport'];
 
 export interface McpTool {
   name: string;

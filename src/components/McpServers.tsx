@@ -15,6 +15,7 @@ import {
   TerminalSquare,
   Eye,
   EyeOff,
+  Download,
 } from 'lucide-react';
 import { notify } from '../store/toastStore';
 import { askConfirm } from '../store/dialogStore';
@@ -28,6 +29,9 @@ type McpTransport = McpServerDef['transport'];
 /** Forget every "Yes, for this session" answer for a server: it was
  *  reconnected, changed or removed, so its tools must ask again. */
 const clearAllowances = (name: string) => useMcpApprovalStore.getState().clearServer(name);
+import type { ExportSummary } from '../utils/mcpExport';
+import { isTauri, tauriSave } from '../utils/fileSystem';
+import { secretFilterSupported } from '../utils/secrets/support';
 
 const blankForm = {
   name: '',
@@ -113,6 +117,8 @@ export default function McpServers() {
   const [editingName, setEditingName] = useState<string | null>(null);
   const [showConfigPaste, setShowConfigPaste] = useState(false);
   const [configPasteText, setConfigPasteText] = useState('');
+  const [exporting, setExporting] = useState(false);
+  const [exportDone, setExportDone] = useState<ExportSummary | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -344,29 +350,95 @@ export default function McpServers() {
     }
   };
 
+  // Export for Casper / Claude Code: a .mcp.json with every secret turned into a ${NAME} variable.
+  // The secret rules load only after the support check, so an old WebView fails closed.
+  const exportServers = async () => {
+    if (exporting) return;
+    if (!isTauri) {
+      notify.info('Export needs the desktop app');
+      return;
+    }
+    if (!secretFilterSupported()) {
+      notify.error('Could not export', "This computer can't run GreenCLI's secret check, so nothing was saved.");
+      return;
+    }
+    setExporting(true);
+    try {
+      const defs = (await invoke<McpServerDef[]>('mcp_list_servers')) || [];
+      if (!defs.length) {
+        notify.info('Nothing to export', 'Add a server first.');
+        return;
+      }
+      const withCredentials = new Set<string>();
+      await Promise.all(
+        defs
+          .filter((d) => d.transport !== 'http')
+          .map(async (d) => {
+            if (await invoke<boolean>('mcp_has_credentials', { name: d.name }).catch(() => false)) withCredentials.add(d.name);
+          }),
+      );
+      const { buildMcpExport, exportSummary, refusedExportPath, EXPORT_FILE_NAME } = await import('../utils/mcpExport');
+      const result = buildMcpExport(defs, { withCredentials });
+      if (result.count === 0) {
+        notify.warning('Nothing to export', result.notes.join(' ') || 'None of these servers can be exported.');
+        return;
+      }
+      const path = await tauriSave(EXPORT_FILE_NAME, 'Export MCP servers');
+      if (!path) return;
+      const refused = refusedExportPath(path);
+      if (refused) {
+        notify.error('Not saved', refused);
+        return;
+      }
+      // Rust checks the real path again (links, other apps' files) and writes it owner-only.
+      await invoke('mcp_export_write', { path, contents: result.text });
+      setExportDone(exportSummary(result, path));
+      notify.success('MCP servers exported', `${result.count} server${result.count === 1 ? '' : 's'} saved`);
+    } catch (e) {
+      notify.error('Could not export MCP servers', String(e));
+    } finally {
+      setExporting(false);
+    }
+  };
+
   const input = 'input-field w-full h-8 px-2 text-sm';
 
   return (
     <section>
       <div className="flex items-center justify-between mb-3">
         <h3 className="text-sm font-semibold text-[var(--text-primary)]">MCP Servers</h3>
-        <button
-          onClick={() => {
-            setForm({ ...blankForm });
-            setCredsSaved(false);
-            setShowCreds(false);
-            setEditingName(null);
-            setShowConfigPaste(false);
-            setConfigPasteText('');
-            // Not a toggle: clicking "Add server" while an EDIT form is open
-            // must open a blank add form, not close the edit form it just reset.
-            setShowForm(true);
-          }}
-          className="flex items-center gap-1.5 px-2.5 py-1 text-[11px] rounded-md bg-[var(--bg-tertiary)] hover:bg-[var(--border-strong)] text-[var(--text-primary)] transition-colors"
-        >
-          <Plus size={13} />
-          Add server
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={exportServers}
+            disabled={servers.length === 0 || exporting}
+            title={
+              servers.length === 0
+                ? 'Add a server first'
+                : 'Save these servers as a .mcp.json file for Casper or Claude Code. Secrets become ${NAME} variables.'
+            }
+            className="flex items-center gap-1.5 px-2.5 py-1 text-[11px] rounded-md bg-[var(--bg-tertiary)] hover:bg-[var(--border-strong)] text-[var(--text-primary)] transition-colors disabled:opacity-50"
+          >
+            {exporting ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
+            Export for Casper / Claude…
+          </button>
+          <button
+            onClick={() => {
+              setForm({ ...blankForm });
+              setCredsSaved(false);
+              setShowCreds(false);
+              setEditingName(null);
+              setShowConfigPaste(false);
+              setConfigPasteText('');
+              // Not a toggle: clicking "Add server" while an EDIT form is open
+              // must open a blank add form, not close the edit form it just reset.
+              setShowForm(true);
+            }}
+            className="flex items-center gap-1.5 px-2.5 py-1 text-[11px] rounded-md bg-[var(--bg-tertiary)] hover:bg-[var(--border-strong)] text-[var(--text-primary)] transition-colors"
+          >
+            <Plus size={13} />
+            Add server
+          </button>
+        </div>
       </div>
 
       <p className="text-[11px] text-[var(--text-secondary)] mb-3 leading-relaxed">
@@ -375,6 +447,46 @@ export default function McpServers() {
         <code className="text-[var(--accent)]">centralmcp</code> Aruba Central/GLP server. Tools are offered to{' '}
         <em>every</em> AI provider, not just one.
       </p>
+
+      {/* Export result: names and places only, never a secret value */}
+      {exportDone && (
+        <div
+          role="status"
+          className="mb-3 p-3 rounded-[var(--radius)] border border-[var(--border-strong)] bg-[var(--bg-secondary)] text-[11px] text-[var(--text-secondary)] space-y-2 leading-relaxed"
+        >
+          <div className="text-[12px] font-medium text-[var(--text-primary)] break-all">{exportDone.title}</div>
+          <p>{exportDone.variablesIntro}</p>
+          {exportDone.variables.length > 0 && (
+            <ul className="list-disc pl-4 space-y-1">
+              {exportDone.variables.map((v) => (
+                <li key={v.name}>
+                  <code className="text-[var(--accent)]">{v.name}</code>: {v.text}
+                </li>
+              ))}
+            </ul>
+          )}
+          <p>{exportDone.whereToPut}</p>
+          {exportDone.notes.length > 0 && (
+            <>
+              <p className="text-[var(--text-primary)]">Notes:</p>
+              <ul className="list-disc pl-4 space-y-1">
+                {exportDone.notes.map((n, i) => (
+                  <li key={i}>{n}</li>
+                ))}
+              </ul>
+            </>
+          )}
+          <p className="text-[var(--text-muted)]">{exportDone.check}</p>
+          <div className="flex justify-end">
+            <button
+              onClick={() => setExportDone(null)}
+              className="px-3 h-7 text-[11px] rounded-md bg-[var(--bg-tertiary)] hover:bg-[var(--border-strong)] text-[var(--text-primary)]"
+            >
+              Done
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Server list */}
       <div className="space-y-2">

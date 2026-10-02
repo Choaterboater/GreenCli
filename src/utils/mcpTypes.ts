@@ -56,9 +56,11 @@ export interface McpServerDef {
   command: string;
   args: string[];
   env: Record<string, string>;
-  cwd?: string;
-  url?: string;
-  credentialsEnvVar?: string;
+  // Rust Option<String>: these arrive as null when unset.
+  cwd?: string | null;
+  url?: string | null;
+  credentialsEnvVar?: string | null;
+  /** Rust always sends an object; optional only because the add/edit form leaves it undefined when empty. */
   headers?: Record<string, string>;
   enabled: boolean;
   /** [A3] */
