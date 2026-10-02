@@ -1,262 +1,294 @@
 # GreenCLI
 
-One cockpit for **Aruba · Juniper · Mist**. A modern, cross-platform terminal, SSH client, config editor, REST API explorer, and AI assistant built as a SecureCRT/Termius replacement, with multi-vendor syntax highlighting for network engineers.
+One desktop app for Aruba, Juniper and Mist: an SSH terminal, a config editor that checks your
+changes, safe changes with a rollback timer, and an AI helper that never sees your passwords.
+For macOS and Windows. Free and open source.
 
-> 📘 **New here? See the [Setup & Configuration Guide](docs/SETUP.md)** — installing,
-> running, and configuring every feature (SSH/vault, AI providers, MCP, Aruba Central,
-> on-prem REST, network intent, TLS, screenshots).
+[![Latest release](https://img.shields.io/github/v/release/Choaterboater/GreenCli?label=release&color=01a982)](https://github.com/Choaterboater/GreenCli/releases/latest)
+[![CI](https://github.com/Choaterboater/GreenCli/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Choaterboater/GreenCli/actions/workflows/ci.yml)
 
-![GreenCLI main window](docs/screenshots/01-main-window.png)
+**[Download](https://choaterboater.github.io/GreenCli/#download)** ·
+[Releases page](https://github.com/Choaterboater/GreenCli/releases/latest) ·
+[Website](https://choaterboater.github.io/GreenCli/) ·
+[Guide](https://choaterboater.github.io/GreenCli/guide/)
+
+[![GreenCLI main window: an AOS-CX session, with saved hosts in folders on the left](https://choaterboater.github.io/GreenCli/screenshots/01-main-window.png)](https://choaterboater.github.io/GreenCli/screenshots/01-main-window.png)
+
+## What's new in 2.0
+
+- **Updates itself.** On macOS and Windows, GreenCLI gets new versions from its GitHub releases.
+  Each one is checked against its signature, and nothing installs until you click
+  **Restart to update**.
+- **Keys in the system password store.** AI keys and MCP logins are now kept in macOS Keychain or
+  Windows Credential Manager (the Secret Service on Linux), not in files.
+- **greencli-mcp.** A read-only MCP server that comes with the app. Casper or Claude Code can read
+  your saved devices, configs and intents, with secrets hidden. [More below](#greencli-mcp).
+- **Tauri 2.** The app now runs on Tauri 2. Your hosts, settings, vault and logins stay where they
+  were, and 2.0 installs over 1.9.
+
+Coming from 1.9 or older? Install 2.0 by hand once. After that it updates itself. Back up your AI
+keys first: see the [upgrade notes](CHANGELOG.md#200---2026-10-02).
+Every change is in the [CHANGELOG](CHANGELOG.md), also on the site as
+[What's new](https://choaterboater.github.io/GreenCli/whats-new/).
+
+## Photos
+
+Click a photo for full size. All of them use made-up demo data: no real devices, addresses or keys.
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <a href="https://choaterboater.github.io/GreenCli/screenshots/02-config-editor.png"><img src="https://choaterboater.github.io/GreenCli/screenshots/thumbs/02-config-editor.png" alt="Config Editor with squiggles and the Problems list"></a><br>
+      <b>Config Editor.</b> Risky lines get a squiggle, and the Problems list shows each one. The
+      bottom line says where Send goes.
+    </td>
+    <td width="50%" valign="top">
+      <a href="https://choaterboater.github.io/GreenCli/screenshots/03-ai-review-diff.png"><img src="https://choaterboater.github.io/GreenCli/screenshots/thumbs/03-ai-review-diff.png" alt="An AI fix shown as a diff"></a><br>
+      <b>AI fix as a diff.</b> Apply it or Discard it. Secrets the AI never saw get their real
+      value back.
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <a href="https://choaterboater.github.io/GreenCli/screenshots/05-ai-assistant.png"><img src="https://choaterboater.github.io/GreenCli/screenshots/thumbs/05-ai-assistant.png" alt="AI Assistant next to a terminal"></a><br>
+      <b>AI Assistant.</b> It ran a show command. The keys in the output reached it as
+      <code>&lt;secret hidden&gt;</code>.
+    </td>
+    <td width="50%" valign="top">
+      <a href="https://choaterboater.github.io/GreenCli/screenshots/06-mcp-approval.png"><img src="https://choaterboater.github.io/GreenCli/screenshots/thumbs/06-mcp-approval.png" alt="The approval box for an MCP tool"></a><br>
+      <b>Approval box.</b> An MCP tool that can change things asks you first, with its full
+      arguments.
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <a href="https://choaterboater.github.io/GreenCli/screenshots/09-change-jobs.png"><img src="https://choaterboater.github.io/GreenCli/screenshots/thumbs/09-change-jobs.png" alt="Change Jobs dry run"></a><br>
+      <b>Change Jobs.</b> One VLAN change for four switches: a dry run first, then a rollback timer
+      until you confirm.
+    </td>
+    <td width="50%" valign="top">
+      <a href="https://choaterboater.github.io/GreenCli/screenshots/11-network-intent.png"><img src="https://choaterboater.github.io/GreenCli/screenshots/thumbs/11-network-intent.png" alt="Network Intent checks"></a><br>
+      <b>Network Intent.</b> Write down what should be true, then check every device. Here one
+      rule fails on two switches.
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <a href="https://choaterboater.github.io/GreenCli/screenshots/07-settings-mcp-servers.png"><img src="https://choaterboater.github.io/GreenCli/screenshots/thumbs/07-settings-mcp-servers.png" alt="Settings, MCP Servers"></a><br>
+      <b>MCP Servers.</b> Writes are off until you turn them on. greencli-mcp has Copy buttons, and
+      Export makes a file for Casper or Claude Code.
+    </td>
+    <td width="50%" valign="top">
+      <a href="https://choaterboater.github.io/GreenCli/screenshots/10-settings-ai.png"><img src="https://choaterboater.github.io/GreenCli/screenshots/thumbs/10-settings-ai.png" alt="Settings, AI Assistant"></a><br>
+      <b>AI settings.</b> Pick the provider and model. The API key is saved in macOS Keychain.
+    </td>
+  </tr>
+</table>
+
+More photos are on the [website](https://choaterboater.github.io/GreenCli/#photos). They are
+taken again for every release.
 
 ## Features
 
-- **SSH, Telnet, Serial & Local PTY** connections (with jump-host / ProxyJump)
-- **Aruba** AOS-CX / AOS-S / InstantOS / ArubaOS syntax highlighting
-- **Juniper Junos** (EX/QFX/SRX/MX) syntax highlighting
-- **Juniper Mist** cloud awareness (API Explorer integration)
-- **Auto device detection** - identifies vendor/OS from the prompt
-- **Tabbed sessions**
-- **Session manager** with folders and organization
-- **Encrypted credential vault** (AES-256-GCM + Argon2)
-- **Real-time syntax highlighting** with ANSI color injection
-- **Modern dark/light themes**
-- **Keyboard shortcuts** (Ctrl+T connect, Ctrl+W close, Ctrl+F search, Ctrl+, settings)
-- **Fast terminal rendering** via xterm.js
-- **Automatic updates** on macOS and Windows, from GitHub releases, checked against their signature before they install
-- **AI keys and MCP logins in the system password store** (macOS Keychain, Windows Credential Manager, Linux Secret Service)
-- **greencli-mcp**, a read-only MCP server so Casper or Claude Code can read your devices, configs (secrets hidden) and intents
+**Terminal**
+- SSH, Telnet, serial and a local shell, in tabs. Split view and pop-out windows.
+- Jump hosts (ProxyJump), SSH keys, ssh-agent, and TACACS+ / RADIUS logins.
+- Knows the device from its prompt: Aruba AOS-CX, AOS-S, access points and Mobility Controllers,
+  and Juniper Junos. Their output shows in color, in your theme's colors.
+- Saved hosts in folders. Import them from a CSV file, SecureCRT, Aruba Central, Juniper Mist or
+  `~/.ssh/config`.
+- SFTP, SSH tunnels (`-L` and SOCKS `-D`), Bulk Runner (one command on many devices), output
+  triggers and session logs.
 
-## Tech Stack
+**Config Editor**
+- The VS Code editor (Monaco), with templates and snippets for Aruba CX and Junos.
+- Risky lines, blanks to fill in and terminal junk get a squiggle. A Problems list, quick fixes,
+  and hover cards that say what a line does.
+- Compare with the running config you pulled, or with a file. Open a whole folder as a tree.
+- Send to the terminal, send only the lines you picked, or send safely as a Change Job.
+- Copy with secrets hidden, for a ticket or a chat.
 
-| Layer | Technology |
-|-------|------------|
-| Frontend | React 18 + TypeScript + Tailwind CSS |
-| Terminal | xterm.js 5.x |
-| Shell | Tauri 2 (Rust + WebView) |
-| SSH | russh 0.63 (Rust native SSH library) |
-| Telnet | tokio async TCP |
-| Serial | tokio-serial |
-| Crypto | AES-256-GCM + Argon2 |
+**Safe changes**
+- **Change Jobs**: one change for many devices. A dry run, one canary device first, then the
+  device's own rollback timer (AOS-CX `checkpoint auto`, Junos `commit confirmed`) until you
+  confirm.
+- **Network Intent**: write down what should be true and check all your devices, by hand or on a
+  schedule.
+- **Config archive**: saved running configs. Compare the newest one with your golden config or the
+  one before it.
 
-## Project Structure
+**AI helper**
+- Anthropic (Claude), OpenRouter, Moonshot (Kimi), Ollama, a local CLI, or
+  [Casper](https://github.com/Choaterboater/casper).
+- Passwords, keys and SNMP communities in device output reach the AI as `<secret hidden>`.
+- You choose which tools the AI may use: device commands, device REST and MCP tools. The
+  Read-only Auditor agent can only read.
+- **Ask AI** in the editor: explain, check or fix lines, or convert Aruba CX ↔ Junos.
 
-```
-green-cli/
-├── src/                          # React frontend
-│   ├── App.tsx                   # Root component / view routing
-│   ├── PopOutTerminal.tsx        # Pop-out terminal window entry
-│   ├── main.tsx                  # React entry point
-│   ├── components/               # UI components
-│   │   ├── Terminal.tsx          # xterm.js wrapper
-│   │   ├── TerminalTabs.tsx      # Tab bar
-│   │   ├── Sidebar.tsx           # Session tree
-│   │   ├── StatusBar.tsx         # Connection status
-│   │   ├── QuickConnect.tsx      # Quick connect dialog
-│   │   ├── SshAuthDialog.tsx     # SSH authentication
-│   │   ├── SettingsPanel.tsx     # Settings UI
-│   │   ├── SearchOverlay.tsx     # Terminal search
-│   │   ├── AiAssistant.tsx       # AI assistant panel
-│   │   ├── ApiExplorer.tsx       # REST API explorer (Central / device / Mist)
-│   │   ├── BulkRunner.tsx        # Run one command across sessions
-│   │   ├── ConfigEditor.tsx      # Monaco config editor
-│   │   ├── HelpPanel.tsx         # In-app help (F1)
-│   │   ├── IntentPanel.tsx       # Network intent / desired state
-│   │   ├── McpServers.tsx        # MCP server manager
-│   │   ├── SftpBrowser.tsx       # SFTP file browser
-│   │   ├── TunnelsManager.tsx    # SSH local/dynamic forwards
-│   │   └── …                     # Command palette, vault, triggers, dialogs, toaster
-│   ├── syntax/                   # Syntax highlighting engine
-│   │   ├── highlighter.ts        # Core highlighting engine
-│   │   ├── grammar-aruba-cx.ts   # Aruba CX grammar (100 commands, 120 subcommands)
-│   │   ├── grammar-aruba-ap.ts   # Aruba AP grammar (56 commands, 88 subcommands)
-│   │   ├── grammar-aruba-ctrl.ts # Aruba Controller grammar (76 commands, 80 subcommands)
-│   │   ├── grammar-junos.ts      # Juniper Junos grammar
-│   │   └── ansi-processor.ts     # ANSI sequence processor
-│   ├── data/                     # Static content (help topics, intent packs)
-│   ├── hooks/                    # React hooks
-│   ├── store/                    # Zustand state stores
-│   ├── types/                    # TypeScript types
-│   ├── styles/                   # Global CSS
-│   └── utils/                    # Shared helpers (clipboard, backup, vault, intent, terminal)
-├── e2e/                          # Playwright end-to-end tests (npm run test:e2e)
-├── scripts/                      # Utility scripts (screenshot capture)
-├── src-tauri/                    # Rust backend
-│   ├── Cargo.toml                # Rust dependencies (and the workspace)
-│   ├── tauri.conf.json           # Tauri configuration
-│   ├── capabilities/             # What the app window may call (Tauri 2)
-│   ├── greencli-mcp/             # Read-only MCP server crate
-│   └── src/
-│       ├── main.rs               # Tauri commands
-│       ├── ssh/                  # SSH client (russh)
-│       ├── telnet/               # Telnet client
-│       ├── serial/               # Serial port client
-│       ├── sftp/                 # SFTP file transfer
-│       ├── vault/                # Credential vault (AES-256-GCM)
-│       ├── session/              # Session manager
-│       ├── ai/                   # AI provider backends
-│       ├── api/                  # On-box REST (AOS-CX/AOS-8/AOS-S)
-│       ├── central/              # Aruba Central client
-│       ├── intent/               # Network intent engine
-│       ├── local/                # Local PTY
-│       ├── mcp/                  # MCP client (stdio + streamable HTTP)
-│       ├── secret_store.rs       # AI keys + MCP logins in the system password store
-│       ├── updater.rs            # Automatic updates from GitHub releases
-│       └── bin/greencli-mcp.rs   # The greencli-mcp binary that ships next to the app
-├── package.json                  # Node dependencies
-└── playwright.config.ts          # Playwright configuration
-```
+**MCP and APIs**
+- GreenCLI is an MCP client (stdio and HTTP). A tool that can change something asks you first,
+  and **Allow writes** is off for each server until you turn it on.
+- **Export for Casper / Claude…** saves your servers as a `.mcp.json` file with no secrets in it.
+- API Explorer for Aruba Central, on-box REST (AOS-CX, AOS-S, AOS 8) and Juniper Mist.
 
-## Quick Start
+## Install
 
-### Runs on
+Get the latest version from the [website](https://choaterboater.github.io/GreenCli/#download) or the
+[Releases page](https://github.com/Choaterboater/GreenCli/releases/latest).
 
-- **macOS 13.3 (Ventura) or newer.** Older macOS versions lack features the app needs to hide device secrets from the AI.
-- **Windows 10/11** with the WebView2 runtime.
-- **Linux** with WebKitGTK 4.1, 2.40 or newer (an updated Ubuntu 22.04 or newer). On an old WebKitGTK, the AI panel withholds device output instead of sending it unchecked. There is no Linux release build, so no automatic updates there.
+| Your computer | File |
+|---------------|------|
+| Mac with Apple Silicon (M1 or newer) | `GreenCLI_<version>_aarch64.dmg` |
+| Mac with Intel | `GreenCLI_<version>_x64.dmg` |
+| Windows | `GreenCLI_<version>_x64-setup.exe` or `GreenCLI_<version>_x64_en-US.msi` (either one works) |
 
-### Prerequisites
+It runs on macOS 13.3 (Ventura) or newer, and on Windows 10 or 11 with Microsoft WebView2 (Windows
+11 has it built in). There is no Linux download: you can [build it yourself](#build-from-source).
 
-- [Node.js](https://nodejs.org/) 18+ and npm
-- [Rust](https://rustup.rs/) stable toolchain, 1.90+ (MSRV)
-- OS-specific build tools for Tauri 2: [Tauri Prerequisites](https://v2.tauri.app/start/prerequisites/). On Linux: `libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libudev-dev libdbus-1-dev pkg-config` (see [docs/SETUP.md](docs/SETUP.md)).
+- **Mac:** open the `.dmg` and drag GreenCLI to Applications. Always open it from there, or it
+  can't update itself.
+- **First open on a Mac:** if macOS won't open it, go to System Settings → Privacy & Security and
+  click **Open Anyway**. A build that Apple has notarized opens with no warning.
+- **First open on Windows:** if you see "Windows protected your PC", click **More info**, then
+  **Run anyway**.
+- **Updates:** Settings → Updates has **Check for updates** and **Check once a day** (on by
+  default). On Windows, close Claude Code and Casper before you update.
 
-### Install Dependencies
+## Keyboard shortcuts
+
+| Action | Mac | Windows |
+|--------|-----|---------|
+| Quick Connect | `Cmd+T` | `Ctrl+Shift+T` |
+| Command palette | `Cmd+K` | `Ctrl+Shift+P` |
+| Find in the terminal | `Cmd+F` | `Ctrl+Shift+F` |
+| Close the tab | `Cmd+W` | `Ctrl+Shift+W` |
+| Next / previous tab | `Ctrl+Tab` / `Ctrl+Shift+Tab` | `Ctrl+Tab` / `Ctrl+Shift+Tab` |
+| Go to tab 1 to 9 | `Cmd+1` … `Cmd+9` | `Alt+1` … `Alt+9` |
+| Editor / API / AI panel | `Cmd+Shift+E` / `A` / `I` | `Ctrl+Shift+E` / `A` / `I` |
+| Show or hide the sidebar | `Cmd+B` | `Ctrl+B` |
+| Settings | `Cmd+,` | `Ctrl+,` |
+| Help | `F1` | `F1` |
+
+Inside a session on Windows, plain `Ctrl+T`, `Ctrl+F`, `Ctrl+K` and `Ctrl+W` go to the device, so
+GreenCLI uses the `Ctrl+Shift` keys. Linux uses the Windows keys. All of them, with the Config
+Editor keys, are in [Help](https://choaterboater.github.io/GreenCli/help/#shortcuts) and in the
+[guide](docs/SETUP.md#11-keyboard-shortcuts).
+
+## greencli-mcp
+
+GreenCLI comes with a small read-only MCP server, `greencli-mcp`, so Casper or Claude Code can read
+your GreenCLI data. It is next to the app: `GreenCLI.app/Contents/MacOS/greencli-mcp` on a Mac,
+`greencli-mcp.exe` in the install folder on Windows. Settings → AI & MCP → MCP Servers shows its
+full path, with Copy buttons for the path and the command. On a Mac, move GreenCLI to Applications
+first. To add it to Claude Code:
 
 ```bash
-# Install Node dependencies
-npm install
-
-# Install Tauri CLI (if not already installed)
-npm install -g @tauri-apps/cli
+claude mcp add greencli -- "/Applications/GreenCLI.app/Contents/MacOS/greencli-mcp"
 ```
 
-### Development Mode
+**Export for Casper / Claude…** adds it to the `.mcp.json` file too.
 
-```bash
-# Start the dev server (Vite + Tauri)
-npm run tauri-dev
-```
+It has six read tools: `access_check`, `list_devices`, `list_config_history`, `get_config`,
+`get_config_diff` and `list_intents`.
 
-### Build for Production
-
-```bash
-# Build the application
-npm run tauri-build
-```
-
-The built application will be in `src-tauri/target/release/`.
-
-### Cross-Platform Builds
-
-```bash
-# macOS (Universal binary)
-npm run tauri-build -- --target universal-apple-darwin
-
-# Windows (from Linux/macOS with cross-compilation)
-npm run tauri-build -- --target x86_64-pc-windows-msvc
-
-# Linux
-npm run tauri-build -- --target x86_64-unknown-linux-gnu
-```
-
-## Keyboard Shortcuts
-
-| Shortcut | Action |
-|----------|--------|
-| `Ctrl+T` | Quick Connect |
-| `Ctrl+W` | Close Active Tab |
-| `Ctrl+F` | Search Terminal |
-| `Ctrl+,` | Open Settings |
-| `F1` | Help & documentation (in-app) |
-| `Ctrl+B` | Toggle Sidebar |
-| `Ctrl+K` | Command Palette |
-| `Ctrl+1`–`Ctrl+9` | Jump to tab N |
-| `Ctrl+Tab` | Cycle to next tab |
-| `Ctrl+Shift+A` | Toggle API Explorer |
-| `Ctrl+Shift+I` | Toggle AI Assistant |
-| `Ctrl+Shift+E` | Toggle Config Editor |
-| `Ctrl+=` / `Ctrl+-` | Zoom terminal font in / out |
-| `Ctrl+0` | Reset terminal font size |
-
-(On macOS use `Cmd` instead of `Ctrl`.)
-
-## Aruba Syntax Highlighting
-
-The syntax highlighter supports **232 commands**, **288 subcommands**, and **144 keywords** across all three Aruba device types. It features:
-
-- **Prompt detection** - Identifies device type from CLI prompt patterns
-- **Auto-detection** - Scans terminal buffer to automatically identify connected device type
-- **Theme colors** - Uses the terminal theme's own colors, so highlighting follows light/dark and any color scheme, and re-colors when you switch
-- **Comment lines** - `!` lines (Aruba) and `#` / `/* */` lines (Junos) show dimmed
-- **Longest-match-first** - Correctly handles multi-word commands like `no shutdown`
-- **Value highlighting** - Colors IP addresses, MAC addresses, VLAN IDs, and interface names
-
-### Supported Device Types
-
-| Device | Grammar Coverage |
-|--------|-----------------|
-| Aruba CX Switch | 100 commands, 120 subcommands, 59 keywords |
-| Aruba Wireless AP | 56 commands, 88 subcommands, 44 keywords |
-| Aruba Mobility Controller | 76 commands, 80 subcommands, 41 keywords |
-
-## greencli-mcp: GreenCLI data for Casper or Claude Code
-
-GreenCLI ships a small read-only MCP server, `greencli-mcp`, next to the app
-(`GreenCLI.app/Contents/MacOS/greencli-mcp` on macOS, `greencli-mcp.exe` in the
-install folder on Windows). Settings → AI & MCP → MCP Servers shows its full path,
-with Copy buttons for the path and the command. On a Mac, move GreenCLI to
-Applications first. To add it to Claude Code:
-
-```bash
-claude mcp add --scope user greencli -- "/Applications/GreenCLI.app/Contents/MacOS/greencli-mcp" \
-  --data-dir "$HOME/Library/Application Support/com.choatelabs.greencli"
-```
-
-`--scope user` makes it available in every folder; without it Claude Code only
-adds it for the folder you run the command in. `--data-dir` is GreenCLI's data
-folder, so greencli-mcp reads the same one as the app (the copied command has
-yours filled in).
-
-"Export for Casper / Claude…" puts it in the `.mcp.json` file too.
-
-It has seven read tools: `access_check`, `list_devices`, `list_archive_devices`,
-`list_config_history`, `get_config`, `get_config_diff` and `list_intents`.
-`list_archive_devices` finds config history kept under a device's old name, after
-a rename or delete in GreenCLI.
-
-- It only reads GreenCLI's data folder. It never writes a file, opens a network
-  connection or starts a program (a source-scan test checks this).
+- It only reads GreenCLI's data folder. It never writes a file, opens a network connection or
+  starts a program (a test checks the source for this).
 - The device list has no passwords, user names, notes or startup commands.
-- Configs and diffs come only from copies made with secrets hidden, saved when a
-  config is captured. A snapshot without a current hidden copy is refused, never
-  served raw. In the Config Archive panel, **Make hidden copies** makes them for
-  older snapshots.
+- Configs and diffs come only from copies with secrets hidden, saved when a config is captured. A
+  snapshot with no up-to-date hidden copy is refused, never served raw. For older snapshots, open
+  Config archive and click **Make hidden copies**.
 - A diff can't show a changed secret: both sides show it hidden.
 
-See [docs/SETUP.md](docs/SETUP.md) §6 for the full details.
+More in the guide: [greencli-mcp](https://choaterboater.github.io/GreenCli/guide/#greencli-mcp-greencli-data-for-casper-or-claude-code).
 
-## Automatic updates
+## Build from source
 
-On macOS and Windows, GreenCLI updates itself from its GitHub releases. Settings →
-Updates has **Check for updates** and **Check once a day** (on by default). An
-update is downloaded and checked against its signature first, and nothing installs
-until you tap **Restart to update**. Each release build signs its own files, so
-there is no signing key to keep. 1.9 and older have no updater: install 2.0 by
-hand once. See [docs/SETUP.md](docs/SETUP.md) §2 for releasing and for what the
-signature does and doesn't protect against.
+You need:
 
-## Security Features
+- [Node.js](https://nodejs.org/) 22 (or 20.19 and newer) and npm.
+- [Rust](https://rustup.rs/) 1.90 or newer.
+- The Tauri 2 build tools for your system: see [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/).
+  On a Mac that is the Xcode Command Line Tools. On Windows, the Microsoft C++ Build Tools and
+  WebView2. On Linux (Ubuntu 24.04 or newer):
 
-- **AES-256-GCM encryption** for stored credentials
-- **AI keys and MCP logins in the system password store**; with one, an MCP login is on disk only while its server runs
-- **Signed updates**, checked before they install, from GreenCLI's GitHub releases only
-- **Argon2id** password hashing for master password
-- Password-protected credential vault
-- **Device REST TLS verification on by default** (opt out only for self-signed lab gear)
-- **TOFU SSH host-key pinning**, with a warning when a known host offers an unseen host-key algorithm
-- **Device secrets hidden from the AI**: passwords, keys, SNMP communities and private keys in tool output reach the model as `<secret hidden>`
-- SSH private keys held in zeroized memory (wiped on drop)
+  ```bash
+  sudo apt install build-essential libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libudev-dev \
+    libdbus-1-dev pkg-config
+  ```
+
+Then, in the repo folder:
+
+```bash
+npm install            # also installs the Tauri command line tool
+npm run tauri-dev      # run the app (the first run takes a few minutes)
+npm run tauri-build    # make the app and installer for this computer
+```
+
+The installers land in `src-tauri/target/release/bundle/`. Build on the system you want the app
+for. Release builds for macOS and Windows come from GitHub Actions
+(`.github/workflows/release.yml`); the guide's
+[Releasing](https://choaterboater.github.io/GreenCli/guide/#releasing) part has the steps.
+
+Checks (the same ones CI runs):
+
+```bash
+npx tsc --noEmit       # types
+npm run lint           # lint
+npm test               # unit tests
+npm run smoke          # build, then open the built app in Chromium
+npm run build && cd src-tauri && cargo test --workspace   # Rust tests
+```
+
+`npm run smoke` and the photos need Chromium for Playwright: run `npx playwright install chromium`
+once. New photos: `npm run build`, then `npm run screenshots`. The website: `npm run site:preview`
+builds it and serves it at http://127.0.0.1:4173/. See [Screenshots](docs/SETUP.md#14-screenshots).
+
+**What's in the repo**
+
+| Folder | What it holds |
+|--------|---------------|
+| [`src/`](src) | The app's screens: React 18, TypeScript, Tailwind CSS, xterm.js and Monaco |
+| [`src-tauri/`](src-tauri) | The Rust side on Tauri 2: SSH (russh), Telnet, serial, SFTP, the vault, AI, MCP and updates |
+| [`src-tauri/greencli-mcp/`](src-tauri/greencli-mcp) | The read-only greencli-mcp server |
+| [`e2e/`](e2e) | Playwright tests |
+| [`scripts/`](scripts) | Photos, website, smoke test and release helpers |
+| [`site/`](site) | The website's pages and style |
+| [`docs/`](docs) | The guide and the photos |
+
+## Docs
+
+- **[Guide](https://choaterboater.github.io/GreenCli/guide/)**: install, set up and use every part
+  of GreenCLI. It is [docs/SETUP.md](docs/SETUP.md) on the website.
+- **[Help topics](https://choaterboater.github.io/GreenCli/help/)**: the same help as `F1` in the
+  app, with the keys for Mac or Windows.
+- **[What's new](https://choaterboater.github.io/GreenCli/whats-new/)**: every change, version by
+  version. It is [CHANGELOG.md](CHANGELOG.md) on the website.
+- [ROADMAP.md](ROADMAP.md): the work log.
+
+## Security
+
+- **SSH passwords** are in an encrypted vault: AES-256-GCM, with a key made from your master
+  password by Argon2id. The vault file is owner-only.
+- **AI keys and MCP logins** are in the system password store. An MCP login is on disk only while
+  its server runs, in an owner-only file.
+- **Device secrets are hidden from the AI**: passwords, keys, SNMP communities and private keys in
+  tool output reach it as `<secret hidden>`.
+- **SSH host keys** are pinned the first time you connect. A changed key is refused, and a new key
+  type from a known host gets a warning.
+- **Device REST checks TLS certificates** by default. Turn it off only for lab gear with
+  self-signed certificates.
+- **Updates** come only from GreenCLI's GitHub releases, and each one is checked against its
+  signature before it can install.
+- **greencli-mcp** is read-only and shows configs only with secrets hidden.
+- SSH passwords and keys are wiped from memory when they are no longer needed.
+- Nothing is sent home: no tracking. GreenCLI talks only to the devices, services and AI providers
+  you set up, and to GitHub for updates.
+
+More in the guide: [Security notes](https://choaterboater.github.io/GreenCli/guide/#12-security-notes).
 
 ## License
 
-MIT
+MIT. See [LICENSE](LICENSE). Licenses of the parts GreenCLI uses are in
+[THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt), which also ships with the app.
+
+GreenCLI by ChoateLabs.
