@@ -77,7 +77,7 @@ fn error_codes() {
         &dir,
         concat!(
             "not json\n",
-            "[{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}]\n",
+            "[]\n",
             "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"resources/list\"}\n",
             "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"nope\"}}\n",
             "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"tools/call\",\"params\":{\"name\":\"access_check\",\"arguments\":{\"x\":1}}}\n",
@@ -102,6 +102,62 @@ fn error_codes() {
     );
     assert_eq!(out[0]["id"], Value::Null);
     assert_eq!(out[2]["id"], 2);
+    std::fs::remove_dir_all(dir).ok();
+}
+
+// Protocol 2025-03-26 says a server must take JSON-RPC batches.
+#[test]
+fn batches_are_answered() {
+    let dir = temp_dir("batch");
+    let lines = run_raw(
+        &dir,
+        &[
+            req(1, "initialize", json!({"protocolVersion": "2025-03-26"})).to_string(),
+            json!([
+                {"jsonrpc": "2.0", "method": "notifications/initialized"},
+                req(2, "tools/list", json!({})),
+            ])
+            .to_string(),
+            // Only notifications and responses: nothing comes back.
+            json!([
+                {"jsonrpc": "2.0", "method": "notifications/initialized"},
+                {"jsonrpc": "2.0", "id": 7, "result": {}},
+            ])
+            .to_string(),
+            json!([req(3, "ping", json!({})), 5, [req(4, "ping", json!({}))]]).to_string(),
+            "[]".to_string(),
+            req(5, "ping", json!({})).to_string(),
+        ]
+        .map(|line| line + "\n")
+        .concat(),
+    );
+    let out: Vec<Value> = lines
+        .iter()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(out.len(), 5, "{lines:?}");
+    assert_eq!(out[0]["result"]["protocolVersion"], "2025-03-26");
+    let batch = out[1].as_array().unwrap();
+    assert_eq!(batch.len(), 1);
+    assert_eq!(batch[0]["id"], 2);
+    assert_eq!(
+        batch[0]["result"]["tools"],
+        run(&dir, &[req(1, "tools/list", json!({}))])[0]["result"]["tools"]
+    );
+    // Each item is answered on its own; one that is not a request object
+    // (a number, an array) gets its own -32600.
+    assert_eq!(
+        out[2],
+        json!([
+            {"jsonrpc": "2.0", "id": 3, "result": {}},
+            {"jsonrpc": "2.0", "id": null, "error": {"code": -32600, "message": "The request must be a JSON object."}},
+            {"jsonrpc": "2.0", "id": null, "error": {"code": -32600, "message": "The request must be a JSON object."}},
+        ])
+    );
+    // An empty batch is one error, not an array.
+    assert_eq!(out[3]["error"]["code"], -32600);
+    assert_eq!(out[3]["id"], Value::Null);
+    assert_eq!(out[4], json!({"jsonrpc": "2.0", "id": 5, "result": {}}));
     std::fs::remove_dir_all(dir).ok();
 }
 
