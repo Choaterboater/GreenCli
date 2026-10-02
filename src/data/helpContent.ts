@@ -256,7 +256,7 @@ export const HELP_TOPICS: HelpTopic[] = [
     title: 'greencli-mcp (for Casper / Claude Code)',
     icon: Database,
     summary: 'A read-only MCP server that lets Casper or Claude Code read your GreenCLI data.',
-    keywords: ['greencli-mcp', 'greencli', 'mcp', 'claude code', 'casper', 'claude mcp add', 'read-only', 'hidden copy', 'make hidden copies', 'config archive', 'diff', 'devices', 'intents'],
+    keywords: ['greencli-mcp', 'greencli', 'mcp', 'claude code', 'casper', 'claude mcp add', 'read-only', 'hidden copy', 'make hidden copies', 'config archive', 'diff', 'devices', 'intents', 'list_archive_devices', 'renamed device'],
     blocks: [
       { kind: 'p', text: 'greencli-mcp lets Casper or Claude Code read your GreenCLI data. It can’t change anything: it only reads GreenCLI’s data folder, and never writes a file, opens a network connection or starts a program. It sits next to the app.' },
       {
@@ -271,6 +271,7 @@ export const HELP_TOPICS: HelpTopic[] = [
         kind: 'bullets',
         items: [
           'It shows your devices (no passwords, user names, notes or startup commands), config history, configs and diffs with secrets hidden, and intent results.',
+          'Config history stays under the name a device had when it was captured. After you rename or delete a saved device, or for a Quick Connect you never saved, the AI finds that history with `list_archive_devices`.',
           'Configs come only from **hidden copies** made when a config is captured. If a tool says a snapshot has no hidden copy, or that it is out of date, open **Config archive** and click **Make hidden copies**.',
           'A diff can’t show a changed password: both sides show it hidden.',
         ],

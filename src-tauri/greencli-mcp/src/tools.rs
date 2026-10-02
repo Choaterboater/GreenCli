@@ -44,7 +44,7 @@ const DEVICE: Param = Param {
     name: "device",
     kind: Kind::Text,
     required: true,
-    description: "The device's archiveKey from list_devices (its name in GreenCLI).",
+    description: "The device's archiveKey from list_devices or list_archive_devices.",
 };
 
 const TOOLS: &[ToolSpec] = &[
@@ -60,7 +60,18 @@ It never changes a device or GreenCLI.",
         title: "List devices",
         description: "Lists the devices saved in GreenCLI: name, folder, protocol, host, port, \
 device type, tags, and archiveKey (the device name to use with the config tools). \
-No passwords, user names, notes or startup commands.",
+No passwords, user names, notes or startup commands. Config history kept under an old name \
+(a renamed or deleted device) is listed by list_archive_devices.",
+        params: &[CURSOR],
+    },
+    ToolSpec {
+        name: "list_archive_devices",
+        title: "List archive devices",
+        description: "Lists every name GreenCLI's config archive has history under: archiveKey \
+(the name to use with the config tools), snapshots (how many), newestTs, and savedDevice. \
+savedDevice is false when no saved device has that archiveKey any more: a device renamed or \
+deleted in GreenCLI keeps its history under its old name, and a Quick Connect that was never \
+saved files it under its host.",
         params: &[CURSOR],
     },
     ToolSpec {
@@ -236,6 +247,7 @@ pub fn call(data_dir: &Path, name: &str, args: &Map<String, Value>) -> Result<Va
         "access_check" => Ok(access_check()),
         "list_intents" => crate::intents::list_intents(data_dir, text_arg(args, "cursor")),
         "list_devices" => crate::devices::list_devices(data_dir, text_arg(args, "cursor")),
+        "list_archive_devices" => archive::list_archive_devices(data_dir, text_arg(args, "cursor")),
         "list_config_history" => archive::list_config_history(
             data_dir,
             text_arg(args, "device").unwrap_or_default(),

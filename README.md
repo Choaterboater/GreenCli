@@ -213,8 +213,10 @@ claude mcp add greencli -- "/Applications/GreenCLI.app/Contents/MacOS/greencli-m
 
 "Export for Casper / Claude…" puts it in the `.mcp.json` file too.
 
-It has six read tools: `access_check`, `list_devices`, `list_config_history`,
-`get_config`, `get_config_diff` and `list_intents`.
+It has seven read tools: `access_check`, `list_devices`, `list_archive_devices`,
+`list_config_history`, `get_config`, `get_config_diff` and `list_intents`.
+`list_archive_devices` finds config history kept under a device's old name, after
+a rename or delete in GreenCLI.
 
 - It only reads GreenCLI's data folder. It never writes a file, opens a network
   connection or starts a program (a source-scan test checks this).

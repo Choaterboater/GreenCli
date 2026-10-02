@@ -31,7 +31,7 @@
       "readOnlyHint": true,
       "title": "List devices"
     },
-    "description": "Lists the devices saved in GreenCLI: name, folder, protocol, host, port, device type, tags, and archiveKey (the device name to use with the config tools). No passwords, user names, notes or startup commands.",
+    "description": "Lists the devices saved in GreenCLI: name, folder, protocol, host, port, device type, tags, and archiveKey (the device name to use with the config tools). No passwords, user names, notes or startup commands. Config history kept under an old name (a renamed or deleted device) is listed by list_archive_devices.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -55,6 +55,32 @@
       "idempotentHint": true,
       "openWorldHint": false,
       "readOnlyHint": true,
+      "title": "List archive devices"
+    },
+    "description": "Lists every name GreenCLI's config archive has history under: archiveKey (the name to use with the config tools), snapshots (how many), newestTs, and savedDevice. savedDevice is false when no saved device has that archiveKey any more: a device renamed or deleted in GreenCLI keeps its history under its old name, and a Quick Connect that was never saved files it under its host.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "cursor": {
+          "description": "nextCursor from the last page, to get the next one.",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "name": "list_archive_devices",
+    "title": "List archive devices"
+  },
+  {
+    "_meta": {
+      "casper/safety": "read"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
       "title": "List config history"
     },
     "description": "Lists a device's saved config snapshots, newest first: ts, source (connect, manual, before-change, after-change), golden, and hasHiddenCopy. Only snapshots with hasHiddenCopy can be read with get_config or get_config_diff.",
@@ -66,7 +92,7 @@
           "type": "string"
         },
         "device": {
-          "description": "The device's archiveKey from list_devices (its name in GreenCLI).",
+          "description": "The device's archiveKey from list_devices or list_archive_devices.",
           "type": "string"
         }
       },
@@ -98,7 +124,7 @@
           "type": "string"
         },
         "device": {
-          "description": "The device's archiveKey from list_devices (its name in GreenCLI).",
+          "description": "The device's archiveKey from list_devices or list_archive_devices.",
           "type": "string"
         },
         "ts": {
@@ -135,7 +161,7 @@
           "type": "string"
         },
         "device": {
-          "description": "The device's archiveKey from list_devices (its name in GreenCLI).",
+          "description": "The device's archiveKey from list_devices or list_archive_devices.",
           "type": "string"
         },
         "from": {

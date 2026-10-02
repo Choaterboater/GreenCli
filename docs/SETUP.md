@@ -477,12 +477,13 @@ Or use **Export for Casper / Claude…**: it adds it as `greencli` (renamed, wit
 already have a server by that name). On a Mac, move GreenCLI to Applications first, or the path
 changes every time it starts; until then MCP Servers says so and the export leaves it out.
 
-**What it shows** (six read tools):
+**What it shows** (seven read tools):
 
 | Tool | What it gives |
 |------|---------------|
 | `access_check` | That this server is read-only |
 | `list_devices` | Your saved devices: name, folder, protocol, host, port, device type, tags. No passwords, user names, notes or startup commands |
+| `list_archive_devices` | Every name the config archive has history under, and whether a saved device still has that name |
 | `list_config_history` | A device's saved config snapshots, newest first, and whether each has a hidden copy |
 | `get_config` | One saved config, with secrets hidden |
 | `get_config_diff` | What changed between two saved configs, with secrets hidden |
@@ -496,6 +497,10 @@ archive and click **Make hidden copies**. MCP Servers and Config archive show ho
 still need one. After a secret filter change, GreenCLI makes the old copies again at start.
 
 - A diff can't show a changed password or key: both sides show it hidden.
+- Config history stays under the name a device had when it was captured. After you rename or
+  delete a saved device, its older history is listed by `list_archive_devices` (with
+  `savedDevice: false`), not `list_devices`. So is a Quick Connect that was never saved (under
+  its host).
 - Two snapshots that differ in more than 20,000 places are refused as a diff; use `get_config` on
   each.
 

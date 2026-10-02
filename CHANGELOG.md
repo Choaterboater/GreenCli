@@ -20,10 +20,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its own files, so there is no signing key to keep and no secret to set.
 - On Windows, MCP servers stop only when the installer starts, and come back if the install fails.
 - **greencli-mcp**: a read-only MCP server for Casper and Claude Code that ships next to the app.
-  It has six read tools: `access_check`, `list_devices`, `list_config_history`, `get_config`,
-  `get_config_diff` and `list_intents`. It only reads GreenCLI's data folder. It never writes a
-  file, opens a network connection or starts a program. The device list has no passwords, user
-  names, notes or startup commands.
+  It has seven read tools: `access_check`, `list_devices`, `list_archive_devices`,
+  `list_config_history`, `get_config`, `get_config_diff` and `list_intents`. `list_archive_devices`
+  finds config history kept under a device's old name, after a rename or delete in GreenCLI. It
+  only reads GreenCLI's data folder. It never writes a file, opens a network connection or starts a
+  program. The device list has no passwords, user names, notes or startup commands.
 - **Hidden copies**: when a config is captured, GreenCLI also saves a copy with secrets hidden (the
   same filter the AI uses). greencli-mcp serves configs and diffs only from these copies, and
   refuses a snapshot without a current one instead of serving it raw. Config archive has a new

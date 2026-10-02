@@ -27,8 +27,9 @@ pub const NO_COPY: &str =
     "No hidden copy for this snapshot. In GreenCLI, open Config archive and click Make hidden copies.";
 pub const STALE_COPY: &str = "This snapshot's hidden copy is out of date. In GreenCLI, open Config archive and click Make hidden copies.";
 const BAD_COPY: &str = "This snapshot's hidden copy couldn't be read. In GreenCLI, open Config archive and click Make hidden copies.";
-const NO_HISTORY: &str =
-    "GreenCLI has no config history for this device. Use archiveKey from list_devices.";
+const NO_HISTORY: &str = "GreenCLI has no config history under this name. Use archiveKey from \
+list_devices or list_archive_devices (a device renamed or deleted in GreenCLI keeps its history \
+under its old name).";
 const NO_SNAPSHOT: &str = "This device has no snapshot with that ts. Use list_config_history.";
 const TOO_MANY_CHANGES: &str =
     "These two snapshots differ in too many places to show as a diff. Use get_config on each one instead.";
@@ -143,6 +144,51 @@ fn load_hidden(data_dir: &Path, device: &str, ts: u64) -> Result<String, ToolFai
 
 fn bad_cursor() -> ToolFail {
     ToolFail::Error(page::BAD_CURSOR.into())
+}
+
+/// Every name the archive has history under, sorted, with how many snapshots
+/// and the newest ts. The app files snapshots under the device's name at
+/// capture time and never moves them, so a device renamed or deleted in
+/// GreenCLI, or a Quick Connect that was never saved, has history here under
+/// a name list_devices doesn't give. savedDevice says whether a saved device
+/// still has that archiveKey (null when the saved sessions can't be read).
+pub fn list_archive_devices(data_dir: &Path, cursor: Option<&str>) -> Result<Value, ToolFail> {
+    const TOOL: &str = "list_archive_devices";
+    let start = match cursor {
+        None => 0,
+        Some(c) => read_cursor(TOOL, c)
+            .filter(|c| c.key.is_null())
+            .map(|c| c.offset)
+            .ok_or_else(bad_cursor)?,
+    };
+    let index = read_index(data_dir)?;
+    let saved = crate::devices::saved_archive_keys(data_dir).ok();
+    let mut keys: Vec<(&String, &Vec<Entry>)> = index
+        .devices
+        .iter()
+        .filter(|(_, entries)| !entries.is_empty())
+        .collect();
+    keys.sort_by(|a, b| a.0.cmp(b.0));
+    if start > keys.len() {
+        return Err(bad_cursor());
+    }
+    let rows: Vec<Value> = keys
+        .iter()
+        .map(|(key, entries)| {
+            json!({
+                "archiveKey": page::clip(key, 255),
+                "snapshots": entries.len(),
+                "newestTs": entries[0].ts,
+                "savedDevice": saved.as_ref().map(|s| s.contains(key.as_str())),
+            })
+        })
+        .collect();
+    let (rows, next) = take_items(&rows, start, PAGE_BUDGET);
+    Ok(json!({
+        "total": keys.len(),
+        "devices": rows,
+        "nextCursor": next.map(|n| make_cursor(TOOL, &Value::Null, n)),
+    }))
 }
 
 pub fn list_config_history(
