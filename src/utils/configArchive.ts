@@ -24,10 +24,11 @@ import { sendAndCapture } from './terminal';
 export const HIDDEN_COPY_FILTER = 1;
 
 /**
- * sha256 of every file under src/utils/secrets (sorted by path, LF newlines).
- * hiddenFilterVersion.test.ts fails when the filter changes without a bump.
+ * sha256 of the filter's source files under src/utils/secrets (tests left
+ * out; sorted by path, LF newlines). hiddenFilterVersion.test.ts fails when
+ * the filter changes without a bump.
  */
-export const HIDDEN_COPY_FILTER_SOURCE = '01548aeb04d7f73244dfb92df1cb2d6d53c4103c318fa5bf2576640a28de3727';
+export const HIDDEN_COPY_FILTER_SOURCE = '42f0b17bb9343b571edd878f15f0e713186fea8fce11f34f9dc75825822cc15f';
 
 /** One history row, mirroring `config_archive::ArchiveEntry` (camelCase). */
 export interface ArchiveEntry {
