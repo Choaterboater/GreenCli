@@ -45,7 +45,8 @@ import { listen } from '@tauri-apps/api/event';
 import { useSessionStore } from '../store/sessionStore';
 import { useSettingsStore } from '../store/settingsStore';
 import { askConfirm, cancelDialogs } from '../store/dialogStore';
-import { ChatMessage, Session, AiProvider, AI_PROVIDERS } from '../types';
+import { ChatMessage, Session, AiProvider, AI_PROVIDERS, isCliProvider } from '../types';
+import { CASPER_PROMPT_PREFACE, buildCliPrompt, plainCliError } from '../utils/cliPrompt';
 import { sleep, stripAnsi, sendAndCapture } from '../utils/terminal';
 import {
   aiIsWriteCommand,
@@ -57,6 +58,7 @@ import {
   normalizeLineBreaks,
 } from '../utils/aiGating';
 import { pickAiSession } from '../utils/aiSession';
+import { activeStreamIds, cancelActiveAiStreams, nextStreamId, runStoppable } from '../utils/aiRuns';
 import { hiddenSecretGate } from '../utils/secrets/gate';
 import { visibleToReadOnlyAgent } from '../utils/mcpGate';
 import { runMcpTool } from '../utils/mcpRun';
@@ -558,19 +560,7 @@ async function executeToolRaw(
 
 // ─── Streaming (token-by-token via Tauri events) ───
 
-let streamCounter = 0;
-const nextStreamId = () => `aistream-${++streamCounter}`;
-
-// Stream ids currently in flight, so Stop can actually abort the backend egress
-// (ai_cancel_stream), which then emits ai_done and lets each stream clean up its
-// listeners. Without this, Stop only stopped the UI from reading while Rust kept
-// generating (and being billed) and the event listeners leaked.
-const activeStreamIds = new Set<string>();
-function cancelActiveAiStreams() {
-  for (const id of activeStreamIds) {
-    invoke('ai_cancel_stream', { streamId: id }).catch(() => {});
-  }
-}
+// Stream and run ids, and Stop for them, live in utils/aiRuns.
 
 interface AnthropicStreamResult {
   text: string;
@@ -942,11 +932,25 @@ async function callOpenAiCompatWithTools(
 
 // ─── Local CLI passthrough with auto-command execution ───
 
+interface CliCallOptions {
+  /** Casper's working folder; empty = a fresh folder per question. */
+  workFolder?: string;
+  /** Text that comes before everything else in the prompt. */
+  preface?: string;
+  /** The attached agent's instructions (a CLI never sees the system prompt). */
+  instructions?: string;
+  /** The Casper provider: the backend refuses any program but Casper. */
+  asCasper?: boolean;
+  /** The session-log folder (Casper may not work in it). */
+  logFolder?: string;
+}
+
 async function callLocalCli(
   command: string,
   conversationHistory: AnthropicMessage[],
   _systemPrompt: string,
-  activeSession?: Session
+  activeSession?: Session,
+  opts: CliCallOptions = {}
 ): Promise<string> {
   // Only the last user message matters for a one-shot CLI call
   const lastUser = [...conversationHistory]
@@ -965,10 +969,25 @@ async function callLocalCli(
     ? `Connected to: ${activeSession.config.name} (${activeSession.config.host}, ${activeSession.config.deviceType})`
     : 'No device connected.';
 
-  // Keep it minimal for local CLIs — large terminal output floods their stdin
-  const prompt = `${device}\n${question}`;
+  // Keep it minimal for local CLIs — large terminal output floods their stdin.
+  // Secrets in the question are hidden: these CLIs keep conversations on disk.
+  const prompt = buildCliPrompt(device, question, { preface: opts.preface, instructions: opts.instructions });
 
-  return await invoke<string>('ai_cli', { command, prompt });
+  // Stop reaches the run through its id, like a streamed answer.
+  try {
+    return await runStoppable((runId) =>
+      invoke<string>('ai_cli', {
+        command,
+        prompt,
+        runId,
+        workFolder: opts.workFolder || null,
+        asCasper: !!opts.asCasper,
+        logFolder: opts.logFolder || null,
+      })
+    );
+  } catch (e) {
+    throw new Error(plainCliError(e));
+  }
 }
 
 // 'claude-sonnet-4-6' → 'sonnet 4.6', 'claude-haiku-4-5-20251001' → 'haiku 4.5'
@@ -1162,6 +1181,9 @@ export default function AiAssistant() {
     aiUseMcp: useSettingsStore((s) => s.aiUseMcp),
     aiModel: useSettingsStore((s) => s.aiModel),
     localCliCommand: useSettingsStore((s) => s.localCliCommand),
+    casperCommand: useSettingsStore((s) => s.casperCommand),
+    casperWorkFolder: useSettingsStore((s) => s.casperWorkFolder),
+    sessionLogDir: useSettingsStore((s) => s.sessionLogDir),
     ollamaUrl: useSettingsStore((s) => s.ollamaUrl),
     ollamaModel: useSettingsStore((s) => s.ollamaModel),
     openrouterModel: useSettingsStore((s) => s.openrouterModel),
@@ -1455,7 +1477,23 @@ export default function AiAssistant() {
           activeAgent?.model || settings.localCliCommand || 'claude -p',
           apiMessages,
           systemPrompt,
-          activeSession
+          activeSession,
+          { instructions: activeAgent?.instructions, logFolder: settings.sessionLogDir }
+        );
+      } else if (provider === 'casper') {
+        // Casper answers in one go too. An agent may override the command.
+        text = await callLocalCli(
+          activeAgent?.model || settings.casperCommand || 'casper',
+          apiMessages,
+          systemPrompt,
+          activeSession,
+          {
+            workFolder: settings.casperWorkFolder || undefined,
+            preface: CASPER_PROMPT_PREFACE,
+            instructions: activeAgent?.instructions,
+            asCasper: true,
+            logFolder: settings.sessionLogDir,
+          }
         );
       } else {
         // OpenAI-compatible: openrouter | moonshot | ollama — each has its own model.
@@ -1579,7 +1617,7 @@ export default function AiAssistant() {
   // Effective provider/model for the header — an attached agent may override both.
   const provider = (activeAgent?.provider || settings.aiProvider || 'ollama') as AiProvider;
   const providerMeta = AI_PROVIDERS.find((p) => p.value === provider);
-  const isLocalProvider = provider === 'ollama' || provider === 'local-cli';
+  const isLocalProvider = provider === 'ollama' || isCliProvider(provider);
   const isReady = !providerMeta?.needsKey || hasKey;
   const providerLabel =
     activeAgent?.model ||
@@ -1587,11 +1625,13 @@ export default function AiAssistant() {
       ? settings.ollamaModel || 'llama3.2'
       : provider === 'local-cli'
         ? settings.localCliCommand || 'CLI'
-        : provider === 'anthropic'
-          ? (settings.aiModel ? prettyClaudeModel(settings.aiModel) : 'Claude')
-          : provider === 'openrouter'
-            ? settings.openrouterModel || providerMeta?.label || provider
-            : settings.moonshotModel || providerMeta?.label || provider);
+        : provider === 'casper'
+          ? settings.casperCommand || 'casper'
+          : provider === 'anthropic'
+            ? (settings.aiModel ? prettyClaudeModel(settings.aiModel) : 'Claude')
+            : provider === 'openrouter'
+              ? settings.openrouterModel || providerMeta?.label || provider
+              : settings.moonshotModel || providerMeta?.label || provider);
 
   const openAiSettings = () => {
     const s = useSessionStore.getState();
@@ -1652,7 +1692,7 @@ export default function AiAssistant() {
           </button>
         )}
         <span className="flex-1" />
-        {mcpToolCount > 0 && (
+        {mcpToolCount > 0 && !isCliProvider(provider) && (
           <span
             className="flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full flex-shrink-0 whitespace-nowrap"
             style={{ color: 'var(--accent)', background: 'var(--accent-soft)' }}
@@ -1685,7 +1725,7 @@ export default function AiAssistant() {
         <div className="mx-3 mt-3 px-3 py-2 bg-[var(--accent-warning-soft)] border border-[var(--accent-warning-border)] rounded-lg flex items-start gap-2">
           <AlertCircle size={12} className="text-[var(--accent-warning)] flex-shrink-0 mt-0.5" />
           <div className="text-[10px] text-[var(--accent-warning)] leading-relaxed">
-            Add an API key for <strong>{providerMeta?.label}</strong> in <strong>Settings → AI &amp; MCP</strong>, or switch to a local provider (Ollama / Local CLI).
+            Add an API key for <strong>{providerMeta?.label}</strong> in <strong>Settings → AI &amp; MCP</strong>, or switch to a local provider (Ollama, Local CLI or Casper).
           </div>
         </div>
       )}

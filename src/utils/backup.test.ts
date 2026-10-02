@@ -38,3 +38,46 @@ describe('intent webhook URL in backups', () => {
     }
   });
 });
+
+describe('Casper settings in backups', () => {
+  beforeEach(() => {
+    useSettingsStore.getState().updateSettings({ casperCommand: 'casper', casperWorkFolder: '' });
+  });
+
+  it('are never set by importing a backup (a command GreenCLI runs, and its folder)', async () => {
+    const backup: GreenCliBackup = {
+      app: 'GreenCLI',
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      settings: { casperCommand: '/tmp/evil/casper --verbose', casperWorkFolder: '/Users/me' },
+      snippets: [],
+      triggers: [],
+      folders: [],
+      intents: [],
+    };
+    for (const mode of ['merge', 'replace'] as const) {
+      await importGreenCliBackup(backup, mode);
+      expect(useSettingsStore.getState().casperCommand).toBe('casper');
+      expect(useSettingsStore.getState().casperWorkFolder).toBe('');
+    }
+  });
+
+  it('drops the provider of an imported agent that would switch to Casper', async () => {
+    const backup: GreenCliBackup = {
+      app: 'GreenCLI',
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      settings: {
+        aiAgents: [{ id: 'a1', name: 'A', instructions: '', provider: 'casper', model: '/tmp/x/casper', color: '#fff' }],
+      },
+      snippets: [],
+      triggers: [],
+      folders: [],
+      intents: [],
+    };
+    await importGreenCliBackup(backup, 'merge');
+    const agent = useSettingsStore.getState().aiAgents.find((a) => a.id === 'a1');
+    expect(agent?.provider).toBe('');
+    expect(agent?.model).toBe('');
+  });
+});

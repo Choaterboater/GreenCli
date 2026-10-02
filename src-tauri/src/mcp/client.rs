@@ -2128,20 +2128,48 @@ fn decorated_tools(key: &str, def: Option<&McpServerDef>, client: &McpClient) ->
 /// brief lock, connect unlocked, then swap the client in. Connecting the new
 /// client first means a failed reconnect leaves the old one up. Returns how
 /// many tools the AI can use.
-pub async fn connect_server(manager: &Mutex<McpManager>, name: &str) -> Result<usize, String> {
+///
+/// `web_refused` says why a web (URL) server may not connect right now, or
+/// None (GreenCLI: not while Casper answers). It is asked before connecting
+/// and again under the manager lock before the client goes in, so one that
+/// starts meanwhile is caught too.
+pub async fn connect_server(
+    manager: &Mutex<McpManager>,
+    name: &str,
+    web_refused: &(dyn Fn() -> Option<String> + Send + Sync),
+) -> Result<usize, String> {
     let resolved = {
         let mgr = manager.lock().await;
         mgr.resolve_connect_def(name).map_err(|e| e.to_string())?
     };
+    let web = resolved.def.url.is_some();
+    if web {
+        if let Some(why) = web_refused() {
+            return Err(why);
+        }
+    }
     let mut client = McpClient::connect(&resolved.def)
         .await
         .map_err(|e| e.to_string())?;
     client.pins = resolved.pins;
     client.connected_writes_on = resolved.writes_on;
-    let (old, count) = {
+    let installed = {
         let mut mgr = manager.lock().await;
-        let old = mgr.install_client(name.to_string(), client);
-        (old, mgr.visible_tool_count(name))
+        let refused = if web { web_refused() } else { None };
+        match refused {
+            Some(why) => Err((why, client)),
+            None => {
+                let old = mgr.install_client(name.to_string(), client);
+                Ok((old, mgr.visible_tool_count(name)))
+            }
+        }
+    };
+    let (old, count) = match installed {
+        Ok(done) => done,
+        Err((why, client)) => {
+            client.shutdown().await;
+            return Err(why);
+        }
     };
     if let Some(old) = old {
         old.shutdown().await;

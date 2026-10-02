@@ -113,8 +113,8 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     title: 'AI Assistant',
     keywords: [
       'provider', 'api key', 'model', 'anthropic', 'claude', 'openrouter', 'ollama', 'moonshot', 'kimi',
-      'local cli', 'assistant tools', 'device cli commands', 'rest apis', 'best-practice references',
-      'standards', 'jvd',
+      'local cli', 'casper', 'working folder', 'check casper', 'assistant tools', 'device cli commands',
+      'rest apis', 'best-practice references', 'standards', 'jvd',
     ],
   },
   {

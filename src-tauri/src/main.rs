@@ -114,12 +114,16 @@ struct AppState {
     session_logs: SessionLogs,
     /// Active SSH port-forwards keyed by forward id (meta + listener task).
     forwards: ForwardsMap,
-    /// Cancellation flags for in-flight AI streams, keyed by stream id, so the
-    /// frontend Stop button can actually abort the backend request/egress.
-    ai_cancels: Arc<AsyncMutex<HashMap<String, Arc<std::sync::atomic::AtomicBool>>>>,
+    /// Cancellation flags for in-flight AI streams and CLI runs, keyed by id,
+    /// so the frontend Stop button can actually abort the backend
+    /// request/egress, even when Stop arrives before the run is registered.
+    ai_cancels: Arc<AsyncMutex<ai::cancel::CancelBook>>,
     /// In-flight MCP tool calls the AI panel's Stop can cancel, keyed by the
     /// call id the panel sends with `mcp_call`.
     mcp_calls: Arc<mcp::cancel::CallRegistry>,
+    /// Casper questions in progress: no port forward opens and no web MCP
+    /// server connects meanwhile (Casper's commands may reach local ports).
+    casper_runs: Arc<std::sync::atomic::AtomicUsize>,
     app_dir: std::path::PathBuf,
 }
 
@@ -149,8 +153,9 @@ impl AppState {
             last_input: Arc::new(AsyncMutex::new(HashMap::new())),
             session_logs: Arc::new(AsyncMutex::new(HashMap::new())),
             forwards: Arc::new(AsyncMutex::new(HashMap::new())),
-            ai_cancels: Arc::new(AsyncMutex::new(HashMap::new())),
+            ai_cancels: Arc::new(AsyncMutex::new(ai::cancel::CancelBook::default())),
             mcp_calls: Arc::new(mcp::cancel::CallRegistry::new()),
+            casper_runs: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             app_dir,
         })
     }
@@ -1622,7 +1627,11 @@ async fn mcp_delete_server(name: String, state: State<'_, AppState>) -> Result<(
 /// stay responsive while a server is connecting (see mcp::connect_server).
 #[tauri::command]
 async fn mcp_connect(name: String, state: State<'_, AppState>) -> Result<usize, String> {
-    mcp::connect_server(&state.mcp_manager, &name).await
+    // A web server may run on this computer, where Casper's commands could
+    // reach it: none connects while Casper answers.
+    let runs = state.casper_runs.clone();
+    let casper_busy = move || ai::casper::casper_busy(&runs).then(|| ai::casper::BUSY_MCP.to_string());
+    mcp::connect_server(&state.mcp_manager, &name, &casper_busy).await
 }
 
 #[tauri::command]
@@ -1932,6 +1941,10 @@ async fn ssh_start_forward(
     remote_port: Option<u16>,
     state: State<'_, AppState>,
 ) -> Result<ssh::forward::ForwardMeta, String> {
+    // Casper's commands may reach local ports: no new forward while it answers.
+    if ai::casper::casper_busy(&state.casper_runs) {
+        return Err(ai::casper::BUSY_FORWARD.to_string());
+    }
     let handle = state
         .session_manager.get_ssh_handle(&session_id)
         .await
@@ -1966,7 +1979,14 @@ async fn ssh_start_forward(
         remote_host,
         remote_port,
     };
-    state.forwards.lock().await.insert(id, (meta.clone(), task));
+    // Checked again under the lock the bridge look reads, so a Casper run
+    // that started meanwhile either sees this forward or it closes here.
+    let mut forwards = state.forwards.lock().await;
+    if ai::casper::casper_busy(&state.casper_runs) {
+        task.abort();
+        return Err(ai::casper::BUSY_FORWARD.to_string());
+    }
+    forwards.insert(id, (meta.clone(), task));
     Ok(meta)
 }
 
@@ -2503,12 +2523,144 @@ async fn ai_chat(
         .map_err(|e| e.to_string())
 }
 
-/// Run a locally installed AI CLI one-shot with the prompt on stdin.
-#[tauri::command]
-async fn ai_cli(command: String, prompt: String) -> Result<String, String> {
-    ai::cli_passthrough(&command, &prompt)
+/// Register a cancel flag the Stop button (ai_cancel_stream) can trip. A Stop
+/// that came first gives a flag that is already tripped; a reused id trips
+/// the displaced run's flag (see ai::cancel::CancelBook).
+async fn register_ai_cancel(
+    state: &AppState,
+    id: &str,
+    who: &str,
+) -> Arc<std::sync::atomic::AtomicBool> {
+    let (cancel, displaced) = state.ai_cancels.lock().await.register(id);
+    if displaced {
+        log::warn!("{who}: id '{id}' reused — cancelling the displaced run");
+    }
+    cancel
+}
+
+/// Open local/dynamic port forwards, and connected MCP servers whose URL may
+/// lead to this computer: ways out of Casper's sandbox (it may reach local
+/// ports). Called with a CasperRunGuard already held, so a forward or server
+/// added after this look is refused instead (see casper_busy).
+async fn ai_bridges(state: &AppState) -> (Vec<(String, u16)>, Vec<String>) {
+    let mut forwards: Vec<(String, u16)> = state
+        .forwards
+        .lock()
         .await
-        .map_err(|e| e.to_string())
+        .values()
+        .filter(|(meta, task)| {
+            (meta.kind == "local" || meta.kind == "dynamic") && !task.is_finished()
+        })
+        .map(|(meta, _)| (meta.kind.clone(), meta.local_port))
+        .collect();
+    forwards.sort_by_key(|(_, port)| *port);
+    let web_servers: Vec<(String, String)> = {
+        let mgr = state.mcp_manager.lock().await;
+        let connected: std::collections::HashSet<String> = mgr
+            .status()
+            .iter()
+            .filter(|s| s.get("connected").and_then(|c| c.as_bool()) == Some(true))
+            .filter_map(|s| s.get("name").and_then(|n| n.as_str()).map(str::to_string))
+            .collect();
+        mgr.list_configs()
+            .into_iter()
+            .filter(|d| connected.contains(&d.name))
+            .filter_map(|d| d.url.map(|url| (d.name, url)))
+            .collect()
+    };
+    // Name lookups run without the manager lock held.
+    let mut local_mcp: Vec<String> = Vec::new();
+    for (name, url) in web_servers {
+        if ai::mcp_url_is_local(&url).await {
+            local_mcp.push(name);
+        }
+    }
+    local_mcp.sort();
+    (forwards, local_mcp)
+}
+
+/// What a CLI run needs from the app (see ai::CliContext).
+async fn cli_context(
+    state: &AppState,
+    app: &AppHandle,
+    work_folder: Option<String>,
+    as_casper: bool,
+    log_folder: Option<String>,
+    cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
+    with_bridges: bool,
+) -> ai::CliContext {
+    // The session-log folder: the user's, or `<app data>/logs` (resolved the
+    // way session logging resolves it). Casper may not work in it.
+    let extra_protected = session_log::resolve_dir(&state.app_dir, log_folder.as_deref())
+        .ok()
+        .into_iter()
+        .collect();
+    ai::CliContext {
+        app_dir: state.app_dir.clone(),
+        cache_dir: app.path_resolver().app_cache_dir(),
+        work_folder,
+        as_casper,
+        bridges: if with_bridges {
+            ai_bridges(state).await
+        } else {
+            (Vec::new(), Vec::new())
+        },
+        extra_protected,
+        cancel,
+    }
+}
+
+/// Run a locally installed AI CLI (Local CLI or Casper) one-shot with the
+/// prompt on stdin. `run_id` lets Stop (ai_cancel_stream) end it.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn ai_cli(
+    command: String,
+    prompt: String,
+    run_id: Option<String>,
+    work_folder: Option<String>,
+    as_casper: Option<bool>,
+    log_folder: Option<String>,
+    state: State<'_, AppState>,
+    app: AppHandle,
+) -> Result<String, String> {
+    let cancel = match &run_id {
+        Some(id) => Some(register_ai_cancel(&state, id, "ai_cli").await),
+        None => None,
+    };
+    let as_casper = as_casper.unwrap_or(false);
+    // Counted before the bridge look, and until Casper has finished.
+    let casper = ai::is_casper_command(&command, as_casper);
+    let _casper_run = casper.then(|| ai::casper::CasperRunGuard::start(&state.casper_runs));
+    let ctx = cli_context(
+        &state,
+        &app,
+        work_folder,
+        as_casper,
+        log_folder,
+        cancel.clone(),
+        casper,
+    )
+    .await;
+    let result = ai::cli_passthrough(&command, &prompt, ctx).await;
+    if let (Some(id), Some(flag)) = (&run_id, &cancel) {
+        state.ai_cancels.lock().await.finish(id, flag);
+    }
+    result.map_err(|e| e.to_string())
+}
+
+/// Settings → Check Casper: the folder, the command, Casper's sandbox
+/// setting, the program and its version. Sends no question.
+#[tauri::command]
+async fn ai_casper_check(
+    command: String,
+    work_folder: Option<String>,
+    log_folder: Option<String>,
+    state: State<'_, AppState>,
+    app: AppHandle,
+) -> Result<ai::CasperCheck, String> {
+    let ctx = cli_context(&state, &app, work_folder, true, log_folder, None, true).await;
+    Ok(ai::casper_check(&command, ctx).await)
 }
 
 /// Streaming chat — emits `ai_chunk`/`ai_done`/`ai_error` events for stream_id.
@@ -2520,26 +2672,12 @@ async fn ai_chat_stream(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     // Register a cancel flag the Stop button (ai_cancel_stream) can trip.
-    let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    // A reused stream id must not silently replace a live stream's flag (the
-    // displaced stream would leak, uncancellable, running to completion and
-    // being billed): trip the OLD flag so that stream aborts before we swap in.
-    if let Some(displaced) = state
-        .ai_cancels
-        .lock()
-        .await
-        .insert(stream_id.clone(), cancel.clone())
-    {
-        log::warn!(
-            "ai_chat_stream: stream id '{stream_id}' reused — cancelling the displaced stream"
-        );
-        displaced.store(true, std::sync::atomic::Ordering::Relaxed);
-    }
+    let cancel = register_ai_cancel(&state, &stream_id, "ai_chat_stream").await;
 
-    let result = ai::chat_stream(&state.ai_keys, request, &app, &stream_id, cancel).await;
+    let result = ai::chat_stream(&state.ai_keys, request, &app, &stream_id, cancel.clone()).await;
 
     // Always deregister the flag, success or failure.
-    state.ai_cancels.lock().await.remove(&stream_id);
+    state.ai_cancels.lock().await.finish(&stream_id, &cancel);
 
     if let Err(e) = result {
         let _ = app.emit_all(
@@ -2555,9 +2693,13 @@ async fn ai_chat_stream(
 /// provider request/egress instead of running to completion (and being billed).
 #[tauri::command]
 async fn ai_cancel_stream(stream_id: String, state: State<'_, AppState>) -> Result<(), String> {
-    if let Some(flag) = state.ai_cancels.lock().await.get(&stream_id) {
-        flag.store(true, std::sync::atomic::Ordering::Relaxed);
-    }
+    // Not registered yet (Stop pressed while the request was on its way)?
+    // The book remembers it, so the run starts already stopped.
+    state
+        .ai_cancels
+        .lock()
+        .await
+        .cancel(&stream_id, std::time::Instant::now());
     Ok(())
 }
 
@@ -2662,10 +2804,14 @@ fn main() {
                     mgr.list_configs()
                 };
                 for def in defs.into_iter().filter(|d| d.enabled) {
-                    // Same path as mcp_connect (pins while writes are off); the
-                    // spawn/handshake runs WITHOUT the manager lock so a slow
-                    // server can't block MCP commands.
-                    if let Err(e) = mcp::connect_server(&state.mcp_manager, &def.name).await {
+                    // Same path as mcp_connect (pins while writes are off; no
+                    // web server while Casper answers); the spawn/handshake runs
+                    // WITHOUT the manager lock so a slow server can't block MCP
+                    // commands.
+                    let runs = state.casper_runs.clone();
+                    let casper_busy =
+                        move || ai::casper::casper_busy(&runs).then(|| ai::casper::BUSY_MCP.to_string());
+                    if let Err(e) = mcp::connect_server(&state.mcp_manager, &def.name, &casper_busy).await {
                         log::warn!("MCP auto-connect '{}' failed: {}", def.name, e);
                     }
                 }
@@ -2741,6 +2887,7 @@ fn main() {
             ai_chat,
             ai_cancel_stream,
             ai_cli,
+            ai_casper_check,
             ai_chat_stream,
             mcp_list_servers,
             mcp_save_server,
@@ -2781,6 +2928,9 @@ fn main() {
         .expect("error while running tauri application")
         .run(|app_handle, event| {
             if let tauri::RunEvent::Exit = event {
+                // A Local CLI or Casper answer still running: stop it and what
+                // it started (kill_on_drop never runs either, see below).
+                ai::stop_all_cli_runs();
                 // Tauri v1 leaves via std::process::exit after the event loop, so
                 // kill_on_drop destructors never run — reap MCP server children
                 // explicitly or they outlive the app (not every server exits on

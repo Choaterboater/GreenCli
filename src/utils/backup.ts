@@ -45,6 +45,9 @@ const SECRET_SETTING_KEYS = new Set<keyof TerminalSettings>([
 const UNSAFE_IMPORT_SETTING_KEYS = new Set<keyof TerminalSettings>([
   'aiProvider',
   'localCliCommand',
+  // A command GreenCLI runs, and the folder it runs in: never from a file.
+  'casperCommand',
+  'casperWorkFolder',
   'ollamaUrl',
   'aiReferences',
   'aiUseTerminal',

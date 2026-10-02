@@ -10,6 +10,20 @@
 //   - moonshot   (Kimi / Moonshot, OpenAI-compatible)
 //   - ollama     (local, OpenAI-compatible)
 //   - local-cli  (spawn a locally installed CLI such as `claude` directly — no shell)
+//   - casper     (the Casper CLI, run with its sandbox on in a folder of its own)
+//
+// The CLI providers live in cli.rs (dispatch), cli_run.rs (spawn, Stop,
+// timeout, quit) and casper.rs (Casper's pure rules).
+
+pub mod cancel;
+pub mod casper;
+mod cli;
+mod cli_run;
+
+pub use cli::{
+    casper_check, cli_passthrough, is_casper_command, mcp_url_is_local, CasperCheck, CliContext,
+};
+pub use cli_run::stop_all_cli_runs;
 
 use crate::error::AppError;
 use serde::Deserialize;
@@ -178,7 +192,7 @@ pub async fn chat_request(store: &AiKeyStore, req: AiChatRequest) -> Result<Valu
     // (which providers answer with an opaque 401).
     if provider_needs_key(&req.provider) && key.is_empty() {
         return Err(AppError::ApiError(format!(
-            "No API key set for '{}'. Open Settings → AI Assistant and add your key (or switch to Ollama / Local CLI).",
+            "No API key set for '{}'. Open Settings → AI Assistant and add your key (or switch to Ollama, Local CLI or Casper).",
             req.provider
         )));
     }
@@ -253,6 +267,12 @@ pub async fn chat_stream(
 ) -> Result<(), AppError> {
     use tauri::Manager;
 
+    // Stop pressed before this run was registered: send nothing at all.
+    if cancel.load(Ordering::Relaxed) {
+        let _ = app.emit_all("ai_done", serde_json::json!({ "streamId": stream_id }));
+        return Ok(());
+    }
+
     // Use an IDLE (between-bytes) read timeout rather than an overall deadline:
     // a stream that keeps producing tokens must never be cut off mid-response,
     // but a genuinely stalled connection still fails. (reqwest 0.12 read_timeout.)
@@ -271,11 +291,13 @@ pub async fn chat_stream(
     }
 
     let rb = build_request(&client, &req.provider, &key, &req.base_url)?;
-    let mut resp = rb
-        .json(&req.body)
-        .send()
-        .await
-        .map_err(|e| AppError::ApiError(format!("Could not reach '{}': {}", req.provider, e)))?;
+    // A Stop while waiting for the provider's first byte drops the request.
+    let Some(sent) = cancel::until_cancelled(rb.json(&req.body).send(), &cancel).await else {
+        let _ = app.emit_all("ai_done", serde_json::json!({ "streamId": stream_id }));
+        return Ok(());
+    };
+    let mut resp =
+        sent.map_err(|e| AppError::ApiError(format!("Could not reach '{}': {}", req.provider, e)))?;
 
     let status = resp.status();
     if !status.is_success() {
@@ -378,93 +400,11 @@ pub async fn chat_stream(
     Ok(())
 }
 
-/// Tokenize a configured CLI command into program + argv WITHOUT a shell, so
-/// metacharacters (`&`, `|`, `;`, backticks, …) in the string are passed
-/// literally to the program instead of being interpreted. Supports single and
-/// double quotes and backslash escapes, covering commands like
-/// `claude --name "my assistant"`.
-fn split_command(cmd: &str) -> Result<Vec<String>, AppError> {
-    let mut out: Vec<String> = Vec::new();
-    let mut cur = String::new();
-    let mut in_single = false;
-    let mut in_double = false;
-    let mut escaped = false;
-    let mut has_token = false;
-    for c in cmd.chars() {
-        if escaped {
-            cur.push(c);
-            escaped = false;
-            continue;
-        }
-        match c {
-            '\\' if !in_single => escaped = true,
-            '\'' if !in_double => {
-                in_single = !in_single;
-                has_token = true;
-            }
-            '"' if !in_single => {
-                in_double = !in_double;
-                has_token = true;
-            }
-            c if c.is_whitespace() && !in_single && !in_double => {
-                if has_token {
-                    out.push(std::mem::take(&mut cur));
-                    has_token = false;
-                }
-            }
-            c => {
-                cur.push(c);
-                has_token = true;
-            }
-        }
-    }
-    if escaped {
-        cur.push('\\');
-    }
-    if in_single || in_double {
-        return Err(AppError::ApiError(
-            "CLI command has an unterminated quote".into(),
-        ));
-    }
-    if has_token {
-        out.push(cur);
-    }
-    if out.is_empty() {
-        return Err(AppError::ApiError("Empty CLI command".into()));
-    }
-    Ok(out)
-}
-
-/// Max bytes kept from each of the CLI's stdout/stderr. The TAIL is kept — the
-/// answer is at the end of the output.
-const MAX_CLI_OUTPUT_BYTES: usize = 1024 * 1024;
-
-/// Drain a pipe to EOF, keeping at most the last `MAX_CLI_OUTPUT_BYTES` — an
-/// unbounded `read_to_end` would let a runaway CLI OOM the process before the
-/// caller's timeout fires.
-async fn read_tail_capped<R: tokio::io::AsyncRead + Unpin>(mut r: R) -> Vec<u8> {
-    use tokio::io::AsyncReadExt;
-    let mut buf = Vec::new();
-    let mut chunk = [0u8; 8192];
-    loop {
-        match r.read(&mut chunk).await {
-            Ok(0) | Err(_) => break,
-            Ok(n) => {
-                buf.extend_from_slice(&chunk[..n]);
-                if buf.len() > MAX_CLI_OUTPUT_BYTES {
-                    buf.drain(..buf.len() - MAX_CLI_OUTPUT_BYTES);
-                }
-            }
-        }
-    }
-    buf
-}
-
 /// Largest byte index `<= i` that lands on a UTF-8 char boundary of `s`
 /// (stable-Rust stand-in for `str::floor_char_boundary`). Slicing a String at
 /// an arbitrary byte offset panics mid-character, so all truncation cuts go
 /// through this.
-fn floor_char_boundary(s: &str, i: usize) -> usize {
+pub(crate) fn floor_char_boundary(s: &str, i: usize) -> usize {
     if i >= s.len() {
         return s.len();
     }
@@ -473,208 +413,4 @@ fn floor_char_boundary(s: &str, i: usize) -> usize {
         i -= 1;
     }
     i
-}
-
-/// Local CLI passthrough: run `command` (whitespace-split into program + args)
-/// with the prompt supplied on stdin, and return captured stdout (+stderr).
-/// Useful for driving an installed agent CLI as the assistant backend.
-pub async fn cli_passthrough(command: &str, prompt: &str) -> Result<String, AppError> {
-    if command.trim().is_empty() {
-        return Err(AppError::ApiError("Empty CLI command".into()));
-    }
-
-    use tokio::io::AsyncWriteExt;
-    use tokio::process::Command;
-
-    // Normalize the command: kimi needs --quiet for non-interactive piped stdin.
-    let command = {
-        let cmd = command.trim();
-        if cmd.contains("kimi") && !cmd.contains("--quiet") && !cmd.contains("--print") {
-            format!("{} --quiet", cmd)
-        } else {
-            cmd.to_string()
-        }
-    };
-
-    // claude CLI: keep one-shot `-p` runs fast and cheap. Without an explicit
-    // --model it inherits the user's Claude Code default (often Opus — slow and
-    // pricey for a chat sidekick), and at startup it connects to every MCP
-    // server in the user's Claude config (which can be dozens of tools and many
-    // seconds) — pure overhead here, since GreenCli pipes a prompt and reads
-    // text back. Both injections defer to anything the user set explicitly in
-    // the command string.
-    let command = {
-        let is_claude = command
-            .split_whitespace()
-            .next()
-            .map(|p| p == "claude" || p.ends_with("/claude"))
-            .unwrap_or(false);
-        if is_claude {
-            let mut c = command;
-            if !c.contains("--model") {
-                c.push_str(" --model haiku");
-            }
-            if !c.contains("--mcp-config") && !c.contains("--strict-mcp-config") {
-                c.push_str(" --strict-mcp-config");
-            }
-            c
-        } else {
-            command
-        }
-    };
-
-    // Cap prompt to prevent flooding CLIs with huge stdin. The prompt is piped
-    // on stdin (not argv), so the cap can be generous: 64 KiB. When over the
-    // cap, keep the HEAD *and* the TAIL — the frontend builds the prompt as
-    // "<device info>\n<paste>\n<question>", so the user's actual question is at
-    // the END; dropping the tail would silently discard it. Cuts are walked
-    // back to UTF-8 char boundaries so we never slice inside a multi-byte char.
-    const MAX_PROMPT_BYTES: usize = 64 * 1024;
-    const HEAD_BYTES: usize = 8 * 1024; // tail gets the remaining ~56 KiB
-    let truncated;
-    let prompt = if prompt.len() > MAX_PROMPT_BYTES {
-        let head_end = floor_char_boundary(prompt, HEAD_BYTES);
-        let tail_start =
-            floor_char_boundary(prompt, prompt.len() - (MAX_PROMPT_BYTES - HEAD_BYTES));
-        truncated = format!(
-            "{}\n…[input truncated]…\n{}",
-            &prompt[..head_end],
-            &prompt[tail_start..]
-        );
-        truncated.as_str()
-    } else {
-        prompt
-    };
-
-    // Spawn the CLI DIRECTLY (no `cmd /C`, no `$SHELL -lc`): the configured
-    // command is tokenized into program + argv so shell metacharacters in it
-    // are passed literally instead of being interpreted. The unix PATH
-    // augmentation below replaces the PATH discovery the login shell used to
-    // provide (GUI apps get a minimal PATH and can't find brew/npm-installed
-    // CLIs otherwise).
-    let argv = split_command(&command)?;
-
-    // Same refusal as MCP stdio server spawning (mcp::client::validate_stdio_command):
-    // a shell interpreter named AS the CLI would re-introduce shell interpretation
-    // of its args (`sh -c …`), defeating the no-shell spawn above.
-    let file_name = Path::new(argv[0].as_str())
-        .file_name()
-        .and_then(|f| f.to_str())
-        .unwrap_or(argv[0].as_str())
-        .to_ascii_lowercase();
-    const SHELLS: [&str; 10] = [
-        "sh", "bash", "zsh", "fish", "cmd", "cmd.exe", "powershell", "powershell.exe", "pwsh",
-        "pwsh.exe",
-    ];
-    if SHELLS.contains(&file_name.as_str()) {
-        return Err(AppError::ApiError(format!(
-            "Refusing to launch shell interpreter '{}' as an AI CLI (its args would be \
-             shell-interpreted). Configure the CLI binary directly (e.g. `claude`, `kimi`, \
-             an absolute path) instead.",
-            argv[0]
-        )));
-    }
-
-    let mut builder = Command::new(&argv[0]);
-    builder.args(&argv[1..]);
-    #[cfg(unix)]
-    {
-        // Ensure user-local bin dirs are on PATH (GUI apps get minimal PATH).
-        if let Ok(home) = std::env::var("HOME") {
-            let extra = [
-                format!("{home}/.local/bin"),
-                format!("{home}/.cargo/bin"),
-                "/usr/local/bin".to_string(),
-                "/opt/homebrew/bin".to_string(),
-            ];
-            let current = std::env::var("PATH").unwrap_or_default();
-            let mut parts: Vec<&str> = current.split(':').collect();
-            for p in &extra {
-                if !parts.contains(&p.as_str()) {
-                    parts.push(p.as_str());
-                }
-            }
-            builder.env("PATH", parts.join(":"));
-        }
-    }
-
-    let mut child = builder
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        // If this future is dropped (command cancelled / app teardown) or the
-        // timeout below fires, the spawned shell must not be left orphaned.
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|e| AppError::ApiError(format!("Failed to launch '{}': {}", command, e)))?;
-
-    if let Some(mut stdin) = child.stdin.take() {
-        let _ = stdin.write_all(prompt.as_bytes()).await;
-        let _ = stdin.write_all(b"\n").await;
-        drop(stdin);
-    }
-
-    // Drain stdout/stderr on separate tasks so the child can never block on a
-    // full pipe while we wait on it, and so a timeout can abandon the reads.
-    // Buffers are CAPPED (tail kept): a runaway or malicious CLI writing
-    // endlessly must not OOM the app before the timeout below fires.
-    let mut stdout_pipe = child.stdout.take();
-    let mut stderr_pipe = child.stderr.take();
-    let stdout_task = tokio::spawn(async move {
-        match stdout_pipe.as_mut() {
-            Some(s) => read_tail_capped(s).await,
-            None => Vec::new(),
-        }
-    });
-    let stderr_task = tokio::spawn(async move {
-        match stderr_pipe.as_mut() {
-            Some(s) => read_tail_capped(s).await,
-            None => Vec::new(),
-        }
-    });
-
-    // A CLI stuck on an OAuth/login prompt, interactive mode, or a blocking
-    // shell profile would otherwise hang the AI chat forever — and every retry
-    // would leak another shell. Bound the wait and kill on expiry.
-    //
-    // NOTE: start_kill() signals only the shell we spawned, not its whole
-    // process group (libc is not a dependency, so killpg isn't available).
-    // In practice shells exec a simple `-c` command, so the child usually IS
-    // the CLI; a grandchild that survives is the accepted limitation here.
-    const CLI_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
-    let status = match tokio::time::timeout(CLI_TIMEOUT, child.wait()).await {
-        Ok(res) => res.map_err(|e| AppError::ApiError(format!("CLI error: {}", e)))?,
-        Err(_) => {
-            let _ = child.start_kill();
-            let _ = child.wait().await; // reap; SIGKILL, so this returns promptly
-            stdout_task.abort();
-            stderr_task.abort();
-            return Err(AppError::ApiError(format!(
-                "Local CLI timed out after 180s — is it waiting for input/login? \
-                 Run `{}` once in a terminal to complete any login/setup, or switch \
-                 providers in Settings → AI Assistant.",
-                command
-            )));
-        }
-    };
-
-    let stdout_buf = stdout_task.await.unwrap_or_default();
-    let stderr_buf = stderr_task.await.unwrap_or_default();
-
-    let mut out = String::from_utf8_lossy(&stdout_buf).to_string();
-    if !status.success() {
-        let err = String::from_utf8_lossy(&stderr_buf);
-        if out.trim().is_empty() {
-            out = err.to_string();
-        } else {
-            out.push_str(&format!("\n[stderr] {}", err));
-        }
-    }
-    // Strip CLI session-resume noise (e.g. kimi's "To resume this session: ...")
-    let lines: Vec<&str> = out.lines().collect();
-    let cleaned: Vec<&str> = lines
-        .into_iter()
-        .filter(|l| !l.starts_with("To resume this session"))
-        .collect();
-    Ok(cleaned.join("\n").trim().to_string())
 }

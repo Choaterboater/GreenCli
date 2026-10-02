@@ -19,6 +19,9 @@ describe('settings sections', () => {
     expect(ids('webhook')).toEqual(['intent-schedule']);
     expect(ids('mist')).toContain('mist');
     expect(ids('zzz nothing')).toEqual([]);
+    expect(ids('casper')).toEqual(['ai']);
+    expect(ids('working folder')).toEqual(['ai']);
+    expect(ids('check casper')).toEqual(['ai']);
   });
 
   it('matches group names too, and returns everything for an empty search', () => {
