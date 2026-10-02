@@ -8,7 +8,9 @@
 // check. No Tauri here: main.rs gathers the app's folders, forwards and MCP
 // servers into a CliContext.
 
-use super::casper::{self, CasperVersion, FolderRules, RunEnd, SandboxScan};
+use super::casper::{
+    self, CasperVersion, FolderRules, ProfileError, ProfileSource, RunEnd, SandboxScan,
+};
 use super::cli_run::{run_cli_process, RunOpts};
 use super::floor_char_boundary;
 use crate::error::AppError;
@@ -496,6 +498,19 @@ fn scan_file(text: Option<&str>, file: &Path) -> Result<(), String> {
     }
 }
 
+fn profile_message(e: ProfileError, project_file: Option<&Path>, global_file: &Path) -> String {
+    match e {
+        ProfileError::BadName(bad) => format!("GreenCLI couldn't tell which Casper profile is in use (\"{bad}\" isn't a profile name), so it can't check that profile's sandbox setting. Fix the profile name, then try again."),
+        ProfileError::Unclear(source) => {
+            let file = match source {
+                ProfileSource::Project => project_file.unwrap_or(global_file),
+                ProfileSource::Global => global_file,
+            };
+            format!("GreenCLI couldn't tell which Casper profile {} picks, so it can't check that profile's sandbox setting. Write that file in a plainer way (plain key names, and \"profile: name\" on one line), then try again.", file.display())
+        }
+    }
+}
+
 /// Refuse when Casper's own config turns the sandbox off, or can't be read:
 /// `~/.casper/config.yaml` and the selected profile's `config.yaml`.
 /// `picked` is the user's folder (its `.casper/project.yaml` can pick a profile).
@@ -506,8 +521,9 @@ fn check_sandbox(picked: Option<&Path>) -> Result<(), String> {
     let global_file = casper_home.join("config.yaml");
     let global = read_config(&global_file)?;
     scan_file(global.as_deref(), &global_file)?;
-    let project = match picked {
-        Some(dir) => read_config(&dir.join(".casper").join("project.yaml"))?,
+    let project_file = picked.map(|dir| dir.join(".casper").join("project.yaml"));
+    let project = match &project_file {
+        Some(file) => read_config(file)?,
         None => None,
     };
     let env = match std::env::var_os("CASPER_PROFILE") {
@@ -518,7 +534,7 @@ fn check_sandbox(picked: Option<&Path>) -> Result<(), String> {
         })?),
     };
     let profile = casper::selected_profile(env.as_deref(), project.as_deref(), global.as_deref())
-        .map_err(|bad| format!("GreenCLI couldn't tell which Casper profile is in use (\"{bad}\" isn't a profile name), so it can't check that profile's sandbox setting. Fix the profile name, then try again."))?;
+        .map_err(|e| profile_message(e, project_file.as_deref(), &global_file))?;
     let profile_file = casper_home
         .join("profiles")
         .join(&profile)

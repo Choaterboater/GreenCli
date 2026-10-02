@@ -445,6 +445,37 @@ fn has_yaml_magic(s: &str) -> bool {
     false
 }
 
+/// The text to scan: without a leading byte order mark, which YAML drops
+/// (Windows editors often save one). None when the text holds anything the
+/// line scan can't follow: a mark anywhere else, or a lone `\r` line break.
+fn scan_text(yaml: &str) -> Option<&str> {
+    let text = yaml.strip_prefix('\u{feff}').unwrap_or(yaml);
+    let lone_cr = text
+        .char_indices()
+        .any(|(i, c)| c == '\r' && text.as_bytes().get(i + 1) != Some(&b'\n'));
+    (!text.contains('\u{feff}') && !lone_cr).then_some(text)
+}
+
+/// A key the scan reads as written: ASCII letters, digits, `_` and `-`.
+/// Anything else (escapes in a quoted key, `{`, `?`, `<<`) is left to the
+/// caller to treat as unknown, never as some other key.
+fn is_plain_key(key: &str) -> bool {
+    !key.is_empty()
+        && key
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
+}
+
+/// `---` or `...` with nothing after it (comments already removed).
+fn is_bare_marker(line: &str) -> bool {
+    line == "---" || line == "..."
+}
+
+/// A YAML list item line (`- x` or a bare `-`), indent already removed.
+fn is_list_item(content: &str) -> bool {
+    content == "-" || content.starts_with("- ")
+}
+
 /// A top-level `key: value` line, as (unquoted key, value). None for other lines.
 fn top_level_pair(line: &str) -> Option<(&str, &str)> {
     if line.starts_with(char::is_whitespace) {
@@ -506,10 +537,16 @@ fn scan_flow_mapping(v: &str) -> SandboxScan {
 /// top-level `sandbox:` key that answers Unsure for anything it can't follow,
 /// so GreenCLI fails closed. No `sandbox:` key means On.
 pub fn scan_sandbox_setting(yaml: &str) -> SandboxScan {
+    let Some(yaml) = scan_text(yaml) else {
+        return SandboxScan::Unsure;
+    };
     let mut seen_content = false;
     let mut in_block = false;
     // Indent of the sandbox mapping's own keys, set by its first line.
     let mut block_indent: Option<usize> = None;
+    // The last of the mapping's own keys had no value on its line (a list
+    // may follow at the same indent, as in `allowedDomains:` then `- a.com`).
+    let mut open_key = false;
     let mut found = false;
     let mut result = SandboxScan::On;
     for raw in yaml.lines() {
@@ -519,7 +556,8 @@ pub fn scan_sandbox_setting(yaml: &str) -> SandboxScan {
             continue;
         }
         if line.starts_with("---") || line.starts_with("...") {
-            if seen_content {
+            // Only a bare marker at the start: `--- {sandbox: off}` holds a document.
+            if seen_content || !is_bare_marker(line) {
                 return SandboxScan::Unsure;
             }
             continue;
@@ -544,6 +582,10 @@ pub fn scan_sandbox_setting(yaml: &str) -> SandboxScan {
                 }
                 continue;
             };
+            if !is_plain_key(key) {
+                // `"sand\x62ox": off` is the sandbox key to YAML.
+                return SandboxScan::Unsure;
+            }
             if key != "sandbox" {
                 continue;
             }
@@ -555,6 +597,7 @@ pub fn scan_sandbox_setting(yaml: &str) -> SandboxScan {
             if value.is_empty() {
                 in_block = true;
                 block_indent = None;
+                open_key = false;
             } else if is_true(v) {
                 result = SandboxScan::On;
             } else if is_false(v) {
@@ -579,11 +622,20 @@ pub fn scan_sandbox_setting(yaml: &str) -> SandboxScan {
                 // A value of one of the mapping's keys (a list item, say).
                 continue;
             }
-            // One of the mapping's own lines: it must be `key: value`
-            // (`sandbox:` then an indented plain `off` is the scalar "off").
+            if is_list_item(content) && open_key {
+                // The list of the key above, written at the same indent.
+                continue;
+            }
+            // One of the mapping's own lines: it must be a plain `key: value`
+            // (`sandbox:` then an indented plain `off` is the scalar "off",
+            // and `{enabled: false}` is a flow mapping).
             let Some((key, value)) = top_level_pair(content) else {
                 return SandboxScan::Unsure;
             };
+            if !is_plain_key(key) {
+                return SandboxScan::Unsure;
+            }
+            open_key = value.is_empty();
             if key == "enabled" {
                 let v = unquote(value);
                 if is_false(v) {
@@ -598,18 +650,59 @@ pub fn scan_sandbox_setting(yaml: &str) -> SandboxScan {
     result
 }
 
-/// The value of a top-level `key: value` line, unquoted; None when missing or empty.
-pub fn top_level_scalar(yaml: &str, key: &str) -> Option<String> {
+/// Where a `profile:` setting GreenCLI couldn't read is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProfileSource {
+    /// The working folder's `.casper/project.yaml`.
+    Project,
+    /// `~/.casper/config.yaml`.
+    Global,
+}
+
+/// Why GreenCLI can't tell which profile Casper will load.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProfileError {
+    /// A name that breaks Casper's profile rule.
+    BadName(String),
+    /// A file with a top-level line the scan can't read plainly.
+    Unclear(ProfileSource),
+}
+
+/// The `profile:` setting of a config file: Ok(None) when there is none.
+/// Err when any top-level line can't be read plainly (a byte order mark
+/// out of place, a quoted key with escapes, a flow mapping, an anchor, a
+/// value on the next line), so the caller never falls back to `default`
+/// while Casper reads some other name.
+fn profile_setting(yaml: &str) -> Result<Option<String>, ()> {
+    let yaml = scan_text(yaml).ok_or(())?;
+    let mut seen_content = false;
+    let mut found: Option<String> = None;
     for raw in yaml.lines() {
         let line = strip_comment(raw);
-        if let Some((k, v)) = top_level_pair(line) {
-            if k == key {
-                let v = unquote(v);
-                return (!v.is_empty()).then(|| v.to_string());
-            }
+        if line.trim_start().is_empty() || line.starts_with(char::is_whitespace) {
+            continue;
         }
+        if line.starts_with("---") || line.starts_with("...") {
+            if seen_content || !is_bare_marker(line) {
+                return Err(());
+            }
+            continue;
+        }
+        seen_content = true;
+        let (key, value) = top_level_pair(line).ok_or(())?;
+        if !is_plain_key(key) {
+            return Err(());
+        }
+        if key != "profile" {
+            continue;
+        }
+        let empty = value.is_empty() || matches!(value, "~" | "null" | "Null" | "NULL");
+        if found.is_some() || empty || has_yaml_magic(value) || value.starts_with(['|', '>']) {
+            return Err(());
+        }
+        found = Some(unquote(value).to_string());
     }
-    None
+    Ok(found)
 }
 
 /// Casper's profile-name rule (src/config/profile.ts).
@@ -624,22 +717,27 @@ fn is_valid_profile_name(name: &str) -> bool {
 
 /// The profile Casper will load: `CASPER_PROFILE`, then `profile:` in the
 /// project's `.casper/project.yaml`, then in `~/.casper/config.yaml`, then
-/// `default`. Like Casper, any name that breaks the profile rule is an error
-/// (Err holds the bad name), even one a higher choice would win over.
+/// `default`. Like Casper, any name that breaks the profile rule is an error,
+/// even one a higher choice would win over. So is a file GreenCLI can't read
+/// plainly: it never guesses `default`.
 pub fn selected_profile(
     env: Option<&str>,
     project_yaml: Option<&str>,
     global_yaml: Option<&str>,
-) -> Result<String, String> {
+) -> Result<String, ProfileError> {
+    let read = |yaml: Option<&str>, source| match yaml {
+        None => Ok(None),
+        Some(y) => profile_setting(y).map_err(|()| ProfileError::Unclear(source)),
+    };
     let candidates = [
         env.map(str::to_string),
-        project_yaml.and_then(|y| top_level_scalar(y, "profile")),
-        global_yaml.and_then(|y| top_level_scalar(y, "profile")),
+        read(project_yaml, ProfileSource::Project)?,
+        read(global_yaml, ProfileSource::Global)?,
     ];
     let mut chosen: Option<String> = None;
     for name in candidates.into_iter().flatten() {
         if !is_valid_profile_name(&name) {
-            return Err(name);
+            return Err(ProfileError::BadName(name));
         }
         chosen.get_or_insert(name);
     }
@@ -652,7 +750,7 @@ pub fn sandbox_message(scan: SandboxScan, file: &Path) -> Option<String> {
     match scan {
         SandboxScan::On => None,
         SandboxScan::Off => Some(format!("Casper's sandbox is turned off in {file}. GreenCLI only uses Casper with its sandbox on. Remove \"sandbox: off\" from that file, then try again.")),
-        SandboxScan::Unsure => Some(format!("GreenCLI couldn't tell whether Casper's sandbox is on from {file}. Write it as \"sandbox: on\" (or remove the sandbox setting), then try again.")),
+        SandboxScan::Unsure => Some(format!("GreenCLI couldn't tell whether Casper's sandbox is on from {file}. Write that file in a plainer way: plain key names (no quotes, anchors or tags), and \"enabled: true\" under sandbox if you set it. Your sandbox lists can stay. Then try again.")),
     }
 }
 
@@ -1642,6 +1740,36 @@ mod tests {
             ("<<: *defaults\n", Unsure),
             ("sandbox: !!bool false\n", Unsure),
             ("sandbox:\n- off\n", Unsure),
+            // A byte order mark at the start is dropped, as YAML does.
+            ("\u{feff}sandbox: off\n", Off),
+            ("\u{feff}sandbox:\n  enabled: false\n", Off),
+            ("\u{feff}sandbox: on\n", On),
+            ("model: x\n\u{feff}sandbox: off\n", Unsure),
+            ("model: x\rsandbox: off\n", Unsure),
+            ("sandbox: on\r\nmodel: x\r\n", On),
+            // A flow mapping, or a quoted key, inside the sandbox block.
+            ("sandbox:\n  {enabled: false}\n", Unsure),
+            ("sandbox:\n  \"en\\x61bled\": false\n", Unsure),
+            ("sandbox:\n  [x]\n", Unsure),
+            ("sandbox:\n  |\n    off\n", Unsure),
+            // Escaped or unusual top-level keys.
+            ("\"sand\\x62ox\": off\n", Unsure),
+            ("'sand''box': off\n", Unsure),
+            ("\"sandbox\": off\n", Off),
+            ("? sandbox\n: off\n", Unsure),
+            ("--- {sandbox: off}\n", Unsure),
+            ("--- # first\nsandbox: on\n", On),
+            // A list at its key's indent (kubectl style) is fine.
+            ("sandbox:\n  allowedDomains:\n  - github.com\n", On),
+            (
+                "sandbox:\n  allowedDomains:\n  - a.com\n  - b.com\n  enabled: false\n",
+                Off,
+            ),
+            (
+                "sandbox:\n  allowWrite:\n  - /tmp/x\n  enabled: true\nmodel: y\n",
+                On,
+            ),
+            ("sandbox:\n  enabled: true\n  - x\n", Unsure),
         ];
         for (yaml, want) in cases {
             assert_eq!(scan_sandbox_setting(yaml), *want, "{yaml:?}");
@@ -1669,14 +1797,72 @@ mod tests {
         assert!(selected_profile(Some(""), None, None).is_err());
         // Like Casper, a bad name anywhere is an error.
         assert!(selected_profile(Some("ok"), None, Some("profile: \"a/b\"\n")).is_err());
-        assert_eq!(top_level_scalar("  profile: x\n", "profile"), None);
+        assert_eq!(profile_setting("  profile: x\n"), Ok(None));
+        assert_eq!(profile_setting("profile: 'x'\n"), Ok(Some("x".to_string())));
         assert_eq!(
-            top_level_scalar("profile: 'x'\n", "profile").as_deref(),
-            Some("x")
+            profile_setting("\u{feff}profile: lab\n"),
+            Ok(Some("lab".to_string()))
+        );
+    }
+
+    #[test]
+    fn selected_profile_never_guesses_default() {
+        use ProfileError::*;
+        use ProfileSource::*;
+        // A byte order mark is dropped, so the name is still read.
+        assert_eq!(
+            selected_profile(None, Some("\u{feff}profile: lab\n"), None).unwrap(),
+            "lab"
+        );
+        assert_eq!(
+            selected_profile(None, None, Some("\u{feff}profile: work\n")).unwrap(),
+            "work"
+        );
+        // Lines GreenCLI can't read plainly are errors, not `default`.
+        for project in [
+            "\"pro\\x66ile\": lab\n",
+            "{profile: lab}\n",
+            "profile:\n  lab\n",
+            "profile: lab\nprofile: other\n",
+            "profile: *name\n",
+            "--- {profile: lab}\n",
+            "x: 1\n\u{feff}profile: lab\n",
+            "? profile\n: lab\n",
+        ] {
+            assert_eq!(
+                selected_profile(None, Some(project), None),
+                Err(Unclear(Project)),
+                "{project:?}"
+            );
+        }
+        assert_eq!(
+            selected_profile(Some("env"), None, Some("\"pro\\x66ile\": lab\n")),
+            Err(Unclear(Global))
+        );
+        assert_eq!(
+            selected_profile(None, Some("profile: \"la\\x62\"\n"), None),
+            Err(BadName("la\\x62".to_string()))
+        );
+        // Plain files with other keys still fall back to `default`.
+        assert_eq!(
+            selected_profile(
+                None,
+                Some("commands:\n  test: npm test\n"),
+                Some("model: x\n")
+            )
+            .unwrap(),
+            "default"
         );
     }
 
     // ─── Working folder ───
+
+    #[test]
+    fn unsure_message_keeps_lists() {
+        let m = sandbox_message(SandboxScan::Unsure, Path::new("/h/.casper/config.yaml")).unwrap();
+        assert!(m.contains("Your sandbox lists can stay"), "{m}");
+        assert!(!m.contains("remove"), "{m}");
+    }
 
     #[test]
     fn chosen_folder_rules() {
@@ -1795,7 +1981,7 @@ mod tests {
         assert!(yaml.contains("    - \"/Users/me/Library/Application Support/app\"\n"));
         assert!(yaml.contains(r#"    - "/tmp/a \"b\"\\c""#));
         assert_eq!(scan_sandbox_setting(&yaml), SandboxScan::On);
-        assert_eq!(top_level_scalar(&yaml, "profile"), None);
+        assert_eq!(profile_setting(&yaml), Ok(None));
         assert!(!project_yaml(&[]).contains("sandbox"));
     }
 
