@@ -14,6 +14,14 @@
 //   of each, so a runaway CLI can't fill memory before the timeout.
 // - Each running CLI is recorded, so quitting GreenCLI can stop it: Tauri v1
 //   leaves through std::process::exit, so kill_on_drop never runs on quit.
+//
+// Known limit (Windows only): when the CLI exits by itself, a process it
+// started and left running is not stopped. Unix stops its whole process group
+// after the exit; Windows has no group to reach once the CLI's own process is
+// gone (taskkill /T walks the tree from a live pid). Closing that gap needs a
+// Job Object with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, which needs Win32 API
+// bindings GreenCLI doesn't carry. The owner runs macOS only, so this is left
+// for now; Stop, the timeout and quitting still end the whole tree.
 
 use super::casper::RunEnd;
 use std::collections::HashMap;
@@ -231,6 +239,7 @@ pub async fn run_cli_process(
         // The CLI is done. Anything it left in its group would run on unseen
         // (and hold the pipes open), so stop it like a Stop would. While any
         // member is alive the group id can't be reused.
+        // Windows: nothing to signal here; see "Known limit" at the top.
         #[cfg(unix)]
         if let Some(pgid) = pgid {
             signal_group("TERM", pgid).await;
