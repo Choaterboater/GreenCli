@@ -185,49 +185,43 @@ function isSecretFlagName(flag: string): boolean {
   return isSecretFieldName(flag) && lastPart(snakeKey(flag)) !== 'enable';
 }
 
-/** user:password typed as one value (admin:Hunter22): a user name, a colon, then a password with a
- *  letter and a digit or symbol. Not host:port, versions or image tags (redis:alpine, python:3.12). */
-const USER_PASS = /^[A-Za-z][\w.@-]{0,63}:(?=[^\s:/]*[A-Za-z])(?=[^\s:/]*[^A-Za-z\s:/])[^\s:/]{4,}$/;
+/** user:password typed as one value. GreenCLI can't tell a password from an image tag by its shape
+ *  (jdoe:123-dev and node:20-alpine look alike), so every value shaped like this is hidden unless its
+ *  name says what it is (isPlainValueName). The user part is a name or one ${NAME}; the rest is any
+ *  text with no spaces that is not only ${NAME}s. */
+const USER_PART = /^(?:[A-Za-z0-9_][\w.@+-]{0,63}|\$\{[A-Za-z_][A-Za-z0-9_]*\})$/;
+/** host:port with a numeric port, maybe a port mapping or a path after it (localhost:8080,
+ *  db:5432/app, 127.0.0.1:8080:80/tcp). */
+const NUMERIC_PORT = /^\d{1,5}(?::\d{1,5})*(?:\/\S*)?$/;
+/** An IPv6 address, a MAC address or a time (fe80::1, aa:bb:cc:dd:ee:ff, 12:30:00): hex digits,
+ *  dots and two or more colons. */
+const HEX_COLONS = /^[0-9A-Fa-f.]*(?::[0-9A-Fa-f.]*){2,}$/;
+/** An ssh or git remote: git@github.com:org/repo, me@host:/srv/x, git@host:repo.git. */
+const REMOTE = /^[\w.+-]+@[\w.-]+:(?:[^\s/]*\/\S*|\S+\.git)$/;
 
-/** A lowercase image or package name (node, postgres, my-app). */
-const IMAGE_NAME = /^[a-z0-9]+(?:[._-][a-z0-9]+)*$/;
-/** Common image tag words (node:lts-alpine, python:3.12-slim-bookworm). */
-const TAG_WORD =
-  '(?:latest|stable|lts|alpine|slim|bookworm|bullseye|buster|trixie|jammy|focal|noble|ubuntu|debian|edge|nightly|beta|alpha|rc|dev|jdk|jre|management|fpm|cli|apache|nanoserver|windowsservercore)';
-/** The first part of an image tag: a short version number (20, 1, v2) or a bare tag word (lts,
- *  alpine). A tag word with digits (alpha123, dev2024) or a long number (v12345) reads as a password. */
-const FIRST_TAG_PART = new RegExp(`^(?:v?\\d{1,3}|${TAG_WORD})$`);
-/** A later part after a version number: a short number, a tag word maybe with a short number
- *  (alpine3, jdk17), or a date (jammy-20240111). Not a 4-digit year (stable-2024). */
-const LATER_TAG_PART = new RegExp(`^(?:v?\\d{1,3}|20\\d{6}|${TAG_WORD}\\d{0,2})$`);
-/** A later part after a tag word: another tag word (lts-alpine) or a date (bookworm-20240110), but
- *  not a bare number. Real tags put the version first; dev-123, beta_99 and alpha.1 are passwords. */
-const LATER_WORD_PART = new RegExp(`^(?:20\\d{6}|${TAG_WORD}\\d{0,2})$`);
-/** Login names that are never an image or package name: admin:1-dev is a password, not a tag. */
-const LOGIN_NAMES: ReadonlySet<string> = new Set([
-  'admin', 'administrator', 'root', 'user', 'username', 'svc', 'service', 'netops', 'ops', 'operator',
-  'manager', 'cisco', 'aruba', 'juniper', 'mist', 'guest', 'test', 'superuser', 'sysadmin', 'netadmin',
-  'support', 'readonly', 'monitor', 'api', 'apiuser',
-]);
-
-/** An image or package reference that USER_PASS would take for user:password: node:20-alpine,
- *  postgres:16-alpine, nginx:1.25-alpine, node:lts-alpine. The name must not be a login name, and
- *  the tag must be lowercase and start with a short version number or be made of tag words (and a
- *  date), so admin:Hunter22, user:pass1, admin:alpha123, root:dev2024, netops:stable-2024,
- *  x:dev-123 and admin:1-dev stay secret. (host:port has no letter after the colon, and
- *  ghcr.io/x/y:1.2 has a "/", so USER_PASS never matches those.) */
-function isImageOrPackageRef(value: string): boolean {
+function looksLikeUserPass(value: string): boolean {
+  if (/\s/.test(value) || onlyReferences(value)) return false;
   const colon = value.indexOf(':');
-  const name = value.slice(0, colon);
-  const [first = '', ...rest] = value.slice(colon + 1).split(/[._-]/);
-  if (!IMAGE_NAME.test(name) || LOGIN_NAMES.has(name) || !FIRST_TAG_PART.test(first)) return false;
-  const later = /^v?\d/.test(first) ? LATER_TAG_PART : LATER_WORD_PART;
-  return rest.every((part) => later.test(part));
+  if (colon < 1) return false;
+  const user = value.slice(0, colon);
+  const pass = value.slice(colon + 1);
+  if (!pass || !USER_PART.test(user) || onlyReferences(pass)) return false;
+  // Not an address (https://, jdbc:postgresql://), a Windows drive path (C:\x), a path list
+  // (bin:/usr/bin), host:port, an IPv6 or MAC address, or an ssh or git remote.
+  if (URL_START.test(value) || (user.length === 1 && /^[/\\]/.test(pass)) || /^~?\/[^\s/]*\//.test(pass)) return false;
+  return !NUMERIC_PORT.test(pass) && !HEX_COLONS.test(value) && !REMOTE.test(value);
 }
 
-/** user:password typed as one value, and not an image or package reference. */
-function looksLikeUserPass(value: string): boolean {
-  return USER_PASS.test(value) && !isImageOrPackageRef(value);
+/** Names that clearly hold no secret, so a user:password-shaped value under them stays plain:
+ *  IMAGE=node:20-alpine, NODE_IMAGE=..., --platform linux:arm64. */
+const PLAIN_VALUE_NAMES = new Set([
+  'image', 'tag', 'version', 'platform', 'arch', 'mode', 'level', 'format', 'node_version', 'python_version',
+]);
+const PLAIN_VALUE_ENDINGS = ['_image', '_tag', '_version', '_platform'];
+
+function isPlainValueName(name: string): boolean {
+  const key = snakeKey(name.replace(/^-+/, ''));
+  return PLAIN_VALUE_NAMES.has(key) || PLAIN_VALUE_ENDINGS.some((end) => key.endsWith(end));
 }
 
 function isPublicKeyName(name: string): boolean {
@@ -618,6 +612,39 @@ function guessed(s: Server, value: string, o: SecretOptions): string {
   const name = secretName(s, value, o);
   s.notes.push(`${s.name}: ${o.where} looked like a secret, so it is now ${ref(name)}.`);
   return ref(name);
+}
+
+/** A value hidden only because it is shaped like user:password. It may well be an image tag or
+ *  something else harmless, so the note says how to put it back. */
+function hideUserPass(s: Server, value: string, o: SecretOptions): string {
+  const name = secretName(s, value, o);
+  s.notes.push(
+    `${s.name}: ${o.where} looked like user:password, so it is now ${ref(name)}. It may not be a secret (an image tag such as node:20-alpine looks the same). If it isn't, put the value back in place of ${ref(name)} in the file, or set ${name} to it.`,
+  );
+  return ref(name);
+}
+
+/** hideUserPass for args: --flag=value, NAME=value, the value after a --flag, or an arg on its own.
+ *  The flag or NAME is the name; an arg on its own has none, so it is always hidden. Values after
+ *  -H/--header are headers, which the header rule already judged. */
+function hideUserPassArgs(s: Server, args: readonly string[]): string[] {
+  return args.map((arg, i) => {
+    const n = i + 1;
+    // --flag=value, "--flag value" typed as one arg, NAME=value.
+    const flagged = FLAG_EQ.exec(arg) ?? FLAG_SPACE.exec(arg);
+    const bare = flagged ? null : BARE_EQ.exec(arg);
+    const named = flagged ? { name: flagged[2], value: flagged.at(-1)! } : bare ? { name: bare[1], value: bare[2] } : undefined;
+    if (named) {
+      const { name, value } = named;
+      if (HEADER_FLAG.test(name) || !looksLikeUserPass(value) || isPlainValueName(name)) return arg;
+      const head = arg.slice(0, arg.length - value.length);
+      return head + hideUserPass(s, value, { raw: name, where: `argument ${head.trim()}`, prefix: true });
+    }
+    if (!looksLikeUserPass(arg)) return arg;
+    const flag = i > 0 ? FLAG.exec(args[i - 1])?.[1] : undefined;
+    if (flag !== undefined && (HEADER_FLAG.test(flag) || isPlainValueName(flag))) return arg;
+    return hideUserPass(s, arg, { raw: flag ?? `ARG_${n}`, where: `argument ${n}`, prefix: true });
+  });
 }
 
 /** The query rule: secret-named values become ${NAME}, and so do values that look like keys whatever
@@ -1139,11 +1166,16 @@ export function buildMcpExport(servers: readonly McpServerDef[], options: McpExp
     }
   }
 
-  // Step 6b: a user:password value under a harmless env name that the sweep didn't already replace.
+  // Step 6b: a user:password value that the sweep didn't already replace, unless its name says it
+  // holds no secret.
   for (const b of built) {
     if (b.env) {
-      b.env = b.env.map(([k, v]) => [k, looksLikeUserPass(v) ? guessed(b.s, v, { raw: k, where: `env ${k}`, prefix: false }) : v]);
+      b.env = b.env.map(([k, v]) => [
+        k,
+        looksLikeUserPass(v) && !isPlainValueName(k) ? hideUserPass(b.s, v, { raw: k, where: `env ${k}`, prefix: false }) : v,
+      ]);
     }
+    if (b.args) b.args = hideUserPassArgs(b.s, b.args);
   }
 
   // Step 7: finish.

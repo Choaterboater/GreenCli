@@ -938,8 +938,8 @@ describe('buildMcpExport: network logins', () => {
           SNMP_COMMUNITY_RO: 'public',
           NOTE: 'netops:Lab2024!',
           FEATURE_ENABLE: 'true',
-          CACHE: 'redis:alpine',
-          PY: 'python:3.12',
+          CACHE_IMAGE: 'redis:alpine',
+          PY_VERSION: 'python:3.12',
           HOST: 'switch1:830',
         },
       }),
@@ -951,62 +951,55 @@ describe('buildMcpExport: network logins', () => {
     expect(s.args[1]).toMatch(/^-p\$\{[A-Z_]+\}$/);
     expect(s.args.slice(5)).toEqual(['-port', '-p8080', '--enable', 'true']);
     expect(s.env?.FEATURE_ENABLE).toBe('true');
-    expect(s.env?.CACHE).toBe('redis:alpine');
-    expect(s.env?.PY).toBe('python:3.12');
+    expect(s.env?.CACHE_IMAGE).toBe('redis:alpine');
+    expect(s.env?.PY_VERSION).toBe('python:3.12');
     expect(s.env?.HOST).toBe('switch1:830');
   });
 
-  it('keeps image tags and package references plain, but still hides user:password', () => {
+  it('hides every user:password-shaped value unless its name says it holds no secret', () => {
     const plain = {
       IMAGE: 'node:20-alpine',
-      DB_IMAGE: 'postgres:16-alpine',
-      WEB: 'nginx:1.25-alpine',
-      LTS: 'node:lts-alpine',
-      PYTHON: 'python:3.12-slim-bookworm',
-      REDIS: 'redis:7.2.4-alpine3.19',
+      NODE_IMAGE: 'node:20-alpine',
+      dbImage: 'postgres:16-alpine',
+      BASE_TAG: 'nginx:1.25-alpine',
+      NODE_VERSION: 'node:lts',
+      PLATFORM: 'linux:arm64',
+      MODE: 'read:only',
+      HOST: 'host:8080',
+      DB: 'db.example.com:5432/app',
+      PORTS: '127.0.0.1:8080:80/tcp',
       GHCR: 'ghcr.io/x/y:1.2',
-      DB: 'db.example.com:5432',
-      PORT: 'localhost:8080',
+      REPO: 'git@github.com:org/repo',
+      REPO_GIT: 'git@github.com:repo.git',
+      SSH_DIR: 'me@host:/srv/x',
+      WIN: 'C:\\tools\\mcp',
+      LIBS: 'lib:/usr/lib',
+      BIND: 'fe80::1',
+      MAC: 'aa:bb:cc:dd:ee:ff',
+      AT: '12:30:00',
+      URL: 'https://h/x',
+      NOTE: 'two words:here',
+      REFS: '${DB_USER}:${DB_PASS}',
+      HALF: 'admin:${DB_PASS}',
     };
-    const hidden = { LOGIN: 'admin:Hunter22', OPS: 'ops:hunter22', SVC: 'svc:2024-Spring', U: 'user:pass1' };
-    const r = build([def({ name: 's', command: 'uvx', args: ['x'], env: { ...plain, ...hidden } })]);
-    const s = stdioOf(r.file.mcpServers.s);
-    for (const [key, value] of Object.entries(plain)) expect([key, s.env?.[key]]).toEqual([key, value]);
-    for (const [key, value] of Object.entries(hidden)) {
-      expect(s.env?.[key]).toMatch(/^\$\{[A-Z_]+\}$/);
-      expect(r.text).not.toContain(value);
-    }
-    expect(r.notes.join('\n')).not.toContain('env IMAGE');
-  });
-
-  it('hides a password made of a tag word and digits, but keeps dated and jdk tags plain', () => {
-    const plain = {
-      DEB: 'debian:bookworm-20240110',
-      JAVA: 'eclipse-temurin:21-jdk-jammy',
-      MQ: 'rabbitmq:3-management',
-      LTS: 'node:lts-alpine',
-      NODE: 'node:20-alpine',
-      PY: 'python:3.12-slim-bookworm',
-      PG: 'postgres:16',
-      GHCR: 'ghcr.io/x/y:1.2',
-      HOST: 'switch1:830',
-    };
+    // The findings' values, and image tags under names that don't say what they hold.
     const hidden = {
-      A: 'admin:alpha123',
-      B: 'root:dev2024',
-      C: 'admin:edge2023',
-      D: 'admin:beta1',
-      E: 'admin:lts2024',
-      F: 'netops:stable-2024',
-      G: 'svc:v12345',
-      H: 'admin:dev-123',
-      I: 'root:alpha.1',
-      J: 'netops:beta_99',
-      K: 'admin:1-dev',
-      L: 'admin:lts-42',
-      M: 'admin:alpha-20240101',
-      N: 'jdoe:dev-123',
-      O: 'jdoe:rc_7',
+      A: 'jdoe:123-dev',
+      B: 'operator1:12-dev',
+      C: 'bob:rc-alpine99',
+      D: 'admin:Hunter22',
+      E: 'netadmin2:42-beta',
+      F: 'jsmith:7.alpha',
+      G: 'jdoe:v99-rc',
+      H: 'jdoe:beta-20991231',
+      I: 'admin:password',
+      J: 'admin:pass:word',
+      K: '${DB_USER}:Hunter22',
+      L: 'admin@corp.com:Hunter22',
+      WEB: 'httpd:2.4-alpine',
+      CACHE: 'redis:alpine',
+      VERSIONS: 'node:22-slim',
+      MY_IMAGE_TAG_LIST: 'jdoe:123-dev,x',
     };
     const r = build([def({ name: 's', command: 'uvx', args: ['x'], env: { ...plain, ...hidden } })]);
     const s = stdioOf(r.file.mcpServers.s);
@@ -1015,6 +1008,49 @@ describe('buildMcpExport: network logins', () => {
       expect([key, s.env?.[key]]).toEqual([key, expect.stringMatching(/^\$\{[A-Z_]+\}$/)]);
       expect(r.text).not.toContain(value);
     }
+    const note = r.notes.find((n) => n.startsWith('s: env WEB '));
+    expect(note).toBe(
+      "s: env WEB looked like user:password, so it is now ${WEB_SECRET}. It may not be a secret (an image tag such as node:20-alpine looks the same). If it isn't, put the value back in place of ${WEB_SECRET} in the file, or set WEB_SECRET to it.",
+    );
+    expect(r.notes.join('\n')).not.toContain('env IMAGE');
+  });
+
+  it('hides user:password-shaped args unless the flag says they hold no secret', () => {
+    expect(
+      argsOf([
+        '--note',
+        'jdoe:123-dev',
+        '--image',
+        'node:20-alpine',
+        '--tag=bob:rc-alpine99',
+        '--label=bob:rc-alpine99',
+        '--node-image=node:20-alpine',
+        'IMAGE=node:20-alpine',
+        'NOTE=admin:Hunter22',
+        '--who operator1:12-dev',
+        'operator1:12-dev',
+        'host:8080',
+        'git@github.com:org/repo',
+        '-H',
+        'Accept:application/json',
+      ]),
+    ).toEqual([
+      '--note',
+      '${S_NOTE_SECRET}',
+      '--image',
+      'node:20-alpine',
+      '--tag=bob:rc-alpine99',
+      '--label=${S_LABEL_SECRET}',
+      '--node-image=node:20-alpine',
+      'IMAGE=node:20-alpine',
+      'NOTE=${S_NOTE_SECRET_2}',
+      '--who ${S_WHO_SECRET}',
+      '${S_ARG_11_SECRET}',
+      'host:8080',
+      'git@github.com:org/repo',
+      '-H',
+      'Accept:application/json',
+    ]);
   });
 });
 
