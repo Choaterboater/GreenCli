@@ -1,13 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 
-vi.mock('@tauri-apps/api/tauri', () => ({ invoke: vi.fn() }));
+vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 vi.mock('../store/dialogStore', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../store/dialogStore')>()),
   askConfirm: vi.fn(),
 }));
 
-import { invoke } from '@tauri-apps/api/tauri';
+import { invoke } from '@tauri-apps/api/core';
 import McpServers from './McpServers';
 import { allowWritesMessage, writesOffHelp } from './McpServerSafety';
 import { askConfirm } from '../store/dialogStore';

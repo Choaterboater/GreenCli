@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { X, Wand2, CheckCircle2, Download, Upload } from 'lucide-react';
-import { invoke } from '@tauri-apps/api/tauri';
-import { open as openDialog, save as saveDialog } from '@tauri-apps/api/dialog';
+import { invoke } from '@tauri-apps/api/core';
+import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
 import { useSessionStore } from '../store/sessionStore';
 import { useSettingsStore } from '../store/settingsStore';
 import { useDialogStore } from '../store/dialogStore';
@@ -17,13 +17,12 @@ import {
 } from '../utils/deviceProfiles';
 import { notify } from '../store/toastStore';
 import { savedHostId, tabLabel } from '../utils/tabs';
+import { isTauri } from '../utils/tauri';
 
 interface DeviceMapperProps {
   sessionId: string | null;
   onClose: () => void;
 }
-
-const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
 
 function lastPrompt(output: string): string {
   return output

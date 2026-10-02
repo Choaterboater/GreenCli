@@ -1,6 +1,6 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import { appWindow } from "@tauri-apps/api/window";
+import { currentWindow, currentWindowLabel, isTauri } from "./utils/tauri";
 // Bundled monaco wiring — must run before any <Editor>/<DiffEditor> mounts so
 // the editor resolves from the local npm build, never the jsdelivr CDN (which
 // is no longer in the CSP).
@@ -11,7 +11,7 @@ import "./styles/index.css";
 
 // Pop-out session windows (label `popout-<sessionId>`) load the same bundle
 // but render a terminal-only view instead of the full app shell.
-const isPopOut = appWindow.label.startsWith("popout-");
+const isPopOut = currentWindowLabel().startsWith("popout-");
 
 // Prevent default browser reload on Cmd+R / Ctrl+R / F5 / Cmd+Shift+R
 document.addEventListener("keydown", (e) => {
@@ -53,7 +53,10 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
 // that shows the window anyway if this code never runs.
 requestAnimationFrame(() =>
   requestAnimationFrame(() => {
-    appWindow.show().catch(() => {});
-    appWindow.setFocus().catch(() => {});
+    if (isTauri) {
+      const win = currentWindow();
+      win?.show().catch(() => {});
+      win?.setFocus().catch(() => {});
+    }
   })
 );

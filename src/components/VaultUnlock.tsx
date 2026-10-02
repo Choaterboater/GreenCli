@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { X, ShieldCheck, Eye, EyeOff } from 'lucide-react';
-import { invoke } from '@tauri-apps/api/tauri';
+import { invoke } from '@tauri-apps/api/core';
 import { useSessionStore } from '../store/sessionStore';
 
 // Master-password prompt for the credential vault.

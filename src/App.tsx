@@ -1,6 +1,5 @@
 import { useEffect, useCallback, useState, useRef, memo } from 'react';
-import { invoke } from '@tauri-apps/api/tauri';
-import { WebviewWindow } from '@tauri-apps/api/window';
+import { invoke } from '@tauri-apps/api/core';
 import { Search, Plug, TerminalSquare, X, Plus, RefreshCw } from 'lucide-react';
 
 import { CONNECTION_FIELDS, useSessionStore, PromptLogin } from './store/sessionStore';
@@ -47,7 +46,7 @@ import {
   tabSwitchIntent,
   withShortcut,
 } from './utils/shortcuts';
-import { appWindow } from '@tauri-apps/api/window';
+import { currentWindow, focusWindow, isTauri } from './utils/tauri';
 import Toaster from './components/Toaster';
 import DialogHost from './components/DialogHost';
 
@@ -538,8 +537,7 @@ function App() {
   const isTauriMac =
     typeof navigator !== 'undefined' &&
     /Mac/.test(navigator.userAgent) &&
-    typeof window !== 'undefined' &&
-    '__TAURI_IPC__' in window;
+    isTauri;
 
 
   // Load saved sessions from backend on mount
@@ -1351,7 +1349,7 @@ function App() {
       // A reused tab living in a pop-out window: bring that window forward —
       // the main window can't show it (setActiveSession ignores it).
       if (st.poppedSessions.includes(tabConfig.id)) {
-        WebviewWindow.getByLabel(`popout-${tabConfig.id}`)?.setFocus().catch(() => {});
+        focusWindow(`popout-${tabConfig.id}`).catch(() => {});
       }
       void handleConnect(tabConfig);
     },
@@ -1432,14 +1430,14 @@ function App() {
       const needsUser = (s: ReturnType<typeof useSessionStore.getState>) =>
         s.showAuthDialog || s.showVaultUnlock;
       if (needsUser(useSessionStore.getState())) {
-        appWindow.setFocus().catch(() => {});
+        currentWindow()?.setFocus().catch(() => {});
         return;
       }
       const stop = useSessionStore.subscribe((s) => {
         if (!needsUser(s)) return;
         clearTimeout(timer);
         stop();
-        appWindow.setFocus().catch(() => {});
+        currentWindow()?.setFocus().catch(() => {});
       });
       // Only the reconnect just requested — stop watching after a minute.
       const timer = setTimeout(stop, 60_000);

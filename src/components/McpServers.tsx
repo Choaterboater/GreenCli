@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type CSSProperties } from 'react';
-import { invoke } from '@tauri-apps/api/tauri';
+import { invoke } from '@tauri-apps/api/core';
 import {
   Plus,
   Trash2,
@@ -132,7 +132,7 @@ export default function McpServers() {
       // Outside Tauri (dev browser / tests) there is no backend at all — stay
       // silent. Real backend failures get logged instead of being swallowed,
       // but not toasted: this runs on a 5s poll and would spam the user.
-      if ('__TAURI_IPC__' in window) {
+      if (isTauri) {
         console.error('[McpServers] status refresh failed:', err);
       }
     }

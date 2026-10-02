@@ -41,7 +41,7 @@ import {
   Square,
   Lock,
 } from 'lucide-react';
-import { invoke } from '@tauri-apps/api/tauri';
+import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { useSessionStore } from '../store/sessionStore';
 import { useSettingsStore } from '../store/settingsStore';
@@ -80,6 +80,7 @@ import { resolveSshLogin } from '../utils/connect';
 import { loginChoiceFor } from '../utils/logins';
 import { backendVault } from '../utils/vaultAccess';
 import { useAiBridge, type AiEditTarget } from '../store/aiBridgeStore';
+import { isTauri } from '../utils/tauri';
 
 // ─── Anthropic API types (local) ───
 
@@ -1296,8 +1297,8 @@ export default function AiAssistant() {
 
     // The assistant talks to providers from the Rust backend. In a plain browser
     // tab there is no Tauri IPC, so fail with a clear message instead of a cryptic
-    // "window.__TAURI_IPC__ is not a function".
-    if (!('__TAURI_IPC__' in window)) {
+    // "Cannot read properties of undefined (reading 'invoke')".
+    if (!isTauri) {
       setMessages((prev) => [
         ...prev,
         {

@@ -22,7 +22,7 @@ import {
   ShieldOff,
   Search,
 } from 'lucide-react';
-import { invoke } from '@tauri-apps/api/tauri';
+import { invoke } from '@tauri-apps/api/core';
 import { useSessionStore } from '../store/sessionStore';
 import { useSettingsStore } from '../store/settingsStore';
 import { askConfirm, useDialogStore } from '../store/dialogStore';

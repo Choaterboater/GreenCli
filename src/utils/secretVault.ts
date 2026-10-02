@@ -6,7 +6,7 @@
 // unlocked; while locked, secrets live only in memory for the session (and writes
 // no-op via the catch below), exactly like saved SSH passwords.
 
-import { invoke } from '@tauri-apps/api/tauri';
+import { invoke } from '@tauri-apps/api/core';
 import { TerminalSettings, CentralAccount } from '../types';
 
 const K_CLIENT_SECRET = 'set:central:clientSecret';

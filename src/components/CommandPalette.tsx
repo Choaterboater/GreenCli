@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
-import { invoke } from '@tauri-apps/api/tauri';
-import { WebviewWindow } from '@tauri-apps/api/window';
+import { invoke } from '@tauri-apps/api/core';
+import { focusWindow } from '../utils/tauri';
 import { fuzzyScore } from '../utils';
 import { notify } from '../store/toastStore';
 import { useTheme } from '../hooks/useTheme';
@@ -288,7 +288,7 @@ export default function CommandPalette({ onConnect, onDuplicateTab, onLocalShell
         icon: <TerminalSquare size={14} className="text-[var(--accent-info)]" />,
         run: () => {
           if (isPopped) {
-            WebviewWindow.getByLabel(`popout-${s.sessionId}`)?.setFocus();
+            focusWindow(`popout-${s.sessionId}`).catch(() => {});
           } else {
             useSessionStore.getState().setActiveSession(s.sessionId);
           }

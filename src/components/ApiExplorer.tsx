@@ -32,7 +32,7 @@ import {
   Users,
   type LucideIcon,
 } from 'lucide-react';
-import { invoke } from '@tauri-apps/api/tauri';
+import { invoke } from '@tauri-apps/api/core';
 import { useSessionStore } from '../store/sessionStore';
 import { useSettingsStore } from '../store/settingsStore';
 import { askConfirm } from '../store/dialogStore';
@@ -50,6 +50,7 @@ import {
   CENTRAL_ENDPOINTS,
   CENTRAL_DOCS,
 } from '../types';
+import { isTauri } from '../utils/tauri';
 
 // Per-device-REST flavour: label, default base URL, endpoint catalog, and the
 // backend login/request commands.
@@ -80,7 +81,6 @@ function defaultBase(k: DeviceApiKind, host?: string): string {
   return k === 'cx' ? '/rest/v10.09' : k === 'aoss' ? '/rest/v7' : '';
 }
 
-const IS_TAURI = typeof window !== 'undefined' && '__TAURI_IPC__' in window;
 const SAVED_REQUESTS_KEY = 'greencli-api-saved-requests-v1';
 
 interface SavedApiRequest {
@@ -145,8 +145,8 @@ function toCsv(rows: Row[], cols: string[]): string {
 async function downloadText(filename: string, contents: string, type = 'text/plain') {
   // Blob-anchor downloads are a silent no-op in the Tauri webview (no download
   // handler) — use the native save dialog there; blob path covers dev-in-browser.
-  if (typeof window !== 'undefined' && '__TAURI__' in window) {
-    const { save } = await import('@tauri-apps/api/dialog');
+  if (isTauri) {
+    const { save } = await import('@tauri-apps/plugin-dialog');
     const ext = filename.split('.').pop() || 'txt';
     const path = await save({
       title: 'Export response',
@@ -354,7 +354,7 @@ export default function ApiExplorer() {
       setResponse(null);
       startTime = performance.now();
 
-      if (!IS_TAURI) {
+      if (!isTauri) {
         throw new Error('The API Explorer runs through the desktop backend — launch the app (not a browser tab).');
       }
 
@@ -481,7 +481,7 @@ export default function ApiExplorer() {
     setError(null);
     setLoggingIn(true);
     try {
-      if (!IS_TAURI) {
+      if (!isTauri) {
         throw new Error('Login requires the desktop app (the browser can\'t reach the switch directly).');
       }
       // Honour the REST version/base the user typed in the Base URL field, else use

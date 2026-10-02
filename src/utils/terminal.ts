@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/tauri';
+import { invoke } from '@tauri-apps/api/core';
 
 /** Small async delay. */
 export const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));

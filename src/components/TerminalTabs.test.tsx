@@ -1,8 +1,11 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-vi.mock('@tauri-apps/api/tauri', () => ({ invoke: vi.fn(() => Promise.resolve()) }));
-vi.mock('@tauri-apps/api/window', () => ({ WebviewWindow: { getByLabel: vi.fn(() => null) } }));
+vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn(() => Promise.resolve()) }));
+vi.mock('@tauri-apps/api/window', () => ({
+  Window: { getByLabel: vi.fn(async () => null) },
+  getCurrentWindow: vi.fn(() => ({ label: 'main' })),
+}));
 vi.mock('../store/dialogStore', () => ({ askPrompt: vi.fn(), askConfirm: vi.fn() }));
 
 import TerminalTabs from './TerminalTabs';

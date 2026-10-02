@@ -5,7 +5,7 @@
 // capture itself happens HERE because pulling a running-config needs the live
 // terminal channel + vendor paging control (same split as intent evaluation).
 
-import { invoke } from '@tauri-apps/api/tauri';
+import { invoke } from '@tauri-apps/api/core';
 import { Session } from '../types';
 import { useSettingsStore } from '../store/settingsStore';
 import { notify } from '../store/toastStore';

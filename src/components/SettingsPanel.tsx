@@ -19,8 +19,8 @@ import {
   ArchiveRestore,
   type LucideIcon,
 } from 'lucide-react';
-import { invoke } from '@tauri-apps/api/tauri';
-import { open as openDialog, save as saveDialog } from '@tauri-apps/api/dialog';
+import { invoke } from '@tauri-apps/api/core';
+import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
 import { useSessionStore } from '../store/sessionStore';
 import { useSettingsStore } from '../store/settingsStore';
 import { askConfirm, useDialogStore } from '../store/dialogStore';
@@ -47,6 +47,7 @@ import {
 } from '../utils/settingsSections';
 import LargeModal, { ModalRail, RailItem } from './LargeModal';
 import { plainHttpWarning } from '../utils/urlSafety';
+import { isTauri } from '../utils/tauri';
 
 // Curated best-practices the AI should apply, distilled from Juniper Validated
 // Designs (JVDs). Appended to the references field on request.
@@ -64,8 +65,6 @@ const JVD_REFERENCES = `# Juniper Validated Design (JVD) best-practices
   routes present (bgp.evpn.0), VXLAN VTEPs up, no interface errors/drops.
 - General: out-of-band mgmt, RFC5549 or lo0 /32s, config via automation where managed,
   golden config + commit confirmed.`;
-
-const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
 
 const THEME_OPTIONS: { id: ThemePreference; label: string; Icon: typeof Sun }[] = [
   { id: 'system', label: 'System', Icon: Monitor },

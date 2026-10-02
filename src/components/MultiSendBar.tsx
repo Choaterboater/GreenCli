@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Radio } from 'lucide-react';
-import { invoke } from '@tauri-apps/api/tauri';
+import { invoke } from '@tauri-apps/api/core';
 import { useSessionStore } from '../store/sessionStore';
 import { askConfirm } from '../store/dialogStore';
 import { notify } from '../store/toastStore';

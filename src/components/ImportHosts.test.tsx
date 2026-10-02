@@ -1,12 +1,12 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { invoke } from '@tauri-apps/api/tauri';
-import { open } from '@tauri-apps/api/dialog';
+import { invoke } from '@tauri-apps/api/core';
+import { open } from '@tauri-apps/plugin-dialog';
 import ImportHosts from './ImportHosts';
 import { useSessionStore } from '../store/sessionStore';
 
-vi.mock('@tauri-apps/api/tauri', () => ({ invoke: vi.fn() }));
-vi.mock('@tauri-apps/api/dialog', () => ({ open: vi.fn(), save: vi.fn() }));
+vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
+vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn(), save: vi.fn() }));
 
 const settings = vi.hoisted(() => ({ mistToken: '' }));
 vi.mock('../store/settingsStore', () => ({

@@ -3,14 +3,13 @@
 
 import { useState } from 'react';
 import { AlertCircle, CheckCircle2 } from 'lucide-react';
-import { invoke } from '@tauri-apps/api/tauri';
-import { open as openDialog } from '@tauri-apps/api/dialog';
+import { invoke } from '@tauri-apps/api/core';
+import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { useSettingsStore } from '../store/settingsStore';
 import { notify } from '../store/toastStore';
 import type { CasperCheck } from '../types';
 import { plainCliError } from '../utils/cliPrompt';
-
-const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
+import { isTauri } from '../utils/tauri';
 
 /** A check result belongs to one command and one folder. */
 const checkKey = (command: string, folder: string) => `${command}\u0000${folder}`;

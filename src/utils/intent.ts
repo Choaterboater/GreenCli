@@ -2,7 +2,7 @@
 // The Rust side persists intents (intents.json); evaluation runs here because we
 // have the live terminal channel. Results are written back via intent_set_result.
 
-import { invoke } from '@tauri-apps/api/tauri';
+import { invoke } from '@tauri-apps/api/core';
 import { Session, DeviceProfile } from '../types';
 import { sendAndCapture } from './terminal';
 import { profileForSession } from './deviceProfiles';

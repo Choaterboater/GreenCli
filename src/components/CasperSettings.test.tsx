@@ -1,15 +1,15 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { invoke } from '@tauri-apps/api/tauri';
-import { open as openDialog } from '@tauri-apps/api/dialog';
+import { invoke } from '@tauri-apps/api/core';
+import { open as openDialog } from '@tauri-apps/plugin-dialog';
 
 // The Choose… button only shows inside the app.
 vi.hoisted(() => {
-  (window as unknown as Record<string, unknown>).__TAURI__ = {};
+  (globalThis as unknown as Record<string, unknown>).isTauri = true;
 });
 
-vi.mock('@tauri-apps/api/tauri', () => ({ invoke: vi.fn() }));
-vi.mock('@tauri-apps/api/dialog', () => ({ open: vi.fn() }));
+vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
+vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn() }));
 
 const notify = vi.hoisted(() => ({ warning: vi.fn(), success: vi.fn(), error: vi.fn(), info: vi.fn() }));
 vi.mock('../store/toastStore', () => ({ notify }));

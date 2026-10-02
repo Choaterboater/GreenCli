@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { invoke } from '@tauri-apps/api/tauri';
+import { invoke } from '@tauri-apps/api/core';
 import { X, Waypoints, Plus, Trash2, ArrowRight, Globe } from 'lucide-react';
 import { useSessionStore } from '../store/sessionStore';
 import { notify } from '../store/toastStore';

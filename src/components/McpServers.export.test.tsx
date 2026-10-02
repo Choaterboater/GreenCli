@@ -1,12 +1,12 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { invoke } from '@tauri-apps/api/tauri';
+import { invoke } from '@tauri-apps/api/core';
 import McpServers from './McpServers';
 import { tauriSave } from '../utils/fileSystem';
 import { notify } from '../store/toastStore';
 import type { McpServerDef } from '../utils/mcpTypes';
 
-vi.mock('@tauri-apps/api/tauri', () => ({ invoke: vi.fn() }));
+vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 vi.mock('../utils/fileSystem', () => ({ isTauri: true, tauriSave: vi.fn() }));
 vi.mock('../store/toastStore', () => ({ notify: { success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() } }));
 
@@ -38,7 +38,8 @@ const SERVERS: McpServerDef[] = [
 ];
 
 function backend(servers: McpServerDef[], writeError?: string) {
-  vi.mocked(invoke).mockImplementation(async (cmd: string, args?: Record<string, unknown>) => {
+  vi.mocked(invoke).mockImplementation(async (cmd: string, raw?: unknown) => {
+    const args = raw as Record<string, unknown> | undefined;
     if (cmd === 'mcp_list_servers') return servers;
     if (cmd === 'mcp_status') return [];
     if (cmd === 'mcp_has_credentials') return args?.name === 'central';

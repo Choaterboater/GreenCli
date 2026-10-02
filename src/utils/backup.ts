@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/tauri';
+import { invoke } from '@tauri-apps/api/core';
 import { DEFAULT_SETTINGS, SessionFolder, TerminalSettings } from '../types';
 import { useSettingsStore } from '../store/settingsStore';
 import { useSnippetsStore, Snippet } from '../store/snippetsStore';
