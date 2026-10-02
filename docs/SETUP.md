@@ -111,6 +111,9 @@ id `com.choatelabs.greencli`:
 Open **Quick Connect** (`Ctrl+T`) or double-click a saved host in the sidebar.
 
 - **Protocols**: SSH, Telnet, Serial, and Local (a local shell / CLI).
+- **Local presets**: Default Shell, Claude CLI, Kimi CLI, Copilot CLI and **Casper**. Set
+  **Start folder** to your project so Casper works on those files. The AI assistant never
+  types into local tabs, Casper's included.
 - **SSH auth**: password, private key (Browse… to load a key file), or **ssh-agent**
   (uses `SSH_AUTH_SOCK` / the OS agent). If `password` auth is refused, it falls back
   to **keyboard-interactive** (TACACS+/RADIUS) — the password answers only the first

@@ -666,7 +666,7 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
                 <label className="block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-secondary)] mb-1.5">
                   Launch
                 </label>
-                <div className="grid grid-cols-4 gap-2">
+                <div className="grid grid-cols-5 gap-2">
                   {LOCAL_CLI_PRESETS.map((p) => (
                     <button
                       key={p.id}
@@ -734,7 +734,9 @@ export default function QuickConnect({ onConnect }: QuickConnectProps) {
                   </button>
                 </div>
                 <p className="text-[10px] text-[var(--text-muted)] mt-1">
-                  The shell starts in this directory. Leave blank to use your home/default.
+                  {cliPresetId === 'casper' && !customCommand.trim()
+                    ? 'Casper works on the files in this folder: pick your project. Blank starts it in your home folder.'
+                    : 'The shell starts in this directory. Leave blank to use your home/default.'}
                 </p>
               </div>
             </div>
