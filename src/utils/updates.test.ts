@@ -26,6 +26,8 @@ import { useSessionStore } from '../store/sessionStore';
 import { useSidePanelStore } from '../store/sidePanelStore';
 
 const ON: UpdateStatus = { version: '2.0.0', enabled: true, reason: null, place: 'normal', ready: null };
+/** A check downloaded 2.0.1, waiting for Restart to update. */
+const READY: UpdateStatus = { ...ON, ready: '2.0.1' };
 const NOW = 1_800_000_000_000;
 
 /** invoke mock answering update_status / update_check / update_install. */
@@ -177,7 +179,7 @@ describe('restartToUpdate', () => {
     });
     invoke.mockImplementation(async (cmd: string) => {
       order.push(cmd);
-      return cmd === 'update_status' ? ON : undefined;
+      return cmd === 'update_status' ? READY : undefined;
     });
     await expect(restartToUpdate('2.0.1')).resolves.toBe(true);
     off();
@@ -193,7 +195,7 @@ describe('restartToUpdate', () => {
   it('says an AI answer still running will stop', async () => {
     useSidePanelStore.getState().setStatus('ai', 'busy');
     askConfirm.mockResolvedValue(false);
-    answer({ update_status: ON });
+    answer({ update_status: READY });
     await expect(restartToUpdate('2.0.1')).resolves.toBe(false);
     expect(askConfirm.mock.calls[0][0].message).toContain('The AI assistant is still answering. It will stop.');
     expect(calls()).toEqual(['update_status']);
@@ -205,7 +207,7 @@ describe('restartToUpdate', () => {
     const save = vi.fn();
     const off = registerBeforeExit(save);
     askConfirm.mockResolvedValue(false);
-    answer({ update_status: ON });
+    answer({ update_status: READY });
     await expect(restartToUpdate('2.0.1')).resolves.toBe(false);
     off();
     const opts = askConfirm.mock.calls[0][0];
@@ -228,7 +230,7 @@ describe('restartToUpdate', () => {
         .spyOn(navigator, 'userAgent', 'get')
         .mockReturnValue('Mozilla/5.0 (Windows NT 10.0; Win64; x64)');
       askConfirm.mockResolvedValue(false);
-      answer({ update_status: ON });
+      answer({ update_status: READY });
       await expect(restartToUpdate('2.0.1')).resolves.toBe(false);
       expect(askConfirm.mock.calls[0][0].message).toContain(UPDATE_TEXT.windows);
     });
@@ -238,7 +240,7 @@ describe('restartToUpdate', () => {
         .spyOn(navigator, 'userAgent', 'get')
         .mockReturnValue('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)');
       askConfirm.mockResolvedValue(false);
-      answer({ update_status: ON });
+      answer({ update_status: READY });
       await expect(restartToUpdate('2.0.1')).resolves.toBe(false);
       expect(askConfirm.mock.calls[0][0].message).not.toContain(UPDATE_TEXT.windows);
     });
@@ -262,6 +264,26 @@ describe('restartToUpdate', () => {
     invoke.mockRejectedValue('Move GreenCLI to Applications, then try again.');
     await expect(restartToUpdate('2.0.1')).resolves.toBe(false);
     expect(toasts()[0].message).toBe('Move GreenCLI to Applications, then try again.');
+  });
+
+  it('names the update waiting now, which a later check may have replaced', async () => {
+    askConfirm.mockResolvedValue(false);
+    answer({ update_status: { ...ON, ready: '2.0.2' } });
+    await expect(restartToUpdate('2.0.1')).resolves.toBe(false);
+    expect(askConfirm.mock.calls[0][0].message).toContain('GreenCLI 2.0.2 installs, then opens again.');
+  });
+
+  it('says to check first, before asking or saving, when nothing is waiting any more', async () => {
+    // The toast said 2.0.1, then a check found its release withdrawn.
+    const save = vi.fn();
+    const off = registerBeforeExit(save);
+    answer({ update_status: ON });
+    await expect(restartToUpdate('2.0.1')).resolves.toBe(false);
+    off();
+    expect(askConfirm).not.toHaveBeenCalled();
+    expect(save).not.toHaveBeenCalled();
+    expect(calls()).toEqual(['update_status']);
+    expect(toasts()[0].message).toBe(UPDATE_TEXT.notReady);
   });
 
   it('says to move the app first, before asking or saving, when run from the disk image', async () => {

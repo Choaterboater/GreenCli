@@ -206,6 +206,41 @@ pub fn should_offer(current: &Version, release: &Version, remote: &Version) -> b
     remote == release && is_newer(current, remote)
 }
 
+/// What a check does once it has asked GitHub for the latest release, given
+/// the update already downloaded and waiting for "Restart to update", if any.
+#[derive(Debug, PartialEq, Eq)]
+pub enum CheckNext {
+    /// Nothing newer than this app is published (none at all, or the waiting
+    /// update's release was withdrawn): drop what is waiting.
+    UpToDate,
+    /// Answer with the waiting update and fetch nothing: it is still the
+    /// latest release, or GitHub couldn't be reached to say otherwise.
+    Keep(String),
+    /// Download this release. Anything waiting is another version (one the
+    /// owner replaced or withdrew): drop it first.
+    Fetch(Version),
+    /// The check failed and nothing is waiting.
+    Fail(&'static str),
+}
+
+/// The waiting version (`waiting`, as `Update::version` writes it) against
+/// the latest release (`latest`, step 1 of a check) and this app's version.
+pub fn check_next(
+    current: &Version,
+    waiting: Option<String>,
+    latest: Result<Option<Version>, &'static str>,
+) -> CheckNext {
+    match latest {
+        // Offline: an update already downloaded and checked stays ready.
+        Err(e) => waiting.map_or(CheckNext::Fail(e), CheckNext::Keep),
+        Ok(Some(release)) if is_newer(current, &release) => match waiting {
+            Some(w) if w == release.to_string() => CheckNext::Keep(w),
+            _ => CheckNext::Fetch(release),
+        },
+        Ok(_) => CheckNext::UpToDate,
+    }
+}
+
 /// The contents of a Tauri `.pub` file: base64 of a minisign public key.
 pub fn pubkey_valid(pubkey: &str) -> bool {
     use base64::Engine;
@@ -383,6 +418,11 @@ impl UpdaterState {
             .as_ref()
             .map(|p| p.update.version.clone())
     }
+
+    /// Forget the waiting update (and free its bytes).
+    fn drop_pending(&self) {
+        *self.pending.lock().unwrap_or_else(|p| p.into_inner()) = None;
+    }
 }
 
 /// Register the updater plugin when updates are on, and always manage
@@ -457,7 +497,8 @@ fn may_update(
 
 /// Look for a newer version and, when there is one, download it and check its
 /// signature. Returns the new version, or None when this is the latest.
-/// Never installs.
+/// Never installs. An update already downloaded is checked against the latest
+/// release too, so one the owner replaced or withdrew is dropped.
 #[tauri::command]
 pub async fn update_check(
     app: AppHandle,
@@ -466,22 +507,32 @@ pub async fn update_check(
     may_update(state.off, current_place)?;
     let platform = current_platform().ok_or(ERR_OFF)?;
     let _one_at_a_time = state.checking.lock().await;
-    if let Some(version) = state.pending_version() {
-        return Ok(Some(version));
-    }
+    let waiting = state.pending_version();
 
     let client = small_client().map_err(|e| {
         log::warn!("Update check setup failed: {}", e.without_url());
         ERR_NETWORK
-    })?;
+    });
     // 1. Which release: the latest one's version. Nothing newer, nothing more
-    // to fetch.
-    let Some(release) = latest_release(&client).await? else {
-        return Ok(None);
+    // to fetch; the one already waiting, nothing to download again.
+    let latest = match &client {
+        Ok(client) => latest_release(client).await,
+        Err(e) => Err(*e),
     };
-    if !is_newer(&app.package_info().version, &release) {
-        return Ok(None);
-    }
+    let release = match check_next(&app.package_info().version, waiting, latest) {
+        CheckNext::UpToDate => {
+            state.drop_pending();
+            return Ok(None);
+        }
+        CheckNext::Keep(version) => return Ok(Some(version)),
+        CheckNext::Fail(e) => return Err(e.into()),
+        CheckNext::Fetch(release) => {
+            state.drop_pending();
+            release
+        }
+    };
+    // Step 1 used it, so it is there.
+    let client = client?;
     // 2. That release's key for this system, and 3. that release's manifest:
     // both from the same tag, so a release published in between can't mix
     // one release's key with another's files.
@@ -802,6 +853,61 @@ mod tests {
         // Never the same version or a downgrade.
         assert!(!should_offer(&v("2.0.1"), &release, &v("2.0.1")));
         assert!(!should_offer(&v("2.1.0"), &release, &v("2.0.1")));
+    }
+
+    #[test]
+    fn a_waiting_update_is_checked_against_the_latest_release() {
+        use CheckNext::*;
+        let current = v("2.0.0");
+        let held = || Some("2.0.1".to_string());
+        let latest = |s: &str| Ok(Some(v(s)));
+        // Nothing waiting: fetch a newer release, else up to date.
+        assert_eq!(
+            check_next(&current, None, latest("2.0.1")),
+            Fetch(v("2.0.1"))
+        );
+        assert_eq!(check_next(&current, None, latest("2.0.0")), UpToDate);
+        assert_eq!(check_next(&current, None, Ok(None)), UpToDate);
+        // Still the latest release: keep it, download nothing again.
+        assert_eq!(
+            check_next(&current, held(), latest("2.0.1")),
+            Keep("2.0.1".into())
+        );
+        // A newer release replaced it: fetch that one.
+        assert_eq!(
+            check_next(&current, held(), latest("2.0.2")),
+            Fetch(v("2.0.2"))
+        );
+        // Its release was withdrawn: the latest is this app's version (or
+        // older), or there is no release with update files at all.
+        assert_eq!(check_next(&current, held(), latest("2.0.0")), UpToDate);
+        assert_eq!(check_next(&current, held(), latest("1.9.0")), UpToDate);
+        assert_eq!(check_next(&current, held(), Ok(None)), UpToDate);
+        // Withdrawn, with an older release still newer than this app.
+        assert_eq!(
+            check_next(&current, Some("2.0.2".into()), latest("2.0.1")),
+            Fetch(v("2.0.1"))
+        );
+        // Offline: what is waiting stays ready; with nothing waiting, the
+        // check fails.
+        assert_eq!(
+            check_next(&current, held(), Err(ERR_NETWORK)),
+            Keep("2.0.1".into())
+        );
+        assert_eq!(
+            check_next(&current, None, Err(ERR_NETWORK)),
+            Fail(ERR_NETWORK)
+        );
+        // The plugin writes Update::version with semver's to_string, which
+        // plain_version requires to match the text exactly.
+        assert_eq!(
+            check_next(
+                &current,
+                Some("2.0.1-beta.1".into()),
+                latest("2.0.1-beta.1")
+            ),
+            Keep("2.0.1-beta.1".into())
+        );
     }
 
     #[test]

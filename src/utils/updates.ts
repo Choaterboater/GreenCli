@@ -36,6 +36,7 @@ export const UPDATE_TEXT = {
   off: 'Updates are off in this build. Get new versions from the GitHub Releases page.',
   offDev: 'Updates are off in development builds.',
   moveFirst: 'Move GreenCLI to Applications first.',
+  notReady: 'Check for updates first.',
   windows: 'Close Claude Code and Casper before updating.',
   dirtyEditor: 'The config editor has unsaved edits. They will be lost.',
   aiBusy: 'The AI assistant is still answering. It will stop.',
@@ -147,8 +148,9 @@ export async function dailyUpdateCheck(now = Date.now()): Promise<void> {
 /**
  * Install the downloaded update and restart, after the user confirms. Not
  * while a Change Job, bulk run or Config Editor send is going (they hold the
- * exit). Resolves false when nothing was installed (refused, cancelled or
- * failed).
+ * exit). `version` is what the toast or button showed; the confirm names the
+ * update waiting now. Resolves false when nothing was installed (refused,
+ * nothing waiting, cancelled or failed).
  */
 export async function restartToUpdate(version: string): Promise<boolean> {
   const busy = () => {
@@ -166,12 +168,19 @@ export async function restartToUpdate(version: string): Promise<boolean> {
     notify.warning('Not now', UPDATE_TEXT.moveFirst);
     return false;
   }
+  // The update waiting now: a check since the toast or button appeared may
+  // have replaced it with a newer one, or dropped it (its release withdrawn).
+  const ready = status ? status.ready : version;
+  if (!ready) {
+    notify.warning('Not now', UPDATE_TEXT.notReady);
+    return false;
+  }
 
   const open = useSessionStore.getState().sessions.length;
   const panel = useSidePanelStore.getState().status;
   const dirty = panel.editor === 'dirty';
   const lines = [
-    `GreenCLI ${version} installs, then opens again.`,
+    `GreenCLI ${ready} installs, then opens again.`,
     open > 0 ? `${open} open session${open === 1 ? '' : 's'} will close.` : '',
     // A running greencli-mcp.exe (from Claude Code or Casper) blocks the
     // installer, which only checks for GreenCLI.exe itself.
