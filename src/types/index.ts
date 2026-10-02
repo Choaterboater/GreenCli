@@ -666,6 +666,9 @@ export const LOCAL_CLI_PRESETS: LocalCliPreset[] = [
   { id: 'claude', label: 'Claude CLI', command: 'claude' },
   { id: 'kimi', label: 'Kimi CLI', command: 'kimi' },
   { id: 'copilot', label: 'Copilot CLI', command: 'copilot' },
+  // Casper works on the files in the tab's start folder (cwd), never a path
+  // argument: an argument would go through cmd.exe's quoting on Windows.
+  { id: 'casper', label: 'Casper', command: 'casper' },
 ];
 
 // ============================
