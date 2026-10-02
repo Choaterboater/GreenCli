@@ -10,6 +10,7 @@ export type SettingsGroupId =
   | 'automation'
   | 'ai'
   | 'integrations'
+  | 'updates'
   | 'backup';
 
 export const SETTINGS_GROUPS: { id: SettingsGroupId; label: string }[] = [
@@ -19,6 +20,7 @@ export const SETTINGS_GROUPS: { id: SettingsGroupId; label: string }[] = [
   { id: 'automation', label: 'Automation' },
   { id: 'ai', label: 'AI & MCP' },
   { id: 'integrations', label: 'Integrations' },
+  { id: 'updates', label: 'Updates' },
   { id: 'backup', label: 'Backup & Reset' },
 ];
 
@@ -155,6 +157,15 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     group: 'integrations',
     title: 'Juniper Mist',
     keywords: ['mist', 'api token', 'api base', 'region', 'cloud'],
+  },
+  {
+    id: 'updates',
+    group: 'updates',
+    title: 'Updates',
+    keywords: [
+      'check for updates', 'update', 'upgrade', 'new version', 'version', 'restart to update',
+      'check once a day', 'automatic updates', 'github releases',
+    ],
   },
   {
     id: 'backup',

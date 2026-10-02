@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-vi.mock('@tauri-apps/api/tauri', () => ({ invoke: vi.fn() }));
+vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 
-import { invoke } from '@tauri-apps/api/tauri';
+import { invoke } from '@tauri-apps/api/core';
 import { DeviceProfile, DeviceType } from '../types';
 import { profileForDeviceType } from './deviceProfiles';
 import { endsAtPager, pagedCommand, pagerQuitKey, pagingCommands, withPagingDisabled } from './paging';

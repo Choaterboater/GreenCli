@@ -3,14 +3,13 @@
 
 import { useState } from 'react';
 import { AlertCircle, CheckCircle2 } from 'lucide-react';
-import { invoke } from '@tauri-apps/api/tauri';
-import { open as openDialog } from '@tauri-apps/api/dialog';
+import { invoke } from '@tauri-apps/api/core';
+import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { useSettingsStore } from '../store/settingsStore';
 import { notify } from '../store/toastStore';
 import type { CasperCheck } from '../types';
 import { plainCliError } from '../utils/cliPrompt';
-
-const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
+import { isTauri } from '../utils/tauri';
 
 /** A check result belongs to one command and one folder. */
 const checkKey = (command: string, folder: string) => `${command}\u0000${folder}`;
@@ -118,7 +117,8 @@ export default function CasperSettings() {
         </p>
         <p className="text-[10px] text-[var(--accent-warning)] mt-1">
           Casper can read files outside its folder. It keeps only a short list of private places from the AI (like
-          ~/.ssh), and GreenCLI&apos;s own files are not on that list: your AI keys, MCP logins and session logs. Ask
+          ~/.ssh), and GreenCLI&apos;s own files are not on that list: your session logs, archived configs and the
+          login file of a running MCP server. AI keys and MCP logins in the system password store are not files. Ask
           Casper only about text you trust, since words hidden in a config or log could ask it to read those files.
         </p>
       </div>

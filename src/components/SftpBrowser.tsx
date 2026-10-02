@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { invoke } from '@tauri-apps/api/tauri';
-import { save, open } from '@tauri-apps/api/dialog';
-import { listen } from '@tauri-apps/api/event';
+import { invoke } from '@tauri-apps/api/core';
+import { save, open } from '@tauri-apps/plugin-dialog';
+import { listenFileDrops } from '../utils/fileDrop';
 import {
   X,
   Upload,
@@ -108,22 +108,21 @@ export default function SftpBrowser({ sessionId, onClose }: Props) {
     [cwd, sessionId, listDir]
   );
 
-  // Native (Tauri) file-drop → upload to the current directory. Tauri's file-drop
-  // is window-global (fires for a drop ANYWHERE in the app), so confirm the target
-  // before uploading rather than silently pushing files to a remote device.
+  // Native (Tauri) file-drop → upload to the current directory. The drop event
+  // covers this whole window (fires for a drop ANYWHERE in it), so confirm the
+  // target before uploading rather than silently pushing files to a remote device.
   useEffect(() => {
     // uploadPath's identity changes with `cwd`, so this effect re-registers on
-    // every navigation. If cleanup runs before the listen() Promise.all below
+    // every navigation. If cleanup runs before the listenFileDrops() promise below
     // resolves (StrictMode double-mount, fast Up/refresh clicks), the OLD
     // cleanup already ran against an empty `unlisteners` array — the `.then()`
     // would then push handles nothing will ever call, leaking duplicate
     // listeners (and duplicate upload-confirm dialogs on the next drop).
     let cancelled = false;
     const unlisteners: Array<() => void> = [];
-    Promise.all([
-      listen<string[]>('tauri://file-drop', async (e) => {
+    listenFileDrops({
+      onDrop: async (paths) => {
         setDragging(false);
-        const paths = e.payload || [];
         if (!paths.length) return;
         const names = paths.map(basename).join(', ');
         const ok = await askConfirm({
@@ -133,16 +132,16 @@ export default function SftpBrowser({ sessionId, onClose }: Props) {
         });
         if (!ok) return;
         for (const p of paths) await uploadPath(p);
-      }),
-      listen('tauri://file-drop-hover', () => setDragging(true)),
-      listen('tauri://file-drop-cancelled', () => setDragging(false)),
-    ])
-      .then((uns) => {
+      },
+      onEnter: () => setDragging(true),
+      onLeave: () => setDragging(false),
+    })
+      .then((un) => {
         if (cancelled) {
-          uns.forEach((u) => u());
+          un();
           return;
         }
-        uns.forEach((u) => unlisteners.push(u));
+        unlisteners.push(un);
       })
       .catch(() => {});
     return () => {

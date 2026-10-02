@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('@tauri-apps/api/tauri', () => ({ invoke: vi.fn(() => Promise.resolve(null)) }));
+vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn(() => Promise.resolve(null)) }));
 
-import { invoke } from '@tauri-apps/api/tauri';
+import { invoke } from '@tauri-apps/api/core';
 import { cancelDialogs, useDialogStore } from '../store/dialogStore';
 import { useMcpApprovalStore } from '../store/mcpApprovalStore';
 import type { McpAskRequest } from './mcpRun';

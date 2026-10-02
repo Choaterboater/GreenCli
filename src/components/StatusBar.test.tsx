@@ -1,6 +1,6 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { invoke } from '@tauri-apps/api/tauri';
+import { invoke } from '@tauri-apps/api/core';
 import StatusBar from './StatusBar';
 import * as sessionStore from '../store/sessionStore';
 import { askConfirm } from '../store/dialogStore';
@@ -37,7 +37,7 @@ vi.mock('../store/terminalToolsStore', () => ({
   countPasteLines: vi.fn(),
 }));
 
-vi.mock('@tauri-apps/api/tauri', () => ({
+vi.mock('@tauri-apps/api/core', () => ({
   invoke: vi.fn().mockResolvedValue(false),
 }));
 

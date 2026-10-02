@@ -1,15 +1,15 @@
 import { render, screen, fireEvent, within, waitFor } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { invoke } from '@tauri-apps/api/tauri';
+import { invoke } from '@tauri-apps/api/core';
 import ChangeJobs from './ChangeJobs';
 import { useSessionStore } from '../store/sessionStore';
 import { useDialogStore } from '../store/dialogStore';
 import { runDevice, type DeviceControl, type DeviceOutcome } from '../utils/changeJobs';
 import type { ConnectionConfig, Session } from '../types';
 
-vi.mock('@tauri-apps/api/tauri', () => ({ invoke: vi.fn().mockResolvedValue('') }));
+vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn().mockResolvedValue('') }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn().mockResolvedValue(() => undefined) }));
-vi.mock('@tauri-apps/api/dialog', () => ({ open: vi.fn(), save: vi.fn() }));
+vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn(), save: vi.fn() }));
 // The device runner has its own tests; here it only has to honor the canary hold.
 vi.mock('../utils/changeJobs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../utils/changeJobs')>();

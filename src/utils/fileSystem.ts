@@ -1,8 +1,8 @@
-import { invoke } from '@tauri-apps/api/tauri';
-import { open as openDialog, save as saveDialog } from '@tauri-apps/api/dialog';
+import { invoke } from '@tauri-apps/api/core';
+import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
 import type { FolderListing } from './folderTree';
 
-export const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
+export { isTauri } from './tauri';
 
 export async function tauriOpen(): Promise<string | null> {
   const result = await openDialog({

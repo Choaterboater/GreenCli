@@ -24,134 +24,63 @@ pub use cli::{
     casper_check, cli_passthrough, is_casper_command, local_mcp_servers, CasperCheck, CliContext,
 };
 pub use cli_run::stop_all_cli_runs;
+#[cfg(all(test, unix))]
+pub(crate) use cli_run::CLI_RUNS_TEST_LOCK;
 
 use crate::error::AppError;
+use crate::secret_store::{self, SecretStore, AI_KEY_PREFIX};
 use serde::Deserialize;
 use serde_json::Value;
-use std::collections::HashMap;
-use std::fs;
-use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use zeroize::Zeroizing;
 
-/// Restrict a file to owner-only read/write: 0600 on Unix; an owner-only DACL
-/// (via icacls — std has no ACL API) on Windows. Best-effort on failure: the
-/// caller's temp-file + rename pattern still applies.
-fn restrict_perms(path: &Path) {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
-    }
-    #[cfg(windows)]
-    {
-        // Strip inheritance and grant full control to the current user only, so
-        // provider keys aren't readable by other local accounts (fs::write gives
-        // the file the parent directory's ACL, which may be broad).
-        if let Ok(user) = std::env::var("USERNAME") {
-            let _ = std::process::Command::new("icacls")
-                .arg(path)
-                .args(["/inheritance:r", "/grant:r", &format!("{}:F", user)])
-                .output();
-        }
-    }
-    #[cfg(not(any(unix, windows)))]
-    let _ = path;
-}
-
-/// Write a secrets file owner-only AND atomically. The content goes to a 0600
-/// sibling temp file — created with mode 0600 directly on Unix rather than
-/// fs::write (umask 0644) then chmod, which would briefly leave raw provider API
-/// keys readable to other local users — then renamed over the target. Rename is
-/// atomic on the same filesystem, so a concurrent reader never observes a
-/// torn/empty file and a crash mid-write leaves the previous good key file intact
-/// (mirrors intent::IntentStore::save_locked; 0600 handling mirrors
-/// mcp::client::write_secret_file).
-fn write_key_file(path: &Path, content: &[u8]) -> Result<(), AppError> {
-    if let Some(parent) = path.parent() {
-        let _ = fs::create_dir_all(parent);
-    }
-    let tmp = path.with_extension("json.tmp");
-    #[cfg(unix)]
-    {
-        use std::io::Write;
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut f = fs::OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .write(true)
-            .mode(0o600)
-            .open(&tmp)
-            .map_err(AppError::from)?;
-        f.write_all(content).map_err(AppError::from)?;
-    }
-    #[cfg(not(unix))]
-    {
-        fs::write(&tmp, content).map_err(AppError::from)?;
-        // Lock the temp file down BEFORE the rename so the secret never sits on
-        // disk with the parent directory's (potentially broad) ACL.
-        restrict_perms(&tmp);
-    }
-    fs::rename(&tmp, path).map_err(AppError::from)?;
-    restrict_perms(path); // belt-and-suspenders: also fixes perms if the target pre-existed
-    Ok(())
-}
-
-/// Simple on-disk key store kept in the app data dir (outside the webview, so
-/// not reachable from JS/localStorage). Not as strong as the password vault,
-/// but it avoids the vault's master-password unlock friction for AI keys.
+/// AI provider keys, kept outside the webview in the system password store
+/// (or, with none, the 1.9 `ai_keys.json`; see secret_store.rs) under the
+/// account `ai-key:<provider>`. Cheap to clone. Every call may block on the
+/// store, so async code goes through `key_for`.
+#[derive(Clone)]
 pub struct AiKeyStore {
-    path: PathBuf,
-    /// Serializes reads and the read-modify-write in `set`, so concurrent saves
-    /// don't clobber and a read never races an in-flight save.
-    lock: Mutex<()>,
+    store: Arc<SecretStore>,
 }
 
 impl AiKeyStore {
-    pub fn new(app_dir: PathBuf) -> Self {
-        Self {
-            path: app_dir.join("ai_keys.json"),
-            lock: Mutex::new(()),
+    pub fn new(store: Arc<SecretStore>) -> Self {
+        Self { store }
+    }
+
+    fn account(provider: &str) -> String {
+        format!("{}{}", AI_KEY_PREFIX, provider)
+    }
+
+    /// Save a key; an empty key deletes it.
+    pub fn set(&self, provider: &str, key: &str) -> Result<(), String> {
+        self.store.set(&Self::account(provider), key)
+    }
+
+    pub fn get(&self, provider: &str) -> Result<Option<Zeroizing<String>>, String> {
+        self.store.get(&Self::account(provider))
+    }
+
+    pub fn has(&self, provider: &str) -> Result<bool, String> {
+        self.store.has(&Self::account(provider))
+    }
+
+    /// The trimmed key for a provider that needs one, read off the async
+    /// runtime; empty for the rest (Ollama never needs the store).
+    pub async fn key_for(&self, provider: &str) -> Result<Zeroizing<String>, AppError> {
+        if !provider_needs_key(provider) {
+            return Ok(Zeroizing::new(String::new()));
         }
-    }
-
-    /// Read the key map from disk. Caller must hold `lock` — `set`'s
-    /// read-modify-write already does, and the `get`/`has` wrappers take it
-    /// themselves (`lock` is non-reentrant, so this must not take it again).
-    fn load_locked(&self) -> HashMap<String, String> {
-        fs::read(&self.path)
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default()
-    }
-
-    fn save(&self, m: &HashMap<String, String>) -> Result<(), AppError> {
-        // Raw provider API keys — write owner-only from the start.
-        write_key_file(&self.path, &serde_json::to_vec(m)?)
-    }
-
-    pub fn set(&self, provider: &str, key: &str) -> Result<(), AppError> {
-        let _g = self.lock.lock().unwrap_or_else(|e| e.into_inner());
-        let mut m = self.load_locked();
-        if key.is_empty() {
-            m.remove(provider);
-        } else {
-            m.insert(provider.to_string(), key.to_string());
-        }
-        self.save(&m)
-    }
-
-    pub fn get(&self, provider: &str) -> Option<String> {
-        let _g = self.lock.lock().unwrap_or_else(|e| e.into_inner());
-        self.load_locked().get(provider).cloned()
-    }
-
-    pub fn has(&self, provider: &str) -> bool {
-        let _g = self.lock.lock().unwrap_or_else(|e| e.into_inner());
-        self.load_locked()
-            .get(provider)
-            .map(|k| !k.is_empty())
-            .unwrap_or(false)
+        let keys = self.clone();
+        let p = provider.to_string();
+        let key = secret_store::blocking(move || keys.get(&p))
+            .await
+            .map_err(AppError::ApiError)?;
+        // A stray newline from a copy-paste must not slip into the header.
+        Ok(Zeroizing::new(
+            key.map(|k| k.trim().to_string()).unwrap_or_default(),
+        ))
     }
 }
 
@@ -184,9 +113,8 @@ pub async fn chat_request(store: &AiKeyStore, req: AiChatRequest) -> Result<Valu
         .connect_timeout(std::time::Duration::from_secs(12))
         .build()
         .map_err(AppError::from)?;
-    // Trim once and use the trimmed key for BOTH the guard and the auth header
-    // (a stray trailing newline from a copy-paste must not slip into the header).
-    let key = store.get(&req.provider).unwrap_or_default().trim().to_string();
+    // Trimmed once and used for BOTH the guard and the auth header.
+    let key = store.key_for(&req.provider).await?;
 
     // Fail with an actionable message rather than sending an empty auth header
     // (which providers answer with an opaque 401).
@@ -265,11 +193,11 @@ pub async fn chat_stream(
     stream_id: &str,
     cancel: Arc<AtomicBool>,
 ) -> Result<(), AppError> {
-    use tauri::Manager;
+    use tauri::Emitter;
 
     // Stop pressed before this run was registered: send nothing at all.
     if cancel.load(Ordering::Relaxed) {
-        let _ = app.emit_all("ai_done", serde_json::json!({ "streamId": stream_id }));
+        let _ = app.emit("ai_done", serde_json::json!({ "streamId": stream_id }));
         return Ok(());
     }
 
@@ -282,7 +210,7 @@ pub async fn chat_stream(
         .connect_timeout(std::time::Duration::from_secs(12))
         .build()
         .map_err(AppError::from)?;
-    let key = store.get(&req.provider).unwrap_or_default().trim().to_string();
+    let key = store.key_for(&req.provider).await?;
     if provider_needs_key(&req.provider) && key.is_empty() {
         return Err(AppError::ApiError(format!(
             "No API key set for '{}'. Open Settings → AI Assistant and add your key.",
@@ -293,7 +221,7 @@ pub async fn chat_stream(
     let rb = build_request(&client, &req.provider, &key, &req.base_url)?;
     // A Stop while waiting for the provider's first byte drops the request.
     let Some(sent) = cancel::until_cancelled(rb.json(&req.body).send(), &cancel).await else {
-        let _ = app.emit_all("ai_done", serde_json::json!({ "streamId": stream_id }));
+        let _ = app.emit("ai_done", serde_json::json!({ "streamId": stream_id }));
         return Ok(());
     };
     let mut resp =
@@ -334,7 +262,7 @@ pub async fn chat_stream(
                 *saw_done = true;
                 return false;
             }
-            let _ = app.emit_all(
+            let _ = app.emit(
                 "ai_chunk",
                 serde_json::json!({ "streamId": stream_id, "data": data }),
             );
@@ -380,14 +308,14 @@ pub async fn chat_stream(
 
     if cancel.load(Ordering::Relaxed) {
         // Cancelled: still emit done so the frontend tears down its listeners.
-        let _ = app.emit_all("ai_done", serde_json::json!({ "streamId": stream_id }));
+        let _ = app.emit("ai_done", serde_json::json!({ "streamId": stream_id }));
         return Ok(());
     }
     if !emitted_any && !saw_done {
         // 200 OK but nothing streamable (captive portal/proxy HTML, a non-stream JSON
         // body, or a provider that ignored stream:true) — surface it instead of a
         // silent blank reply.
-        let _ = app.emit_all(
+        let _ = app.emit(
             "ai_error",
             serde_json::json!({
                 "streamId": stream_id,
@@ -396,7 +324,7 @@ pub async fn chat_stream(
         );
         return Ok(());
     }
-    let _ = app.emit_all("ai_done", serde_json::json!({ "streamId": stream_id }));
+    let _ = app.emit("ai_done", serde_json::json!({ "streamId": stream_id }));
     Ok(())
 }
 
@@ -413,4 +341,38 @@ pub(crate) fn floor_char_boundary(s: &str, i: usize) -> usize {
         i -= 1;
     }
     i
+}
+
+#[cfg(test)]
+mod key_store_tests {
+    use super::*;
+    use crate::secret_store::mem::MemBackend;
+
+    fn keys() -> (Arc<MemBackend>, AiKeyStore) {
+        let mem = MemBackend::new();
+        let store = Arc::new(SecretStore::os_for_tests(mem.clone()));
+        (mem, AiKeyStore::new(store))
+    }
+
+    #[tokio::test]
+    async fn keys_are_saved_under_the_provider_account_and_trimmed_for_use() {
+        let (mem, keys) = keys();
+        keys.set("anthropic", "sk-ant-api03-abc\n").unwrap();
+        assert_eq!(mem.raw("ai-key:anthropic").unwrap(), b"sk-ant-api03-abc\n");
+        assert!(keys.has("anthropic").unwrap());
+        assert!(!keys.has("moonshot").unwrap());
+        assert_eq!(keys.key_for("anthropic").await.unwrap().as_str(), "sk-ant-api03-abc");
+        keys.set("anthropic", "").unwrap();
+        assert!(mem.raw("ai-key:anthropic").is_none());
+        assert!(!keys.has("anthropic").unwrap());
+    }
+
+    #[tokio::test]
+    async fn ollama_never_asks_the_store_and_a_locked_store_is_an_error() {
+        let (mem, keys) = keys();
+        mem.fail_all.store(true, Ordering::Relaxed);
+        assert!(keys.key_for("ollama").await.unwrap().is_empty());
+        let err = keys.key_for("openrouter").await.unwrap_err().to_string();
+        assert!(err.contains(secret_store::UNAVAILABLE), "{err}");
+    }
 }

@@ -1,6 +1,6 @@
 // The real wiring for runMcpTool (mcpRun.ts): Tauri commands, the approval
 // box, the session allowances, and the ids Stop uses to cancel calls.
-import { invoke } from '@tauri-apps/api/tauri';
+import { invoke } from '@tauri-apps/api/core';
 import { askChoice, type DialogChoice } from '../store/dialogStore';
 import { useMcpApprovalStore } from '../store/mcpApprovalStore';
 import type { McpAnswer } from './mcpGate';

@@ -1,10 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-vi.mock('@tauri-apps/api/tauri', () => ({
+vi.mock('@tauri-apps/api/core', () => ({
   invoke: vi.fn(async () => undefined),
 }));
 
-import { invoke } from '@tauri-apps/api/tauri';
+import { invoke } from '@tauri-apps/api/core';
 import { activeStreamIds, cancelActiveAiStreams, nextStreamId, runStoppable } from './aiRuns';
 
 const invokeMock = vi.mocked(invoke);

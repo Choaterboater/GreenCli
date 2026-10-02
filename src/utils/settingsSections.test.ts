@@ -27,6 +27,8 @@ describe('settings sections', () => {
     expect(ids('export')).toContain('mcp');
     expect(ids('working folder')).toEqual(['ai']);
     expect(ids('check casper')).toEqual(['ai']);
+    expect(ids('check for updates')).toEqual(['updates']);
+    expect(ids('new version')).toEqual(['updates']);
   });
 
   it('matches group names too, and returns everything for an empty search', () => {

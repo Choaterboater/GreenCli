@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { invoke } from '@tauri-apps/api/tauri';
+import { invoke } from '@tauri-apps/api/core';
 import { KeyRound, Plus, Trash2, ChevronDown, ChevronRight, Eye, EyeOff, Lock } from 'lucide-react';
 import { useSettingsStore } from '../store/settingsStore';
 import { useSessionStore } from '../store/sessionStore';

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { invoke } from '@tauri-apps/api/tauri';
-import { appWindow } from '@tauri-apps/api/window';
+import { invoke } from '@tauri-apps/api/core';
+import { currentWindow, currentWindowLabel } from './utils/tauri';
 import { emit, listen } from '@tauri-apps/api/event';
 import { Minimize2, RefreshCw, Search } from 'lucide-react';
 import Terminal from './components/Terminal';
@@ -39,7 +39,7 @@ const RECONNECT_WAIT_MS = 30_000;
  * returns the session to its tab in the main window.
  */
 export default function PopOutTerminal() {
-  const sessionId = appWindow.label.replace(/^popout-/, '');
+  const sessionId = currentWindowLabel().replace(/^popout-/, '');
   const meta = useMemo<PopOutMeta>(() => {
     try {
       return JSON.parse(localStorage.getItem(`popout-meta-${sessionId}`) || '{}');
@@ -178,7 +178,7 @@ export default function PopOutTerminal() {
             Find
           </button>
           <button
-            onClick={() => appWindow.close().catch(() => {})}
+            onClick={() => currentWindow()?.close().catch(() => {})}
             className={btn}
             title="Close this window and put the session back in its tab"
           >

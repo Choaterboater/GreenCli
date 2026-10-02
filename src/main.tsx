@@ -1,6 +1,6 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import { appWindow } from "@tauri-apps/api/window";
+import { currentWindow, currentWindowLabel, isTauri } from "./utils/tauri";
 // Bundled monaco wiring — must run before any <Editor>/<DiffEditor> mounts so
 // the editor resolves from the local npm build, never the jsdelivr CDN (which
 // is no longer in the CSP).
@@ -11,7 +11,7 @@ import "./styles/index.css";
 
 // Pop-out session windows (label `popout-<sessionId>`) load the same bundle
 // but render a terminal-only view instead of the full app shell.
-const isPopOut = appWindow.label.startsWith("popout-");
+const isPopOut = currentWindowLabel().startsWith("popout-");
 
 // Prevent default browser reload on Cmd+R / Ctrl+R / F5 / Cmd+Shift+R
 document.addEventListener("keydown", (e) => {
@@ -49,11 +49,17 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
 
 // Windows start hidden (tauri.conf.json / pop-out builder: visible: false) so
 // launch never flashes an unpainted white webview. Reveal once React has
-// committed a painted frame (double rAF); the Rust side has a timeout fallback
+// committed a painted frame (double rAF). A webview may not run animation
+// frames while its window is hidden (WebKitGTK doesn't), so a short timer
+// reveals it too, whichever comes first. The Rust side has a 4 s fallback
 // that shows the window anyway if this code never runs.
-requestAnimationFrame(() =>
-  requestAnimationFrame(() => {
-    appWindow.show().catch(() => {});
-    appWindow.setFocus().catch(() => {});
-  })
-);
+let revealed = false;
+const reveal = () => {
+  if (revealed || !isTauri) return;
+  revealed = true;
+  const win = currentWindow();
+  win?.show().catch(() => {});
+  win?.setFocus().catch(() => {});
+};
+requestAnimationFrame(() => requestAnimationFrame(reveal));
+setTimeout(reveal, 400);

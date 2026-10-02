@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Zap, Plus, X, Send } from 'lucide-react';
-import { invoke } from '@tauri-apps/api/tauri';
+import { invoke } from '@tauri-apps/api/core';
 import { useSnippetsStore, Snippet } from '../store/snippetsStore';
 import { useSessionStore } from '../store/sessionStore';
 import { useSettingsStore } from '../store/settingsStore';

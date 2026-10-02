@@ -5,7 +5,7 @@ import { FitAddon } from 'xterm-addon-fit';
 import { WebLinksAddon } from 'xterm-addon-web-links';
 import { SearchAddon } from 'xterm-addon-search';
 import { listen } from '@tauri-apps/api/event';
-import { invoke } from '@tauri-apps/api/tauri';
+import { invoke } from '@tauri-apps/api/core';
 import { useSettingsStore } from '../store/settingsStore';
 import { useSessionStore } from '../store/sessionStore';
 import { useTriggersStore } from '../store/triggersStore';
@@ -31,13 +31,13 @@ import { tabLabel } from '../utils/tabs';
 import { draftFromSelection } from '../utils/editorDraft';
 import { useEditorInbox } from '../store/editorInboxStore';
 import { isTauri, browserSave, tauriWriteText } from '../utils/fileSystem';
-import { save as saveDialog } from '@tauri-apps/api/dialog';
-import { appWindow } from '@tauri-apps/api/window';
+import { save as saveDialog } from '@tauri-apps/plugin-dialog';
+import { currentWindowLabel } from '../utils/tauri';
 import 'xterm/css/xterm.css';
 
 // Pop-out windows render one session in a fresh store — the background-activity
 // logic below only makes sense in the main window with its tab strip.
-const isPopOutWindow = appWindow.label.startsWith('popout-');
+const isPopOutWindow = currentWindowLabel().startsWith('popout-');
 
 const isMac = navigator.platform.toUpperCase().includes('MAC');
 const isWindows = navigator.platform.toUpperCase().includes('WIN');

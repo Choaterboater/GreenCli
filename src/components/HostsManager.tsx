@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { invoke } from '@tauri-apps/api/tauri';
+import { invoke } from '@tauri-apps/api/core';
 import { Trash2, ShieldCheck, RefreshCw, FileSpreadsheet, FolderOpen, Cloud, KeyRound } from 'lucide-react';
 import { useSessionStore } from '../store/sessionStore';
 import { notify } from '../store/toastStore';

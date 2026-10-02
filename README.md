@@ -22,6 +22,9 @@ One cockpit for **Aruba · Juniper · Mist**. A modern, cross-platform terminal,
 - **Modern dark/light themes**
 - **Keyboard shortcuts** (Ctrl+T connect, Ctrl+W close, Ctrl+F search, Ctrl+, settings)
 - **Fast terminal rendering** via xterm.js
+- **Automatic updates** on macOS and Windows, from GitHub releases, checked against their signature before they install
+- **AI keys and MCP logins in the system password store** (macOS Keychain, Windows Credential Manager, Linux Secret Service)
+- **greencli-mcp**, a read-only MCP server so Casper or Claude Code can read your devices, configs (secrets hidden) and intents
 
 ## Tech Stack
 
@@ -29,7 +32,7 @@ One cockpit for **Aruba · Juniper · Mist**. A modern, cross-platform terminal,
 |-------|------------|
 | Frontend | React 18 + TypeScript + Tailwind CSS |
 | Terminal | xterm.js 5.x |
-| Shell | Tauri 1.6 (Rust + WebView) |
+| Shell | Tauri 2 (Rust + WebView) |
 | SSH | russh 0.63 (Rust native SSH library) |
 | Telnet | tokio async TCP |
 | Serial | tokio-serial |
@@ -78,8 +81,10 @@ green-cli/
 ├── e2e/                          # Playwright end-to-end tests (npm run test:e2e)
 ├── scripts/                      # Utility scripts (screenshot capture)
 ├── src-tauri/                    # Rust backend
-│   ├── Cargo.toml                # Rust dependencies
+│   ├── Cargo.toml                # Rust dependencies (and the workspace)
 │   ├── tauri.conf.json           # Tauri configuration
+│   ├── capabilities/             # What the app window may call (Tauri 2)
+│   ├── greencli-mcp/             # Read-only MCP server crate
 │   └── src/
 │       ├── main.rs               # Tauri commands
 │       ├── ssh/                  # SSH client (russh)
@@ -93,7 +98,10 @@ green-cli/
 │       ├── central/              # Aruba Central client
 │       ├── intent/               # Network intent engine
 │       ├── local/                # Local PTY
-│       └── mcp/                  # MCP client (stdio + streamable HTTP)
+│       ├── mcp/                  # MCP client (stdio + streamable HTTP)
+│       ├── secret_store.rs       # AI keys + MCP logins in the system password store
+│       ├── updater.rs            # Automatic updates from GitHub releases
+│       └── bin/greencli-mcp.rs   # The greencli-mcp binary that ships next to the app
 ├── package.json                  # Node dependencies
 └── playwright.config.ts          # Playwright configuration
 ```
@@ -104,13 +112,13 @@ green-cli/
 
 - **macOS 13.3 (Ventura) or newer.** Older macOS versions lack features the app needs to hide device secrets from the AI.
 - **Windows 10/11** with the WebView2 runtime.
-- **Linux** with a recent WebKitGTK. On an old WebKitGTK, the AI panel withholds device output instead of sending it unchecked.
+- **Linux** with WebKitGTK 4.1 (Ubuntu 24.04 or newer). On an old WebKitGTK, the AI panel withholds device output instead of sending it unchecked. There is no Linux release build, so no automatic updates there.
 
 ### Prerequisites
 
 - [Node.js](https://nodejs.org/) 18+ and npm
-- [Rust](https://rustup.rs/) stable toolchain, 1.85+ (MSRV)
-- OS-specific build tools for Tauri: [Tauri Prerequisites](https://tauri.app/v1/guides/getting-started/prerequisites)
+- [Rust](https://rustup.rs/) stable toolchain, 1.90+ (MSRV)
+- OS-specific build tools for Tauri 2: [Tauri Prerequisites](https://v2.tauri.app/start/prerequisites/). On Linux: `libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libudev-dev libdbus-1-dev pkg-config` (see [docs/SETUP.md](docs/SETUP.md)).
 
 ### Install Dependencies
 
@@ -191,9 +199,49 @@ The syntax highlighter supports **232 commands**, **288 subcommands**, and **144
 | Aruba Wireless AP | 56 commands, 88 subcommands, 44 keywords |
 | Aruba Mobility Controller | 76 commands, 80 subcommands, 41 keywords |
 
+## greencli-mcp: GreenCLI data for Casper or Claude Code
+
+GreenCLI ships a small read-only MCP server, `greencli-mcp`, next to the app
+(`GreenCLI.app/Contents/MacOS/greencli-mcp` on macOS, `greencli-mcp.exe` in the
+install folder on Windows). Settings → AI & MCP → MCP Servers shows its full path,
+with Copy buttons for the path and the command. On a Mac, move GreenCLI to
+Applications first. To add it to Claude Code:
+
+```bash
+claude mcp add greencli -- "/Applications/GreenCLI.app/Contents/MacOS/greencli-mcp"
+```
+
+"Export for Casper / Claude…" puts it in the `.mcp.json` file too.
+
+It has six read tools: `access_check`, `list_devices`, `list_config_history`,
+`get_config`, `get_config_diff` and `list_intents`.
+
+- It only reads GreenCLI's data folder. It never writes a file, opens a network
+  connection or starts a program (a source-scan test checks this).
+- The device list has no passwords, user names, notes or startup commands.
+- Configs and diffs come only from copies made with secrets hidden, saved when a
+  config is captured. A snapshot without a current hidden copy is refused, never
+  served raw. In Config archive, **Make hidden copies** makes them for older
+  snapshots.
+- A diff can't show a changed secret: both sides show it hidden.
+
+See [docs/SETUP.md](docs/SETUP.md) §6 for the full details.
+
+## Automatic updates
+
+On macOS and Windows, GreenCLI updates itself from its GitHub releases. Settings →
+Updates has **Check for updates** and **Check once a day** (on by default). An
+update is downloaded and checked against its signature first, and nothing installs
+until you tap **Restart to update**. Each release build signs its own files, so
+there is no signing key to keep. 1.9 and older have no updater: install 2.0 by
+hand once. See [docs/SETUP.md](docs/SETUP.md) §2 for releasing and for what the
+signature does and doesn't protect against.
+
 ## Security Features
 
 - **AES-256-GCM encryption** for stored credentials
+- **AI keys and MCP logins in the system password store**; an MCP login is on disk only while its server runs
+- **Signed updates**, checked before they install, from GreenCLI's GitHub releases only
 - **Argon2id** password hashing for master password
 - Password-protected credential vault
 - **Device REST TLS verification on by default** (opt out only for self-signed lab gear)

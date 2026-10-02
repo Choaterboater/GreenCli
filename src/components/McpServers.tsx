@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type CSSProperties } from 'react';
-import { invoke } from '@tauri-apps/api/tauri';
+import { invoke } from '@tauri-apps/api/core';
 import {
   Plus,
   Trash2,
@@ -23,15 +23,34 @@ import { useMcpApprovalStore } from '../store/mcpApprovalStore';
 import type { McpExportPins, McpServerDef, McpStatus } from '../utils/mcpTypes';
 import { plainHttpWarning } from '../utils/urlSafety';
 import McpServerSafety from './McpServerSafety';
+import SecretStoreNote from './SecretStoreNote';
+import { keyCheckError, saveMcpLogin } from '../utils/secretStore';
 
 type McpTransport = McpServerDef['transport'];
 
 /** Forget every "Yes, until GreenCLI closes" answer for a server: it was
  *  reconnected, changed or removed, so its tools must ask again. */
 const clearAllowances = (name: string) => useMcpApprovalStore.getState().clearServer(name);
-import type { ExportSummary } from '../utils/mcpExport';
+import type { ExportSummary, GreencliExport } from '../utils/mcpExport';
 import { isTauri, tauriSave } from '../utils/fileSystem';
 import { secretFilterSupported } from '../utils/secrets/support';
+import { copyText } from '../utils/clipboard';
+import { refreshStaleHiddenCopies } from '../utils/configArchive';
+
+/** greencli_mcp_info: GreenCLI's own read-only MCP server, next to the app. */
+interface GreencliMcpInfo {
+  path: string;
+  exists: boolean;
+  place: 'normal' | 'translocated' | 'diskImage';
+}
+
+/** How the export should treat greencli-mcp. */
+function greencliForExport(info: GreencliMcpInfo | null): GreencliExport | undefined {
+  if (!info) return undefined;
+  if (!info.exists) return { leftOut: 'missing' };
+  if (info.place !== 'normal') return { leftOut: 'not-installed' };
+  return { command: info.path };
+}
 
 const blankForm = {
   name: '',
@@ -119,6 +138,41 @@ export default function McpServers() {
   const [configPasteText, setConfigPasteText] = useState('');
   const [exporting, setExporting] = useState(false);
   const [exportDone, setExportDone] = useState<ExportSummary | null>(null);
+  const [greencli, setGreencli] = useState<GreencliMcpInfo | null>(null);
+  const [needHidden, setNeedHidden] = useState(0);
+
+  // GreenCLI's own read-only server: where it is, and how many config
+  // snapshots it can't serve yet (no hidden copy, or an old one).
+  useEffect(() => {
+    if (!isTauri) return;
+    let cancelled = false;
+    const readNeedHidden = async () => {
+      const hidden = await invoke<{ missing: number; stale: number } | null>('config_archive_missing_hidden').catch(
+        () => null,
+      );
+      return hidden ? (hidden.missing ?? 0) + (hidden.stale ?? 0) : 0;
+    };
+    void (async () => {
+      const info = await invoke<GreencliMcpInfo | null>('greencli_mcp_info').catch(() => null);
+      const need = await readNeedHidden();
+      if (cancelled) return;
+      setGreencli(info && typeof info.path === 'string' ? info : null);
+      setNeedHidden(need);
+      // The background refresh may fix stale copies: count again when it ends.
+      await refreshStaleHiddenCopies();
+      if (cancelled) return;
+      const after = await readNeedHidden();
+      if (!cancelled) setNeedHidden(after);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const copy = async (text: string) => {
+    if (await copyText(text)) notify.success('Copied');
+    else notify.error('Could not copy');
+  };
 
   const refresh = useCallback(async () => {
     try {
@@ -132,7 +186,7 @@ export default function McpServers() {
       // Outside Tauri (dev browser / tests) there is no backend at all — stay
       // silent. Real backend failures get logged instead of being swallowed,
       // but not toasted: this runs on a 5s poll and would spam the user.
-      if ('__TAURI_IPC__' in window) {
+      if (isTauri) {
         console.error('[McpServers] status refresh failed:', err);
       }
     }
@@ -319,27 +373,39 @@ export default function McpServers() {
         await invoke('mcp_rename_server', { from: editingName, to: def.name });
       }
       await invoke('mcp_save_server', { def });
+      // The config is saved: drop the old approvals and say if writes went
+      // off. Done here so a failed login save below can't skip it.
+      const configSaved = async () => {
+        clearAllowances(def.name);
+        if (editingName) clearAllowances(editingName);
+        if (writesWereOn) {
+          const saved = ((await invoke<McpServerDef[]>('mcp_list_servers').catch(() => [])) || []).find(
+            (s) => s.name === def.name
+          );
+          if (saved?.writes === 'off') {
+            notify.info(
+              `${def.name} writes are off again`,
+              "The server's command, folder or URL changed, so GreenCLI turned writes off."
+            );
+          }
+        }
+      };
       // Persist credentials content only when the user typed new content (so we
       // never wipe saved creds just because the field is blank on edit). Only
       // meaningful for stdio — Http servers aren't spawned by this app, so
       // there's no process to inject a credentials env var into.
       if (form.transport === 'stdio' && form.credsContent.trim()) {
-        await invoke('mcp_set_credentials', { name: def.name, content: form.credsContent });
-      }
-      clearAllowances(def.name);
-      if (editingName) clearAllowances(editingName);
-      notify.success('MCP server saved', def.name);
-      if (writesWereOn) {
-        const saved = ((await invoke<McpServerDef[]>('mcp_list_servers').catch(() => [])) || []).find(
-          (s) => s.name === def.name
-        );
-        if (saved?.writes === 'off') {
-          notify.info(
-            `${def.name} writes are off again`,
-            "The server's command, folder or URL changed, so GreenCLI turned writes off."
-          );
+        // The server is saved; only its login failed (a toast says why). Keep
+        // the form open on the saved name so Save can try again.
+        if (!(await saveMcpLogin(def.name, form.credsContent))) {
+          await configSaved();
+          setEditingName(def.name);
+          refresh();
+          return;
         }
       }
+      notify.success('MCP server saved', def.name);
+      await configSaved();
       setShowForm(false);
       setForm({ ...blankForm });
       setCredsSaved(false);
@@ -368,25 +434,38 @@ export default function McpServers() {
     setExporting(true);
     try {
       const defs = (await invoke<McpServerDef[]>('mcp_list_servers')) || [];
-      if (!defs.length) {
-        notify.info('Nothing to export', 'Add a server first.');
-        return;
-      }
+      // A server's login must be known, or its file would leave out the login variable without a word.
       const withCredentials = new Set<string>();
+      let loginError: { name: string; text: string } | null = null;
       await Promise.all(
         defs
           .filter((d) => d.transport !== 'http')
           .map(async (d) => {
-            if (await invoke<boolean>('mcp_has_credentials', { name: d.name }).catch(() => false)) withCredentials.add(d.name);
+            try {
+              if (await invoke<boolean>('mcp_has_credentials', { name: d.name })) withCredentials.add(d.name);
+            } catch (e) {
+              loginError ??= { name: d.name, text: keyCheckError(e) };
+            }
           }),
       );
+      if (loginError) {
+        const { name, text } = loginError;
+        notify.error('Could not export', `Can't check the login for ${name}. ${text}`);
+        return;
+      }
       // The read-only settings GreenCLI adds while a server's writes are off go in the file too.
       const pinList = await invoke<Record<string, McpExportPins>>('mcp_export_pins').catch(() => ({}));
       const pins = new Map(Object.entries(pinList ?? {}));
       const { buildMcpExport, exportSummary, refusedExportPath, EXPORT_FILE_NAME } = await import('../utils/mcpExport');
-      const result = buildMcpExport(defs, { withCredentials, pins });
+      // GreenCLI's own read-only server goes in too, even with no saved servers.
+      const info = await invoke<GreencliMcpInfo | null>('greencli_mcp_info').catch(() => null);
+      const greencliEntry = greencliForExport(info && typeof info.path === 'string' ? info : null);
+      const result = buildMcpExport(defs, { withCredentials, pins, greencli: greencliEntry });
       if (result.count === 0) {
-        notify.warning('Nothing to export', result.notes.join(' ') || 'None of these servers can be exported.');
+        notify.warning(
+          'Nothing to export',
+          result.notes.join(' ') || (defs.length ? 'None of these servers can be exported.' : 'Add a server first.'),
+        );
         return;
       }
       const path = await tauriSave(EXPORT_FILE_NAME, 'Export MCP servers');
@@ -416,12 +495,8 @@ export default function McpServers() {
         <div className="flex items-center gap-2">
           <button
             onClick={exportServers}
-            disabled={servers.length === 0 || exporting}
-            title={
-              servers.length === 0
-                ? 'Add a server first'
-                : 'Save these servers as a .mcp.json file for Casper or Claude Code. Secrets become ${NAME} variables.'
-            }
+            disabled={exporting}
+            title="Save these servers, and GreenCLI's own read-only server, as a .mcp.json file for Casper or Claude Code. Secrets become ${NAME} variables."
             className="flex items-center gap-1.5 px-2.5 py-1 text-[11px] rounded-md bg-[var(--bg-tertiary)] hover:bg-[var(--border-strong)] text-[var(--text-primary)] transition-colors disabled:opacity-50"
           >
             {exporting ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
@@ -453,6 +528,51 @@ export default function McpServers() {
         <code className="text-[var(--accent)]">centralmcp</code> Aruba Central/GLP server. The AI can use these tools with
         every provider except Local CLI and Casper.
       </p>
+
+      {/* GreenCLI's own read-only MCP server (greencli-mcp) */}
+      {greencli && (
+        <div className="mb-3 p-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--bg-inset)] text-[11px] text-[var(--text-secondary)] space-y-1.5 leading-relaxed">
+          {greencli.exists ? (
+            <>
+              <div className="flex items-start gap-2">
+                <p className="flex-1 min-w-0">
+                  Read-only GreenCLI data for Casper or Claude Code:{' '}
+                  <code className="text-[var(--text-primary)] break-all">{greencli.path}</code>
+                </p>
+                <button
+                  onClick={() => void copy(greencli.path)}
+                  title="Copy the path"
+                  className="flex-shrink-0 flex items-center gap-1 px-1.5 py-0.5 text-[10px] rounded bg-[var(--bg-tertiary)] hover:bg-[var(--border-strong)] text-[var(--text-secondary)]"
+                >
+                  <Copy size={10} /> Copy
+                </button>
+              </div>
+              <div className="flex items-start gap-2">
+                <code className="flex-1 min-w-0 break-all text-[var(--accent)]">
+                  {`claude mcp add greencli -- "${greencli.path}"`}
+                </code>
+                <button
+                  onClick={() => void copy(`claude mcp add greencli -- "${greencli.path}"`)}
+                  title="Copy the command"
+                  className="flex-shrink-0 flex items-center gap-1 px-1.5 py-0.5 text-[10px] rounded bg-[var(--bg-tertiary)] hover:bg-[var(--border-strong)] text-[var(--text-secondary)]"
+                >
+                  <Copy size={10} /> Copy
+                </button>
+              </div>
+              {greencli.place !== 'normal' && (
+                <p className="text-[var(--accent-warning)]">Move GreenCLI to Applications first.</p>
+              )}
+              {needHidden > 0 && (
+                <p>
+                  {needHidden} {needHidden === 1 ? 'snapshot needs' : 'snapshots need'} a new hidden copy.
+                </p>
+              )}
+            </>
+          ) : (
+            <p>greencli-mcp, GreenCLI's read-only server, isn't next to GreenCLI in this build.</p>
+          )}
+        </div>
+      )}
 
       {/* Export result: names and places only, never a secret value */}
       {exportDone && (
@@ -757,10 +877,10 @@ export default function McpServers() {
                     {showCreds ? <EyeOff size={13} /> : <Eye size={13} />}
                   </button>
                 </div>
-                <p className="text-[10px] text-[var(--text-muted)]">
-                  Stored in the app data dir (outside the browser). On connect it's written to a file and the env var
-                  above is pointed at it — so you never keep a separate credentials file by hand.
-                </p>
+                <SecretStoreNote
+                  after="On connect it's written to a private file that the env var above points at. The file is deleted when the server stops."
+                  refreshKey={showForm}
+                />
               </div>
             </>
           )}

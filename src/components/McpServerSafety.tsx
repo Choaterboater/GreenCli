@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { invoke } from '@tauri-apps/api/tauri';
+import { invoke } from '@tauri-apps/api/core';
 import { askConfirm } from '../store/dialogStore';
 import { useMcpApprovalStore } from '../store/mcpApprovalStore';
 import { notify } from '../store/toastStore';

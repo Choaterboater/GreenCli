@@ -13,7 +13,7 @@ import {
   RefreshCw,
   Save,
 } from 'lucide-react';
-import { open as openDialog } from '@tauri-apps/api/dialog';
+import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { useSessionStore } from '../store/sessionStore';
 import { savedHostId } from '../utils/tabs';
 import {
@@ -28,7 +28,7 @@ import {
   vendorColor,
 } from '../types';
 import { generateId } from '../utils';
-import { invoke } from '@tauri-apps/api/tauri';
+import { invoke } from '@tauri-apps/api/core';
 import { notify } from '../store/toastStore';
 import { useSettingsStore } from '../store/settingsStore';
 import { allDeviceProfiles, profileForDeviceType, saveSessionPayload } from '../utils/deviceProfiles';

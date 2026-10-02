@@ -26,7 +26,7 @@ import {
   CopyPlus,
   KeyRound,
 } from 'lucide-react';
-import { invoke } from '@tauri-apps/api/tauri';
+import { invoke } from '@tauri-apps/api/core';
 import { useSessionStore } from '../store/sessionStore';
 import { useSettingsStore } from '../store/settingsStore';
 import { useResizablePanel } from '../hooks/useResizablePanel';

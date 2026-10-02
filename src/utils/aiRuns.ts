@@ -2,7 +2,7 @@
 // backend registers, and Stop (ai_cancel_stream) reaches each one in flight.
 // A Stop that arrives before the backend has registered the id is kept, so
 // the run starts already stopped (see ai::cancel in the Rust side).
-import { invoke } from '@tauri-apps/api/tauri';
+import { invoke } from '@tauri-apps/api/core';
 
 // Ids are unique per page load: a reload restarts the counter, and an old
 // id must never reach a run started after it.

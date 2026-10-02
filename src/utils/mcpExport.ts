@@ -81,7 +81,17 @@ export interface McpExportOptions {
   withCredentials?: ReadonlySet<string>;
   /** mcp_export_pins: the read-only settings GreenCLI adds to each server whose writes are off. */
   pins?: ReadonlyMap<string, McpExportPins>;
+  /** GreenCLI's own read-only server (greencli-mcp): its path, or why it is left out. */
+  greencli?: GreencliExport;
 }
+
+/** greencli-mcp in the export: the binary's full path, or why it is left out
+ *  ("missing": not next to GreenCLI in this build; "not-installed": GreenCLI runs
+ *  from outside Applications, so the path would change). */
+export type GreencliExport = { command: string } | { leftOut: 'missing' | 'not-installed' };
+
+/** The server name greencli-mcp gets in the file. */
+export const GREENCLI_SERVER_NAME = 'greencli';
 
 /** The server as GreenCLI starts it while writes are off: the pinned args, and the pinned env
  *  (a user key equal to a pin key, ignoring case, is dropped first, as Rust apply_pins does). */
@@ -1288,6 +1298,24 @@ export function buildMcpExport(servers: readonly McpServerDef[], options: McpExp
     notes.push(
       `Writes are off in GreenCLI for ${joinNames(writesLost)}, but the file can't keep that. ` +
         `Claude Code will offer ${one ? 'its' : 'their'} tools that change things. Casper starts every server with writes off.`,
+    );
+  }
+
+  // GreenCLI's own read-only server. It has nothing secret in it: just its path.
+  const greencli = options.greencli;
+  if (greencli && 'command' in greencli) {
+    let name = GREENCLI_SERVER_NAME;
+    for (let i = 2; used.has(name); i++) name = `${GREENCLI_SERVER_NAME}-${i}`;
+    used.add(name);
+    if (name !== GREENCLI_SERVER_NAME) {
+      notes.push(`GreenCLI's read-only server is saved as "${name}", because another server already uses "${GREENCLI_SERVER_NAME}".`);
+    }
+    entries.push([name, { type: 'stdio', command: greencli.command, args: [] }]);
+  } else if (greencli) {
+    notes.push(
+      greencli.leftOut === 'missing'
+        ? `"${GREENCLI_SERVER_NAME}" (GreenCLI's read-only server) was left out: greencli-mcp isn't next to GreenCLI in this build.`
+        : `"${GREENCLI_SERVER_NAME}" (GreenCLI's read-only server) was left out: move GreenCLI to Applications first, then export again.`,
     );
   }
 

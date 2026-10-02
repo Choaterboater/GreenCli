@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { Shield, ShieldOff, Usb, Zap, TerminalSquare, CircleDot, Circle, ClipboardList, Trash2, FolderOpen } from 'lucide-react';
-import { invoke } from '@tauri-apps/api/tauri';
+import { invoke } from '@tauri-apps/api/core';
 import { useSessionStore } from '../store/sessionStore';
 import { deviceMeta, vendorColor, type Session } from '../types';
 import { notify } from '../store/toastStore';

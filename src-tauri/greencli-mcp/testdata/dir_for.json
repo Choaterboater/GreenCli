@@ -1,0 +1,50 @@
+[
+  {
+    "device": "sw-core-01",
+    "dir": "sw-core-01-68f307af"
+  },
+  {
+    "device": "sw core 01",
+    "dir": "sw_core_01-7a8ddd35"
+  },
+  {
+    "device": "sw/core/01",
+    "dir": "sw_core_01-28ba1133"
+  },
+  {
+    "device": "10.0.0.1",
+    "dir": "10.0.0.1-debebe8d"
+  },
+  {
+    "device": "",
+    "dir": "-811c9dc5"
+  },
+  {
+    "device": "..",
+    "dir": "..-a3d4a70d"
+  },
+  {
+    "device": "Zürich-é",
+    "dir": "Z_rich-_-49416baf"
+  },
+  {
+    "device": "a~b_c.d",
+    "dir": "a~b_c.d-dc07902c"
+  },
+  {
+    "device": "弁天",
+    "dir": "__-976c19a5"
+  },
+  {
+    "device": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "dir": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx-67b9d905"
+  },
+  {
+    "device": "tab\there",
+    "dir": "tab_here-a0c92419"
+  },
+  {
+    "device": "../../etc",
+    "dir": ".._.._etc-cb7d5d3f"
+  }
+]

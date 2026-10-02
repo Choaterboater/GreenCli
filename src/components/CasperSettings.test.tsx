@@ -1,15 +1,15 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { invoke } from '@tauri-apps/api/tauri';
-import { open as openDialog } from '@tauri-apps/api/dialog';
+import { invoke } from '@tauri-apps/api/core';
+import { open as openDialog } from '@tauri-apps/plugin-dialog';
 
 // The Choose… button only shows inside the app.
 vi.hoisted(() => {
-  (window as unknown as Record<string, unknown>).__TAURI__ = {};
+  (globalThis as unknown as Record<string, unknown>).isTauri = true;
 });
 
-vi.mock('@tauri-apps/api/tauri', () => ({ invoke: vi.fn() }));
-vi.mock('@tauri-apps/api/dialog', () => ({ open: vi.fn() }));
+vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
+vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn() }));
 
 const notify = vi.hoisted(() => ({ warning: vi.fn(), success: vi.fn(), error: vi.fn(), info: vi.fn() }));
 vi.mock('../store/toastStore', () => ({ notify }));
@@ -41,10 +41,11 @@ describe('CasperSettings', () => {
     expect(useSettingsStore.getState().casperCommand).toBe('casper --model a/b');
   });
 
-  it('says plainly that Casper can read GreenCLI’s own keys and logs', () => {
+  it('says plainly that Casper can read GreenCLI’s own logs and files', () => {
     render(<CasperSettings />);
     expect(screen.getByText(/GreenCLI's own files are not on that list/)).toBeTruthy();
-    expect(screen.getByText(/your AI keys, MCP logins and session logs/)).toBeTruthy();
+    expect(screen.getByText(/your session logs, archived configs and the\s+login file of a running MCP server/)).toBeTruthy();
+    expect(screen.getByText(/AI keys and MCP logins in the system password store are not files/)).toBeTruthy();
     expect(screen.queryByText(/not private ones like ~\/\.ssh/)).toBeNull();
   });
 

@@ -1,4 +1,4 @@
-import { writeText as tauriWriteText, readText as tauriReadText } from '@tauri-apps/api/clipboard';
+import { writeText as tauriWriteText, readText as tauriReadText } from '@tauri-apps/plugin-clipboard-manager';
 
 /**
  * Clipboard access that actually works inside Tauri's webviews.
@@ -15,7 +15,7 @@ export async function copyText(text: string): Promise<boolean> {
     await tauriWriteText(text);
     return true;
   } catch {
-    /* not running under Tauri, or allowlist rejected — fall through */
+    /* not running under Tauri, or the capability refused it — fall through */
   }
   try {
     await navigator.clipboard.writeText(text);
@@ -47,7 +47,7 @@ export async function readClipboardText(): Promise<string | null> {
     const text = await tauriReadText();
     if (text != null) return text;
   } catch {
-    /* not running under Tauri, or allowlist rejected — fall through */
+    /* not running under Tauri, or the capability refused it — fall through */
   }
   try {
     return await navigator.clipboard.readText();

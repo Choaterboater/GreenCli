@@ -1,76 +1,19 @@
 {
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "GreenCLI",
+  "mainBinaryName": "GreenCLI",
+  "version": "2.0.0",
+  "identifier": "com.choatelabs.greencli",
   "build": {
     "beforeBuildCommand": "npm run build",
     "beforeDevCommand": "npm run dev",
-    "devPath": "http://localhost:1420",
-    "distDir": "../dist"
+    "devUrl": "http://localhost:1420",
+    "frontendDist": "../dist"
   },
-  "package": {
-    "productName": "GreenCLI",
-    "version": "1.9.0"
-  },
-  "tauri": {
-    "allowlist": {
-      "all": false,
-      "clipboard": {
-        "all": false,
-        "writeText": true,
-        "readText": true
-      },
-      "dialog": {
-        "all": false,
-        "open": true,
-        "save": true
-      },
-      "window": {
-        "all": false,
-        "startDragging": true,
-        "setFocus": true,
-        "close": true
-      }
-    },
-    "bundle": {
-      "active": true,
-      "category": "DeveloperTool",
-      "copyright": "© 2026 ChoateLabs",
-      "deb": {
-        "depends": []
-      },
-      "externalBin": [],
-      "icon": [
-        "icons/32x32.png",
-        "icons/128x128.png",
-        "icons/128x128@2x.png",
-        "icons/icon.icns",
-        "icons/icon.ico"
-      ],
-      "identifier": "com.choatelabs.greencli",
-      "longDescription": "One cockpit for Aruba, Juniper, and Mist. A premium SSH/Telnet/Serial terminal with multi-vendor syntax highlighting, config tooling, REST API explorer, and an AI assistant for network engineers.",
-      "macOS": {
-        "entitlements": null,
-        "exceptionDomain": "",
-        "frameworks": [],
-        "minimumSystemVersion": "13.3",
-        "providerShortName": null,
-        "signingIdentity": null
-      },
-      "resources": ["../THIRD_PARTY_NOTICES.txt"],
-      "shortDescription": "GreenCLI",
-      "targets": "all",
-      "windows": {
-        "certificateThumbprint": null,
-        "digestAlgorithm": "sha256",
-        "timestampUrl": ""
-      }
-    },
-    "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
-    },
-    "updater": {
-      "active": false
-    },
+  "app": {
     "windows": [
       {
+        "label": "main",
         "fullscreen": false,
         "height": 800,
         "resizable": true,
@@ -81,8 +24,60 @@
         "minHeight": 560,
         "center": true,
         "titleBarStyle": "Overlay",
-        "hiddenTitle": true
+        "hiddenTitle": true,
+        "useHttpsScheme": true
       }
-    ]
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost https://ipc.localhost; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "createUpdaterArtifacts": false,
+    "category": "DeveloperTool",
+    "copyright": "© 2026 ChoateLabs",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "resources": ["../THIRD_PARTY_NOTICES.txt"],
+    "shortDescription": "GreenCLI",
+    "longDescription": "One cockpit for Aruba, Juniper, and Mist. A premium SSH/Telnet/Serial terminal with multi-vendor syntax highlighting, config tooling, REST API explorer, and an AI assistant for network engineers.",
+    "externalBin": [],
+    "linux": {
+      "deb": {
+        "depends": []
+      }
+    },
+    "macOS": {
+      "minimumSystemVersion": "13.3",
+      "entitlements": null,
+      "frameworks": [],
+      "providerShortName": null,
+      "signingIdentity": null
+    },
+    "windows": {
+      "certificateThumbprint": null,
+      "digestAlgorithm": "sha256",
+      "timestampUrl": "",
+      "wix": {
+        "upgradeCode": "718138b6-2db8-5ffd-9235-e853b5bba5b8"
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "",
+      "endpoints": ["https://github.com/Choaterboater/GreenCli/releases/latest/download/latest.json"],
+      "requireSignedVersion": true,
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }
