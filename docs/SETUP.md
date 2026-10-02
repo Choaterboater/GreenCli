@@ -533,9 +533,9 @@ changes every time it starts; until then MCP Servers says so and the export leav
 **Hidden copies.** When a config is captured, GreenCLI also saves a copy with secrets hidden (the
 same filter the AI uses). greencli-mcp reads configs only from these copies. A snapshot without
 one, or with one from an older filter, is refused ("No hidden copy for this snapshot …" or "… is
-out of date …"), never served raw. Configs captured before 2.0 have no hidden copy: open Config
-archive and click **Make hidden copies**. MCP Servers and Config archive show how many snapshots
-still need one. After a secret filter change, GreenCLI makes the old copies again at start.
+out of date …"), never served raw. Configs captured before 2.0 have no hidden copy: open the
+**Config Archive** panel (activity bar or command palette) and click **Make hidden copies**. MCP
+Servers and the Config Archive panel show how many snapshots still need one. After a secret filter change, GreenCLI makes the old copies again at start.
 
 - A diff can't show a changed password or key: both sides show it hidden.
 - Config history stays under the name a device had when it was captured. After you rename or
@@ -731,7 +731,7 @@ live compliance:
 | Vault won't unlock after a crash | A corrupt `vault.enc` is preserved, not overwritten. Back it up, then remove it to start fresh (saved secrets are lost only if the file was truly corrupted). |
 | *"Can't reach the system password store"* | Your keys are still there. Log in to the desktop (on Linux, make sure a keyring such as GNOME Keyring is running), then try again. |
 | *"An old key file couldn't be read …"* | Enter your keys again, then delete the file Settings names. |
-| greencli-mcp: *"No hidden copy for this snapshot"* or *"out of date"* | Open Config archive and click **Make hidden copies**. |
+| greencli-mcp: *"No hidden copy for this snapshot"* or *"out of date"* | Open the Config Archive panel (activity bar or command palette) and click **Make hidden copies**. |
 | Updates: *"Move GreenCLI to Applications first."* | Drag GreenCLI into Applications and open it from there. |
 | Updates: *"You have the latest version."* but GitHub has a newer one | That release is still a draft, or wasn't set as the latest release: publish it as the latest release. If it is already published as the latest, its update files are missing or wrong (update-files wasn't green for it): release a new version and publish it only after update-files is green. |
 

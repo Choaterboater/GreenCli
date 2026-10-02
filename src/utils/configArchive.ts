@@ -7,6 +7,7 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import { Session } from '../types';
+import { useSessionStore } from '../store/sessionStore';
 import { useSettingsStore } from '../store/settingsStore';
 import { notify } from '../store/toastStore';
 import { profileForSession } from './deviceProfiles';
@@ -216,6 +217,17 @@ export async function makeHiddenCopies(opts: { limit?: number } = {}): Promise<H
   return { made, failed, left: todo.length - batch.length };
 }
 
+/**
+ * Open the Config Archive panel (it lives in the Config Editor), where the
+ * Make hidden copies button is. Settings closes first, since it covers it.
+ */
+export function openConfigArchive(): void {
+  const s = useSessionStore.getState();
+  s.setShowSettings(false);
+  s.setShowConfigEditor(true);
+  s.setShowArchive(true);
+}
+
 /** Most snapshots the background refresh redoes in one run. */
 export const BACKGROUND_REFRESH_LIMIT = 500;
 
@@ -224,9 +236,9 @@ let refreshRun: Promise<void> | null = null;
 /**
  * Once per app run, in the background: after the secret filter changed (some
  * hidden copies are stale), make the copies again. Capped and logged; the
- * "Make hidden copies" button in Config archive does the rest. Every call
- * returns the same promise, which ends when the run is done (it never fails),
- * so a caller can read the hidden copy count again after it.
+ * "Make hidden copies" button in the Config Archive panel does the rest. Every
+ * call returns the same promise, which ends when the run is done (it never
+ * fails), so a caller can read the hidden copy count again after it.
  */
 export function refreshStaleHiddenCopies(): Promise<void> {
   refreshRun ??= (async () => {
@@ -242,7 +254,7 @@ export function refreshStaleHiddenCopies(): Promise<void> {
 
 /**
  * App start: run the refresh above once, so greencli-mcp gets current hidden
- * copies even when Config archive is never opened and nothing is captured.
+ * copies even when the Config Archive panel is never opened and nothing is captured.
  * Does nothing outside the app.
  */
 export function refreshHiddenCopiesAtStart(): void {

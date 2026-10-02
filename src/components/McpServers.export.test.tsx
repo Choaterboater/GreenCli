@@ -7,6 +7,7 @@ import { notify } from '../store/toastStore';
 import type { McpServerDef } from '../utils/mcpTypes';
 import { resetHiddenRefreshForTests } from '../utils/configArchive';
 import { copyText } from '../utils/clipboard';
+import { useSessionStore } from '../store/sessionStore';
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 vi.mock('../utils/fileSystem', () => ({ isTauri: true, tauriSave: vi.fn() }));
@@ -115,8 +116,15 @@ describe('McpServers export', () => {
     expect(screen.getByText(command)).toBeTruthy();
     fireEvent.click(screen.getByTitle('Copy the command'));
     await waitFor(() => expect(copyText).toHaveBeenCalledWith(command));
-    expect(screen.getByText('3 snapshots need a new hidden copy.')).toBeTruthy();
+    expect(
+      screen.getByText('3 snapshots need a new hidden copy. Open Config Archive and click Make hidden copies.'),
+    ).toBeTruthy();
     expect(screen.queryByText('Move GreenCLI to Applications first.')).toBeNull();
+    // The button is in the Config Archive panel, not in Settings: the link
+    // opens the panel and closes Settings, which covers it.
+    useSessionStore.setState({ showSettings: true, showConfigEditor: false, showArchive: false });
+    fireEvent.click(screen.getByRole('button', { name: 'Open Config Archive' }));
+    expect(useSessionStore.getState()).toMatchObject({ showSettings: false, showConfigEditor: true, showArchive: true });
   });
 
   it('counts hidden copies again after the background refresh', async () => {

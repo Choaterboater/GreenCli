@@ -16,6 +16,7 @@ import {
   Eye,
   EyeOff,
   Download,
+  History,
 } from 'lucide-react';
 import { notify } from '../store/toastStore';
 import { askConfirm } from '../store/dialogStore';
@@ -35,7 +36,7 @@ import type { ExportSummary, GreencliExport } from '../utils/mcpExport';
 import { isTauri, tauriSave } from '../utils/fileSystem';
 import { secretFilterSupported } from '../utils/secrets/support';
 import { copyText } from '../utils/clipboard';
-import { refreshStaleHiddenCopies } from '../utils/configArchive';
+import { openConfigArchive, refreshStaleHiddenCopies } from '../utils/configArchive';
 
 /** greencli_mcp_info: GreenCLI's own read-only MCP server, next to the app. */
 interface GreencliMcpInfo {
@@ -586,9 +587,18 @@ export default function McpServers() {
                 <p className="text-[var(--accent-warning)]">Move GreenCLI to Applications first.</p>
               )}
               {needHidden > 0 && (
-                <p>
-                  {needHidden} {needHidden === 1 ? 'snapshot needs' : 'snapshots need'} a new hidden copy.
-                </p>
+                <div className="flex items-start gap-2">
+                  <p className="flex-1 min-w-0">
+                    {needHidden} {needHidden === 1 ? 'snapshot needs' : 'snapshots need'} a new hidden copy. Open
+                    Config Archive and click Make hidden copies.
+                  </p>
+                  <button
+                    onClick={openConfigArchive}
+                    className="flex-shrink-0 flex items-center gap-1 px-1.5 py-0.5 text-[10px] rounded bg-[var(--bg-tertiary)] hover:bg-[var(--border-strong)] text-[var(--text-secondary)]"
+                  >
+                    <History size={10} /> Open Config Archive
+                  </button>
+                </div>
               )}
             </>
           ) : (

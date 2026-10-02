@@ -18,6 +18,7 @@ import {
   Cloud,
   ArchiveRestore,
   RefreshCw,
+  History,
   type LucideIcon,
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
@@ -52,6 +53,7 @@ import {
 import LargeModal, { ModalRail, RailItem } from './LargeModal';
 import { plainHttpWarning } from '../utils/urlSafety';
 import { isTauri } from '../utils/tauri';
+import { openConfigArchive } from '../utils/configArchive';
 
 // Curated best-practices the AI should apply, distilled from Juniper Validated
 // Designs (JVDs). Appended to the references field on request.
@@ -1173,6 +1175,19 @@ export default function SettingsPanel() {
                   />
                 </div>
               </label>
+
+              <p className="text-[11px] text-[var(--text-secondary)] mt-3 mb-2">
+                greencli-mcp reads configs only from hidden copies (secrets
+                hidden). Make them with {'"'}Make hidden copies{'"'} in the
+                Config Archive panel.
+              </p>
+              <button
+                onClick={openConfigArchive}
+                className="flex items-center gap-1.5 px-3 h-8 rounded bg-[var(--bg-tertiary)] hover:bg-[var(--border-strong)] text-xs text-[var(--text-primary)]"
+              >
+                <History size={13} />
+                Open Config Archive
+              </button>
             </section>
           </Section>
           <Section id="intent-schedule">

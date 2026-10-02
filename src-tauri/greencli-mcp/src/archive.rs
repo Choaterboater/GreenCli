@@ -23,10 +23,15 @@ use std::time::{Duration, Instant};
 const MAX_INDEX: u64 = 16 * 1024 * 1024;
 const MAX_COPY: u64 = 32 * 1024 * 1024;
 
-pub const NO_COPY: &str =
-    "No hidden copy for this snapshot. In GreenCLI, open Config archive and click Make hidden copies.";
-pub const STALE_COPY: &str = "This snapshot's hidden copy is out of date. In GreenCLI, open Config archive and click Make hidden copies.";
-const BAD_COPY: &str = "This snapshot's hidden copy couldn't be read. In GreenCLI, open Config archive and click Make hidden copies.";
+// Each names the Config Archive panel and how to open it: the "Config
+// archive" part of Settings has no Make hidden copies button.
+pub const NO_COPY: &str = "No hidden copy for this snapshot. In GreenCLI, open Config Archive \
+(activity bar or command palette) and click Make hidden copies.";
+pub const STALE_COPY: &str =
+    "This snapshot's hidden copy is out of date. In GreenCLI, open Config \
+Archive (activity bar or command palette) and click Make hidden copies.";
+const BAD_COPY: &str = "This snapshot's hidden copy couldn't be read. In GreenCLI, open Config \
+Archive (activity bar or command palette) and click Make hidden copies.";
 const NO_HISTORY: &str = "GreenCLI has no config history under this name. Use archiveKey from \
 list_devices or list_archive_devices (a device renamed or deleted in GreenCLI keeps its history \
 under its old name).";

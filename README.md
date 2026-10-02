@@ -226,8 +226,8 @@ a rename or delete in GreenCLI.
 - The device list has no passwords, user names, notes or startup commands.
 - Configs and diffs come only from copies made with secrets hidden, saved when a
   config is captured. A snapshot without a current hidden copy is refused, never
-  served raw. In Config archive, **Make hidden copies** makes them for older
-  snapshots.
+  served raw. In the Config Archive panel, **Make hidden copies** makes them for
+  older snapshots.
 - A diff can't show a changed secret: both sides show it hidden.
 
 See [docs/SETUP.md](docs/SETUP.md) §6 for the full details.

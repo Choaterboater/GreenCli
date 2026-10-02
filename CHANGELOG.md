@@ -30,8 +30,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   program. The device list has no passwords, user names, notes or startup commands.
 - **Hidden copies**: when a config is captured, GreenCLI also saves a copy with secrets hidden (the
   same filter the AI uses). greencli-mcp serves configs and diffs only from these copies, and
-  refuses a snapshot without a current one instead of serving it raw. Config archive has a new
-  **Make hidden copies** button for older snapshots. After a secret filter change, GreenCLI makes
+  refuses a snapshot without a current one instead of serving it raw. The Config Archive panel has a
+  new **Make hidden copies** button for older snapshots. After a secret filter change, GreenCLI makes
   the old copies again at start.
 - **MCP Servers** shows where greencli-mcp is, with **Copy** buttons for its path and for the
   `claude mcp add --scope user greencli` command (user scope, so Claude Code has it in every

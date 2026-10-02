@@ -272,7 +272,7 @@ export const HELP_TOPICS: HelpTopic[] = [
         items: [
           'It shows your devices (no passwords, user names, notes or startup commands), config history, configs and diffs with secrets hidden, and intent results.',
           'Config history stays under the name a device had when it was captured. After you rename or delete a saved device, or for a Quick Connect you never saved, the AI finds that history with `list_archive_devices`.',
-          'Configs come only from **hidden copies** made when a config is captured. If a tool says a snapshot has no hidden copy, or that it is out of date, open **Config archive** and click **Make hidden copies**.',
+          'Configs come only from **hidden copies** made when a config is captured. If a tool says a snapshot has no hidden copy, or that it is out of date, open **Config Archive** (activity bar or command palette) and click **Make hidden copies**.',
           'A diff can’t show a changed password: both sides show it hidden.',
         ],
       },
@@ -506,7 +506,7 @@ export const HELP_TOPICS: HelpTopic[] = [
           'Device REST cert error — verification is on by default; for self-signed lab gear turn *Verify device TLS* off in Settings → Connections & Security (heed the interception warning).',
           'Connected tab but no shell — a restricted account/appliance refused a PTY/shell; this now surfaces as a connect error.',
           '“Can’t reach the system password store” — your keys are still there. Log in to the desktop (on Linux, start a keyring such as GNOME Keyring), then try again.',
-          'greencli-mcp says a snapshot has no hidden copy, or it is out of date — open **Config archive** and click **Make hidden copies**.',
+          'greencli-mcp says a snapshot has no hidden copy, or it is out of date — open **Config Archive** (activity bar or command palette) and click **Make hidden copies**.',
         ],
       },
     ],

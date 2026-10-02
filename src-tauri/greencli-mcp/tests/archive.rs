@@ -125,7 +125,13 @@ fn a_missing_copy_is_refused_and_the_raw_config_never_shows() {
         error_text(&body).starts_with("No hidden copy for this snapshot."),
         "{text}"
     );
-    assert!(error_text(&body).contains("Make hidden copies"));
+    // The Config Archive panel has the button; Settings' "Config archive" doesn't.
+    assert!(
+        error_text(&body).contains(
+            "open Config Archive (activity bar or command palette) and click Make hidden copies"
+        ),
+        "{text}"
+    );
     assert!(!text.contains("RAW-SECRET"));
     // A ts that isn't in the index.
     let (is_error, body, _) = call(&dir, "get_config", json!({"device": "sw1", "ts": 101}));
