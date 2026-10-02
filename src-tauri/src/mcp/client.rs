@@ -1832,20 +1832,28 @@ impl McpManager {
     /// start web servers, so disconnecting one doesn't stop it), and the
     /// address each live http connection really uses (it differs after an edit
     /// that wasn't followed by a reconnect). A stdio server's leftover url
-    /// doesn't count.
-    pub fn web_urls(&self) -> Vec<(String, String)> {
-        let mut urls: Vec<(String, String)> = self
+    /// doesn't count. Each comes as (name, url, connected): connected when a
+    /// live connection uses that address.
+    pub fn web_urls(&self) -> Vec<(String, String, bool)> {
+        let live: Vec<(String, String)> = self
+            .clients
+            .iter()
+            .filter_map(|(name, client)| client.web_url().map(|url| (name.clone(), url)))
+            .collect();
+        let mut urls: Vec<(String, String, bool)> = self
             .store
             .load()
             .into_iter()
             .filter(|d| d.transport == McpTransport::Http)
             .filter_map(|d| d.url.map(|url| (d.name, url)))
+            .map(|(name, url)| {
+                let connected = live.iter().any(|(n, u)| *n == name && *u == url);
+                (name, url, connected)
+            })
             .collect();
-        for (name, client) in &self.clients {
-            if let Some(url) = client.web_url() {
-                if !urls.iter().any(|(n, u)| n == name && *u == url) {
-                    urls.push((name.clone(), url));
-                }
+        for (name, url) in live {
+            if !urls.iter().any(|(n, u, _)| *n == name && *u == url) {
+                urls.push((name, url, true));
             }
         }
         urls
@@ -2743,16 +2751,33 @@ mod tests {
         mgr.save_config(left).unwrap();
         assert_eq!(
             mgr.web_urls(),
-            vec![("web".to_string(), "https://mcp.example.com/mcp".to_string())]
+            vec![(
+                "web".to_string(),
+                "https://mcp.example.com/mcp".to_string(),
+                false
+            )]
         );
         // "web" was edited to a remote address but is still connected to the old one.
         mgr.install_client("web".into(), fake_client("web", vec![]));
         assert_eq!(
             mgr.web_urls(),
             vec![
-                ("web".to_string(), "https://mcp.example.com/mcp".to_string()),
-                ("web".to_string(), "http://127.0.0.1:9/mcp".to_string()),
+                (
+                    "web".to_string(),
+                    "https://mcp.example.com/mcp".to_string(),
+                    false
+                ),
+                ("web".to_string(), "http://127.0.0.1:9/mcp".to_string(), true),
             ]
+        );
+        // Connected to the saved address: that one is marked connected.
+        let mut web = def("web", "", &[]);
+        web.transport = McpTransport::Http;
+        web.url = Some("http://127.0.0.1:9/mcp".into());
+        mgr.save_config(web).unwrap();
+        assert_eq!(
+            mgr.web_urls(),
+            vec![("web".to_string(), "http://127.0.0.1:9/mcp".to_string(), true)]
         );
     }
 

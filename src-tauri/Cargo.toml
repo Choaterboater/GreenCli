@@ -19,6 +19,8 @@ tokio = { version = "1.35", features = ["full"] }
 tokio-serial = "5.4"
 async-trait = "0.1"
 futures = "0.3"
+# This computer's host name (a saved web MCP server named after it counts as local).
+gethostname = "1.1"
 # default crypto backend is aws-lc-rs (needs NASM on Windows). `ring` is the
 # portable backend that builds on the Windows MSVC toolchain and ubuntu-22.04 CI.
 russh = { version = "0.63.1", default-features = false, features = ["flate2", "ring", "rsa"] }

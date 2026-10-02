@@ -33,8 +33,8 @@ pub struct CliContext {
     pub work_folder: Option<String>,
     /// The Casper provider asked for this run (refuses any program but Casper).
     pub as_casper: bool,
-    /// Open local/dynamic port forwards (kind, local port), and connected MCP
-    /// servers on this computer (names).
+    /// Open local/dynamic port forwards (kind, local port), and web MCP
+    /// servers that may run on this computer (names, see local_mcp_servers).
     pub bridges: (Vec<(String, u16)>, Vec<String>),
     /// More folders Casper may not work in (the session-log folder, if set).
     pub extra_protected: Vec<PathBuf>,
@@ -205,6 +205,59 @@ const LOOKUP_TIMEOUT: Duration = Duration::from_secs(3);
 /// listening on all addresses answers on 127.0.0.1 too, however it is named.
 fn is_own_address(ip: IpAddr) -> bool {
     casper::is_local_ip(ip) || std::net::UdpSocket::bind((ip, 0)).is_ok()
+}
+
+/// Whether `host` (lowercase, from url_host) names this computer by its own
+/// host name `own`: the full name, its first part, or the first part with
+/// ".local" (macOS Bonjour names). No lookup.
+pub fn is_own_host_name(host: &str, own: &str) -> bool {
+    let own = own.trim().trim_end_matches('.').to_ascii_lowercase();
+    if own.is_empty() {
+        return false;
+    }
+    let short = own.split('.').next().unwrap_or(&own);
+    host == own || host == short || host.strip_suffix(".local") == Some(short)
+}
+
+/// Whether a saved web MCP server's URL is literally this computer, with no
+/// name lookup: localhost, *.localhost, a loopback or unspecified address in
+/// any spelling, one of this computer's own addresses, or its own host name.
+/// Used for saved servers GreenCLI isn't connected to, so a saved server that
+/// only resolves on a VPN doesn't block Casper (or wait on a lookup).
+pub fn mcp_url_is_literally_local(url: &str) -> bool {
+    match casper::url_host(url) {
+        UrlHost::Local => true,
+        UrlHost::Ip(ip) => is_own_address(ip),
+        UrlHost::Name(host, _) => {
+            is_own_host_name(&host, &gethostname::gethostname().to_string_lossy())
+        }
+    }
+}
+
+/// The web MCP servers that may lead to this computer, by name (sorted, each
+/// once). `servers` holds (name, url, connected). A connected server's address
+/// is looked up (mcp_url_is_local, all at once, each with the lookup timeout);
+/// a saved one that isn't connected is only checked as written
+/// (mcp_url_is_literally_local).
+pub async fn local_mcp_servers(servers: Vec<(String, String, bool)>) -> Vec<String> {
+    let checks = servers
+        .into_iter()
+        .map(|(name, url, connected)| async move {
+            let local = if connected {
+                mcp_url_is_local(&url).await
+            } else {
+                mcp_url_is_literally_local(&url)
+            };
+            local.then_some(name)
+        });
+    let mut names: Vec<String> = futures::future::join_all(checks)
+        .await
+        .into_iter()
+        .flatten()
+        .collect();
+    names.sort();
+    names.dedup();
+    names
 }
 
 /// Whether an MCP server URL may lead to this computer: loopback names and
@@ -1088,6 +1141,82 @@ mod tests {
         }
         // TEST-NET-1 is never this computer's address.
         assert!(!mcp_url_is_local("http://192.0.2.1:8000/mcp").await);
+    }
+
+    #[test]
+    fn own_host_names() {
+        assert!(is_own_host_name("mbp", "MBP.corp.example.com."));
+        assert!(is_own_host_name(
+            "mbp.corp.example.com",
+            "MBP.corp.example.com"
+        ));
+        assert!(is_own_host_name("mbp.local", "mbp"));
+        assert!(!is_own_host_name("mbp2", "mbp"));
+        assert!(!is_own_host_name("mcp.corp.internal", "mbp"));
+        assert!(!is_own_host_name("", ""));
+        assert!(!is_own_host_name(".local", ""));
+    }
+
+    #[test]
+    fn saved_servers_are_checked_as_written() {
+        for url in [
+            "http://127.1:9000/mcp",
+            "http://[::]:80/",
+            "http://app.localhost/",
+            "not a url",
+        ] {
+            assert!(mcp_url_is_literally_local(url), "{url}");
+        }
+        let own = gethostname::gethostname()
+            .to_string_lossy()
+            .to_ascii_lowercase();
+        if !own.is_empty() && reqwest::Url::parse(&format!("http://{own}/")).is_ok() {
+            assert!(mcp_url_is_literally_local(&format!(
+                "http://{own}:8000/mcp"
+            )));
+        }
+        // No lookup: a name that never resolves is not local when only saved.
+        assert!(!mcp_url_is_literally_local(
+            "https://greencli-test.invalid/mcp"
+        ));
+        assert!(!mcp_url_is_literally_local("http://192.0.2.1:8000/mcp"));
+    }
+
+    #[tokio::test]
+    async fn only_connected_servers_are_looked_up() {
+        let servers = vec![
+            // Saved, not connected, only resolves on a VPN: doesn't block Casper.
+            (
+                "vpn".to_string(),
+                "https://greencli-test.invalid/mcp".to_string(),
+                false,
+            ),
+            // Connected and its name doesn't resolve: counts (fail closed).
+            (
+                "live".to_string(),
+                "https://greencli-test.invalid/mcp".to_string(),
+                true,
+            ),
+            (
+                "saved-local".to_string(),
+                "http://localhost:8000/mcp".to_string(),
+                false,
+            ),
+            (
+                "remote".to_string(),
+                "http://192.0.2.1:8000/mcp".to_string(),
+                true,
+            ),
+            (
+                "live".to_string(),
+                "http://127.0.0.1:9/mcp".to_string(),
+                true,
+            ),
+        ];
+        assert_eq!(
+            local_mcp_servers(servers).await,
+            vec!["live".to_string(), "saved-local".to_string()]
+        );
     }
 
     #[test]

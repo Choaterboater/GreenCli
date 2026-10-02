@@ -21,7 +21,7 @@ mod cli;
 mod cli_run;
 
 pub use cli::{
-    casper_check, cli_passthrough, is_casper_command, mcp_url_is_local, CasperCheck, CliContext,
+    casper_check, cli_passthrough, is_casper_command, local_mcp_servers, CasperCheck, CliContext,
 };
 pub use cli_run::stop_all_cli_runs;
 
