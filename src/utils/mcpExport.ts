@@ -191,21 +191,27 @@ const USER_PASS = /^[A-Za-z][\w.@-]{0,63}:(?=[^\s:/]*[A-Za-z])(?=[^\s:/]*[^A-Za-
 
 /** A lowercase image or package name (node, postgres, my-app). */
 const IMAGE_NAME = /^[a-z0-9]+(?:[._-][a-z0-9]+)*$/;
-/** One part of an image tag: a number (20, v1), or a common tag word, maybe with a number (alpine3). */
-const TAG_PART =
-  /^(?:v?\d+|(?:latest|stable|lts|alpine|slim|bookworm|bullseye|buster|trixie|jammy|focal|noble|ubuntu|debian|edge|nightly|beta|alpha|rc|dev|jdk|jre|management|fpm|cli|apache|nanoserver|windowsservercore)\d*)$/;
+/** Common image tag words (node:lts-alpine, python:3.12-slim-bookworm). */
+const TAG_WORD =
+  '(?:latest|stable|lts|alpine|slim|bookworm|bullseye|buster|trixie|jammy|focal|noble|ubuntu|debian|edge|nightly|beta|alpha|rc|dev|jdk|jre|management|fpm|cli|apache|nanoserver|windowsservercore)';
+/** The first part of an image tag: a short version number (20, 1, v2) or a bare tag word (lts,
+ *  alpine). A tag word with digits (alpha123, dev2024) or a long number (v12345) reads as a password. */
+const FIRST_TAG_PART = new RegExp(`^(?:v?\\d{1,3}|${TAG_WORD})$`);
+/** A later part: a short number, a tag word maybe with a short number (alpine3, jdk17), or a
+ *  date (jammy-20240111). Not a 4-digit year (stable-2024). */
+const LATER_TAG_PART = new RegExp(`^(?:v?\\d{1,3}|20\\d{6}|${TAG_WORD}\\d{0,2})$`);
 
 /** An image or package reference that USER_PASS would take for user:password: node:20-alpine,
- *  postgres:16-alpine, nginx:1.25-alpine, node:lts-alpine. The tag must be
- *  lowercase and made only of numbers and common tag words, so admin:Hunter22 and user:pass1 stay
- *  secret. (host:port has no letter after the colon, and ghcr.io/x/y:1.2 has a "/", so USER_PASS
- *  never matches those.) */
+ *  postgres:16-alpine, nginx:1.25-alpine, node:lts-alpine. The tag must be lowercase and start
+ *  with a short version number or a bare tag word, so admin:Hunter22, user:pass1, admin:alpha123,
+ *  root:dev2024 and netops:stable-2024 stay secret. (host:port has no letter after the colon, and
+ *  ghcr.io/x/y:1.2 has a "/", so USER_PASS never matches those.) */
 function isImageOrPackageRef(value: string): boolean {
   const colon = value.indexOf(':');
   const name = value.slice(0, colon);
-  const tag = value.slice(colon + 1);
+  const [first, ...rest] = value.slice(colon + 1).split(/[._-]/);
   if (!IMAGE_NAME.test(name)) return false;
-  return tag.split(/[._-]/).every((part) => TAG_PART.test(part));
+  return FIRST_TAG_PART.test(first ?? '') && rest.every((part) => LATER_TAG_PART.test(part));
 }
 
 /** user:password typed as one value, and not an image or package reference. */

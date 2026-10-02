@@ -978,6 +978,26 @@ describe('buildMcpExport: network logins', () => {
     }
     expect(r.notes.join('\n')).not.toContain('env IMAGE');
   });
+
+  it('hides a password made of a tag word and digits, but keeps dated and jdk tags plain', () => {
+    const plain = { DEB: 'debian:bookworm-20240110', JAVA: 'eclipse-temurin:21-jdk-jammy', MQ: 'rabbitmq:3-management' };
+    const hidden = {
+      A: 'admin:alpha123',
+      B: 'root:dev2024',
+      C: 'admin:edge2023',
+      D: 'admin:beta1',
+      E: 'admin:lts2024',
+      F: 'netops:stable-2024',
+      G: 'svc:v12345',
+    };
+    const r = build([def({ name: 's', command: 'uvx', args: ['x'], env: { ...plain, ...hidden } })]);
+    const s = stdioOf(r.file.mcpServers.s);
+    for (const [key, value] of Object.entries(plain)) expect([key, s.env?.[key]]).toEqual([key, value]);
+    for (const [key, value] of Object.entries(hidden)) {
+      expect([key, s.env?.[key]]).toEqual([key, expect.stringMatching(/^\$\{[A-Z_]+\}$/)]);
+      expect(r.text).not.toContain(value);
+    }
+  });
 });
 
 describe('exportSummary', () => {
