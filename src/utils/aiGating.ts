@@ -148,11 +148,11 @@ function takesValue(verb: string, option: string): boolean {
 
 /** A path to a file that never ends or waits on the keyboard: /dev/stdin, /dev/tty, /dev/fd/0,
  *  /dev/zero, /dev/random, any other /dev file but /dev/null, /proc/<pid>/fd/*, /proc/kmsg and the
- *  kernel trace pipe. Quotes and backslashes are dropped first ("/d\ev/zero"). A path with a ".."
- *  part counts too: /proc/self/../self/fd/0 is the keyboard, and a ".." after a link (/proc/self/cwd)
- *  can't be worked out from the text. */
+ *  kernel trace pipe. The word comes from shellWords, so "/d\ev/zero" arrives as /dev/zero. A path
+ *  with a ".." part counts too: /proc/self/../self/fd/0 is the keyboard, and a ".." after a link
+ *  (/proc/self/cwd) can't be worked out from the text. */
 function devicePath(word: string): boolean {
-  const path = word.replace(/["'\\]/g, '').replace(/\/{2,}/g, '/').replace(/\/\.(?=\/)/g, '');
+  const path = word.replace(/\/{2,}/g, '/').replace(/\/\.(?=\/)/g, '');
   if (path.includes('/') && path.split('/').includes('..')) return true;
   if (path === '/dev/null') return false;
   return /(?:^|\/)dev\//.test(path) || /(?:^|\/)proc\/[^/]+\/fd(?:\/|$)/.test(path)
@@ -165,9 +165,9 @@ function blockingFile(word: string): boolean {
   return devicePath(word) || word.includes('$') || /[*?[{].*\//.test(word);
 }
 
-/** cat, head or tail with a file to read. With none (or only "-", or tail with only +N) they wait on the keyboard, and
- *  the AI's next line is typed into them. A file that never ends or reads the keyboard
- *  (blockingFile) is refused too. */
+/** cat, head or tail with a file to read. With none (or only "-", or tail with only +N) they wait on
+ *  the keyboard, and the AI's next line is typed into them. An empty name ("") is not a file. A file
+ *  that never ends or reads the keyboard (blockingFile) is refused too. */
 function readsAFile(verb: string, words: string[]): boolean {
   const files: string[] = [];
   for (let i = 0; i < words.length; i++) {
@@ -185,7 +185,7 @@ function readsAFile(verb: string, words: string[]): boolean {
     if (verb === 'tail' && w.startsWith('+')) continue;
     files.push(w);
   }
-  return files.some((f) => f !== '-') && !files.some((f) => f === '-' || blockingFile(f));
+  return files.some((f) => f !== '-' && f !== '') && !files.some((f) => f === '-' || blockingFile(f));
 }
 
 /** The command word without a Windows .exe (ping.exe, PING.EXE). */
@@ -193,21 +193,75 @@ function verbOf(word: string | undefined): string {
   return (word ?? '').toLowerCase().replace(/\.exe$/, '');
 }
 
+/**
+ * One pipe stage split into words the way a POSIX shell reads them: quotes ('...', "...") and
+ * backslash escapes are removed and "" or '' leaves nothing, so tail "+1f", tail '-F', tail \-f and
+ * tail ""+1f reach the checks as +1f, -F, -f and +1f. Every Auditor word check reads these words.
+ * Returns null when the words can't be worked out for sure: an unclosed quote, a trailing backslash,
+ * $'...' or $"...", a backtick, $( or ${, a { (brace expansion turns {-f,x} into -f x), or a # that
+ * starts a word (the shell drops the rest of the line as a comment, so cat # reads the keyboard).
+ */
+export function shellWords(stage: string): string[] | null {
+  if (/[`{]|\$['"({]/.test(stage)) return null;
+  const words: string[] = [];
+  let word = '';
+  let inWord = false;
+  let quote = '';
+  for (let i = 0; i < stage.length; i++) {
+    const ch = stage[i]!;
+    if (quote === "'") {
+      if (ch === "'") quote = '';
+      else word += ch;
+    } else if (quote === '"') {
+      // Inside "...", a backslash only escapes $ ` " \ and keeps its place before anything else.
+      if (ch === '"') quote = '';
+      else if (ch === '\\' && '$`"\\'.includes(stage[i + 1] ?? '')) word += stage[++i];
+      else word += ch;
+    } else if (/\s/.test(ch)) {
+      if (inWord) words.push(word);
+      word = '';
+      inWord = false;
+    } else if (ch === '#' && !inWord) {
+      return null;
+    } else {
+      inWord = true;
+      if (ch === "'" || ch === '"') quote = ch;
+      else if (ch === '\\') {
+        if (i + 1 >= stage.length) return null;
+        word += stage[++i];
+      } else word += ch;
+    }
+  }
+  if (quote) return null;
+  if (inWord) words.push(word);
+  return words;
+}
+
+/** Verbs whose words the Auditor checks. A $ in one of their stages refuses the command: the shell
+ *  puts a value there the check can't see (tail $F, ping -c $N). */
+const WORD_CHECKED_VERBS: ReadonlySet<string> = new Set(['cat', 'head', 'tail', 'ping', 'date', 'sh']);
+
 /** Plain reads that end: date without a time to set, ping with a small count, cat/head/tail with
  *  a file, tail without follow (also as a pipe stage), and sh (Aruba and Cisco show) not running a
- *  shell (sh -c ..., sh script.sh). */
+ *  shell (sh -c ..., sh script.sh). Every word is read through shellWords first; a stage it can't
+ *  read refuses the command. */
 function auditorWordsOk(line: string): boolean {
-  const stages = line.split('|').map((stage) => stage.trim().split(/\s+/).filter(Boolean));
-  const first = stages[0] ?? [];
-  const verb = verbOf(first[0] === 'do' ? first[1] : first[0]);
-  const args = first.slice(first[0] === 'do' ? 2 : 1);
+  const stages: { verb: string; args: string[] }[] = [];
+  for (const [index, text] of line.split('|').entries()) {
+    const words = shellWords(text);
+    if (!words) return false;
+    const skip = index === 0 && verbOf(words[0]) === 'do' ? 1 : 0;
+    stages.push({ verb: verbOf(words[skip]), args: words.slice(skip + 1) });
+  }
+  if (stages.some(({ verb, args }) => WORD_CHECKED_VERBS.has(verb) && args.some((w) => w.includes('$')))) return false;
+  const { verb, args } = stages[0] ?? { verb: '', args: [] };
   if (verb === 'date' && !args.every((w) => DATE_SHOW_ARG.test(w))) return false;
   if (verb === 'ping' && !pingEnds(args)) return false;
   if (['cat', 'head', 'tail'].includes(verb) && !readsAFile(verb, args)) return false;
   if (verb === 'sh' && /^-|[/.]/.test(args[0] ?? '')) return false;
   // A pipe stage that names a file reads it instead of the pipe (show x | tail /dev/zero).
-  if (stages.slice(1).some((words) => words.slice(1).some(devicePath))) return false;
-  return stages.every((words) => verbOf(words[0]) !== 'tail' || !tailFollows(words.slice(1)));
+  if (stages.slice(1).some((stage) => stage.args.some(devicePath))) return false;
+  return stages.every((stage) => stage.verb !== 'tail' || !tailFollows(stage.args));
 }
 
 /**
@@ -215,8 +269,9 @@ function auditorWordsOk(line: string): boolean {
  * read word (show, display, get, ping, ...; not less, more or monitor), has no write word, no `;`,
  * `&`, `<`, `>`, backtick or `$(`, each `|` stage is in AUDITOR_PIPES, `date` sets no time,
  * `ping` has a count of 1 to 100 and no long interval or wait, `cat`/`head`/`tail` name a file
- * that ends, `tail` doesn't follow and `sh` doesn't run a shell. Anything else is refused, with no
- * dialog.
+ * that ends, `tail` doesn't follow and `sh` doesn't run a shell. Those words are read as the shell
+ * reads them (shellWords), and a stage whose words can't be worked out for sure is refused. Anything
+ * else is refused, with no dialog.
  */
 export function auditorAllowsCommand(cmd: string): boolean {
   if (CONTROL_CHARS.test(cmd)) return false;

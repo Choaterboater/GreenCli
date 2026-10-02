@@ -6,6 +6,7 @@ import {
   CONTROL_CHARS,
   isReadOnlyAgent,
   normalizeLineBreaks,
+  shellWords,
 } from './aiGating';
 import { BUILTIN_AGENTS } from '../types';
 
@@ -250,12 +251,110 @@ describe('auditorAllowsCommand', () => {
     }
   });
 
+  it('reads quoted and escaped words the way the shell does before any word check', () => {
+    // Follow, written with quotes, backslashes or empty quotes: the shell hands tail +1f, -F, -f, --follow.
+    for (const cmd of [
+      'tail "+1f" /var/log/x',
+      "tail '+f' /var/log/x",
+      'tail \\+1f /var/log/x',
+      'tail ""+1f x',
+      'cat x | tail "+1f"',
+      'tail "-f" x',
+      "tail '-F' x",
+      'tail \\-f x',
+      'tail "--follow" x',
+      'tail -""f x',
+      "tail '-'f x",
+      'tail "+1 f" x',
+      'show log | tail "-f"',
+      'show log | t\\ail -f',
+      'tail"" -f x',
+      'do tail -f /var/log/x',
+      'DO tail -f /var/log/x',
+    ]) {
+      expect([cmd, auditorAllowsCommand(cmd)]).toEqual([cmd, false]);
+    }
+    // The same words, quoted, in files, pings, date and sh.
+    for (const cmd of [
+      'cat "/dev/zero"',
+      "cat '/dev/stdin'",
+      'cat ""',
+      'head -n 5 "/dev/zero"',
+      'cat"" /dev/zero',
+      'ping "8.8.8.8"',
+      'ping -c "0" 8.8.8.8',
+      "ping -c 4 '-t' 8.8.8.8",
+      'ping"" 8.8.8.8',
+      'date "-s" 2020-01-01',
+      'date"" -s 2020-01-01',
+      'sh "-c" id',
+      "sh '/tmp/x'",
+      'show log | grep x "/dev/zero"',
+    ]) {
+      expect([cmd, auditorAllowsCommand(cmd)]).toEqual([cmd, false]);
+    }
+    // Plain reads still pass when they are quoted.
+    for (const cmd of [
+      'tail -n 20 "/var/log/my file"',
+      "tail '-n' 20 /var/log/x",
+      'tail "+2" /var/log/x',
+      'cat "/etc/hosts"',
+      'ping -c "4" 8.8.8.8',
+      'date "+%F"',
+      'show log | match "error"',
+      'show log | tail "-n" 5',
+    ]) {
+      expect([cmd, auditorAllowsCommand(cmd)]).toEqual([cmd, true]);
+    }
+  });
+
+  it('refuses a stage whose words cannot be worked out for sure', () => {
+    for (const cmd of [
+      'tail "-f x',
+      "tail '-f x",
+      'tail -f\\',
+      "tail $'-f' x",
+      'tail $"-f" x',
+      'tail ${F} x',
+      'tail $F x',
+      'show log | tail $F',
+      'ping -c $N 8.8.8.8',
+      "ping $'-t' 8.8.8.8",
+      'cat #',
+      'cat x #',
+      'tail {-f,x}',
+      'cat {/dev/zero,x}',
+      'head -n 5 x ${y}',
+      'show log | match "a',
+    ]) {
+      expect([cmd, auditorAllowsCommand(cmd)]).toEqual([cmd, false]);
+    }
+  });
+
   it('refuses sh when it runs a shell rather than meaning show', () => {
     for (const cmd of ['sh -c "id"', 'sh script.sh', 'sh /tmp/x', 'do sh -c id']) {
       expect([cmd, auditorAllowsCommand(cmd)]).toEqual([cmd, false]);
     }
     expect(auditorAllowsCommand('sh ip route')).toBe(true);
     expect(auditorAllowsCommand('sh run | inc vlan')).toBe(true);
+  });
+});
+
+describe('shellWords', () => {
+  it('removes quotes, backslashes and empty quotes as a POSIX shell does', () => {
+    expect(shellWords('tail "+1f" x')).toEqual(['tail', '+1f', 'x']);
+    expect(shellWords("tail '-F' x")).toEqual(['tail', '-F', 'x']);
+    expect(shellWords('tail \\-f x')).toEqual(['tail', '-f', 'x']);
+    expect(shellWords('tail ""+1f x')).toEqual(['tail', '+1f', 'x']);
+    expect(shellWords('tail "--follow" x')).toEqual(['tail', '--follow', 'x']);
+    expect(shellWords('cat "a b" \'c\'d ""')).toEqual(['cat', 'a b', 'cd', '']);
+    expect(shellWords('echo "a\\"b" "c\\d"')).toEqual(['echo', 'a"b', 'c\\d']);
+  });
+  it('gives up on words it cannot read for sure', () => {
+    for (const stage of ['tail "x', "tail 'x", 'tail x\\', "tail $'x'", 'tail $"x"', 'tail `x`', 'tail $(x)', 'tail ${x}', 'tail {a,b}', 'cat #x']) {
+      expect([stage, shellWords(stage)]).toEqual([stage, null]);
+    }
+    expect(shellWords('cat a#b')).toEqual(['cat', 'a#b']);
   });
 });
 
