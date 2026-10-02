@@ -17,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Editor status line**: "Send to: core-sw1 · Aruba CX · CONFIG MODE · pulled 12 min ago", named
   like the terminal tab. When the tab is for another vendor than the device (a Junos tab with an
   Aruba CX session) a red line says so.
+- **After a Send, a bar beside each line shows how far it got**: green for lines that went out with
+  no error, red for the line the switch rejected, amber for a question or for lines that went out
+  after the error, grey for lines never sent. A line above the editor sums it up ("3 sent ·
+  1 rejected · 3 not sent") with **Clear marks**. The bars stay with that tab until the next send.
 - **The Send dialog counts the problems** ("1 error, 2 warnings") and lists the first five with their
   lines, errors first, plus the vendor warning. It names the device like its terminal tab. A tab in
   a code language still gets the device checks, since it is going to a device.

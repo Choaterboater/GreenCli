@@ -298,6 +298,7 @@ export const HELP_TOPICS: HelpTopic[] = [
           '**Config Editor problems**: risky lines, blanks to fill in, terminal junk and a Junos edit with no commit are underlined and counted in the toolbar. Click the count (or **Ctrl+Shift+M**) for the Problems panel; **F8** jumps to the next one. A line the switch rejected shows in red.',
           '**Copy with secrets hidden**: the eye button next to Copy copies the tab with passwords, keys and SNMP communities hidden, safe for a ticket or chat.',
           '**Editor status line**: where Send goes, the device\'s CLI, **CONFIG MODE**, and when you pulled its config. It warns in red when the tab is for another vendor than the device.',
+          '**After a Send**: bars beside the lines show what reached the switch (green), what it rejected (red) and what was never sent (grey).',
           '**Config Editor smarts**: **Ctrl+/** comments a line (`!` Aruba, `#` Junos); a double-click picks `1/1/5` or `ge-0/0/0.100` whole.',
           '**Snippets**: type `cx-access`, `junos-trunk`, … at the start of a line, or pick from *Snippets*; **Tab** moves to the next blank.',
           '**Diff**: compare the editor with the running-config you pulled, or with a file.',

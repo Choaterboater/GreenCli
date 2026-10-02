@@ -308,6 +308,9 @@ live compliance:
     CLI, **CONFIG MODE** when its prompt shows it, and how long ago you pulled its
     running-config. A tab for another vendor (a Junos tab with an Aruba CX session) gets a red
     warning, and the Send dialog says it too.
+  - **After a Send**, a bar beside each line shows how far it got: green went out with no
+    error, red was rejected, amber is a question or a line sent after the error, grey was never
+    sent. **Clear marks** removes them.
   - **Aruba and Junos smarts**: **Ctrl+/** comments a line (`!` for Aruba, `#` for Junos);
     a double-click picks `1/1/5` or `ge-0/0/0.100` whole; the block you're in stays on top as
     you scroll.
