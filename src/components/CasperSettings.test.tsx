@@ -92,7 +92,7 @@ describe('CasperSettings', () => {
     fireEvent.click(screen.getByText('Choose…'));
     await waitFor(() => expect(useSettingsStore.getState().casperWorkFolder).toBe('/Users/me/code/lab'));
     expect(await screen.findByText('Found Casper 0.2.21. It works in /Users/me/code/lab.')).toBeTruthy();
-    fireEvent.click(screen.getByText("Use GreenCLI's folder"));
+    fireEvent.click(screen.getByText('Use a fresh folder'));
     expect(useSettingsStore.getState().casperWorkFolder).toBe('');
   });
 });

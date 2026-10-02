@@ -103,16 +103,12 @@ export default function CasperSettings() {
           className="w-full h-8 px-2 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)] font-mono"
         />
         <p className="text-[10px] text-[var(--text-muted)] mt-1">
-          Runs Casper on this computer with your question.{' '}
-          <span className="text-[var(--accent-success)]">No API key needed</span>: Casper uses its own sign-in. You can
-          add <code className="text-[var(--text-primary)]">--model</code>,{' '}
+          Runs Casper on this computer. <span className="text-[var(--accent-success)]">No API key</span>: Casper
+          uses its own sign-in. You can add <code className="text-[var(--text-primary)]">--model</code>,{' '}
           <code className="text-[var(--text-primary)]">--effort</code>,{' '}
-          <code className="text-[var(--text-primary)]">--max-turns</code> or{' '}
-          <code className="text-[var(--text-primary)]">--verify</code>. GreenCLI adds{' '}
-          <code className="text-[var(--text-primary)]">--json</code>, sends your question separately, and never turns
-          off Casper&apos;s sandbox. Unless you set them, it also adds{' '}
-          <code className="text-[var(--text-primary)]">--no-verify</code> and{' '}
-          <code className="text-[var(--text-primary)]">--max-turns 20</code>.
+          <code className="text-[var(--text-primary)]">--max-turns</code> (default 20) or{' '}
+          <code className="text-[var(--text-primary)]">--verify</code> (off by default). Casper&apos;s sandbox always
+          stays on.
         </p>
         <p className="text-[10px] text-[var(--text-muted)] mt-1">
           Casper runs its own commands in a sandbox, and those can reach this computer&apos;s ports. So Casper
@@ -184,16 +180,18 @@ export default function CasperSettings() {
               type="button"
               onClick={() => setCasperWorkFolder('')}
               className="px-2 h-8 rounded text-xs text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] flex-shrink-0"
-              title="Give Casper a fresh, empty folder for each question"
+              title="Go back to a fresh, empty folder for each question"
             >
-              Use GreenCLI&apos;s folder
+              Use a fresh folder
             </button>
           )}
         </div>
         <p className="text-[10px] text-[var(--text-muted)] mt-1">
           By default Casper gets a fresh, empty folder for each question, and GreenCLI deletes it afterwards. If you
           pick a folder, Casper reads and writes files there and follows instruction files it finds there or above it
-          (.casper/rules.md, AGENTS.md, CLAUDE.md). Your home folder and GreenCLI&apos;s own folders can&apos;t be used.
+          (.casper/rules.md, AGENTS.md, CLAUDE.md). You can&apos;t pick your home folder or a folder above it, a folder
+          that holds GreenCLI&apos;s, Casper&apos;s or your session logs&apos; files, or a folder whose files other
+          programs run (like ~/.local/bin or ~/.claude).
         </p>
       </div>
     </div>
