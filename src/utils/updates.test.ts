@@ -109,6 +109,16 @@ describe('dailyUpdateCheck', () => {
     expect(lastCheckAt()).toBeNull();
   });
 
+  it('never checks when run from the disk image or a moved copy', async () => {
+    for (const place of ['diskImage', 'translocated'] as const) {
+      invoke.mockReset();
+      answer({ update_status: { ...ON, place }, update_check: '2.0.1' });
+      await dailyUpdateCheck(NOW);
+      expect(calls()).toEqual(['update_status']);
+    }
+    expect(toasts()).toEqual([]);
+  });
+
   it('never checks when no update key is built in', async () => {
     answer({ update_status: { ...ON, enabled: false, reason: 'noKey' }, update_check: '2.0.1' });
     await dailyUpdateCheck(NOW);
@@ -166,10 +176,11 @@ describe('restartToUpdate', () => {
     });
     invoke.mockImplementation(async (cmd: string) => {
       order.push(cmd);
+      return cmd === 'update_status' ? ON : undefined;
     });
     await expect(restartToUpdate('2.0.1')).resolves.toBe(true);
     off();
-    expect(order).toEqual(['confirm', 'save', 'update_install']);
+    expect(order).toEqual(['update_status', 'confirm', 'save', 'update_install']);
     const opts = askConfirm.mock.calls[0][0];
     expect(opts.title).toBe('Restart now?');
     expect(opts.message).toContain('2 open sessions will close.');
@@ -183,6 +194,7 @@ describe('restartToUpdate', () => {
     const save = vi.fn();
     const off = registerBeforeExit(save);
     askConfirm.mockResolvedValue(false);
+    answer({ update_status: ON });
     await expect(restartToUpdate('2.0.1')).resolves.toBe(false);
     off();
     const opts = askConfirm.mock.calls[0][0];
@@ -190,7 +202,7 @@ describe('restartToUpdate', () => {
     expect(opts.message).toContain('The config editor has unsaved edits. They will be lost.');
     expect(opts.danger).toBe(true);
     expect(save).not.toHaveBeenCalled();
-    expect(invoke).not.toHaveBeenCalled();
+    expect(calls()).toEqual(['update_status']);
   });
 
   it('refuses while a Change Job or bulk run is going', async () => {
@@ -207,5 +219,17 @@ describe('restartToUpdate', () => {
     invoke.mockRejectedValue('Move GreenCLI to Applications, then try again.');
     await expect(restartToUpdate('2.0.1')).resolves.toBe(false);
     expect(toasts()[0].message).toBe('Move GreenCLI to Applications, then try again.');
+  });
+
+  it('says to move the app first, before asking or saving, when run from the disk image', async () => {
+    const save = vi.fn();
+    const off = registerBeforeExit(save);
+    answer({ update_status: { ...ON, place: 'diskImage' } });
+    await expect(restartToUpdate('2.0.1')).resolves.toBe(false);
+    off();
+    expect(askConfirm).not.toHaveBeenCalled();
+    expect(save).not.toHaveBeenCalled();
+    expect(calls()).toEqual(['update_status']);
+    expect(toasts()[0].message).toBe(UPDATE_TEXT.moveFirst);
   });
 });

@@ -121,13 +121,15 @@ export function showUpdateReady(version: string): void {
 
 /**
  * The quiet daily check: only when updates are on, "Check once a day" is on,
- * and the last check was a day ago or more. Errors are only logged.
+ * the app can update itself where it is (not run from the disk image or a
+ * moved copy macOS opened in a temporary place), and the last check was a
+ * day ago or more. Errors are only logged.
  */
 export async function dailyUpdateCheck(now = Date.now()): Promise<void> {
   try {
     if (!isTauri || !dailyCheckOn() || !dailyCheckDue(now, lastCheckAt())) return;
     const status = await getUpdateStatus();
-    if (!status?.enabled) return;
+    if (!status?.enabled || status.place !== 'normal') return;
     // Counted when it starts, so a failing check waits a day like a good one.
     recordCheck(now);
     const version = await invoke<string | null>('update_check');
@@ -150,6 +152,14 @@ export async function restartToUpdate(version: string): Promise<boolean> {
     return true;
   };
   if (busy()) return false;
+
+  // From the disk image (or a copy macOS runs from a temporary place) the
+  // install can't work: say so before asking, not after the saves.
+  const status = await getUpdateStatus().catch(() => null);
+  if (status && status.place !== 'normal') {
+    notify.warning('Not now', UPDATE_TEXT.moveFirst);
+    return false;
+  }
 
   const open = useSessionStore.getState().sessions.length;
   const dirty = useSidePanelStore.getState().status.editor === 'dirty';
