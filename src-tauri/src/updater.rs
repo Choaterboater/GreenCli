@@ -13,7 +13,7 @@
 
 use std::{
     cmp::Ordering,
-    sync::Mutex,
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
@@ -219,6 +219,9 @@ pub struct UpdaterState {
     pending: Mutex<Option<Pending>>,
     /// One check at a time (the daily check and the button can overlap).
     checking: tokio::sync::Mutex<()>,
+    /// Set when the Windows installer hook stopped MCP servers and CLI runs:
+    /// the MCP servers that were connected.
+    stopped_mcp: Arc<Mutex<Option<Vec<String>>>>,
 }
 
 impl UpdaterState {
@@ -255,6 +258,7 @@ pub fn register(app: &tauri::App) {
         off,
         pending: Mutex::new(None),
         checking: tokio::sync::Mutex::new(()),
+        stopped_mcp: Arc::new(Mutex::new(None)),
     });
 }
 
@@ -306,8 +310,18 @@ pub async fn update_check(
     let endpoint = Url::parse(LATEST_JSON_URL).map_err(|_| ERR_NETWORK)?;
     // The plugin is registered (state.off is None), so updater_builder has
     // its state, with the built-in public key from the config.
+    let stopped = state.stopped_mcp.clone();
+    let hook_app = app.clone();
     let updater = app
         .updater_builder()
+        // Windows: runs after the update file is unpacked, just before the
+        // installer starts and the app exits (no RunEvent::Exit there), so
+        // MCP servers and CLI runs stop only when the install really goes
+        // ahead. Elsewhere the restart goes through RunEvent::Exit.
+        .on_before_exit(move || {
+            let names = tauri::async_runtime::block_on(crate::stop_children_for_update(&hook_app));
+            *stopped.lock().unwrap_or_else(|p| p.into_inner()) = Some(names);
+        })
         .endpoints(vec![endpoint])
         .and_then(|b| {
             b.timeout(CHECK_TIMEOUT)
@@ -377,12 +391,9 @@ pub async fn update_install(app: AppHandle, state: State<'_, UpdaterState>) -> R
         .take()
         .ok_or(ERR_NOT_READY)?;
 
-    // Windows: the installer closes the app right away (process exit, no
-    // RunEvent::Exit), so stop MCP servers and CLI runs first. Elsewhere the
-    // restart below goes through RunEvent::Exit, which does it.
-    #[cfg(windows)]
-    crate::shutdown_children(&app).await;
-
+    // Stopping MCP servers and CLI runs on Windows happens in the
+    // on_before_exit hook (update_check), right before the installer starts.
+    take_stopped(&state.stopped_mcp);
     let result = tauri::async_runtime::spawn_blocking(move || {
         let r = pending.update.install(&pending.bytes);
         (r, pending)
@@ -397,12 +408,29 @@ pub async fn update_install(app: AppHandle, state: State<'_, UpdaterState>) -> R
             log::warn!("Update install failed: {}", plain_error(&e));
             // Keep it, so "Restart to update" can be tried again.
             *state.pending.lock().unwrap_or_else(|p| p.into_inner()) = Some(pending);
+            reconnect_if_stopped(&app, &state.stopped_mcp);
             Err(ERR_INSTALL.into())
         }
         Err(e) => {
             log::warn!("Update install failed: {e}");
+            reconnect_if_stopped(&app, &state.stopped_mcp);
             Err(ERR_INSTALL.into())
         }
+    }
+}
+
+/// The MCP servers the Windows hook stopped, when a failed install got that
+/// far (the installer then didn't start). Clears what was kept.
+fn take_stopped(stopped: &Mutex<Option<Vec<String>>>) -> Option<Vec<String>> {
+    stopped.lock().unwrap_or_else(|p| p.into_inner()).take()
+}
+
+/// The app keeps running after a failed install: bring back the MCP
+/// servers the hook stopped, so the AI's tools don't silently vanish.
+fn reconnect_if_stopped(app: &AppHandle, stopped: &Mutex<Option<Vec<String>>>) {
+    if let Some(names) = take_stopped(stopped) {
+        log::info!("Update install failed after MCP servers stopped: reconnecting them");
+        crate::spawn_mcp_connect(app.clone(), Some(names));
     }
 }
 
@@ -576,6 +604,14 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_failed_install_reconnects_only_what_the_hook_stopped() {
+        let stopped = Mutex::new(None);
+        assert_eq!(take_stopped(&stopped), None, "the hook didn't run: nothing to reconnect");
+        *stopped.lock().unwrap() = Some(vec!["aruba".to_string(), "mist".to_string()]);
+        assert_eq!(take_stopped(&stopped), Some(vec!["aruba".to_string(), "mist".to_string()]));
+        assert_eq!(take_stopped(&stopped), None, "only once");
+    }
 
     fn conf() -> Value {
         serde_json::from_str(include_str!("../tauri.conf.json")).unwrap()

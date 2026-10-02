@@ -2016,6 +2016,13 @@ impl McpManager {
         self.clients.remove(name)
     }
 
+    /// The names of the servers with a client now (live or dead), sorted.
+    pub fn client_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.clients.keys().cloned().collect();
+        names.sort();
+        names
+    }
+
     /// Detach every live client (for app-exit cleanup — shut them down outside
     /// the lock).
     pub fn take_all_clients(&mut self) -> Vec<McpClient> {

@@ -2750,6 +2750,48 @@ pub(crate) async fn shutdown_children(app: &AppHandle) {
     shutdown_children_inner(&state.mcp_manager).await;
 }
 
+/// Connect MCP servers in the background: `None` connects the enabled ones
+/// (at start, so the AI's tools survive an app restart without reconnecting
+/// each one by hand); `Some(names)` reconnects those (after a Windows update
+/// install stopped them but then failed).
+pub(crate) fn spawn_mcp_connect(handle: AppHandle, names: Option<Vec<String>>) {
+    tauri::async_runtime::spawn(async move {
+        let state = handle.state::<AppState>();
+        let names = match names {
+            Some(names) => names,
+            None => {
+                let mgr = state.mcp_manager.lock().await;
+                mgr.list_configs()
+                    .into_iter()
+                    .filter(|d| d.enabled)
+                    .map(|d| d.name)
+                    .collect()
+            }
+        };
+        for name in names {
+            // Same path as mcp_connect (pins while writes are off; no
+            // web server while Casper answers); the spawn/handshake runs
+            // WITHOUT the manager lock so a slow server can't block MCP
+            // commands.
+            let runs = state.casper_runs.clone();
+            let casper_busy =
+                move || ai::casper::casper_busy(&runs).then(|| ai::casper::BUSY_MCP.to_string());
+            if let Err(e) = mcp::connect_server(&state.mcp_manager, &name, &casper_busy).await {
+                log::warn!("MCP auto-connect '{}' failed: {}", name, e);
+            }
+        }
+    });
+}
+
+/// Before a Windows update install: the names of the connected MCP servers,
+/// then shutdown_children.
+pub(crate) async fn stop_children_for_update(app: &AppHandle) -> Vec<String> {
+    let state: State<AppState> = app.state();
+    let names = state.mcp_manager.lock().await.client_names();
+    shutdown_children_inner(&state.mcp_manager).await;
+    names
+}
+
 /// macOS requires a native menu for the standard editing key equivalents:
 /// without an Edit menu wired to the responder chain, WKWebView never receives
 /// Cmd+C/Cmd+V/Cmd+X/Cmd+A — copy/paste is dead in the terminal AND every text
@@ -2858,28 +2900,7 @@ fn main() {
             // (tauri.conf.json plugins.updater.pubkey); otherwise off (updater.rs).
             updater::register(app);
 
-            // Auto-connect enabled MCP servers in the background so the AI's
-            // tools survive an app restart without reconnecting each one by hand.
-            let handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                let state = handle.state::<AppState>();
-                let defs = {
-                    let mgr = state.mcp_manager.lock().await;
-                    mgr.list_configs()
-                };
-                for def in defs.into_iter().filter(|d| d.enabled) {
-                    // Same path as mcp_connect (pins while writes are off; no
-                    // web server while Casper answers); the spawn/handshake runs
-                    // WITHOUT the manager lock so a slow server can't block MCP
-                    // commands.
-                    let runs = state.casper_runs.clone();
-                    let casper_busy =
-                        move || ai::casper::casper_busy(&runs).then(|| ai::casper::BUSY_MCP.to_string());
-                    if let Err(e) = mcp::connect_server(&state.mcp_manager, &def.name, &casper_busy).await {
-                        log::warn!("MCP auto-connect '{}' failed: {}", def.name, e);
-                    }
-                }
-            });
+            spawn_mcp_connect(app.handle().clone(), None);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -3033,6 +3054,8 @@ mod shutdown_tests {
         let pid = fake_child_pid(&client);
         assert!(process_exists(pid));
         assert!(mcp.lock().await.install_client("fake".into(), client).is_none());
+        // What a failed Windows update install reconnects.
+        assert_eq!(mcp.lock().await.client_names(), vec!["fake".to_string()]);
 
         shutdown_children_inner(&mcp).await;
         // Killed and waited for: not even a zombie is left.
