@@ -680,8 +680,9 @@ live compliance:
   against its signature before it can install (§2, *How update signing works*).
 - greencli-mcp is read-only and shows configs only with secrets hidden (§6).
 - SSH uses **TOFU** host-key pinning (`known_hosts.json`); a changed key is rejected.
-- No secrets in `localStorage`; no telemetry / outbound calls except the providers and
-  devices you configure.
+- No secrets in `localStorage`; no telemetry. GreenCLI calls only the providers and devices you
+  configure, plus GitHub for the update check on macOS and Windows (turn off **Check once a day**
+  in Settings → **Updates**; see §2).
 - Device secrets in AI tool output are hidden before the AI sees them (§5).
 - Device REST TLS verification defaults to **on** for new installs (§8); disabling it
   shows an interception warning in Settings.

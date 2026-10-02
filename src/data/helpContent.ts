@@ -392,7 +392,7 @@ export const HELP_TOPICS: HelpTopic[] = [
     title: 'Security & your data',
     icon: ShieldCheck,
     summary: 'What is encrypted, where keys are kept, where data lives.',
-    keywords: ['security', 'data', 'storage', 'permissions', '0600', 'known_hosts', 'privacy', 'telemetry', 'keychain', 'credential manager', 'password store', 'keyring', 'secret_store', 'ai_keys', 'mcp_creds', 'backup', 'downgrade'],
+    keywords: ['security', 'data', 'storage', 'permissions', '0600', 'known_hosts', 'privacy', 'telemetry', 'keychain', 'credential manager', 'password store', 'keyring', 'secret_store', 'ai_keys', 'mcp_creds', 'backup', 'downgrade', 'outbound', 'firewall'],
     blocks: [
       {
         kind: 'bullets',
@@ -400,7 +400,7 @@ export const HELP_TOPICS: HelpTopic[] = [
           'AI keys and MCP logins are kept in the system password store: macOS Keychain, Windows Credential Manager, or the Secret Service on Linux. Settings says where.',
           'The vault (`vault.enc`) and the other secret files are owner-only (`0600`), written atomically.',
           'SSH uses **TOFU** host-key pinning — a changed key is rejected.',
-          'No secrets in browser storage; no telemetry — only the providers and devices you configure.',
+          'No secrets in browser storage; no telemetry. GreenCLI calls only the providers and devices you configure, plus GitHub for the update check on macOS and Windows (turn off **Check once a day** in Settings → **Updates**).',
         ],
       },
       {
