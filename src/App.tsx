@@ -398,7 +398,7 @@ function App() {
       } catch {
         /* ignore */
       }
-    });
+    }).catch(() => () => {}); // outside the app: nothing to stop
     return () => {
       un.then((f) => f());
     };
@@ -409,7 +409,7 @@ function App() {
   useEffect(() => {
     const un = listen<HostKeyWarningPayload>('host-key-warning', (e) => {
       toastHostKeyWarning(e.payload?.message);
-    });
+    }).catch(() => () => {}); // outside the app: nothing to stop
     return () => {
       un.then((f) => f());
     };
@@ -1444,7 +1444,7 @@ function App() {
       });
       // Only the reconnect just requested — stop watching after a minute.
       const timer = setTimeout(stop, 60_000);
-    });
+    }).catch(() => () => {}); // outside the app: nothing to stop
     return () => {
       un.then((f) => f());
     };
