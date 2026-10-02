@@ -2158,7 +2158,7 @@ export default function ConfigEditor() {
             {showSendMenu && (
               <>
                 <div className="fixed inset-0 z-20" onClick={() => setShowSendMenu(false)} />
-                <div className="absolute bottom-full right-0 mb-1 z-30 w-72 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg shadow-xl py-1">
+                <div className="absolute top-full right-0 mt-1 z-30 w-72 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg shadow-xl py-1">
                   <button
                     onClick={() => {
                       setShowSendMenu(false);
