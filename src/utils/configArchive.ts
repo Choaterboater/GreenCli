@@ -11,13 +11,47 @@ import { useSettingsStore } from '../store/settingsStore';
 import { notify } from '../store/toastStore';
 import { profileForSession } from './deviceProfiles';
 import { pagedCommand, withPagingDisabled } from './paging';
+import { hideSecretsInText } from './secrets/forCopy';
 import { sendAndCapture } from './terminal';
+
+/**
+ * Version of the secret filter (src/utils/secrets) that made a hidden copy.
+ * greencli-mcp serves a snapshot's config only from its hidden copy
+ * (`<ts>.hidden.json`), and only when the copy has this version. Keep it equal
+ * to HIDDEN_COPY_FILTER in src-tauri/greencli-mcp/src/lib.rs (a Rust test
+ * checks). When the filter changes, bump both, so old copies are made again.
+ */
+export const HIDDEN_COPY_FILTER = 1;
+
+/**
+ * sha256 of every file under src/utils/secrets (sorted by path, LF newlines).
+ * hiddenFilterVersion.test.ts fails when the filter changes without a bump.
+ */
+export const HIDDEN_COPY_FILTER_SOURCE = '01548aeb04d7f73244dfb92df1cb2d6d53c4103c318fa5bf2576640a28de3727';
 
 /** One history row, mirroring `config_archive::ArchiveEntry` (camelCase). */
 export interface ArchiveEntry {
   ts: number;
   source: string;
   golden: boolean;
+  /** Secret filter version of the snapshot's hidden copy; absent when it has none. */
+  hiddenFilter?: number;
+}
+
+/** What config_archive_capture stored. */
+interface Captured {
+  ts: number | null;
+  /** Set when the hidden copy was not saved. */
+  warning?: string;
+}
+
+/** Snapshots by hidden copy (config_archive_missing_hidden). */
+export interface HiddenStatus {
+  missing: number;
+  stale: number;
+  current: number;
+  /** The missing and stale ones. */
+  todo: { device: string; ts: number }[];
 }
 
 // The show command that prints each vendor's running config. Paging is handled
@@ -72,12 +106,19 @@ export async function captureRunningConfig(
   const pull = () => sendAndCapture(sid, show);
   const { output, truncated } = opts.pagingOff ? await pull() : await withPagingDisabled(sid, profile, pull);
   if (!output.trim()) return null;
-  const ts = await invoke<number | null>('config_archive_capture', {
+  // The hidden copy for greencli-mcp. When the filter can't run, there is no
+  // copy: greencli-mcp then refuses this snapshot instead of serving it raw.
+  const hidden = await hideSecretsInText(output);
+  const got = await invoke<Captured>('config_archive_capture', {
     device: getDeviceId(session),
     source,
     content: output,
+    hidden: hidden.ok ? hidden.text : null,
+    filter: HIDDEN_COPY_FILTER,
   });
-  return { content: output, truncated, ts };
+  if (got.warning) console.warn(`[config-archive] ${got.warning}`);
+  refreshStaleHiddenCopies();
+  return { content: output, truncated, ts: got.ts };
 }
 
 /** Pull the running config NOW and store it under the device's archive key.
@@ -124,4 +165,72 @@ export async function archiveSnapshot(device: string, ts: number): Promise<strin
 
 export async function archiveSetGolden(device: string, ts: number): Promise<void> {
   await invoke('config_archive_set_golden', { device, ts });
+}
+
+export async function archiveHiddenStatus(): Promise<HiddenStatus> {
+  return invoke<HiddenStatus>('config_archive_missing_hidden');
+}
+
+export interface HiddenCopiesResult {
+  made: number;
+  failed: number;
+  /** Left for next time (over the limit). */
+  left: number;
+}
+
+/**
+ * Make hidden copies for snapshots that have none, or one from an older secret
+ * filter: read the raw snapshot, hide its secrets, save the copy. A snapshot
+ * that fails (too big for the filter, or the filter can't run) is skipped and
+ * counted; it keeps no copy, so greencli-mcp keeps refusing it.
+ */
+export async function makeHiddenCopies(opts: { limit?: number } = {}): Promise<HiddenCopiesResult> {
+  const { todo } = await archiveHiddenStatus();
+  const limit = opts.limit ?? Infinity;
+  const batch = todo.slice(0, limit);
+  let made = 0;
+  let failed = 0;
+  for (const { device, ts } of batch) {
+    try {
+      const raw = await archiveSnapshot(device, ts);
+      const hidden = await hideSecretsInText(raw);
+      if (!hidden.ok) {
+        failed++;
+        continue;
+      }
+      await invoke('config_archive_set_hidden', { device, ts, hidden: hidden.text, filter: HIDDEN_COPY_FILTER });
+      made++;
+    } catch {
+      failed++;
+    }
+  }
+  return { made, failed, left: todo.length - batch.length };
+}
+
+/** Most snapshots the background refresh redoes in one run. */
+export const BACKGROUND_REFRESH_LIMIT = 500;
+
+let refreshStarted = false;
+
+/**
+ * Once per app run, in the background: after the secret filter changed (some
+ * hidden copies are stale), make the copies again. Capped and logged; the
+ * "Make hidden copies" button in Config archive does the rest.
+ */
+export function refreshStaleHiddenCopies(): void {
+  if (refreshStarted) return;
+  refreshStarted = true;
+  void (async () => {
+    const status = await archiveHiddenStatus();
+    if (status.stale === 0) return;
+    const result = await makeHiddenCopies({ limit: BACKGROUND_REFRESH_LIMIT });
+    console.info(
+      `[config-archive] hidden copies refreshed after a secret filter change: ${result.made} made, ${result.failed} failed, ${result.left} left`
+    );
+  })().catch((e) => console.warn('[config-archive] hidden copy refresh failed', e));
+}
+
+/** Tests only: let refreshStaleHiddenCopies run again. */
+export function resetHiddenRefreshForTests(): void {
+  refreshStarted = false;
 }

@@ -41,3 +41,27 @@ fn same_version_as_the_app() {
     assert_eq!(package_version(&app), greencli_mcp::VERSION);
     assert_eq!(tauri_conf()["version"], greencli_mcp::VERSION);
 }
+
+/// The frontend stamps hidden copies with its own HIDDEN_COPY_FILTER; it must
+/// be the version this server accepts.
+#[test]
+fn the_frontend_filter_version_matches() {
+    let ts =
+        std::fs::read_to_string(common::manifest_dir().join("../../src/utils/configArchive.ts"))
+            .unwrap();
+    let line = ts
+        .lines()
+        .find(|l| l.starts_with("export const HIDDEN_COPY_FILTER ="))
+        .expect("configArchive.ts has HIDDEN_COPY_FILTER");
+    let value: u32 = line
+        .trim_start_matches("export const HIDDEN_COPY_FILTER =")
+        .trim()
+        .trim_end_matches(';')
+        .parse()
+        .unwrap();
+    assert_eq!(
+        value,
+        greencli_mcp::HIDDEN_COPY_FILTER,
+        "HIDDEN_COPY_FILTER differs between src/utils/configArchive.ts and greencli-mcp"
+    );
+}

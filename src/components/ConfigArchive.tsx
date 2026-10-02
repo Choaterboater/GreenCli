@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { X, Crown, History, GitCompare, RefreshCw, FileText } from 'lucide-react';
+import { X, Crown, History, GitCompare, RefreshCw, FileText, EyeOff } from 'lucide-react';
 import { DiffEditor } from '@monaco-editor/react';
 import { setupMonaco } from '../editor/setup';
 import { detectConfigLanguage } from '../editor/networkLanguages';
@@ -13,8 +13,11 @@ import {
   archiveHistory,
   archiveSnapshot,
   archiveSetGolden,
+  archiveHiddenStatus,
   captureNow,
   getDeviceId,
+  makeHiddenCopies,
+  refreshStaleHiddenCopies,
 } from '../utils/configArchive';
 
 const fmtTime = (ts: number) =>
@@ -54,6 +57,40 @@ export default function ConfigArchive({ onOpenSnapshot, onClose }: ConfigArchive
     [diffModified, diffOriginal]
   );
   const [diffLabel, setDiffLabel] = useState('');
+  // Snapshots with no hidden copy (or one from an older secret filter):
+  // greencli-mcp won't serve their config until a new copy is made.
+  const [needHidden, setNeedHidden] = useState(0);
+  const [makingHidden, setMakingHidden] = useState(false);
+
+  const loadHiddenStatus = useCallback(async () => {
+    const status = await archiveHiddenStatus().catch(() => null);
+    setNeedHidden(status ? status.missing + status.stale : 0);
+  }, []);
+
+  useEffect(() => {
+    void loadHiddenStatus();
+    refreshStaleHiddenCopies();
+  }, [loadHiddenStatus]);
+
+  const onMakeHiddenCopies = async () => {
+    setMakingHidden(true);
+    try {
+      const { made, failed } = await makeHiddenCopies();
+      if (failed) {
+        notify.warning(
+          'Hidden copies',
+          `Made ${made}. ${failed} couldn't be made (too big, or the secret check can't run here).`
+        );
+      } else {
+        notify.success('Hidden copies', `Made ${made}.`);
+      }
+    } catch (err) {
+      notify.error('Could not make hidden copies', String(err));
+    } finally {
+      setMakingHidden(false);
+      await loadHiddenStatus();
+    }
+  };
 
   // Follow the active session's device (the panel is opened from the editor).
   useEffect(() => {
@@ -133,6 +170,7 @@ export default function ConfigArchive({ onOpenSnapshot, onClose }: ConfigArchive
       }
       await loadHistory(getDeviceId(activeSession));
       await loadDevices();
+      await loadHiddenStatus();
     } finally {
       setBusy(false);
     }
@@ -186,6 +224,22 @@ export default function ConfigArchive({ onOpenSnapshot, onClose }: ConfigArchive
                   <option key={d} value={d}>{d}</option>
                 ))}
               </select>
+              {needHidden > 0 && (
+                <div className="mt-2 flex items-center gap-2">
+                  <p className="flex-1 text-[11px] text-[var(--text-secondary)]">
+                    {needHidden} {needHidden === 1 ? 'snapshot needs' : 'snapshots need'} a new hidden copy.
+                  </p>
+                  <button
+                    onClick={() => void onMakeHiddenCopies()}
+                    disabled={makingHidden}
+                    title="Make copies with secrets hidden, for greencli-mcp (Casper or Claude Code)"
+                    className="flex items-center gap-1 px-1.5 py-0.5 text-[10px] rounded bg-[var(--bg-tertiary)] hover:bg-[var(--border-strong)] text-[var(--text-secondary)] disabled:opacity-50"
+                  >
+                    <EyeOff size={10} className={makingHidden ? 'animate-pulse' : ''} />
+                    Make hidden copies
+                  </button>
+                </div>
+              )}
             </div>
             <div className="flex-1 overflow-y-auto divide-y divide-[var(--border)]">
               {loading && <p className="px-3 py-2 text-xs text-[var(--text-muted)]">Loading…</p>}
