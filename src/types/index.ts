@@ -203,6 +203,10 @@ export interface TerminalSettings {
   openrouterModel: string;
   moonshotModel: string;
   localCliCommand: string;
+  /** The Casper provider's command: `casper`, or its full path, plus options. */
+  casperCommand: string;
+  /** Casper's working folder; empty = a fresh, empty folder for each question. */
+  casperWorkFolder: string;
   /** References / standards injected into the AI context (lightweight RAG). */
   aiReferences: string;
   // Which tool sources the AI assistant may use (opt-in beyond plain CLI).
@@ -284,7 +288,7 @@ export const CENTRAL_REGIONS = [
   'https://apigw.central.arubanetworks.com.cn',       // China-1
 ];
 
-export type AiProvider = 'anthropic' | 'openrouter' | 'moonshot' | 'ollama' | 'local-cli';
+export type AiProvider = 'anthropic' | 'openrouter' | 'moonshot' | 'ollama' | 'local-cli' | 'casper';
 
 // `needsKey` providers are HTTP APIs that require an API key. The CLI/local
 // providers drive a locally-installed tool that handles its own auth/login, so
@@ -295,7 +299,25 @@ export const AI_PROVIDERS: { value: AiProvider; label: string; needsKey: boolean
   { value: 'moonshot', label: 'Moonshot API (Kimi)', needsKey: true },
   { value: 'ollama', label: 'Ollama (local)', needsKey: false },
   { value: 'local-cli', label: 'Local CLI (no key)', needsKey: false },
+  { value: 'casper', label: 'Casper (no key)', needsKey: false },
 ];
+
+/** Providers that run a program on this computer and answer from the
+ *  question alone: no GreenCLI tools, SSH sessions or MCP servers. */
+export function isCliProvider(provider: AiProvider | '' | undefined | null): boolean {
+  return provider === 'local-cli' || provider === 'casper';
+}
+
+/** Settings → Check Casper (Rust `ai_casper_check`). */
+export interface CasperCheck {
+  ok: boolean;
+  version: string | null;
+  workFolder: string;
+  message: string;
+  folderOk: boolean;
+  folderMessage: string | null;
+  warnings: string[];
+}
 
 // Quick presets for the Local CLI provider — locally-installed agent CLIs that
 // authenticate themselves (no API key needed).
@@ -384,6 +406,8 @@ export const DEFAULT_SETTINGS: TerminalSettings = {
   openrouterModel: 'anthropic/claude-3.5-sonnet',
   moonshotModel: 'kimi-k2-0905-preview',
   localCliCommand: 'claude -p',
+  casperCommand: 'casper',
+  casperWorkFolder: '',
   aiUseTerminal: true,
   aiUseCxRest: false,
   aiUseMcp: false,

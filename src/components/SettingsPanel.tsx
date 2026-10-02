@@ -24,11 +24,12 @@ import { open as openDialog, save as saveDialog } from '@tauri-apps/api/dialog';
 import { useSessionStore } from '../store/sessionStore';
 import { useSettingsStore } from '../store/settingsStore';
 import { askConfirm, useDialogStore } from '../store/dialogStore';
-import { AI_PROVIDERS, AI_CLI_PRESETS, TerminalSettings, TerminalColorScheme, TERMINAL_SCHEMES, DeviceType, DEVICE_TYPES, DeviceProfile, SessionFolder, ThemePreference } from '../types';
+import { AI_PROVIDERS, AI_CLI_PRESETS, isCliProvider, TerminalSettings, TerminalColorScheme, TERMINAL_SCHEMES, DeviceType, DEVICE_TYPES, DeviceProfile, SessionFolder, ThemePreference } from '../types';
 import { useSystemTheme } from '../hooks/useTheme';
 import { notify } from '../store/toastStore';
 import McpServers from './McpServers';
 import AiAgents from './AiAgents';
+import CasperSettings from './CasperSettings';
 import HostsManager from './HostsManager';
 import LoginProfiles from './LoginProfiles';
 import TriggersSettings from './TriggersSettings';
@@ -1244,7 +1245,16 @@ export default function SettingsPanel() {
                       </button>
                     ))}
                   </div>
+                  {isCliProvider(aiProvider) && (
+                    <p className="text-[11px] text-[var(--text-muted)] mt-2 leading-relaxed">
+                      <strong className="text-[var(--text-secondary)]">Local CLI and Casper answer from your question only.</strong>{' '}
+                      They can&apos;t use GreenCLI&apos;s tools, your SSH sessions or GreenCLI&apos;s MCP servers, so the
+                      Assistant tools switches below don&apos;t apply to them.
+                    </p>
+                  )}
                 </div>
+
+                {aiProvider === 'casper' && <CasperSettings />}
 
                 {/* Key-based providers: API key (stored in Rust, never in localStorage) */}
                 {providerMeta?.needsKey && (
@@ -1411,7 +1421,11 @@ export default function SettingsPanel() {
                   <label className="block text-xs text-[var(--text-secondary)] mb-1.5">
                     Assistant tools <span className="text-[var(--text-muted)]">(opt-in)</span>
                   </label>
-                  <div className="space-y-2.5 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--bg-inset)] p-2.5">
+                  <div
+                    className={`space-y-2.5 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--bg-inset)] p-2.5${
+                      isCliProvider(aiProvider) ? ' opacity-60' : ''
+                    }`}
+                  >
                     {(
                       [
                         { key: 'aiUseTerminal', label: 'Run device CLI commands', hint: 'Execute show/config on the active SSH/terminal session' },
