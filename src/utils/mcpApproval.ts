@@ -14,8 +14,9 @@
 //   that only names a tool counts too. Every call found is judged and the strictest wins.
 // - Every string that starts with { or [ and parses as JSON is searched as if the JSON were there in
 //   place (FastMCP json.loads's any non-str parameter sent as a string), by the router search and by
-//   the confirm and preview checks. One that doesn't parse (as serde_json would read it) makes a
-//   router call unclear.
+//   the confirm and preview checks. One that doesn't parse (as serde_json would read it), or whose
+//   JSON nests past MAX_DEPTH, makes any call unclear, router or not, and counts as the AI skipping
+//   a check (skippedCheck).
 // - Two arguments keys in one call ({args: {}, params: {...}}) make it unclear: the server may read either.
 // - Every key that may hold the tool's name counts, in any spelling. Two different names make the
 //   call unclear, and so does a batch entry GreenCLI can't read or a routed tool that is a router.
@@ -40,7 +41,8 @@ export interface ApprovalPlan {
   routed: RoutedCall[];
   /** The tool is a router: by its name, or by a tool-name key next to an arguments key (also in a batch list). */
   router: boolean;
-  /** The tool looks like a router, but GreenCLI could not tell which tool it runs. */
+  /** GreenCLI can't tell what the call runs: a router whose tools it can't name, or (router or not)
+   *  a JSON text in the arguments it can't read (unreadableJsonText). */
   routerUnclear: boolean;
 }
 
@@ -195,9 +197,8 @@ function schemaHasRouter(schema: unknown): boolean {
   return visit(schema, 0);
 }
 
-/** What a search of a call's arguments found: router shapes, every object that holds one call, and
- *  whether a JSON text in them could not be read. */
-interface CallSearch { shaped: boolean; sites: unknown[]; unreadable: boolean }
+/** What a search of a call's arguments found: router shapes, and every object that holds one call. */
+interface CallSearch { shaped: boolean; sites: unknown[] }
 
 /** A string a server may read as JSON: after JSON whitespace it starts with { or [. */
 function looksLikeJson(text: string): boolean {
@@ -255,7 +256,7 @@ function serdeReads(parsed: unknown): boolean {
  * read the same way, down to MAX_DEPTH. unreadable: such a string did not parse, or its JSON goes
  * deeper than MAX_DEPTH, so the search can't see everything the server might read. Same as Rust
  * read_json_text. The router search and the skipped-check walk (aiConfirm, previewSwitchedOff)
- * both read the arguments through it.
+ * both read the arguments through it, and unreadableJsonText reports the flag.
  */
 function readJsonText(args: Record<string, unknown>): { value: Record<string, unknown>; unreadable: boolean } {
   let unreadable = false;
@@ -288,6 +289,17 @@ function readJsonText(args: Record<string, unknown>): { value: Record<string, un
 }
 
 /**
+ * A string anywhere in the arguments starts like JSON ({ or [) but serde_json would not read it
+ * (1e400, a lone \ud800, a syntax error), or its JSON nests past MAX_DEPTH. GreenCLI can't see what
+ * the server reads there (FastMCP json.loads takes 1e400 and \ud800), so the call is unclear
+ * whether or not the tool is a router, and it counts as the AI skipping a check. Same as Rust
+ * unreadable_json_text.
+ */
+export function unreadableJsonText(args: Record<string, unknown>): boolean {
+  return readJsonText(args).unreadable;
+}
+
+/**
  * Every place in a call's arguments that holds one routed call, down to MAX_DEPTH (JSON text read
  * in place, see readJsonText):
  * - the arguments themselves when they name a tool;
@@ -299,8 +311,8 @@ function readJsonText(args: Record<string, unknown>): { value: Record<string, un
  * {name, arguments}}]}, {batch: {calls: [...]}}).
  */
 function searchCalls(callArgs: Record<string, unknown>, schema: unknown): CallSearch {
-  const { value: args, unreadable } = readJsonText(callArgs);
-  const found: CallSearch = { shaped: routerKeys(Object.keys(args)), sites: [], unreadable };
+  const args = readJsonText(callArgs).value;
+  const found: CallSearch = { shaped: routerKeys(Object.keys(args)), sites: [] };
   if (innerNames(args).length > 0) found.sites.push(args);
   searchChildren(args, [schema], schema, true, 1, found);
   return found;
@@ -399,15 +411,12 @@ export function routedCalls(tool: string, args: Record<string, unknown>, schema?
 /**
  * The router call can't be judged: it runs no tool GreenCLI can name; a place that holds a call
  * (the arguments, a nested call, a batch entry) names no tool or two different ones, or sets two
- * arguments keys; a tool it runs is itself a router (invoke_tool running invoke_tools_batch); or a
- * string in the arguments starts with { or [ but GreenCLI can't read it as JSON (fails closed: the
- * server may read it some other way).
+ * arguments keys; or a tool it runs is itself a router (invoke_tool running invoke_tools_batch).
+ * Unreadable JSON text is checked for every call, router or not (buildPlan).
  */
 function routerUnclear(args: Record<string, unknown>, schema: unknown, routed: RoutedCall[]): boolean {
-  const found = searchCalls(args, schema);
   return routed.length === 0
-    || found.unreadable
-    || found.sites.some((site) => !innerCall(site))
+    || searchCalls(args, schema).sites.some((site) => !innerCall(site))
     || routed.some((call) => isRouter(call.name, undefined, call.arguments));
 }
 
@@ -417,7 +426,8 @@ export function buildPlan(input: {
 }): ApprovalPlan {
   const router = isRouter(input.tool, input.schema, input.arguments);
   const routed = routedCalls(input.tool, input.arguments, input.schema);
-  return { ...input, router, routed, routerUnclear: router && routerUnclear(input.arguments, input.schema, routed) };
+  const unclear = unreadableJsonText(input.arguments) || (router && routerUnclear(input.arguments, input.schema, routed));
+  return { ...input, router, routed, routerUnclear: unclear };
 }
 
 /** The label the call is judged by: the tool's own, the real tools' names, and "not read" for an unclear router. */
@@ -470,9 +480,19 @@ export function previewSwitchedOff(args: Record<string, unknown>): string[] {
 }
 
 /**
+ * The AI may have skipped a check itself: confirm/confirmed/force set (aiConfirm), a preview switch
+ * turned off (previewSwitchedOff), or a JSON text GreenCLI can't read, where either could hide
+ * (unreadableJsonText). Same as Rust skipped_check, which also counts nesting past MAX_DEPTH (the TS
+ * gate refuses that first, argsDepth).
+ */
+export function skippedCheck(args: Record<string, unknown>): boolean {
+  return aiConfirm(args).length > 0 || previewSwitchedOff(args).length > 0 || unreadableJsonText(args);
+}
+
+/**
  * True when the user must say yes: the call is not read, or the AI tried to skip a check itself
- * (confirm/confirmed/force set, or a preview switch set to false). A read label never overrides that.
+ * (skippedCheck). A read label never overrides that.
  */
 export function needsApproval(plan: ApprovalPlan): boolean {
-  return planLabel(plan) !== "read" || aiConfirm(plan.arguments).length > 0 || previewSwitchedOff(plan.arguments).length > 0;
+  return planLabel(plan) !== "read" || skippedCheck(plan.arguments);
 }

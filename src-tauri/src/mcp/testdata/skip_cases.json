@@ -569,6 +569,63 @@
     "args": {
       "calls": "[{\"name\": \"get_status\", \"arguments\": {\"force\": true}"
     },
+    "skipped": true
+  },
+  {
+    "args": {
+      "calls": "[{\"name\":\"delete_vlan\",\"arguments\":{\"x\":1e400}}]"
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "calls": "[{\"name\":\"delete_vlan\",\"arguments\":{\"x\":\"\\ud800\"}}]"
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "request": "{\"calls\":[{\"name\":\"delete_vlan\"}], \"x\":1e400}"
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "options": "{\"force\": true, \"n\": 1e400}"
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "payload": "{\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"force\": true}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}"
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "site": {
+        "filter": "[1e400]"
+      }
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "note": "[WARN] fan"
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "payload": "[1, 2]",
+      "site": "{\"id\": 3}"
+    },
+    "skipped": false
+  },
+  {
+    "args": {
+      "payload": "{\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"force\": false}}}}}}}}}}}}}}}}}}}}"
+    },
     "skipped": false
   }
 ]

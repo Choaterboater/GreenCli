@@ -8,7 +8,7 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { aiConfirm, buildPlan, MAX_DEPTH, previewSwitchedOff } from './mcpApproval';
+import { buildPlan, MAX_DEPTH, skippedCheck } from './mcpApproval';
 import { argsDepth, readNamed, writesOffHides } from './mcpGate';
 import { toolLabel, type CapabilitySafety } from './mcpLabels';
 import { isPlainJunosShow } from './mcpPresets';
@@ -57,11 +57,10 @@ describe('MCP label fixtures shared with Rust', () => {
     for (const c of cases) expect([c.command, isPlainJunosShow(c.command)]).toEqual([c.command, c.plain]);
   });
 
-  it('skipped checks, with nesting over 32 counted as skipped', () => {
+  it('skipped checks, with nesting over 32 and unreadable JSON text counted as skipped', () => {
     const cases = fixture<{ args: Record<string, unknown>; skipped: boolean }>('skip_cases.json');
     for (const c of cases) {
-      const skipped =
-        aiConfirm(c.args).length + previewSwitchedOff(c.args).length > 0 || argsDepth(c.args) > MAX_DEPTH;
+      const skipped = skippedCheck(c.args) || argsDepth(c.args) > MAX_DEPTH;
       expect([c.args, skipped]).toEqual([c.args, c.skipped]);
     }
   });

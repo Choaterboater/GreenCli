@@ -387,6 +387,29 @@ describe('writes off, read-only login and the Read-only Auditor', () => {
     expect(asked(decide(runTool({ writes: 'on' }), broken)).notes.join('\n')).toContain("tools GreenCLI can't see");
   });
 
+  it('fails closed on JSON text it cannot read, router or not: refused with writes off and for the Auditor, asked otherwise', () => {
+    const helper = (extra: Partial<McpToolInfo> = {}) => tool('helper', { annotations: READ_ONLY, ...extra });
+    let deep = '{"force": true}';
+    for (let i = 1; i < 40; i++) deep = `{"a": ${deep}}`;
+    for (const args of [
+      { calls: '[{"name":"delete_vlan","arguments":{"x":1e400}}]' },
+      { calls: '[{"name":"delete_vlan","arguments":{"x":"\\ud800"}}]' },
+      { request: '{"calls":[{"name":"delete_vlan"}], "x":1e400}' },
+      { options: '{"force": true, "n": 1e400}' },
+      { payload: deep },
+    ]) {
+      expect([args, decide(helper({ writes: 'off' }), args)]).toEqual([args, refused(writesOffText('srv'))]);
+      expect([args, auditor(helper({ writes: 'on' }), args)]).toEqual([args, refused(AUDITOR_REFUSAL)]);
+      const d = asked(decide(helper({ writes: 'on' }), args, true));
+      expect(d.choices).toEqual(['no', 'once']);
+      expect(d.notes).toContain(
+        "A value in the arguments starts like JSON but GreenCLI can't read it, so it can't see what the server will do with it"
+      );
+    }
+    // Text that reads fine still runs.
+    expect(decide(helper({ writes: 'off' }), { filter: '{"site": 1}', ports: '[1, 2]' })).toEqual({ kind: 'run', label: 'read', why: 'read' });
+  });
+
   it('counts force="t" as the AI skipping a check (pydantic reads it as true)', () => {
     expect(decide(tool('list_sessions'), { force: 'true' }, true).kind).toBe('ask');
     expect(decide(tool('list_sessions'), { force: 't' }, true).kind).toBe('ask');

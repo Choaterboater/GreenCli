@@ -23,6 +23,8 @@ import {
   MAX_DEPTH,
   planLabel,
   previewSwitchedOff,
+  skippedCheck,
+  unreadableJsonText,
   type ApprovalPlan,
 } from './mcpApproval';
 import {
@@ -205,7 +207,7 @@ export function decideMcpCall(input: McpGateInput): McpGateDecision {
   // Casper's walk() stops silently past MAX_DEPTH, so a deeper confirm or dry_run switch would go
   // unseen: refuse rather than guess.
   if (argsDepth(args) > MAX_DEPTH) return { kind: 'refuse', text: TOO_DEEP };
-  const skipped = aiConfirm(args).length + previewSwitchedOff(args).length > 0;
+  const skipped = skippedCheck(args);
   const js = tool.preset === JUNOS_PRESET ? junosShow(tool.name, args) : 'n/a';
   const router = plan.router;
 
@@ -221,8 +223,9 @@ export function decideMcpCall(input: McpGateInput): McpGateDecision {
     if (writesOffHides(label, tool.name) || writesOffHides(plan.label, tool.name)) {
       return { kind: 'refuse', text: writesOffText(tool.server) };
     }
-    // A router must not reach a hidden tool by a name GreenCLI can't judge.
-    if (router && (plan.routerUnclear || plan.routed.some((call) => !readNamed(call.name)))) {
+    // A router must not reach a hidden tool by a name GreenCLI can't judge, and no call may carry
+    // JSON text GreenCLI can't read (routerUnclear covers both).
+    if (plan.routerUnclear || (router && plan.routed.some((call) => !readNamed(call.name)))) {
       return { kind: 'refuse', text: writesOffText(tool.server) };
     }
   }
@@ -304,8 +307,13 @@ export function approvalNotes(plan: ApprovalPlan, tool: McpToolInfo, label: Capa
   } else if (routed.length > 0) {
     const unseen = plan.routerUnclear ? ", and tools GreenCLI can't see" : '';
     notes.push(`Runs ${routed.length} tool${routed.length === 1 ? '' : 's'} through ${through}: ${routed.join(', ')}${unseen}`);
-  } else if (plan.routerUnclear) {
+  } else if (plan.routerUnclear && plan.router) {
     notes.push(`Runs a tool GreenCLI can't see, through ${through}`);
+  }
+  if (unreadableJsonText(plan.arguments)) {
+    notes.push(
+      "A value in the arguments starts like JSON but GreenCLI can't read it, so it can't see what the server will do with it"
+    );
   }
 
   const confirms = [...new Set(aiConfirm(plan.arguments).map((path) => showName(lastKey(path))))];

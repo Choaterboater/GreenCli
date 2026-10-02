@@ -1506,7 +1506,7 @@
       "note": "[WARN] fan"
     },
     "routed": [],
-    "unclear": false
+    "unclear": true
   },
   {
     "tool": "get_device",
@@ -1688,6 +1688,70 @@
     "routed": [
       "get_status"
     ],
+    "unclear": true
+  },
+  {
+    "tool": "helper",
+    "schema": {
+      "type": "object"
+    },
+    "args": {
+      "calls": "[{\"name\":\"delete_vlan\",\"arguments\":{\"x\":1e400}}]"
+    },
+    "routed": [],
+    "unclear": true
+  },
+  {
+    "tool": "helper",
+    "schema": {
+      "type": "object"
+    },
+    "args": {
+      "calls": "[{\"name\":\"delete_vlan\",\"arguments\":{\"x\":\"\\ud800\"}}]"
+    },
+    "routed": [],
+    "unclear": true
+  },
+  {
+    "tool": "helper",
+    "args": {
+      "request": "{\"calls\":[{\"name\":\"delete_vlan\"}], \"x\":1e400}"
+    },
+    "routed": [],
+    "unclear": true
+  },
+  {
+    "tool": "helper",
+    "args": {
+      "options": "{\"force\": true, \"n\": 1e400}"
+    },
+    "routed": [],
+    "unclear": true
+  },
+  {
+    "tool": "helper",
+    "args": {
+      "payload": "{\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"force\": true}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}"
+    },
+    "routed": [],
+    "unclear": true
+  },
+  {
+    "tool": "get_device",
+    "args": {
+      "site": {
+        "filter": "[1e400]"
+      }
+    },
+    "routed": [],
+    "unclear": true
+  },
+  {
+    "tool": "get_device",
+    "args": {
+      "note": "[WARN] fan"
+    },
+    "routed": [],
     "unclear": true
   }
 ]

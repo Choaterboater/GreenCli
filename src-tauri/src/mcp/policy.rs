@@ -125,13 +125,15 @@ pub fn call_refusal(
     if !p.writes_on && writes_off_hides(cl, tool_name) {
         return Some(writes_off_reason(server));
     }
-    // 4. A router must not reach a hidden tool by a name GreenCLI can't judge.
+    // 4. A router must not reach a hidden tool by a name GreenCLI can't judge,
+    //    and no call may carry JSON text GreenCLI can't read (router_unclear
+    //    covers both).
     if !p.writes_on
-        && is_router(tool_name, schema, args)
         && (router_unclear(tool_name, schema, args)
-            || routed_calls(tool_name, schema, args)
-                .iter()
-                .any(|(name, _)| !read_named(name)))
+            || (is_router(tool_name, schema, args)
+                && routed_calls(tool_name, schema, args)
+                    .iter()
+                    .any(|(name, _)| !read_named(name))))
     {
         return Some(writes_off_reason(server));
     }
@@ -300,6 +302,44 @@ mod tests {
         }
         let plain = json!([{ "name": "get_status", "arguments": { "force": false } }]).to_string();
         assert_eq!(refuse(&p, &helper, json!({ "calls": plain }), true), None);
+    }
+
+    #[test]
+    fn json_text_it_cannot_read_fails_closed_router_or_not() {
+        let helper = read_tool("helper");
+        let off = def("uvx", &["some-server"], None);
+        let on = def("uvx", &["some-server"], Some(McpWrites::On));
+        let deep = (1..40).fold("{\"force\": true}".to_string(), |text, _| {
+            format!("{{\"a\": {text}}}")
+        });
+        for args in [
+            json!({ "calls": "[{\"name\":\"delete_vlan\",\"arguments\":{\"x\":1e400}}]" }),
+            json!({ "calls": "[{\"name\":\"delete_vlan\",\"arguments\":{\"x\":\"\\ud800\"}}]" }),
+            json!({ "request": "{\"calls\":[{\"name\":\"delete_vlan\"}], \"x\":1e400}" }),
+            json!({ "options": "{\"force\": true, \"n\": 1e400}" }),
+            json!({ "payload": deep }),
+        ] {
+            assert_eq!(
+                refuse(&policy(&off, &[]), &helper, args.clone(), false),
+                Some(writes_off_reason("s")),
+                "{args}"
+            );
+            assert_eq!(
+                refuse(&policy(&on, &[]), &helper, args.clone(), true),
+                Some(AUDITOR_REFUSAL.to_string()),
+                "{args}"
+            );
+            assert_eq!(
+                refuse(&policy(&on, &[]), &helper, args.clone(), false),
+                None
+            );
+        }
+        let fine = json!({ "filter": "{\"site\": 1}", "ports": "[1, 2]" });
+        assert_eq!(
+            refuse(&policy(&off, &[]), &helper, fine.clone(), false),
+            None
+        );
+        assert_eq!(refuse(&policy(&on, &[]), &helper, fine, true), None);
     }
 
     #[test]

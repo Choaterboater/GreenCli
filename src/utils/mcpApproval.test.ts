@@ -8,6 +8,8 @@ import {
   planLabel,
   previewSwitchedOff,
   routedCalls,
+  skippedCheck,
+  unreadableJsonText,
 } from './mcpApproval';
 
 const schema = { type: 'object' as const };
@@ -176,9 +178,32 @@ describe('JSON text in the arguments', () => {
     expect(deep.routerUnclear).toBe(true);
   });
 
-  it('leaves a call that is not a router alone', () => {
+  it('makes any call unclear when a JSON text in it cannot be read, router or not', () => {
     const p = buildPlan({ server: 's', tool: 'get_device', label: 'read', schema: { type: 'object' }, arguments: { filter: '{oops' } });
-    expect([p.router, p.routerUnclear]).toEqual([false, false]);
+    expect([p.router, p.routerUnclear, planLabel(p), needsApproval(p)]).toEqual([false, true, 'external-action', true]);
+    const fine = buildPlan({ server: 's', tool: 'get_device', label: 'read', schema: { type: 'object' }, arguments: { filter: '{"site": 1}' } });
+    expect([fine.routerUnclear, needsApproval(fine)]).toEqual([false, false]);
+  });
+
+  it('reads 1e400, a lone \\ud800 and nesting past MAX_DEPTH as unreadable, and as a skipped check', () => {
+    const deepForce = (n: number) => {
+      let text = '{"force": true}';
+      for (let i = 1; i < n; i++) text = `{"a": ${text}}`;
+      return text;
+    };
+    for (const args of [
+      { calls: '[{"name":"delete_vlan","arguments":{"x":1e400}}]' },
+      { calls: '[{"name":"delete_vlan","arguments":{"x":"\\ud800"}}]' },
+      { request: '{"calls":[{"name":"delete_vlan"}], "x":1e400}' },
+      { options: '{"force": true, "n": 1e400}' },
+      { payload: deepForce(40) },
+      { a: { b: ['[1e400]'] } },
+    ]) {
+      const p = buildPlan({ server: 's', tool: 'helper', label: 'read', schema: { type: 'object' }, arguments: args });
+      expect([args, unreadableJsonText(args), skippedCheck(args), p.routerUnclear, needsApproval(p)]).toEqual([args, true, true, true, true]);
+    }
+    expect(skippedCheck({ payload: deepForce(20) })).toBe(true);
+    expect(skippedCheck({ payload: deepForce(20).replace('true', 'false'), ports: '[1, 2]' })).toBe(false);
   });
 });
 

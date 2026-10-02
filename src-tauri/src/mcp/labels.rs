@@ -22,8 +22,9 @@
 //   and the strictest wins.
 // - Every string that starts with { or [ and parses as JSON is searched as
 //   if the JSON were there in place (FastMCP json.loads's any non-str
-//   parameter sent as a string). One that doesn't parse makes a router call
-//   unclear.
+//   parameter sent as a string). One that doesn't parse (or whose JSON
+//   nests past MAX_DEPTH) makes any call unclear, router or not, and counts
+//   as the AI skipping a check.
 // - Two arguments keys in one call ({args: {}, params: {...}}) make it
 //   unclear: the server may read either.
 // - Every key that may hold the routed tool's name counts, in any spelling.
@@ -593,8 +594,7 @@ fn schema_has_router(schema: &Value) -> bool {
 }
 
 /// What a search of a call's arguments found: router shapes, and every value
-/// that holds one call. Same as TS CallSearch (whose unreadable flag comes
-/// from read_json_text here).
+/// that holds one call. Same as TS CallSearch.
 struct CallSearch<'a> {
     shaped: bool,
     sites: Vec<&'a Value>,
@@ -657,6 +657,16 @@ fn read_json_text(args: &Value) -> (Value, bool) {
     let mut unreadable = false;
     let value = read(args, 1, false, &mut unreadable);
     (value, unreadable)
+}
+
+/// A string anywhere in the arguments starts like JSON ({ or [) but
+/// serde_json can't read it (1e400, a lone \ud800, a syntax error), or its
+/// JSON nests past MAX_DEPTH. GreenCLI can't see what the server reads there
+/// (FastMCP json.loads takes 1e400 and \ud800), so the call is unclear
+/// whether or not the tool is a router (router_unclear), and it counts as
+/// the AI skipping a check (skipped_check). Same as TS unreadableJsonText.
+pub fn unreadable_json_text(args: &Value) -> bool {
+    read_json_text(args).1
 }
 
 /// Every place in a call's arguments that holds one routed call, down to
@@ -831,21 +841,21 @@ pub fn routed_calls(tool: &str, schema: &Value, args: &Value) -> Vec<(String, Va
         .collect()
 }
 
-/// The tool looks like a router, but GreenCLI can't tell every tool it runs:
-/// it runs no tool GreenCLI can name; a place that holds a call names no
-/// tool or two different ones, or sets two arguments keys; a tool it runs is
-/// itself a router; or a string in the arguments starts with { or [ but
-/// GreenCLI can't read it as JSON (fails closed: the server may read it some
-/// other way). Same as TS routerUnclear.
+/// GreenCLI can't tell what the call runs: any call (router or not) with
+/// JSON text it can't read (unreadable_json_text); or a router that runs no
+/// tool GreenCLI can name, where a place that holds a call names no tool or
+/// two different ones, or sets two arguments keys, or where a tool it runs
+/// is itself a router. Same as TS buildPlan's routerUnclear.
 pub fn router_unclear(tool: &str, schema: &Value, args: &Value) -> bool {
+    if unreadable_json_text(args) {
+        return true;
+    }
     if !is_router(tool, schema, args) {
         return false;
     }
     let routed = routed_calls(tool, schema, args);
-    let (read, unreadable) = read_json_text(args);
     routed.is_empty()
-        || unreadable
-        || search_calls(&read, schema)
+        || search_calls(&read_json_text(args).0, schema)
             .sites
             .into_iter()
             .any(|site| inner_call(site).is_none())
@@ -944,8 +954,10 @@ fn unclear_switch(value: &Value) -> bool {
 }
 
 fn walk_skipped(value: &Value, depth: usize) -> bool {
+    // Fails closed: deeper than the walk looks counts as skipped. (too_deep
+    // and unreadable_json_text already catch every such value.)
     if depth > MAX_DEPTH {
-        return false;
+        return true;
     }
     match value {
         Value::Array(items) => items.iter().any(|v| walk_skipped(v, depth + 1)),
@@ -963,9 +975,10 @@ fn walk_skipped(value: &Value, depth: usize) -> bool {
 /// the arguments. JSON text is read in place first, with the same helper and
 /// depth limit as the router search (read_json_text), so {calls: '[{"name":
 /// "x", "arguments": {"force": true}}]'} counts. Nesting deeper than
-/// MAX_DEPTH also returns true.
+/// MAX_DEPTH, and JSON text GreenCLI can't read (unreadable_json_text: a
+/// force could hide in it), also return true.
 pub fn skipped_check(args: &Value) -> bool {
-    too_deep(args) || walk_skipped(&read_json_text(args).0, 0)
+    too_deep(args) || unreadable_json_text(args) || walk_skipped(&read_json_text(args).0, 0)
 }
 
 #[cfg(test)]
@@ -1343,10 +1356,16 @@ mod tests {
         // Text that starts like JSON but doesn't parse.
         let broken = json!({ "request": get, "batch": "[{\"name\": \"delete_vlan\", " });
         assert!(router_unclear("helper", &Value::Null, &broken));
-        assert!(!router_unclear(
+        // Any call, router or not.
+        assert!(router_unclear(
             "get_device",
             &Value::Null,
             &json!({ "filter": "{oops" })
+        ));
+        assert!(!router_unclear(
+            "get_device",
+            &Value::Null,
+            &json!({ "filter": "{\"site\": 1}" })
         ));
         assert!(looks_like_json(" \n\t{"));
         assert!(!looks_like_json("see [1]"));
