@@ -291,6 +291,27 @@ export function vendorSteps(deviceType: DeviceType): VendorSteps {
 
 const JOB_COMMENT = 'GreenCLI change job';
 
+/**
+ * The Config Editor's tab (or selected lines) as a Change Job block. Lines the
+ * job adds itself are taken out (a Junos `commit …`, an AOS-CX `checkpoint
+ * auto …`), so a tab made ready for a plain Send, say with the "commit
+ * confirmed 5" quick fix, still plans. Everything else stays for the dry run
+ * to judge.
+ */
+export function jobBlockFromEditor(text: string, deviceType: DeviceType): { block: string; removed: string[] } {
+  const vendor = vendorSteps(deviceType);
+  const removed: string[] = [];
+  const kept = text.split('\n').filter((raw) => {
+    const line = raw.trim();
+    const drop =
+      (vendor.wrapper === 'commit-confirmed' && /^commit\b/i.test(line)) ||
+      (deviceType === 'aruba-cx' && /^checkpoint\s+auto\b/i.test(line));
+    if (drop) removed.push(line);
+    return !drop;
+  });
+  return { block: kept.join('\n').replace(/\n+$/, '\n'), removed };
+}
+
 // ─── Plans ───
 
 export interface JobOptions {

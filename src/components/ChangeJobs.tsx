@@ -611,6 +611,30 @@ export default function ChangeJobs({ onConnect }: ChangeJobsProps) {
     return () => window.removeEventListener('keydown', onKey);
   }, [showChangeJobs, setShowChangeJobs]);
 
+  // "Send safely" from the Config Editor: its block and device, ready for a
+  // dry run. A running job is never replaced.
+  const changeJobDraft = useSessionStore((s) => s.changeJobDraft);
+  useEffect(() => {
+    if (!showChangeJobs || !changeJobDraft) return;
+    useSessionStore.getState().clearChangeJobDraft();
+    if (running) {
+      notify.info('A change job is running', 'Let it finish, then use Send safely again.');
+      return;
+    }
+    setBlock(changeJobDraft.block);
+    setPick({ folders: [], tags: [], hosts: [], sessions: [changeJobDraft.sessionId] });
+    setExcluded(new Set());
+    setDry(null);
+    setSummary(null);
+    setStep('compose');
+    if (changeJobDraft.removed.length) {
+      notify.info(
+        'Left out lines the job adds itself',
+        `${changeJobDraft.removed.join(', ')}. The job arms the rollback timer and commits for you.`
+      );
+    }
+  }, [showChangeJobs, changeJobDraft, running]);
+
   // A canary pause nobody can see (window closed): a sticky toast leads back
   // to it; reopening the window clears it.
   useEffect(() => {

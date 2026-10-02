@@ -4,6 +4,7 @@ vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn() }));
 vi.mock('@tauri-apps/api/tauri', () => ({ invoke: vi.fn() }));
 
 import {
+  jobBlockFromEditor,
   parseCsv,
   toCsv,
   parseVariableTable,
@@ -644,5 +645,34 @@ describe('formatClock', () => {
     expect(formatClock(65_000)).toBe('1:05');
     expect(formatClock(3_725_000)).toBe('1:02:05');
     expect(formatClock(-5)).toBe('0:00');
+  });
+});
+
+describe('jobBlockFromEditor', () => {
+  it('takes out the Junos commit lines the job adds itself', () => {
+    const text = 'set vlans users vlan-id 20\ncommit confirmed 5\n';
+    expect(jobBlockFromEditor(text, 'juniper-junos')).toEqual({ block: 'set vlans users vlan-id 20\n', removed: ['commit confirmed 5'] });
+    expect(jobBlockFromEditor('set system ntp server 10.1.1.1\n  commit and-quit', 'mist').removed).toEqual(['commit and-quit']);
+  });
+
+  it('takes out an AOS-CX checkpoint auto line, but not other vendors\' lines', () => {
+    expect(jobBlockFromEditor('checkpoint auto 5\nvlan 20\n    name users', 'aruba-cx')).toEqual({
+      block: 'vlan 20\n    name users',
+      removed: ['checkpoint auto 5'],
+    });
+    expect(jobBlockFromEditor('vlan 20\ncommit', 'aruba-aos-s')).toEqual({ block: 'vlan 20\ncommit', removed: [] });
+  });
+
+  it('gives a block that plans without errors', () => {
+    const { block } = jobBlockFromEditor('set vlans users vlan-id 20\ncommit confirmed 5', 'juniper-junos');
+    const plan = buildDevicePlan({
+      block,
+      preChecks: '',
+      postChecks: '',
+      device: { name: 'ex1', deviceType: 'juniper-junos' },
+      table: null,
+      options: DEFAULT_JOB_OPTIONS,
+    });
+    expect(plan.errors).toEqual([]);
   });
 });
