@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-10-02
+
 ### Added
 - **Casper tab**: Quick Connect → Local → **Casper** starts Casper in a terminal tab, in the
   **Start folder** you pick (your project). The folder is the tab's working directory, never a
