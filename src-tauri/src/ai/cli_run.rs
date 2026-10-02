@@ -5,8 +5,9 @@
 // std only, no Tauri, so it moves to Tauri 2 unchanged.
 //
 // - The CLI gets its own process group (unix) so Stop reaches what it started
-//   in that group; on Windows it starts without a console window and Stop
-//   ends its process tree with taskkill.
+//   in that group, and so does a normal exit: whatever it left running in its
+//   group is stopped too. On Windows it starts without a console window and
+//   Stop ends its process tree with taskkill.
 // - The prompt is written from its own task: a CLI that never reads stdin
 //   can't hold up Stop or the timeout.
 // - stdout and stderr are drained on their own tasks, keeping the last 1 MiB
@@ -102,6 +103,19 @@ async fn drain_tail<R: tokio::io::AsyncRead + Unpin>(mut r: R, buf: Arc<Mutex<Ve
     }
 }
 
+/// Wait up to `grace` for the output tasks to reach the end of their pipes.
+/// A finished task is not awaited again (a JoinHandle can't be polled twice).
+async fn wait_drains(drains: &mut [tokio::task::JoinHandle<()>], grace: Duration) {
+    let _ = tokio::time::timeout(grace, async {
+        for task in drains.iter_mut() {
+            if !task.is_finished() {
+                let _ = task.await;
+            }
+        }
+    })
+    .await;
+}
+
 fn take(buf: &Arc<Mutex<Vec<u8>>>) -> Vec<u8> {
     buf.lock()
         .map(|mut b| std::mem::take(&mut *b))
@@ -163,6 +177,9 @@ pub async fn run_cli_process(
         .kill_on_drop(true)
         .spawn()?;
     let _registered = child.id().map(Registered::new);
+    // The process group id, saved now: id() is None once the leader is reaped.
+    #[cfg(unix)]
+    let pgid = child.id();
 
     let stdin_task = child.stdin.take().map(|mut pipe| {
         tokio::spawn(async move {
@@ -211,12 +228,16 @@ pub async fn run_cli_process(
         task.abort();
     }
     if matches!(waited, Ok(RunEnd::Exited(_))) {
-        let _ = tokio::time::timeout(DRAIN_GRACE, async {
-            for task in drains.iter_mut() {
-                let _ = task.await;
-            }
-        })
-        .await;
+        // The CLI is done. Anything it left in its group would run on unseen
+        // (and hold the pipes open), so stop it like a Stop would. While any
+        // member is alive the group id can't be reused.
+        #[cfg(unix)]
+        if let Some(pgid) = pgid {
+            signal_group("TERM", pgid).await;
+            wait_drains(&mut drains, TERM_GRACE).await;
+            signal_group("KILL", pgid).await;
+        }
+        wait_drains(&mut drains, DRAIN_GRACE).await;
     }
     for task in &drains {
         task.abort();
@@ -228,14 +249,51 @@ pub async fn run_cli_process(
     })
 }
 
-/// `/usr/bin/pkill -<SIGNAL> -g <pgid>`: signal every process in a group.
+/// Folders searched for pkill and kill: never PATH, which the user's shell
+/// setup controls. /run/current-system/sw/bin is NixOS.
 #[cfg_attr(not(unix), allow(dead_code))]
-const PKILL: &str = "/usr/bin/pkill";
+const SIGNAL_DIRS: &[&str] = &[
+    "/usr/bin",
+    "/bin",
+    "/run/current-system/sw/bin",
+    "/usr/local/bin",
+];
 
-/// pkill's arguments to send `signal` ("TERM", "KILL") to process group `pgid`.
+/// The program that signals a process group: pkill (`pkill -<SIGNAL> -g
+/// <pgid>`), or kill (`kill -s <SIGNAL> -- -<pgid>`) where pkill is missing.
+/// Looked up once.
+#[cfg(unix)]
+fn group_signaller() -> Option<&'static (PathBuf, bool)> {
+    static FOUND: OnceLock<Option<(PathBuf, bool)>> = OnceLock::new();
+    FOUND
+        .get_or_init(|| {
+            let find = |name: &str| {
+                SIGNAL_DIRS
+                    .iter()
+                    .map(|dir| Path::new(dir).join(name))
+                    .find(|p| p.is_file())
+            };
+            find("pkill")
+                .map(|p| (p, true))
+                .or_else(|| find("kill").map(|p| (p, false)))
+        })
+        .as_ref()
+}
+
+/// The arguments to send `signal` ("TERM", "KILL") to process group `pgid`,
+/// for pkill or for kill.
 #[cfg_attr(not(unix), allow(dead_code))]
-fn group_signal_argv(signal: &str, pgid: u32) -> [String; 3] {
-    [format!("-{signal}"), "-g".to_string(), pgid.to_string()]
+fn group_signal_argv(signal: &str, pgid: u32, pkill: bool) -> Vec<String> {
+    if pkill {
+        vec![format!("-{signal}"), "-g".to_string(), pgid.to_string()]
+    } else {
+        vec![
+            "-s".to_string(),
+            signal.to_string(),
+            "--".to_string(),
+            format!("-{pgid}"),
+        ]
+    }
 }
 
 /// taskkill's arguments to end process `pid` and its children, forcefully.
@@ -261,8 +319,11 @@ fn taskkill_path(system_root: Option<&OsStr>) -> PathBuf {
 
 #[cfg(unix)]
 async fn signal_group(signal: &str, pgid: u32) {
-    let run = tokio::process::Command::new(PKILL)
-        .args(group_signal_argv(signal, pgid))
+    let Some((program, pkill)) = group_signaller() else {
+        return;
+    };
+    let run = tokio::process::Command::new(program)
+        .args(group_signal_argv(signal, pgid, *pkill))
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -329,8 +390,11 @@ pub fn stop_all_cli_runs() {
     #[cfg(unix)]
     {
         let signal = |signal: &str, pgid: u32| {
-            let _ = std::process::Command::new(PKILL)
-                .args(group_signal_argv(signal, pgid))
+            let Some((program, pkill)) = group_signaller() else {
+                return;
+            };
+            let _ = std::process::Command::new(program)
+                .args(group_signal_argv(signal, pgid, *pkill))
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
@@ -367,10 +431,21 @@ mod tests {
     #[test]
     fn group_signal_argv_shape() {
         assert_eq!(
-            group_signal_argv("TERM", 4242),
-            ["-TERM".to_string(), "-g".to_string(), "4242".to_string()]
+            group_signal_argv("TERM", 4242, true),
+            ["-TERM", "-g", "4242"].map(String::from)
         );
-        assert_eq!(group_signal_argv("KILL", 7)[0], "-KILL");
+        assert_eq!(group_signal_argv("KILL", 7, true)[0], "-KILL");
+        assert_eq!(
+            group_signal_argv("KILL", 7, false),
+            ["-s", "KILL", "--", "-7"].map(String::from)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_group_signaller_is_found() {
+        let (program, _) = group_signaller().expect("pkill or kill");
+        assert!(program.is_absolute());
     }
 
     #[test]
@@ -519,6 +594,41 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
             assert!(gone, "grandchild {pid} still running");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        #[tokio::test]
+        async fn normal_exit_stops_what_it_left_running() {
+            let dir = temp_dir();
+            let pidfile = dir.join("pid");
+            // The helper keeps stdout open, as a left-behind server would.
+            let script = format!("sleep 60 & echo $! > '{}'; echo done", pidfile.display());
+            let started = Instant::now();
+            let run = run_cli_process(
+                &sh(&script),
+                Vec::new(),
+                opts(Duration::from_secs(60), None),
+            )
+            .await
+            .unwrap();
+            assert_eq!(run.end, RunEnd::Exited(Some(0)));
+            assert!(String::from_utf8_lossy(&run.stdout).contains("done"));
+            assert!(
+                started.elapsed() < Duration::from_secs(4),
+                "{:?}",
+                started.elapsed()
+            );
+            let pid = std::fs::read_to_string(&pidfile).unwrap();
+            let pid = pid.trim();
+            let mut gone = false;
+            for _ in 0..30 {
+                if pid_gone(pid) {
+                    gone = true;
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            assert!(gone, "the helper {pid} is still running");
             let _ = std::fs::remove_dir_all(&dir);
         }
 
