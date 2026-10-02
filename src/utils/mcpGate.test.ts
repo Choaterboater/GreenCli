@@ -147,12 +147,12 @@ describe('decideMcpCall', () => {
     expect(d.notes).toContain('load_and_commit_config commits right away. No preview and no auto-rollback');
   });
 
-  it('runs a tool the server marks diagnostic', () => {
-    expect(decide(tool('probe_link', { _meta: { 'casper/safety': 'diagnostic' } }))).toEqual({
-      kind: 'run',
-      label: 'diagnostic',
-      why: 'read',
-    });
+  it('asks about a tool the server marks diagnostic, as Casper does', () => {
+    const d = asked(decide(tool('probe_link', { _meta: { 'casper/safety': 'diagnostic' } }), {}, true));
+    expect(d.label).toBe('diagnostic');
+    expect(d.choices).toEqual(['no', 'once']);
+    expect(d.danger).toBe(false);
+    expect(d.notes[0]).toBe("The server says this tool runs a check, but doesn't say it only reads");
   });
 
   it('lets the Rust label only raise a tool', () => {
@@ -287,9 +287,11 @@ describe('writes off, read-only login and the Read-only Auditor', () => {
     expect(auditor(junos('execute_junos_command', true), { command: 'show version' }).kind).toBe('run');
     expect(auditor(junos('execute_junos_command'), { command: 'configure' })).toEqual(refused(AUDITOR_REFUSAL));
     expect(auditor(junos('execute_junos_pfe_command'), { command: 'show version' })).toEqual(refused(AUDITOR_REFUSAL));
+    // A diagnostic check is not refused, but it asks.
+    expect(auditor(tool('ap_ping', { _meta: { 'casper/safety': 'diagnostic' } })).kind).toBe('ask');
   });
 
-  it('shows the Auditor only tools the server marks read-only, and Junos show tools', () => {
+  it('shows the Auditor only tools the server marks read-only or diagnostic, and Junos show tools', () => {
     expect(visibleToReadOnlyAgent(tool('get_device', { annotations: READ_ONLY }))).toBe(true);
     expect(visibleToReadOnlyAgent(tool('ap_ping', { _meta: { 'casper/safety': 'diagnostic' } }))).toBe(true);
     expect(visibleToReadOnlyAgent(tool('get_device'))).toBe(false);

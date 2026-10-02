@@ -135,7 +135,8 @@ export interface AiAgent {
   /** Accent colour for the sidebar chip. */
   color: string;
   /** Read-only: GreenCLI refuses every AI tool call that could change a device, and the AI
-   *  only sees MCP tools the server marks as read-only (see isReadOnlyAgent in utils/aiGating.ts). */
+   *  only sees MCP tools the server marks as read-only or diagnostic, plus the Junos show tools
+   *  (see isReadOnlyAgent in utils/aiGating.ts and visibleToReadOnlyAgent in utils/mcpGate.ts). */
   readOnly?: boolean;
 }
 

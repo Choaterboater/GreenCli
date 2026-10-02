@@ -5,10 +5,12 @@
 // What it promises:
 // - With a server's writes off, or on a read-only login, a call that would
 //   change something is refused before any dialog (the Rust backend refuses
-//   it again). The Read-only Auditor refuses everything that is not a read.
-// - A call that might write, run commands or delete always asks, and so does
-//   any router call (invoke_tool and friends) and any call where the AI set
-//   confirm=true or turned off a preview switch.
+//   it again). The Read-only Auditor refuses everything above diagnostic
+//   (a check such as ping), except Junos plain show commands.
+// - Only a read runs without asking (Casper's needsApproval): a diagnostic
+//   tool, a call that might write, run commands or delete, any router call
+//   (invoke_tool and friends) and any call where the AI set confirm=true or
+//   turned off a preview switch all ask.
 // - Only a tool whose name clearly reads, and that the server just doesn't
 //   mark read-only, can be allowed for the session.
 // - Labels only get stricter: the server's hints, the name, the preset and
@@ -41,8 +43,8 @@ import type { McpToolInfo } from './mcpTypes';
 
 export type McpAnswer = 'no' | 'once' | 'session';
 
-/** Calls at or above this label ask the user. */
-export const ASK_AT: CapabilitySafety = 'external-action';
+/** Calls at or above this label ask the user. Everything but a read asks, as in Casper. */
+export const ASK_AT: CapabilitySafety = 'diagnostic';
 
 export const TOO_DEEP = 'Not run: the arguments are nested too deeply to check (over 32 levels).';
 
@@ -175,7 +177,8 @@ export function decideMcpCall(input: McpGateInput): McpGateDecision {
       return { kind: 'refuse', text: writesOffText(tool.server) };
     }
   }
-  // 8. The Read-only Auditor: reads only, plus Junos plain shows (which still ask without the opt-in).
+  // 8. The Read-only Auditor: reads and diagnostic checks only (a check still asks), plus Junos plain
+  //    shows (which still ask without the opt-in).
   const junosShowOk = js === 'all-show' && tool.name !== 'execute_junos_pfe_command';
   if (input.readOnlyAgent && (skipped || (rank(label) > rank('diagnostic') && !junosShowOk))) {
     return { kind: 'refuse', text: AUDITOR_REFUSAL };
@@ -213,8 +216,8 @@ export function decideMcpCall(input: McpGateInput): McpGateDecision {
   };
 }
 
-/** The Read-only Auditor only sees tools that read (by the server's own marks), and the Junos
- *  command tools, which it may use for plain show commands. */
+/** The Read-only Auditor only sees tools the server marks read-only or diagnostic (a check such as
+ *  ping, which still asks), and the Junos command tools, which it may use for plain show commands. */
 export function visibleToReadOnlyAgent(tool: McpToolInfo): boolean {
   if (rank(effectiveLabel(tool)) <= rank('diagnostic')) return true;
   return tool.preset === JUNOS_PRESET && JUNOS_SHOW_TOOLS.has(tool.name);
@@ -232,6 +235,7 @@ function lastKey(path: string): string {
 }
 
 const LABEL_NOTES: Partial<Record<CapabilitySafety, string>> = {
+  diagnostic: "The server says this tool runs a check, but doesn't say it only reads",
   'external-action': "The server doesn't say this tool only reads, so it might change something",
   write: 'This tool can change settings',
   exec: 'This tool runs commands',

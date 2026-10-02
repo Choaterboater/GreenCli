@@ -49,6 +49,7 @@ import { ChatMessage, Session, AiProvider, AI_PROVIDERS } from '../types';
 import { sleep, stripAnsi, sendAndCapture } from '../utils/terminal';
 import {
   aiIsWriteCommand,
+  auditorAllowsCommand,
   AI_DANGER_CMD,
   AUDITOR_REFUSAL,
   CONTROL_CHARS,
@@ -525,8 +526,9 @@ async function executeToolRaw(
     }
     // Every line break as \n, so the confirm dialog shows each line the device runs.
     const command = normalizeLineBreaks(raw);
-    // The Read-only Auditor never changes a device: refuse before any dialog.
-    if (readOnlyAgent && aiIsWriteCommand(command)) return rawErr(AUDITOR_REFUSAL);
+    // The Read-only Auditor never changes a device: anything but a plain read (no file-writing
+    // pipes or redirects) is refused before any dialog.
+    if (readOnlyAgent && !auditorAllowsCommand(command)) return rawErr(AUDITOR_REFUSAL);
     if (!activeSession) {
       return rawErr('Error: No active terminal session. Please connect to a device first.');
     }
@@ -1641,7 +1643,7 @@ export default function AiAssistant() {
             style={{ color: activeAgent.color, background: `${activeAgent.color}1f` }}
             title={
               isReadOnlyAgent(activeAgent)
-                ? `AI agent "${activeAgent.name}" is active for this session. It can't change devices, and it only uses MCP tools the server marks as read-only. Click to manage.`
+                ? `AI agent "${activeAgent.name}" is active for this session. It can't change devices. It only uses MCP tools the server marks as read-only or as checks (checks ask first), plus Junos show commands. Click to manage.`
                 : `AI agent "${activeAgent.name}" is active for this session — click to manage`
             }
           >

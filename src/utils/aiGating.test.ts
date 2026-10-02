@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { AUDITOR_REFUSAL, aiIsWriteCommand, CONTROL_CHARS, isReadOnlyAgent, normalizeLineBreaks } from './aiGating';
+import {
+  AUDITOR_REFUSAL,
+  aiIsWriteCommand,
+  auditorAllowsCommand,
+  CONTROL_CHARS,
+  isReadOnlyAgent,
+  normalizeLineBreaks,
+} from './aiGating';
 import { BUILTIN_AGENTS } from '../types';
 
 describe('aiIsWriteCommand', () => {
@@ -52,6 +59,59 @@ describe('aiIsWriteCommand', () => {
     expect(aiIsWriteCommand('show vlan\x1a')).toBe(true);
     expect(aiIsWriteCommand('sh\tconf')).toBe(true);
     expect(aiIsWriteCommand('show \x1b[A')).toBe(true);
+  });
+});
+
+describe('file-writing pipes and redirects', () => {
+  it('asks before a read that writes a file', () => {
+    expect(aiIsWriteCommand('show configuration | save /var/tmp/c.txt')).toBe(true);
+    expect(aiIsWriteCommand('show log messages | save /var/log/messages')).toBe(true);
+    expect(aiIsWriteCommand('show log messages | s /var/log/messages')).toBe(true);
+    expect(aiIsWriteCommand('show configuration | append /var/tmp/c.txt')).toBe(true);
+    expect(aiIsWriteCommand('show configuration | tee /var/tmp/c.txt')).toBe(true);
+    expect(aiIsWriteCommand('show running-config | redirect flash:x')).toBe(true);
+    expect(aiIsWriteCommand('echo x > /etc/motd')).toBe(true);
+    expect(aiIsWriteCommand('cat a >> b')).toBe(true);
+  });
+
+  it('still passes safe pipes', () => {
+    expect(aiIsWriteCommand('show interfaces terse | match ge-')).toBe(false);
+    expect(aiIsWriteCommand('show configuration | display set | no-more')).toBe(false);
+    expect(aiIsWriteCommand('show running-config | include hostname')).toBe(false);
+    expect(aiIsWriteCommand('show version | trim 5')).toBe(false);
+  });
+});
+
+describe('auditorAllowsCommand', () => {
+  it('allows plain reads and safe pipes', () => {
+    expect(auditorAllowsCommand('show version')).toBe(true);
+    expect(auditorAllowsCommand('show configuration | display set | no-more')).toBe(true);
+    expect(auditorAllowsCommand('show interfaces terse | match ge- | count')).toBe(true);
+    expect(auditorAllowsCommand('show running-config | include hostname')).toBe(true);
+    expect(auditorAllowsCommand('sh run | inc vlan')).toBe(true);
+    expect(auditorAllowsCommand('cat /var/log/messages | grep error | tail -n 20')).toBe(true);
+    expect(auditorAllowsCommand('ping 10.0.0.1')).toBe(true);
+    expect(auditorAllowsCommand('show version\nshow vlan')).toBe(true);
+  });
+
+  it('refuses writes, file-writing pipes and shell tricks', () => {
+    expect(auditorAllowsCommand('configure')).toBe(false);
+    expect(auditorAllowsCommand('show configuration | save /var/tmp/c.txt')).toBe(false);
+    expect(auditorAllowsCommand('show log messages | save /var/log/messages')).toBe(false);
+    expect(auditorAllowsCommand('show log messages | s /var/log/messages')).toBe(false);
+    expect(auditorAllowsCommand('show configuration | compare rollback 1')).toBe(false);
+    expect(auditorAllowsCommand('show version | request message all message hi')).toBe(false);
+    expect(auditorAllowsCommand('cat a | sort -o b')).toBe(false);
+    expect(auditorAllowsCommand('show version || reboot')).toBe(false);
+    expect(auditorAllowsCommand('echo x > file')).toBe(false);
+    expect(auditorAllowsCommand('cat a; rm b')).toBe(false);
+    expect(auditorAllowsCommand('show version & reboot')).toBe(false);
+    expect(auditorAllowsCommand('echo `reboot`')).toBe(false);
+    expect(auditorAllowsCommand('echo $(reboot)')).toBe(false);
+    expect(auditorAllowsCommand('cat <(reboot)')).toBe(false);
+    expect(auditorAllowsCommand('set system host-name x')).toBe(false);
+    expect(auditorAllowsCommand('show version\nrequest system reboot')).toBe(false);
+    expect(auditorAllowsCommand('show version\x1a')).toBe(false);
   });
 });
 
