@@ -5,8 +5,10 @@
 //
 // Hiding follows Casper's isHidden (casper src/mcp/presets.ts:484-489 @ ad678b6):
 // a read-only login hides everything above diagnostic; writes off hides write
-// and destructive tools and the preset's own list. Tools that run commands
-// (exec) stay visible with writes off; the AI panel asks before every one.
+// and destructive tools and the preset's own list. Tools that only run
+// commands (exec) stay visible with writes off; the AI panel asks before every
+// one. A command tool whose name also makes a change (push_cli_config) is
+// hidden like a write.
 // Refusals mirror the TS gate (src/utils/mcpGate.ts steps 3 and 6-8), so a
 // call the panel would refuse is refused here too.
 
@@ -284,6 +286,15 @@ mod tests {
         // Exec asks every time; writes off doesn't hide it.
         assert_eq!(final_label(&p, &tool("execute_command")), SafetyLabel::Exec);
         assert_eq!(hidden(&p, &tool("execute_command")), None);
+        // A command tool whose name also makes a change is hidden and refused.
+        for name in ["push_cli_config", "apply_config_command"] {
+            assert_eq!(final_label(&p, &tool(name)), SafetyLabel::Exec);
+            assert_eq!(hidden(&p, &tool(name)), Some(writes_off_reason("s")));
+            assert_eq!(
+                refuse(&p, &read_tool(name), json!({}), false),
+                Some(writes_off_reason("s"))
+            );
+        }
     }
 
     #[test]

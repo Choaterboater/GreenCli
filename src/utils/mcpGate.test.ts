@@ -339,6 +339,14 @@ describe('writes off, read-only login and the Read-only Auditor', () => {
     expect(decide(tool('set_ssid', { writes: 'on' })).kind).toBe('ask');
   });
 
+  it('refuses a command tool whose name also makes a change', () => {
+    for (const name of ['push_cli_config', 'apply_config_command']) {
+      expect(decide(off(name))).toEqual(refused(writesOffText('srv')));
+      expect(decide(off(name, { annotations: READ_ONLY }))).toEqual(refused(writesOffText('srv')));
+      expect(asked(decide(tool(name, { writes: 'on' }))).label).toBe('exec');
+    }
+  });
+
   it('allows only plain show commands on Junos', () => {
     const junosOff = (name: string) => off(name, { preset: 'junos-mcp-server' });
     expect(decide(junosOff('execute_junos_command'), { command: 'configure' })).toEqual(refused(JUNOS_WRITES_OFF_TEXT));

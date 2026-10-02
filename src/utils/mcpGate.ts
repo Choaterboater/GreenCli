@@ -72,21 +72,31 @@ export function effectiveLabel(tool: McpToolInfo): CapabilitySafety {
   return strictest(own, presetTighten(tool.preset, tool.name, own), tool.label ?? 'read');
 }
 
-/**
- * A change, run or delete word anywhere in the name. Skipped, as in Casper's wordLabel: the
- * NOUN_USES words for that exact name, and a change word just before a read noun ending
- * (get_write_status reads the write status). Casper's labels skip every change word after a
- * read word (get_and_apply_config reads as `read`); GreenCLI doesn't when deciding what writes off
- * hides and what can be allowed for the session.
- */
-export function namesAChange(name: string): boolean {
+/** True when a word in the name is in one of the given lists. Skipped, as in Casper's wordLabel:
+ *  the NOUN_USES words for that exact name, and a change word just before a read noun ending
+ *  (get_write_status reads the write status). */
+function hasActionWord(name: string, lists: ReadonlyArray<ReadonlySet<string>>): boolean {
   const skipped = new Set(NOUN_USES.get(name) ?? []);
   const words = toolWords(name).filter((word) => !skipped.has(word));
   const describing = words.length >= 3 && READ_NOUN_ENDINGS.has(words.at(-1)!) ? words.length - 2 : -1;
   return words.some(
     (word, index) =>
-      DESTRUCTIVE_WORDS.has(word) || EXEC_WORDS.has(word) || (index !== describing && WRITE_WORDS.has(word))
+      DESTRUCTIVE_WORDS.has(word) || lists.some((list) => list.has(word) && (list !== WRITE_WORDS || index !== describing))
   );
+}
+
+/**
+ * A change, run or delete word anywhere in the name (see hasActionWord for the words skipped).
+ * Casper's labels skip every change word after a read word (get_and_apply_config reads as `read`);
+ * GreenCLI doesn't when deciding what writes off hides and what can be allowed for the session.
+ */
+export function namesAChange(name: string): boolean {
+  return hasActionWord(name, [EXEC_WORDS, WRITE_WORDS]);
+}
+
+/** A change or delete word anywhere in the name; a run word alone (execute_command) doesn't count. */
+export function namesAWrite(name: string): boolean {
+  return hasActionWord(name, [WRITE_WORDS]);
 }
 
 /**
@@ -107,9 +117,17 @@ export function readNamed(name: string): boolean {
 }
 
 /** With writes off, an unmarked tool whose name has a change word is treated as a write: hidden
- *  and refused (the Rust policy hides it too). A tool the server marks read-only keeps its label. */
+ *  and refused (the Rust policy hides it too). So is a tool that runs commands and whose name also
+ *  has a change or delete word (push_cli_config, apply_config_command): exec ranks above write, so
+ *  its label alone would let it through. A tool that only runs commands (execute_command) stays,
+ *  and asks every time. A tool the server marks read-only keeps its label. */
 export function writesOffHides(label: CapabilitySafety, name: string): boolean {
-  return label === 'write' || label === 'destructive' || (label === 'external-action' && namesAChange(name));
+  return (
+    label === 'write' ||
+    label === 'destructive' ||
+    (label === 'external-action' && namesAChange(name)) ||
+    (label === 'exec' && namesAWrite(name))
+  );
 }
 
 /** planLabel(plan), raised to at least 'external-action' for each routed call whose name is not readNamed. */

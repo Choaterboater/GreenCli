@@ -312,10 +312,10 @@ pub fn tool_label(name: &str, annotations: Option<&Value>, meta: Option<&Value>)
     label
 }
 
-/// A change, run or delete word anywhere in the name, apart from the
-/// NOUN_USES words for that exact name and a change word just before a read
-/// noun ending (get_write_status). Same as TS namesAChange.
-pub fn names_a_change(name: &str) -> bool {
+/// A delete word, a run word (when `with_run`) or a change word anywhere in
+/// the name, apart from the NOUN_USES words for that exact name and a change
+/// word just before a read noun ending (get_write_status).
+fn has_action_word(name: &str, with_run: bool) -> bool {
     let words = action_words(name);
     let describing = match words.last() {
         Some(last) if words.len() >= 3 && has(READ_NOUN_ENDINGS, last) => Some(words.len() - 2),
@@ -323,9 +323,20 @@ pub fn names_a_change(name: &str) -> bool {
     };
     words.iter().enumerate().any(|(i, w)| {
         has(DESTRUCTIVE_WORDS, w)
-            || has(EXEC_WORDS, w)
+            || (with_run && has(EXEC_WORDS, w))
             || (Some(i) != describing && has(WRITE_WORDS, w))
     })
+}
+
+/// A change, run or delete word anywhere in the name. Same as TS namesAChange.
+pub fn names_a_change(name: &str) -> bool {
+    has_action_word(name, true)
+}
+
+/// A change or delete word anywhere in the name; a run word alone
+/// (execute_command) doesn't count. Same as TS namesAWrite.
+pub fn names_a_write(name: &str) -> bool {
+    has_action_word(name, false)
 }
 
 /// "Clearly reads by its name": not a router, the first action word is a read
@@ -341,11 +352,15 @@ pub fn read_named(name: &str) -> bool {
         && !names_a_change(name)
 }
 
-/// With writes off: a write or destructive label, or an unmarked tool
-/// (ExternalAction) whose name has a change word. Same as TS writesOffHides.
+/// With writes off: a write or destructive label, an unmarked tool
+/// (ExternalAction) whose name has a change word, or a tool that runs
+/// commands (Exec) whose name also has a change or delete word
+/// (push_cli_config, apply_config_command). A tool that only runs commands
+/// (execute_command) stays and asks every time. Same as TS writesOffHides.
 pub fn writes_off_hides(label: SafetyLabel, name: &str) -> bool {
     matches!(label, SafetyLabel::Write | SafetyLabel::Destructive)
         || (label == SafetyLabel::ExternalAction && names_a_change(name))
+        || (label == SafetyLabel::Exec && names_a_write(name))
 }
 
 // ─── Router calls (approval.ts:75-121) ───
@@ -643,6 +658,23 @@ mod tests {
                 case["readNamed"].as_bool().unwrap(),
                 "readNamed of {}",
                 name
+            );
+        }
+    }
+
+    #[test]
+    fn writes_off_fixture_matches() {
+        let cases: Vec<Value> =
+            serde_json::from_str(include_str!("testdata/writes_off_cases.json")).unwrap();
+        assert!(cases.len() >= 10);
+        for case in &cases {
+            let name = case["name"].as_str().unwrap();
+            let annotations = opt(case, "annotations");
+            let label = tool_label(name, annotations.as_ref(), None);
+            assert_eq!(
+                writes_off_hides(label, name),
+                case["hides"].as_bool().unwrap(),
+                "writes off hides {case}"
             );
         }
     }

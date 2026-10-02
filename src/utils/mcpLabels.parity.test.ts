@@ -9,7 +9,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { aiConfirm, buildPlan, MAX_DEPTH, previewSwitchedOff } from './mcpApproval';
-import { argsDepth, readNamed } from './mcpGate';
+import { argsDepth, readNamed, writesOffHides } from './mcpGate';
 import { toolLabel, type CapabilitySafety } from './mcpLabels';
 import { isPlainJunosShow } from './mcpPresets';
 
@@ -39,6 +39,16 @@ describe('MCP label fixtures shared with Rust', () => {
       expect(readNamed(c.name)).toBe(c.readNamed);
     }
   );
+
+  it('what writes off hides', () => {
+    const cases = fixture<{ name: string; annotations?: { readOnlyHint?: boolean }; hides: boolean }>(
+      'writes_off_cases.json'
+    );
+    expect(cases.length).toBeGreaterThanOrEqual(10);
+    for (const c of cases) {
+      expect([c, writesOffHides(toolLabel(c), c.name)]).toEqual([c, c.hides]);
+    }
+  });
 
   it('Junos plain show commands', () => {
     const cases = fixture<{ command: string; plain: boolean }>('junos_show_cases.json');
