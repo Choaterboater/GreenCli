@@ -26,7 +26,10 @@ describe('SecretStoreNote', () => {
     ['keychain', 'Saved in macOS Keychain.'],
     ['credential-manager', 'Saved in Windows Credential Manager.'],
     ['secret-service', 'Saved in your system keyring.'],
-    ['file', 'Saved in a private file on this computer. No system password store was found.'],
+    [
+      'file',
+      "Saved in a private file on this computer. The system password store couldn't be used when GreenCLI started; it tries again at each start.",
+    ],
   ] as const)('shows where keys are kept: %s', async (kind, line) => {
     withStatus(ok({ kind }));
     render(<SecretStoreNote after="Sent only to the provider." />);

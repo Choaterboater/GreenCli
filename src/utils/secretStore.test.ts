@@ -27,7 +27,10 @@ describe('secretStoreLine', () => {
     ['keychain', 'Saved in macOS Keychain.'],
     ['credential-manager', 'Saved in Windows Credential Manager.'],
     ['secret-service', 'Saved in your system keyring.'],
-    ['file', 'Saved in a private file on this computer. No system password store was found.'],
+    [
+      'file',
+      "Saved in a private file on this computer. The system password store couldn't be used when GreenCLI started; it tries again at each start.",
+    ],
     [
       'unavailable',
       "Can't reach the system password store. Your keys are still there. Try again after you log in to the desktop.",
