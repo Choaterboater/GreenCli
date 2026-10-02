@@ -36,7 +36,8 @@ on:
         type: boolean
         default: true
 
-# Read-only by default; only the job that uploads to the release gets write.
+# Read-only by default; only the build jobs (which upload) and update-files
+# (which must see the draft) get write.
 permissions:
   contents: read
 

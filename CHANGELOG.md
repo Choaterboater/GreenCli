@@ -66,7 +66,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Linux builds need webkit2gtk-4.1 2.40 or newer** (Ubuntu 22.04 with updates, or newer; CI uses
   24.04) and Rust 1.90 or newer. See docs/SETUP.md for the packages.
 - Release workflow: manual runs have a **publish** box (untick it to only build), every release
-  starts as a draft, and only the jobs that upload can write to the repo.
+  starts as a draft, and only the build jobs and the update-files check can write to the repo (the
+  check only reads, but needs write to see the draft).
 
 ### Fixed
 - An AI key or MCP login that fails to save now shows a message. Before, it failed with no
