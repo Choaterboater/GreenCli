@@ -393,6 +393,23 @@ describe('writes off, read-only login and the Read-only Auditor', () => {
     expect(auditor(tool('get_device', { annotations: READ_ONLY }), { confirm: 'T' })).toEqual(refused(AUDITOR_REFUSAL));
   });
 
+  it('counts a confirm, force or dry_run inside a JSON-text routed call as the AI skipping a check', () => {
+    const router = tool('invoke_read_tool', { annotations: READ_ONLY });
+    const calls = [{ name: 'get_status', arguments: {} }, { name: 'get_status', arguments: { force: true } }];
+    for (const args of [{ calls }, { calls: JSON.stringify(calls) }, { request: JSON.stringify({ calls: JSON.stringify(calls) }) }]) {
+      const d = asked(decide(router, args, true));
+      expect([args, d.label]).toEqual([args, 'read']);
+      expect(d.notes).toContain(
+        "The AI set force by itself. That can skip the server's own check, so it runs only if you say Yes"
+      );
+      expect(auditor(router, args)).toEqual(refused(AUDITOR_REFUSAL));
+    }
+    const preview = asked(decide(router, { calls: JSON.stringify([{ name: 'get_status', arguments: { dry_run: false } }]) }, true));
+    expect(preview.notes).toContain('The AI turned off dry_run, so this makes the change instead of only showing it');
+    const confirm = { name: 'get_status', arguments: JSON.stringify({ confirm: 'yes' }) };
+    expect(auditor(router, confirm)).toEqual(refused(AUDITOR_REFUSAL));
+  });
+
   it('refuses writes and destructive tools, but asks about commands', () => {
     expect(decide(off('set_ssid'))).toEqual(refused(writesOffText('srv')));
     expect(decide(off('delete_site'))).toEqual(refused(writesOffText('srv')));

@@ -13,8 +13,9 @@
 //   ({tool_calls: [{function: {name, arguments}}]}). Under calls, requests, items or steps an entry
 //   that only names a tool counts too. Every call found is judged and the strictest wins.
 // - Every string that starts with { or [ and parses as JSON is searched as if the JSON were there in
-//   place (FastMCP json.loads's any non-str parameter sent as a string). One that doesn't parse makes
-//   a router call unclear.
+//   place (FastMCP json.loads's any non-str parameter sent as a string), by the router search and by
+//   the confirm and preview checks. One that doesn't parse (as serde_json would read it) makes a
+//   router call unclear.
 // - Two arguments keys in one call ({args: {}, params: {...}}) make it unclear: the server may read either.
 // - Every key that may hold the tool's name counts, in any spelling. Two different names make the
 //   call unclear, and so does a batch entry GreenCLI can't read or a routed tool that is a router.
@@ -253,7 +254,8 @@ function serdeReads(parsed: unknown): boolean {
  * (after JSON whitespace) and parses as serde_json would parse it (serdeReads); the JSON it holds is
  * read the same way, down to MAX_DEPTH. unreadable: such a string did not parse, or its JSON goes
  * deeper than MAX_DEPTH, so the search can't see everything the server might read. Same as Rust
- * read_json_text.
+ * read_json_text. The router search and the skipped-check walk (aiConfirm, previewSwitchedOff)
+ * both read the arguments through it.
  */
 function readJsonText(args: Record<string, unknown>): { value: Record<string, unknown>; unreadable: boolean } {
   let unreadable = false;
@@ -448,17 +450,20 @@ function unclearSwitch(value: unknown): boolean {
   return value !== undefined && value !== null && typeof value !== "boolean";
 }
 
-/** Paths where confirm, confirmed or force is set to anything but false or null, anywhere in the arguments (router inner arguments too). */
+/** Paths where confirm, confirmed or force is set to anything but false or null, anywhere in the
+ *  arguments (router inner arguments too), JSON text read in place as the router search reads it
+ *  (readJsonText): {calls: '[{"name": "x", "arguments": {"force": true}}]'} counts. */
 export function aiConfirm(args: Record<string, unknown>): string[] {
   const paths: string[] = [];
-  walk(args, (key, value, path) => { if (isConfirmKey(key) && saysYes(value)) paths.push(path); });
+  walk(readJsonText(args).value, (key, value, path) => { if (isConfirmKey(key) && saysYes(value)) paths.push(path); });
   return paths;
 }
 
-/** Paths where a preview switch is false, or set to something that is not plain true/false, anywhere in the arguments. */
+/** Paths where a preview switch is false, or set to something that is not plain true/false, anywhere
+ *  in the arguments, JSON text read in place (readJsonText). */
 export function previewSwitchedOff(args: Record<string, unknown>): string[] {
   const paths: string[] = [];
-  walk(args, (key, value, path) => {
+  walk(readJsonText(args).value, (key, value, path) => {
     if (isPreviewKey(key) && (value === false || unclearSwitch(value))) paths.push(path);
   });
   return paths;

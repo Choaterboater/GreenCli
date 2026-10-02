@@ -509,5 +509,66 @@
       "confirmation": false
     },
     "skipped": false
+  },
+  {
+    "args": {
+      "calls": "[{\"name\": \"get_status\", \"arguments\": {\"force\": true}}]"
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "calls": "[{\"name\": \"get_status\", \"arguments\": {\"confirm\": true}}]"
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "calls": "[{\"name\": \"get_status\", \"arguments\": {\"dry_run\": false}}]"
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "batch": "[{\"arguments\": {\"x\": 1}, \"name\": \"get_status\"}, {\"arguments\": {\"Confirmed\": \"yes\"}, \"name\": \"get_status\"}]"
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "name": "get_status",
+      "arguments": "{\"force\": 1}"
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "request": "{\"calls\": \"[{\\\"name\\\": \\\"get_status\\\", \\\"arguments\\\": {\\\"dry-run\\\": \\\"false\\\"}}]\"}"
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "calls": "  \n[{\"name\": \"get_status\", \"arguments\": {\"preview\": 0}}]"
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "calls": "[{\"name\": \"get_status\", \"arguments\": {\"force\": false, \"dry_run\": true, \"confirm\": null}}]"
+    },
+    "skipped": false
+  },
+  {
+    "args": {
+      "note": "force: true"
+    },
+    "skipped": false
+  },
+  {
+    "args": {
+      "calls": "[{\"name\": \"get_status\", \"arguments\": {\"force\": true}"
+    },
+    "skipped": false
   }
 ]

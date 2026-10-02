@@ -276,6 +276,33 @@ mod tests {
     }
 
     #[test]
+    fn auditor_sees_a_skipped_check_inside_json_text() {
+        let helper = read_tool("helper");
+        let on = def("uvx", &["some-server"], Some(McpWrites::On));
+        let p = policy(&on, &[]);
+        let calls = json!([
+            { "name": "get_status", "arguments": {} },
+            { "name": "get_status", "arguments": { "force": true } }
+        ]);
+        let text = calls.to_string();
+        for args in [
+            json!({ "calls": calls }),
+            json!({ "calls": text }),
+            json!({ "request": json!({ "calls": text }).to_string() }),
+            json!({ "calls": json!([{ "name": "get_status", "arguments": { "dry_run": false } }]).to_string() }),
+            json!({ "name": "get_status", "arguments": "{\"confirm\": \"yes\"}" }),
+        ] {
+            assert_eq!(
+                refuse(&p, &helper, args.clone(), true),
+                Some(AUDITOR_REFUSAL.to_string()),
+                "{args}"
+            );
+        }
+        let plain = json!([{ "name": "get_status", "arguments": { "force": false } }]).to_string();
+        assert_eq!(refuse(&p, &helper, json!({ "calls": plain }), true), None);
+    }
+
+    #[test]
     fn deep_batch_routers_are_found() {
         // FastMCP writes run_batch(request: BatchRequest) like this.
         let schema = json!({

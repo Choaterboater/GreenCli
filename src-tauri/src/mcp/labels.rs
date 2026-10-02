@@ -960,9 +960,12 @@ fn walk_skipped(value: &Value, depth: usize) -> bool {
 
 /// aiConfirm and previewSwitchedOff in one walk: true when a confirm-like key
 /// says yes, or a preview-like key is false or not a plain bool, anywhere in
-/// the arguments. Nesting deeper than MAX_DEPTH also returns true.
+/// the arguments. JSON text is read in place first, with the same helper and
+/// depth limit as the router search (read_json_text), so {calls: '[{"name":
+/// "x", "arguments": {"force": true}}]'} counts. Nesting deeper than
+/// MAX_DEPTH also returns true.
 pub fn skipped_check(args: &Value) -> bool {
-    too_deep(args) || walk_skipped(args, 0)
+    too_deep(args) || walk_skipped(&read_json_text(args).0, 0)
 }
 
 #[cfg(test)]
