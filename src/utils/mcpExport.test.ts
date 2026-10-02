@@ -980,7 +980,17 @@ describe('buildMcpExport: network logins', () => {
   });
 
   it('hides a password made of a tag word and digits, but keeps dated and jdk tags plain', () => {
-    const plain = { DEB: 'debian:bookworm-20240110', JAVA: 'eclipse-temurin:21-jdk-jammy', MQ: 'rabbitmq:3-management' };
+    const plain = {
+      DEB: 'debian:bookworm-20240110',
+      JAVA: 'eclipse-temurin:21-jdk-jammy',
+      MQ: 'rabbitmq:3-management',
+      LTS: 'node:lts-alpine',
+      NODE: 'node:20-alpine',
+      PY: 'python:3.12-slim-bookworm',
+      PG: 'postgres:16',
+      GHCR: 'ghcr.io/x/y:1.2',
+      HOST: 'switch1:830',
+    };
     const hidden = {
       A: 'admin:alpha123',
       B: 'root:dev2024',
@@ -989,6 +999,14 @@ describe('buildMcpExport: network logins', () => {
       E: 'admin:lts2024',
       F: 'netops:stable-2024',
       G: 'svc:v12345',
+      H: 'admin:dev-123',
+      I: 'root:alpha.1',
+      J: 'netops:beta_99',
+      K: 'admin:1-dev',
+      L: 'admin:lts-42',
+      M: 'admin:alpha-20240101',
+      N: 'jdoe:dev-123',
+      O: 'jdoe:rc_7',
     };
     const r = build([def({ name: 's', command: 'uvx', args: ['x'], env: { ...plain, ...hidden } })]);
     const s = stdioOf(r.file.mcpServers.s);

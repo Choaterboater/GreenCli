@@ -197,21 +197,32 @@ const TAG_WORD =
 /** The first part of an image tag: a short version number (20, 1, v2) or a bare tag word (lts,
  *  alpine). A tag word with digits (alpha123, dev2024) or a long number (v12345) reads as a password. */
 const FIRST_TAG_PART = new RegExp(`^(?:v?\\d{1,3}|${TAG_WORD})$`);
-/** A later part: a short number, a tag word maybe with a short number (alpine3, jdk17), or a
- *  date (jammy-20240111). Not a 4-digit year (stable-2024). */
+/** A later part after a version number: a short number, a tag word maybe with a short number
+ *  (alpine3, jdk17), or a date (jammy-20240111). Not a 4-digit year (stable-2024). */
 const LATER_TAG_PART = new RegExp(`^(?:v?\\d{1,3}|20\\d{6}|${TAG_WORD}\\d{0,2})$`);
+/** A later part after a tag word: another tag word (lts-alpine) or a date (bookworm-20240110), but
+ *  not a bare number. Real tags put the version first; dev-123, beta_99 and alpha.1 are passwords. */
+const LATER_WORD_PART = new RegExp(`^(?:20\\d{6}|${TAG_WORD}\\d{0,2})$`);
+/** Login names that are never an image or package name: admin:1-dev is a password, not a tag. */
+const LOGIN_NAMES: ReadonlySet<string> = new Set([
+  'admin', 'administrator', 'root', 'user', 'username', 'svc', 'service', 'netops', 'ops', 'operator',
+  'manager', 'cisco', 'aruba', 'juniper', 'mist', 'guest', 'test', 'superuser', 'sysadmin', 'netadmin',
+  'support', 'readonly', 'monitor', 'api', 'apiuser',
+]);
 
 /** An image or package reference that USER_PASS would take for user:password: node:20-alpine,
- *  postgres:16-alpine, nginx:1.25-alpine, node:lts-alpine. The tag must be lowercase and start
- *  with a short version number or a bare tag word, so admin:Hunter22, user:pass1, admin:alpha123,
- *  root:dev2024 and netops:stable-2024 stay secret. (host:port has no letter after the colon, and
+ *  postgres:16-alpine, nginx:1.25-alpine, node:lts-alpine. The name must not be a login name, and
+ *  the tag must be lowercase and start with a short version number or be made of tag words (and a
+ *  date), so admin:Hunter22, user:pass1, admin:alpha123, root:dev2024, netops:stable-2024,
+ *  x:dev-123 and admin:1-dev stay secret. (host:port has no letter after the colon, and
  *  ghcr.io/x/y:1.2 has a "/", so USER_PASS never matches those.) */
 function isImageOrPackageRef(value: string): boolean {
   const colon = value.indexOf(':');
   const name = value.slice(0, colon);
-  const [first, ...rest] = value.slice(colon + 1).split(/[._-]/);
-  if (!IMAGE_NAME.test(name)) return false;
-  return FIRST_TAG_PART.test(first ?? '') && rest.every((part) => LATER_TAG_PART.test(part));
+  const [first = '', ...rest] = value.slice(colon + 1).split(/[._-]/);
+  if (!IMAGE_NAME.test(name) || LOGIN_NAMES.has(name) || !FIRST_TAG_PART.test(first)) return false;
+  const later = /^v?\d/.test(first) ? LATER_TAG_PART : LATER_WORD_PART;
+  return rest.every((part) => later.test(part));
 }
 
 /** user:password typed as one value, and not an image or package reference. */
