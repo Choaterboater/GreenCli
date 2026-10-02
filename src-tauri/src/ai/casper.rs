@@ -861,15 +861,25 @@ pub fn project_yaml(deny_read: &[PathBuf]) -> String {
 
 /// `GIT_CEILING_DIRECTORIES` for a working folder: its parent, so git never
 /// finds a repository above the folder. Fails closed.
+///
+/// Git splits the value on ":" (";" on Windows) and reads no quotes, so a
+/// parent path holding that character would turn into entries git ignores.
+/// std's join_paths can't be used to catch that: on Windows it quotes a path
+/// with ";" instead of failing.
 pub fn git_ceiling(work_dir: &Path) -> Result<OsString, String> {
+    let sep = if cfg!(windows) { ';' } else { ':' };
     let fail = || {
-        "Casper's working folder can't be used because its path holds a \":\" or \";\". Pick another folder.".to_string()
+        format!("Casper's working folder can't be used because its path holds a \"{sep}\". Pick another folder.")
     };
     let parent = work_dir
         .parent()
-        .filter(|p| !p.as_os_str().is_empty())
+        .filter(|p| !p.as_os_str().is_empty() && p.is_absolute())
         .ok_or_else(fail)?;
-    std::env::join_paths([plain_path(parent)]).map_err(|_| fail())
+    let parent = plain_path(parent);
+    if parent.to_string_lossy().contains(sep) {
+        return Err(fail());
+    }
+    Ok(parent.as_os_str().to_owned())
 }
 
 /// Instruction files Casper would follow when it works in `folder`:
@@ -2000,6 +2010,15 @@ mod tests {
             .unwrap_err()
             .contains("Pick another folder"));
         assert!(git_ceiling(Path::new("run-1")).is_err());
+        assert!(git_ceiling(Path::new("a/run-1")).is_err());
+        // Only the platform's own list separator matters.
+        let other = if cfg!(windows) { ":" } else { ";" };
+        if !cfg!(windows) {
+            let ok = std::env::temp_dir()
+                .join(format!("a{other}b"))
+                .join("run-1");
+            assert_eq!(git_ceiling(&ok).unwrap(), ok.parent().unwrap().as_os_str());
+        }
     }
 
     #[test]
