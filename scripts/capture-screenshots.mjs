@@ -14,8 +14,6 @@
 //
 // Needs Playwright's Chromium once: npx playwright install chromium
 // (in CI: npx playwright install --with-deps chromium).
-// The fonts come from Google Fonts. Behind a web proxy, also set
-// NODE_USE_ENV_PROXY=1, or the pictures use the system fonts.
 
 import { createServer } from 'node:http';
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
@@ -92,28 +90,6 @@ try {
   process.exit(1);
 }
 
-// The app loads Inter and JetBrains Mono from Google Fonts. Fetch them from
-// Node so they also load where the browser has no direct internet; if that
-// fails the shots fall back to system fonts.
-const fontCache = new Map();
-async function routeFonts(context) {
-  await context.route(/^https:\/\/fonts\.(googleapis|gstatic)\.com\//, async (route) => {
-    const u = route.request().url();
-    try {
-      let hit = fontCache.get(u);
-      if (!hit) {
-        const r = await fetch(u, { headers: { 'user-agent': 'Mozilla/5.0 Chrome/140.0 Safari/537.36' } });
-        if (!r.ok) throw new Error(String(r.status));
-        hit = { type: r.headers.get('content-type') || '', body: Buffer.from(await r.arrayBuffer()) };
-        fontCache.set(u, hit);
-      }
-      await route.fulfill({ status: 200, contentType: hit.type, body: hit.body });
-    } catch {
-      await route.abort();
-    }
-  });
-}
-
 // Every shot's clock starts at the same moment (it still runs), so the times
 // the app shows are the same on every run.
 const DEMO_TIME = Date.UTC(2026, 9, 2, 9, 41, 0);
@@ -143,7 +119,6 @@ for (const shot of shots) {
     locale: 'en-US',
     timezoneId: 'UTC',
   });
-  await routeFonts(context);
   await context.addInitScript(startClockAt, DEMO_TIME);
   await context.addInitScript(installDemoBackend, { ...demo, ...(shot.demo || {}) });
   await context.addInitScript(seedStorage, shot.storage || {});
