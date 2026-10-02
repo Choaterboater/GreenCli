@@ -1753,5 +1753,30 @@
     },
     "routed": [],
     "unclear": true
+  },
+  {
+    "tool": "call_tool",
+    "args": {
+      "name": "get_status",
+      "arguments": {},
+      "batch": "[{\"arguments\": {\"x\": 1.7976931348623158e308}, \"name\": \"delete_vlan\"}]"
+    },
+    "routed": [
+      "get_status",
+      "delete_vlan"
+    ],
+    "unclear": false
+  },
+  {
+    "tool": "call_tool",
+    "args": {
+      "name": "get_status",
+      "arguments": {},
+      "batch": "[{\"arguments\": {\"x\": 1.79769313486231584e308}, \"name\": \"delete_vlan\"}]"
+    },
+    "routed": [
+      "get_status"
+    ],
+    "unclear": true
   }
 ]

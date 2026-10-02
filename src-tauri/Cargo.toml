@@ -14,7 +14,9 @@ tauri-build = { version = "1.5.1", features = [] }
 [dependencies]
 tauri = { version = "1.6.0", features = [ "clipboard-read-text", "clipboard-write-text", "window-set-focus", "window-close", "window-start-dragging", "dialog-save", "dialog-open"] }
 serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
+# float_roundtrip: parse floats exactly like JSON.parse, so the MCP checks in TS and Rust agree on
+# which JSON text is readable (labels.rs read_json_text vs mcpApproval.ts readJsonText).
+serde_json = { version = "1.0", features = ["float_roundtrip"] }
 tokio = { version = "1.35", features = ["full"] }
 tokio-serial = "5.4"
 async-trait = "0.1"

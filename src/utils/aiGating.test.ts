@@ -89,7 +89,7 @@ describe('auditorAllowsCommand', () => {
     expect(auditorAllowsCommand('show configuration | display set | no-more')).toBe(true);
     expect(auditorAllowsCommand('show interfaces terse | match ge- | count')).toBe(true);
     expect(auditorAllowsCommand('show running-config | include hostname')).toBe(true);
-    expect(auditorAllowsCommand('sh run | inc vlan')).toBe(true);
+    expect(auditorAllowsCommand('show run | inc vlan')).toBe(true);
     expect(auditorAllowsCommand('cat /var/log/messages | grep error | tail -n 20')).toBe(true);
     expect(auditorAllowsCommand('ping 10.0.0.1 count 5')).toBe(true);
     expect(auditorAllowsCommand('show version\nshow vlan')).toBe(true);
@@ -384,8 +384,12 @@ describe('auditorAllowsCommand', () => {
     for (const cmd of ['sh -c "id"', 'sh script.sh', 'sh /tmp/x', 'do sh -c id']) {
       expect([cmd, auditorAllowsCommand(cmd)]).toEqual([cmd, false]);
     }
-    expect(auditorAllowsCommand('sh ip route')).toBe(true);
-    expect(auditorAllowsCommand('sh run | inc vlan')).toBe(true);
+    // The `sh` short form is refused: on a Linux server it starts a shell or runs a script.
+    for (const cmd of ['sh', 'do sh', 'sh ip route', 'sh run | inc vlan', 'sh myscript']) {
+      expect(auditorAllowsCommand(cmd)).toBe(false);
+    }
+    expect(auditorAllowsCommand('show ip route')).toBe(true);
+    expect(auditorAllowsCommand('do show run | inc vlan')).toBe(true);
   });
 });
 
@@ -445,5 +449,19 @@ describe('isReadOnlyAgent', () => {
   it('tells the model what to do instead', () => {
     expect(AUDITOR_REFUSAL.startsWith('Not run: ')).toBe(true);
     expect(AUDITOR_REFUSAL).toContain('Give the user the exact commands to run instead.');
+  });
+});
+
+describe('auditorAllowsCommand: write words as plain read arguments', () => {
+  it('lets reads whose arguments or filters hold a write word through', () => {
+    for (const cmd of ['show system commit', 'show system boot-messages', 'show boot-history', 'show log messages | match commit']) {
+      expect(auditorAllowsCommand(cmd)).toBe(true);
+    }
+  });
+
+  it('still refuses a pipe that writes a file', () => {
+    for (const cmd of ['show configuration | save /var/tmp/x', 'show log messages | append x', 'show run | redirect flash:x']) {
+      expect(auditorAllowsCommand(cmd)).toBe(false);
+    }
   });
 });

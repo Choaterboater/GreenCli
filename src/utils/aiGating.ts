@@ -67,7 +67,8 @@ export const AUDITOR_PIPES: ReadonlySet<string> = new Set([
  * view, and the AI's next line would be typed into it as keys) and without `?`.
  */
 const AUDITOR_VERBS: ReadonlySet<string> = new Set([
-  'sh', 'show', 'disp', 'display', 'get', 'ping', 'traceroute', 'tracert', 'dir', 'cat', 'tail', 'head',
+  // No `sh` short form: on a Linux server `sh` (or `sh WORD`) starts a shell or runs a script.
+  'show', 'disp', 'display', 'get', 'ping', 'traceroute', 'tracert', 'dir', 'cat', 'tail', 'head',
   'echo', 'whoami', 'who', 'uptime', 'date',
 ]);
 /** Windows commands the Auditor also takes with .exe (PING.EXE). */
@@ -236,11 +237,14 @@ function auditorVerb(word: string | undefined): string | undefined {
 }
 
 /** One line the Auditor may run: AUDITOR_CHAR text (auditorStages), a read verb first (after an
- *  optional `do`), an AUDITOR_PIPES filter first in every later stage, no write word, and the word
- *  checks: date sets no time, ping ends, cat/head/tail read a file that ends, tail doesn't follow,
- *  sh doesn't run a shell, and a later stage names no device file. */
+ *  optional `do`), an AUDITOR_PIPES filter first in every later stage, no pipe that writes a file,
+ *  and the word checks: date sets no time, ping ends, cat/head/tail read a file that ends, tail
+ *  doesn't follow, and a later stage names no device file. */
 function auditorLineOk(line: string): boolean {
-  if (aiIsWriteCommand(line)) return false;
+  // Only the write-to-file pipes (| save, | append, | tee …). The other aiIsWriteCommand words
+  // (commit, boot, rollback …) can't run here: the line starts with a read verb and holds no shell
+  // syntax, so as arguments they are just text (show system commit, show boot-history).
+  if (AI_WRITE_PIPE.test(line)) return false;
   const stages = auditorStages(line);
   if (!stages) return false;
   const [first = [], ...rest] = stages;
@@ -252,7 +256,6 @@ function auditorLineOk(line: string): boolean {
   if (verb === 'date' && !args.every((w) => DATE_SHOW_ARG.test(w))) return false;
   if (verb === 'ping' && !pingEnds(args)) return false;
   if ((verb === 'cat' || verb === 'head' || verb === 'tail') && !readsAFile(verb, args)) return false;
-  if (verb === 'sh' && /^-|[/.]/.test(args[0] ?? '')) return false;
   if (verb === 'tail' && tailFollows(args)) return false;
   // A pipe stage that names a file reads it instead of the pipe (show x | tail /dev/zero).
   return rest.every((stage) => !stage.slice(1).some(devicePath) && (stage[0]?.toLowerCase() !== 'tail' || !tailFollows(stage.slice(1))));
