@@ -199,6 +199,24 @@ describe('auditorAllowsCommand', () => {
     expect(auditorAllowsCommand('cat /proc/cpuinfo')).toBe(true);
   });
 
+  it('refuses tail +N with no file and paths that climb with ..', () => {
+    for (const cmd of [
+      'tail +2',
+      'tail -q +2',
+      'cat /proc/self/../self/fd/0',
+      'cat /proc/1/../self/fd/0',
+      'cat /proc/1/../kmsg',
+      'show x | grep y /proc/self/../self/fd/1',
+      'head -n 5 ../../dev/zero',
+    ]) {
+      expect([cmd, auditorAllowsCommand(cmd)]).toEqual([cmd, false]);
+    }
+    // tail +N with a file reads the file from line N; a grep pattern of .. is not a path.
+    for (const cmd of ['tail +2 /var/log/x', 'show log | grep ..', 'cat /etc/hosts']) {
+      expect([cmd, auditorAllowsCommand(cmd)]).toEqual([cmd, true]);
+    }
+  });
+
   it('refuses pings that go on for hours, and ping.exe without a count', () => {
     for (const cmd of [
       'ping -c 999999999 8.8.8.8',

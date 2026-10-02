@@ -146,9 +146,12 @@ function takesValue(verb: string, option: string): boolean {
 
 /** A path to a file that never ends or waits on the keyboard: /dev/stdin, /dev/tty, /dev/fd/0,
  *  /dev/zero, /dev/random, any other /dev file but /dev/null, /proc/<pid>/fd/*, /proc/kmsg and the
- *  kernel trace pipe. Quotes and backslashes are dropped first ("/d\ev/zero"). */
+ *  kernel trace pipe. Quotes and backslashes are dropped first ("/d\ev/zero"). A path with a ".."
+ *  part counts too: /proc/self/../self/fd/0 is the keyboard, and a ".." after a link (/proc/self/cwd)
+ *  can't be worked out from the text. */
 function devicePath(word: string): boolean {
   const path = word.replace(/["'\\]/g, '').replace(/\/{2,}/g, '/').replace(/\/\.(?=\/)/g, '');
+  if (path.includes('/') && path.split('/').includes('..')) return true;
   if (path === '/dev/null') return false;
   return /(?:^|\/)dev\//.test(path) || /(?:^|\/)proc\/[^/]+\/fd(?:\/|$)/.test(path)
     || /(?:^|\/)proc\/kmsg$/.test(path) || /(?:^|\/)tracing\//.test(path);
@@ -160,7 +163,7 @@ function blockingFile(word: string): boolean {
   return devicePath(word) || word.includes('$') || /[*?[{].*\//.test(word);
 }
 
-/** cat, head or tail with a file to read. With none (or only "-") they wait on the keyboard, and
+/** cat, head or tail with a file to read. With none (or only "-", or tail with only +N) they wait on the keyboard, and
  *  the AI's next line is typed into them. A file that never ends or reads the keyboard
  *  (blockingFile) is refused too. */
 function readsAFile(verb: string, words: string[]): boolean {
@@ -175,6 +178,9 @@ function readsAFile(verb: string, words: string[]): boolean {
       if (takesValue(verb, w)) i++;
       continue;
     }
+    // GNU tail reads the old `tail +N` as "start at line N", not as a file: `tail +2` reads the
+    // keyboard.
+    if (verb === 'tail' && w.startsWith('+')) continue;
     files.push(w);
   }
   return files.some((f) => f !== '-') && !files.some((f) => f === '-' || blockingFile(f));
