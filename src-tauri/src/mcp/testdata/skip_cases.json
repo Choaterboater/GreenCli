@@ -435,5 +435,41 @@
       "forced": true
     },
     "skipped": false
+  },
+  {
+    "args": {
+      "force": "t"
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "Confirm": " T "
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "calls": [
+        {
+          "arguments": {
+            "confirmed": "t"
+          }
+        }
+      ]
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "force": "f"
+    },
+    "skipped": false
+  },
+  {
+    "args": {
+      "force": "tt"
+    },
+    "skipped": false
   }
 ]

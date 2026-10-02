@@ -6,6 +6,9 @@
 // vocabulary (actlint 0.3.0, vocabulary 0.5.0, by Formael, Apache-2.0,
 // https://github.com/formael/actlint); see THIRD_PARTY_NOTICES.txt.
 //
+// GreenCLI changes: a router call that names two different tools counts as
+// unclear, and says_yes also takes "t" (pydantic v2 reads it as true).
+//
 // The TypeScript side (src/utils/mcpLabels.ts, mcpApproval.ts, mcpGate.ts)
 // must give the same answers. testdata/*.json holds cases both test suites
 // check, so a drift fails both.
@@ -320,13 +323,36 @@ pub fn is_router_name(tool: &str) -> bool {
 const INNER_NAME_KEYS: [&str; 3] = ["name", "tool", "tool_name"];
 const INNER_ARGS_KEYS: [&str; 3] = ["arguments", "args", "params"];
 
+/// The different non-empty tool names in name, tool and tool_name.
+fn inner_names(obj: &Map<String, Value>) -> Vec<&str> {
+    let mut names: Vec<&str> = Vec::new();
+    for name in INNER_NAME_KEYS
+        .iter()
+        .filter_map(|k| obj.get(*k).and_then(Value::as_str))
+    {
+        if !name.is_empty() && !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    names
+}
+
+/// Two different names (name: "get_status", tool_name: "delete_vlan"): the
+/// server may run either one.
+fn names_clash(value: &Value) -> bool {
+    value
+        .as_object()
+        .is_some_and(|obj| inner_names(obj).len() > 1)
+}
+
+/// The call a router argument object names; none when it names no tool or
+/// two different ones.
 fn inner_call(value: &Value) -> Option<(String, Value)> {
     let obj = value.as_object()?;
-    let name = INNER_NAME_KEYS.iter().find_map(|k| {
-        obj.get(*k)
-            .and_then(Value::as_str)
-            .filter(|s| !s.is_empty())
-    })?;
+    let name = match inner_names(obj).as_slice() {
+        [only] => *only,
+        _ => return None,
+    };
     let args = INNER_ARGS_KEYS
         .iter()
         .find_map(|k| obj.get(*k).filter(|v| v.is_object()))
@@ -358,7 +384,7 @@ pub fn router_unclear(tool: &str, args: &Value) -> bool {
         .and_then(Value::as_array)
         .map_or(0, Vec::len);
     let single = usize::from(inner_call(args).is_some());
-    routed == 0 || (batch > 0 && routed != batch + single)
+    routed == 0 || names_clash(args) || (batch > 0 && routed != batch + single)
 }
 
 /// The label a call is judged by: the tool's own, the real tools' names, and
@@ -445,14 +471,14 @@ fn js_trim(s: &str) -> &str {
     s.trim_matches(|c: char| c != '\u{85}' && (c.is_whitespace() || c == '\u{feff}'))
 }
 
-/// A confirm value a server may read as yes.
+/// A confirm value a server may read as yes (pydantic v2 also takes "t").
 fn says_yes(value: &Value) -> bool {
     match value {
         Value::Bool(b) => *b,
         Value::Number(n) => n.as_f64() == Some(1.0),
         Value::String(s) => matches!(
             js_trim(s).to_lowercase().as_str(),
-            "true" | "1" | "yes" | "y" | "on"
+            "true" | "t" | "1" | "yes" | "y" | "on"
         ),
         _ => false,
     }
@@ -526,6 +552,33 @@ mod tests {
                 case["skipped"].as_bool().unwrap(),
                 "skipped of {}",
                 case["args"]
+            );
+        }
+    }
+
+    #[test]
+    fn router_fixture_matches() {
+        let cases: Vec<Value> =
+            serde_json::from_str(include_str!("testdata/router_cases.json")).unwrap();
+        assert!(cases.len() >= 10);
+        for case in &cases {
+            let tool = case["tool"].as_str().unwrap();
+            let names: Vec<String> = routed_calls(tool, &case["args"])
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect();
+            let want: Vec<String> = case["routed"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_str().unwrap().to_string())
+                .collect();
+            assert_eq!(names, want, "routed of {}", case);
+            assert_eq!(
+                router_unclear(tool, &case["args"]),
+                case["unclear"].as_bool().unwrap(),
+                "unclear of {}",
+                case
             );
         }
     }

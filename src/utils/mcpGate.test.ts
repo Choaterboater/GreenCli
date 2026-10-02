@@ -227,6 +227,31 @@ describe('writes off, read-only login and the Read-only Auditor', () => {
     expect(asked(decide(t, { name: 'get_device' })).choices).toEqual(['no', 'once']);
   });
 
+  it('refuses a router call that names two different tools', () => {
+    // name is a harmless decoy; the server may read tool_name and delete the VLAN.
+    const decoy = { name: 'get_status', tool_name: 'delete_vlan', arguments: { vlan: 10 } };
+    expect(decide(off('call_tool'), { tool_name: 'delete_vlan', arguments: { vlan: 10 } })).toEqual(
+      refused(writesOffText('srv'))
+    );
+    expect(decide(off('call_tool'), decoy)).toEqual(refused(writesOffText('srv')));
+    expect(auditor(tool('call_tool', { writes: 'on' }), decoy)).toEqual(refused(AUDITOR_REFUSAL));
+    // Writes on: it asks, and the box does not name the decoy.
+    const d = asked(decide(tool('call_tool', { writes: 'on' }), decoy));
+    expect(d.choices).toEqual(['no', 'once']);
+    expect(d.notes).toContain("Runs a tool GreenCLI can't see, through call_tool");
+    expect(d.notes.join('\n')).not.toContain('get_status');
+    // The same name twice is fine.
+    expect(asked(decide(tool('call_tool', { writes: 'on' }), { name: 'get_status', tool_name: 'get_status' })).notes).toContain(
+      'Runs get_status through call_tool'
+    );
+  });
+
+  it('counts force="t" as the AI skipping a check (pydantic reads it as true)', () => {
+    expect(decide(tool('list_sessions'), { force: 'true' }, true).kind).toBe('ask');
+    expect(decide(tool('list_sessions'), { force: 't' }, true).kind).toBe('ask');
+    expect(auditor(tool('get_device', { annotations: READ_ONLY }), { confirm: 'T' })).toEqual(refused(AUDITOR_REFUSAL));
+  });
+
   it('refuses writes and destructive tools, but asks about commands', () => {
     expect(decide(off('set_ssid'))).toEqual(refused(writesOffText('srv')));
     expect(decide(off('delete_site'))).toEqual(refused(writesOffText('srv')));

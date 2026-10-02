@@ -323,6 +323,30 @@ mod tests {
     }
 
     #[test]
+    fn a_router_call_naming_two_tools_is_refused() {
+        let d = def("uvx", &["x"], None);
+        let p = policy(&d, &[]);
+        let router = tool("call_tool");
+        let off = Some(writes_off_reason("s"));
+        let plain = json!({ "tool_name": "delete_vlan", "arguments": { "vlan": 10 } });
+        assert_eq!(refuse(&p, &router, plain, false), off);
+        let decoy = json!({
+            "name": "get_status",
+            "tool_name": "delete_vlan",
+            "arguments": { "vlan": 10 }
+        });
+        assert_eq!(refuse(&p, &router, decoy.clone(), false), off);
+        // Writes on: the Read-only Auditor still refuses it.
+        let on = def("uvx", &["x"], Some(McpWrites::On));
+        let p = policy(&on, &[]);
+        assert_eq!(refuse(&p, &router, decoy.clone(), false), None);
+        assert_eq!(
+            refuse(&p, &router, decoy, true),
+            Some(AUDITOR_REFUSAL.to_string())
+        );
+    }
+
+    #[test]
     fn read_only_login_refuses_a_routed_write() {
         let d = def("uvx", &["x"], Some(McpWrites::On));
         let ro = read_only_access();

@@ -8,7 +8,7 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { aiConfirm, MAX_DEPTH, previewSwitchedOff } from './mcpApproval';
+import { aiConfirm, buildPlan, MAX_DEPTH, previewSwitchedOff } from './mcpApproval';
 import { argsDepth, readNamed } from './mcpGate';
 import { toolLabel, type CapabilitySafety } from './mcpLabels';
 import { isPlainJunosShow } from './mcpPresets';
@@ -53,6 +53,22 @@ describe('MCP label fixtures shared with Rust', () => {
       const skipped =
         aiConfirm(c.args).length + previewSwitchedOff(c.args).length > 0 || argsDepth(c.args) > MAX_DEPTH;
       expect([c.args, skipped]).toEqual([c.args, c.skipped]);
+    }
+  });
+
+  it('router calls: the tools they name, and when GreenCLI cannot tell', () => {
+    const cases = fixture<{ tool: string; args: Record<string, unknown>; routed: string[]; unclear: boolean }>(
+      'router_cases.json'
+    );
+    expect(cases.length).toBeGreaterThanOrEqual(10);
+    for (const c of cases) {
+      const plan = buildPlan({ server: 's', tool: c.tool, label: 'read', schema: { type: 'object' }, arguments: c.args });
+      expect([c.tool, c.args, plan.routed.map((call) => call.name), plan.routerUnclear]).toEqual([
+        c.tool,
+        c.args,
+        c.routed,
+        c.unclear,
+      ]);
     }
   });
 });

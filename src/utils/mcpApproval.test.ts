@@ -19,6 +19,22 @@ describe('routedCalls', () => {
     ]);
   });
 
+  it('does not pick one of two different names', () => {
+    expect(routedCalls('call_tool', { name: 'get_status', tool_name: 'delete_vlan' })).toEqual([]);
+    expect(routedCalls('call_tool', { name: 'get_status', tool: 'get_status' })).toEqual([
+      { name: 'get_status', arguments: {} },
+    ]);
+    const plan = buildPlan({
+      server: 's',
+      tool: 'invoke_tools_batch',
+      label: 'read',
+      schema,
+      arguments: { name: 'get_a', tool: 'delete_b', calls: [{ name: 'get_c' }] },
+    });
+    expect(plan.routed.map((call) => call.name)).toEqual(['get_c']);
+    expect(plan.routerUnclear).toBe(true);
+  });
+
   it('is empty for a tool that is not a router', () => {
     expect(routedCalls('get_device', { name: 'delete_site' })).toEqual([]);
   });
@@ -61,6 +77,8 @@ describe('the AI skipping a check', () => {
     expect(aiConfirm({ Confirm: 'yes' })).toEqual(['Confirm']);
     expect(aiConfirm({ arguments: { force: 1 } })).toEqual(['arguments.force']);
     expect(aiConfirm({ confirm: false })).toEqual([]);
+    expect(aiConfirm({ force: 't', confirmed: ' T ' })).toEqual(['force', 'confirmed']);
+    expect(aiConfirm({ force: 'f' })).toEqual([]);
   });
 
   it('finds a preview switch turned off', () => {

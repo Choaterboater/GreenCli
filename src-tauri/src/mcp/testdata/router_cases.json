@@ -1,0 +1,144 @@
+[
+  {
+    "tool": "call_tool",
+    "args": {
+      "tool_name": "delete_vlan",
+      "arguments": {
+        "vlan": 10
+      }
+    },
+    "routed": [
+      "delete_vlan"
+    ],
+    "unclear": false
+  },
+  {
+    "tool": "call_tool",
+    "args": {
+      "name": "get_status",
+      "tool_name": "delete_vlan",
+      "arguments": {
+        "vlan": 10
+      }
+    },
+    "routed": [],
+    "unclear": true
+  },
+  {
+    "tool": "call_tool",
+    "args": {
+      "name": "get_status",
+      "tool": "delete_vlan"
+    },
+    "routed": [],
+    "unclear": true
+  },
+  {
+    "tool": "call_tool",
+    "args": {
+      "tool": "get_status",
+      "tool_name": "delete_vlan"
+    },
+    "routed": [],
+    "unclear": true
+  },
+  {
+    "tool": "call_tool",
+    "args": {
+      "name": "get_status",
+      "tool": "get_status",
+      "tool_name": "get_status"
+    },
+    "routed": [
+      "get_status"
+    ],
+    "unclear": false
+  },
+  {
+    "tool": "call_tool",
+    "args": {
+      "name": "",
+      "tool_name": "get_status"
+    },
+    "routed": [
+      "get_status"
+    ],
+    "unclear": false
+  },
+  {
+    "tool": "call_tool",
+    "args": {
+      "name": "get_status",
+      "tool_name": 7
+    },
+    "routed": [
+      "get_status"
+    ],
+    "unclear": false
+  },
+  {
+    "tool": "invoke_tools_batch",
+    "args": {
+      "calls": [
+        {
+          "name": "get_a"
+        },
+        {
+          "name": "get_b",
+          "tool_name": "delete_c"
+        }
+      ]
+    },
+    "routed": [
+      "get_a"
+    ],
+    "unclear": true
+  },
+  {
+    "tool": "invoke_tools_batch",
+    "args": {
+      "name": "get_a",
+      "tool": "delete_b",
+      "calls": [
+        {
+          "name": "get_c"
+        }
+      ]
+    },
+    "routed": [
+      "get_c"
+    ],
+    "unclear": true
+  },
+  {
+    "tool": "invoke_tools_batch",
+    "args": {
+      "name": "get_a",
+      "calls": [
+        {
+          "name": "get_c"
+        }
+      ]
+    },
+    "routed": [
+      "get_a",
+      "get_c"
+    ],
+    "unclear": false
+  },
+  {
+    "tool": "invoke_tool",
+    "args": {},
+    "routed": [],
+    "unclear": true
+  },
+  {
+    "tool": "get_device",
+    "args": {
+      "name": "get_a",
+      "tool_name": "delete_b"
+    },
+    "routed": [],
+    "unclear": false
+  }
+]
