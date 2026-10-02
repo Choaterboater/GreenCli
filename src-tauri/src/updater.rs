@@ -26,13 +26,17 @@ pub const RELEASES: &str = "https://github.com/Choaterboater/GreenCli/releases";
 /// The update manifest tauri-action writes into each release.
 pub const LATEST_JSON_URL: &str =
     "https://github.com/Choaterboater/GreenCli/releases/latest/download/latest.json";
-/// Update files must be assets of a GreenCLI release (the path under github.com).
+/// Update files must be assets of a GreenCLI release: tauri-action writes
+/// their API address into latest.json (`api.github.com/repos/<repo>/releases/
+/// assets/<id>`); a plain release download link is accepted too.
+const ASSET_API_PREFIX: &str = "/repos/Choaterboater/GreenCli/releases/assets/";
 const DOWNLOAD_PATH_PREFIX: &str = "/Choaterboater/GreenCli/releases/download/";
-/// The only hosts update requests may reach: github.com, and the hosts it
-/// redirects release downloads to (release-assets is where GitHub sends them
-/// today, objects is the older name).
-pub const ALLOWED_HOSTS: [&str; 3] = [
+/// The only hosts update requests may reach: github.com and its API, and the
+/// hosts they redirect release downloads to (release-assets is where GitHub
+/// sends them today, objects is the older name).
+pub const ALLOWED_HOSTS: [&str; 4] = [
     "github.com",
+    "api.github.com",
     "objects.githubusercontent.com",
     "release-assets.githubusercontent.com",
 ];
@@ -116,15 +120,26 @@ pub fn redirect_allowed(next: &Url, already: usize) -> bool {
 }
 
 /// The file an update manifest points to must be an asset of a GreenCLI
-/// release on github.com (GitHub then redirects to its download host).
+/// release (GitHub then redirects to its download host).
 pub fn download_url_ok(url: &Url) -> bool {
-    url_allowed(url)
-        && url.host_str() == Some("github.com")
-        && url.query().is_none()
-        && url
-            .path()
-            .get(..DOWNLOAD_PATH_PREFIX.len())
-            .is_some_and(|p| p.eq_ignore_ascii_case(DOWNLOAD_PATH_PREFIX))
+    if !url_allowed(url) || url.query().is_some() || url.fragment().is_some() {
+        return false;
+    }
+    let path = url.path();
+    let starts = |prefix: &str| {
+        path.get(..prefix.len())
+            .is_some_and(|p| p.eq_ignore_ascii_case(prefix))
+    };
+    match url.host_str() {
+        Some("api.github.com") => {
+            starts(ASSET_API_PREFIX) && {
+                let id = &path[ASSET_API_PREFIX.len()..];
+                !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit())
+            }
+        }
+        Some("github.com") => starts(DOWNLOAD_PATH_PREFIX),
+        _ => false,
+    }
 }
 
 /// Install only a newer version. Build metadata (`+…`) is ignored, as semver
@@ -502,6 +517,7 @@ mod tests {
             "https://objects.githubusercontent.com/github-production-release-asset-2e65be/1?x=1",
             "https://release-assets.githubusercontent.com/github-production-release-asset/1/2?sp=r",
             "https://github.com:443/a",
+            "https://api.github.com/repos/Choaterboater/GreenCli/releases/assets/1",
         ] {
             assert!(url_allowed(&url(ok)), "{ok}");
         }
@@ -509,7 +525,6 @@ mod tests {
             "http://github.com/Choaterboater/GreenCli/releases/latest/download/latest.json",
             "https://github.com.evil.example/x",
             "https://evilgithub.com/x",
-            "https://api.github.com/repos/x",
             "https://raw.githubusercontent.com/x",
             "https://gist.githubusercontent.com/x",
             "https://user:pw@github.com/x",
@@ -536,6 +551,10 @@ mod tests {
 
     #[test]
     fn update_files_must_be_greencli_release_assets() {
+        // What tauri-action writes into latest.json.
+        assert!(download_url_ok(&url(
+            "https://api.github.com/repos/Choaterboater/GreenCli/releases/assets/301234567"
+        )));
         assert!(download_url_ok(&url(
             "https://github.com/Choaterboater/GreenCli/releases/download/v2.0.1/GreenCLI.app.tar.gz"
         )));
@@ -547,6 +566,13 @@ mod tests {
             "https://github.com/Choaterboater/GreenCli-fork/releases/download/v2/x",
             "https://github.com/Choaterboater/GreenCli/archive/refs/tags/v2.0.1.tar.gz",
             "https://github.com/Choaterboater/GreenCli/releases/download/v2.0.1/x?token=1",
+            "https://api.github.com/repos/someone/GreenCli/releases/assets/301234567",
+            "https://api.github.com/repos/Choaterboater/GreenCli/releases/assets/",
+            "https://api.github.com/repos/Choaterboater/GreenCli/releases/assets/12/../../../x",
+            "https://api.github.com/repos/Choaterboater/GreenCli/releases/assets/12x",
+            "https://api.github.com/repos/Choaterboater/GreenCli/releases/assets/12?access_token=1",
+            "https://api.github.com/repos/Choaterboater/GreenCli/contents/x",
+            "https://github.com/Choaterboater/GreenCli/releases/assets/12",
             "https://objects.githubusercontent.com/Choaterboater/GreenCli/releases/download/v2/x",
             "http://github.com/Choaterboater/GreenCli/releases/download/v2.0.1/x",
             "https://example.com/Choaterboater/GreenCli/releases/download/v2.0.1/x",
@@ -614,5 +640,71 @@ mod tests {
         let parsed: tauri_plugin_updater::Config = serde_json::from_value(u.clone()).unwrap();
         assert!(parsed.require_signed_version);
         assert_eq!(parsed.endpoints, vec![url(LATEST_JSON_URL)]);
+    }
+
+    /// A file signed the way release builds sign update files (a one-time
+    /// key from `tauri signer generate --ci`, then `tauri signer sign
+    /// --app-version 2.0.1`); the private key was deleted.
+    const SIGNED_PUB: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDZEMDdBRjE0NDk5M0ZEQ0YKUldUUC9aTkpGSzhIYlVnRGd4UjJJOWRMeVRoUVMvZytOTC9FRWFVNSs5RExnYmFsWmdsY1pWcjkK";
+    const SIGNED_SIG: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUUC9aTkpGSzhIYlEyemFrNWo5SFB0RHpoOFkwWDVqcnVFOGpxeTBPc3MvRUhERjROQ3NoVzJoUFgrTjlEQzBtckJMZDJrQnZDVHM4enZxazVDTFA3elFMbytqOVA1dUE0PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkwOTQ5MTU0CWZpbGU6Zml4dHVyZS50eHQJdmVyc2lvbjoyLjAuMQpXN1ZzeHBISzVxRWgwbExWYVEreGhmdHM5UUczUUNBK2lMTVJzcFk0bkFqdTEveWdzb3BhNDZBTTZWQ2dpbWNHbVVHeWhZZ3R0cG9ORmUyOXM3NlZEUT09Cg==";
+    const SIGNED_DATA: &[u8] = b"GreenCLI update test\n";
+
+    fn b64_text(s: &str) -> String {
+        use base64::Engine;
+        String::from_utf8(base64::engine::general_purpose::STANDARD.decode(s).unwrap()).unwrap()
+    }
+
+    /// The updater plugin checks downloads like this (minisign-verify, with
+    /// the fetched key); a release build's signature must pass, and only for
+    /// its own file and key.
+    #[test]
+    fn release_signatures_verify_with_the_fetched_key() {
+        use minisign_verify::{PublicKey, Signature};
+        assert!(pubkey_valid(SIGNED_PUB));
+        let key = PublicKey::decode(&b64_text(SIGNED_PUB)).unwrap();
+        let sig = Signature::decode(&b64_text(SIGNED_SIG)).unwrap();
+        key.verify(SIGNED_DATA, &sig, false).unwrap();
+        // The signed version requireSignedVersion compares with latest.json.
+        assert!(sig.trusted_comment().split('\t').any(|f| f == "version:2.0.1"));
+        assert!(key.verify(b"GreenCLI update test!\n", &sig, false).is_err());
+        let other = PublicKey::decode(&b64_text(TEST_PUB)).unwrap();
+        assert!(other.verify(SIGNED_DATA, &sig, false).is_err());
+    }
+
+    /// release.yml names each build's key after the platform; the names must
+    /// be the ones the app fetches.
+    #[test]
+    fn release_workflow_names_keys_like_the_app() {
+        let yml = include_str!("../../.github/workflows/release.yml");
+        let mut pairs = Vec::new();
+        let mut target = None;
+        for line in yml.lines().map(str::trim) {
+            if let Some(t) = line.strip_prefix("target: ").or_else(|| line.strip_prefix("- target: ")) {
+                if !t.contains("${{") {
+                    target = Some(t.trim().to_string());
+                }
+            } else if let Some(p) = line.strip_prefix("updater: ") {
+                pairs.push((target.take().expect("target before updater"), p.trim().to_string()));
+            }
+        }
+        assert_eq!(pairs.len(), SHIPPED_PLATFORMS.len(), "{pairs:?}");
+        for (target, platform) in &pairs {
+            let arch = target.split('-').next().unwrap();
+            let os = if target.contains("apple-darwin") {
+                "macos"
+            } else if target.contains("windows") {
+                "windows"
+            } else {
+                "other"
+            };
+            assert_eq!(platform_key(os, arch), Some(platform.as_str()), "{target}");
+        }
+        assert!(yml.contains("update-key-${{ matrix.updater }}.pub"));
+        assert!(yml.contains("signer generate --ci"));
+        assert!(yml.contains("uploadUpdaterJson: true"));
+        // The private key only ever goes to tauri-action as a file path.
+        for line in yml.lines().filter(|l| l.contains("TAURI_SIGNING_PRIVATE_KEY")) {
+            assert!(!line.contains("GITHUB_ENV") && !line.contains("GITHUB_OUTPUT"), "{line}");
+        }
     }
 }
