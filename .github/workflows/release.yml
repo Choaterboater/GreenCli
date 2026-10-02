@@ -348,7 +348,15 @@ jobs:
             fi
             exit 1
           fi
-          xcrun stapler staple "$dmg"
+          # Apple's ticket can take a little while to show up after
+          # "Accepted" (stapler then says "Record not found", error 65), so
+          # try a few times before failing the job.
+          for i in 1 2 3 4 5; do
+            xcrun stapler staple "$dmg" && break
+            if [ "$i" = 5 ]; then echo "::error::Could not staple Apple's ticket to $name."; exit 1; fi
+            echo "Apple's ticket is not available yet; trying again in 30s..."
+            sleep 30
+          done
           echo "Apple notarized $name, and its ticket is stapled."
           if [ "$PUBLISH" != true ]; then exit 0; fi
           test -n "$RELEASE_ID"

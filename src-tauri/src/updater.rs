@@ -1660,8 +1660,65 @@ mod tests {
         assert!(at < step(&steps, "Check the update signatures").0);
         assert!(at < step(&steps, "Publish the update key").0);
         let (_, dmg) = step(&steps, "Notarize the .dmg");
-        assert!(dmg.run.contains("xcrun stapler staple \"$dmg\"\n"));
+        assert!(dmg.run.contains("xcrun stapler staple \"$dmg\" && break\n"));
         assert!(dmg.run.contains("if [ \"$status\" != Accepted ]; then\n"));
+    }
+
+    /// Apple's ticket can take a little while to show up after notarytool
+    /// says "Accepted", so the .dmg staple is tried up to five times, 30
+    /// seconds apart, before the job fails. Runs the step's own loop with a
+    /// stand-in xcrun that fails a given number of times.
+    #[cfg(unix)]
+    #[test]
+    fn release_workflow_retries_the_dmg_staple() {
+        let steps = build_steps(RELEASE_YML);
+        let (_, dmg) = step(&steps, "Notarize the .dmg");
+        // The step staples in one place: the loop.
+        assert_eq!(dmg.run.matches("xcrun stapler staple").count(), 1);
+        let start = dmg
+            .run
+            .find("for i in 1 2 3 4 5; do\n")
+            .expect("a retry loop around the .dmg staple");
+        let len = dmg.run[start..].find("done\n").unwrap() + "done\n".len();
+        let staple = &dmg.run[start..start + len];
+        assert!(staple.contains("xcrun stapler staple \"$dmg\" && break\n"));
+        let run = |fails: u32| {
+            let script = format!(
+                "set -euo pipefail\n\
+                 n=0\n\
+                 xcrun() {{ n=$((n + 1)); echo \"xcrun $*\"; [ \"$n\" -gt {fails} ]; }}\n\
+                 sleep() {{ echo \"sleep $*\"; }}\n\
+                 dmg=GreenCLI.dmg\n\
+                 name=GreenCLI.dmg\n\
+                 {staple}\
+                 echo stapled\n"
+            );
+            let out = std::process::Command::new("bash")
+                .arg("-c")
+                .arg(&script)
+                .output()
+                .expect("bash");
+            let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+            (out.status.code(), stdout)
+        };
+        for fails in 0..5 {
+            let (code, out) = run(fails);
+            assert_eq!(code, Some(0), "{fails} failures: {out}");
+            let tries = fails as usize + 1;
+            assert_eq!(
+                out.matches("xcrun stapler staple GreenCLI.dmg\n").count(),
+                tries,
+                "{out}"
+            );
+            assert_eq!(out.matches("sleep 30\n").count(), tries - 1, "{out}");
+            assert!(out.ends_with("stapled\n"), "{out}");
+        }
+        let (code, out) = run(5);
+        assert_eq!(code, Some(1), "{out}");
+        assert_eq!(out.matches("xcrun stapler staple").count(), 5, "{out}");
+        assert_eq!(out.matches("sleep 30\n").count(), 4, "{out}");
+        assert!(out.contains("::error::Could not staple Apple's ticket to GreenCLI.dmg.\n"));
+        assert!(!out.contains("stapled\n"), "{out}");
     }
 
     /// Matches a path against an upload-artifact pattern, one `/` part at a
