@@ -262,7 +262,7 @@ export const HELP_TOPICS: HelpTopic[] = [
       {
         kind: 'steps',
         items: [
-          'Settings → **AI & MCP → MCP Servers**: copy its path, or copy the `claude mcp add greencli -- "<path>"` command and run it in a terminal.',
+          'Settings → **AI & MCP → MCP Servers**: copy its path, or copy the `claude mcp add --scope user greencli -- "<path>"` command and run it in a terminal. `--scope user` makes it available in every folder; without it Claude Code only adds it for the folder you run the command in.',
           'Or use **Export for Casper / Claude…**, which adds it as `greencli`.',
           'On a Mac, move GreenCLI to Applications first, or the path changes every time it starts.',
         ],

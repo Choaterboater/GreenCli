@@ -122,6 +122,14 @@ function parseMcpConfigPaste(text: string): Partial<typeof blankForm> | null {
   return patch;
 }
 
+/** The Claude Code command that adds greencli-mcp. `--scope user` makes it
+ *  work in every folder: Claude Code's default scope (local) adds a server
+ *  only for the folder the command is run in, and greencli-mcp reads
+ *  GreenCLI's own data, not a project's. */
+function claudeAddCommand(path: string): string {
+  return `claude mcp add --scope user greencli -- "${path}"`;
+}
+
 export default function McpServers() {
   const [servers, setServers] = useState<McpServerDef[]>([]);
   const [status, setStatus] = useState<Record<string, McpStatus>>({});
@@ -565,11 +573,9 @@ export default function McpServers() {
                 </button>
               </div>
               <div className="flex items-start gap-2">
-                <code className="flex-1 min-w-0 break-all text-[var(--accent)]">
-                  {`claude mcp add greencli -- "${greencli.path}"`}
-                </code>
+                <code className="flex-1 min-w-0 break-all text-[var(--accent)]">{claudeAddCommand(greencli.path)}</code>
                 <button
-                  onClick={() => void copy(`claude mcp add greencli -- "${greencli.path}"`)}
+                  onClick={() => void copy(claudeAddCommand(greencli.path))}
                   title="Copy the command"
                   className="flex-shrink-0 flex items-center gap-1 px-1.5 py-0.5 text-[10px] rounded bg-[var(--bg-tertiary)] hover:bg-[var(--border-strong)] text-[var(--text-secondary)]"
                 >

@@ -6,10 +6,12 @@ import { tauriSave } from '../utils/fileSystem';
 import { notify } from '../store/toastStore';
 import type { McpServerDef } from '../utils/mcpTypes';
 import { resetHiddenRefreshForTests } from '../utils/configArchive';
+import { copyText } from '../utils/clipboard';
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 vi.mock('../utils/fileSystem', () => ({ isTauri: true, tauriSave: vi.fn() }));
 vi.mock('../store/toastStore', () => ({ notify: { success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() } }));
+vi.mock('../utils/clipboard', () => ({ copyText: vi.fn(async () => true) }));
 vi.mock('../utils/secrets/forCopy', () => ({
   hideSecretsInText: vi.fn(async (text: string) => ({ ok: true, text: `hidden ${text}`, hidden: 0, words: [] })),
 }));
@@ -108,7 +110,11 @@ describe('McpServers export', () => {
     backend([], undefined, { path, exists: true, place: 'normal' }, { missing: 2, stale: 1 });
     render(<McpServers />);
     expect(await screen.findByText(path)).toBeTruthy();
-    expect(screen.getByText(`claude mcp add greencli -- "${path}"`)).toBeTruthy();
+    // User scope: Claude Code's default (local) would add it only for the folder the command runs in.
+    const command = `claude mcp add --scope user greencli -- "${path}"`;
+    expect(screen.getByText(command)).toBeTruthy();
+    fireEvent.click(screen.getByTitle('Copy the command'));
+    await waitFor(() => expect(copyText).toHaveBeenCalledWith(command));
     expect(screen.getByText('3 snapshots need a new hidden copy.')).toBeTruthy();
     expect(screen.queryByText('Move GreenCLI to Applications first.')).toBeNull();
   });

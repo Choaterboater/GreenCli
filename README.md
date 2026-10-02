@@ -208,8 +208,11 @@ with Copy buttons for the path and the command. On a Mac, move GreenCLI to
 Applications first. To add it to Claude Code:
 
 ```bash
-claude mcp add greencli -- "/Applications/GreenCLI.app/Contents/MacOS/greencli-mcp"
+claude mcp add --scope user greencli -- "/Applications/GreenCLI.app/Contents/MacOS/greencli-mcp"
 ```
+
+`--scope user` makes it available in every folder; without it Claude Code only
+adds it for the folder you run the command in.
 
 "Export for Casper / Claude…" puts it in the `.mcp.json` file too.
 

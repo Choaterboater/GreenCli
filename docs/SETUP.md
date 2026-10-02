@@ -470,8 +470,11 @@ GreenCLI's data folder, and never writes a file, opens a network connection or s
 the path and for the command below. Run the command in a terminal:
 
 ```bash
-claude mcp add greencli -- "/Applications/GreenCLI.app/Contents/MacOS/greencli-mcp"
+claude mcp add --scope user greencli -- "/Applications/GreenCLI.app/Contents/MacOS/greencli-mcp"
 ```
+
+`--scope user` makes it available in every folder; without it Claude Code only adds it for the
+folder you run the command in.
 
 Or use **Export for Casper / Claude…**: it adds it as `greencli` (renamed, with a note, if you
 already have a server by that name). On a Mac, move GreenCLI to Applications first, or the path

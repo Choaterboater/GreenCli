@@ -31,8 +31,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   **Make hidden copies** button for older snapshots. After a secret filter change, GreenCLI makes
   the old copies again at start.
 - **MCP Servers** shows where greencli-mcp is, with **Copy** buttons for its path and for the
-  `claude mcp add greencli` command. **Export for Casper / Claude…** adds it as `greencli`, and now
-  works with no saved servers.
+  `claude mcp add --scope user greencli` command (user scope, so Claude Code has it in every
+  folder). **Export for Casper / Claude…** adds it as `greencli`, and now works with no saved
+  servers.
 - **Apple signing, ready to turn on**: release builds sign the Mac app (with greencli-mcp inside)
   and have Apple notarize it and the `.dmg` once the five Apple secrets are set (see
   docs/SETUP.md). With only the certificate and its password, the app is signed but not notarized.
