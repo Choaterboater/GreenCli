@@ -61,6 +61,63 @@ pub fn write_private_atomic(path: &Path, bytes: &[u8]) -> Result<(), AppError> {
     Ok(())
 }
 
+/// Restrict a key file to owner-only read/write: 0600 on Unix; an owner-only
+/// DACL (via icacls — std has no ACL API) on Windows. Best effort.
+fn restrict_key_file(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+    }
+    #[cfg(windows)]
+    {
+        // Strip inheritance and grant full control to the current user only, so
+        // keys aren't readable by other local accounts (fs::write gives the
+        // file the parent folder's ACL, which may be broad). No console window.
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        if let Ok(user) = std::env::var("USERNAME") {
+            let _ = std::process::Command::new("icacls")
+                .arg(path)
+                .args(["/inheritance:r", "/grant:r", &format!("{}:F", user)])
+                .creation_flags(CREATE_NO_WINDOW)
+                .output();
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
+    let _ = path;
+}
+
+/// Write a key file (`ai_keys.json`, `mcp_creds.json`, a login file for an
+/// MCP server) owner-only AND atomically: a 0600 sibling temp file
+/// (`<name>.tmp`, the name 1.9 used for the two key files), then renamed over
+/// the target. On Windows the temp file gets an owner-only ACL before the
+/// rename, so the key never sits on disk with the folder's ACL.
+pub fn write_key_file(path: &Path, content: &[u8]) -> Result<(), AppError> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let tmp = tmp_path(path);
+    #[cfg(unix)]
+    write_private(&tmp, content)?;
+    #[cfg(not(unix))]
+    {
+        // Lock down the empty file first, then write the key into it.
+        fs::write(&tmp, b"")?;
+        restrict_key_file(&tmp);
+        fs::write(&tmp, content)?;
+    }
+    fs::rename(&tmp, path)?;
+    // Also fixes the mode if the target existed before.
+    restrict_key_file(path);
+    Ok(())
+}
+
+/// The temp file `write_key_file` uses for `path`.
+pub fn key_file_tmp(path: &Path) -> PathBuf {
+    tmp_path(path)
+}
+
 /// Create `dir` if needed and make it this user's only (0700 on Unix).
 pub fn private_dir(dir: &Path) -> Result<(), AppError> {
     fs::create_dir_all(dir)?;

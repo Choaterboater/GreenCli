@@ -14,6 +14,7 @@ mod local;
 mod mcp;
 mod private_fs;
 mod securecrt;
+mod secret_store;
 mod serial;
 mod session;
 mod session_log;
@@ -99,7 +100,10 @@ struct AppState {
     /// Central client has interior mutability (config + token cache behind a
     /// std Mutex), so requests never hold an outer lock across an await.
     central: Arc<CentralClient>,
+    /// AI provider keys in the system password store (secret_store.rs).
     ai_keys: AiKeyStore,
+    /// The system password store (or the 1.9 key files when there is none).
+    secrets: Arc<secret_store::SecretStore>,
     /// Durable network-intent / desired-state store.
     intents: intent::IntentStore,
     /// Per-device versioned config snapshot history + golden baseline.
@@ -133,7 +137,10 @@ struct AppState {
 }
 
 impl AppState {
-    fn new(app_dir: std::path::PathBuf) -> Result<Self, AppError> {
+    fn new(
+        app_dir: std::path::PathBuf,
+        secrets: Arc<secret_store::SecretStore>,
+    ) -> Result<Self, AppError> {
         let vault_dir = app_dir.clone();
         let vault = CredentialVault::new(vault_dir)?;
         let vault_initialized = vault.is_initialized();
@@ -150,7 +157,8 @@ impl AppState {
             mist: Arc::new(AsyncMutex::new(None)),
             junos_clients: Arc::new(AsyncMutex::new(HashMap::new())),
             central: Arc::new(CentralClient::new()?),
-            ai_keys: AiKeyStore::new(app_dir.clone()),
+            ai_keys: AiKeyStore::new(secrets.clone()),
+            secrets,
             intents: intent::IntentStore::new(app_dir.clone()),
             config_archive: config_archive::ConfigArchiveStore::new(app_dir.clone()),
             terminal_buffers: Arc::new(AsyncMutex::new(HashMap::new())),
@@ -2539,17 +2547,26 @@ async fn sftp_rename_cmd(
 
 // ─── AI Commands ───
 
+/// Save (or, when empty, delete) an AI provider key in the system password
+/// store. Off the async runtime: the store can be slow or ask the user.
 #[tauri::command]
-fn ai_set_key(provider: String, key: String, state: State<'_, AppState>) -> Result<(), String> {
-    state
-        .ai_keys
-        .set(&provider, &key)
-        .map_err(|e| e.to_string())
+async fn ai_set_key(provider: String, key: String, state: State<'_, AppState>) -> Result<(), String> {
+    let keys = state.ai_keys.clone();
+    let key = zeroize::Zeroizing::new(key);
+    secret_store::blocking(move || keys.set(&provider, &key)).await
 }
 
 #[tauri::command]
-fn ai_has_key(provider: String, state: State<'_, AppState>) -> Result<bool, String> {
-    Ok(state.ai_keys.has(&provider))
+async fn ai_has_key(provider: String, state: State<'_, AppState>) -> Result<bool, String> {
+    let keys = state.ai_keys.clone();
+    secret_store::blocking(move || keys.has(&provider)).await
+}
+
+/// Where AI keys and MCP logins are kept, for Settings.
+#[tauri::command]
+async fn secret_store_status(state: State<'_, AppState>) -> Result<secret_store::StoreStatus, String> {
+    let secrets = state.secrets.clone();
+    secret_store::blocking(move || Ok(secrets.status())).await
 }
 
 /// Proxy one AI provider request from Rust (keys never touch the webview).
@@ -2841,7 +2858,9 @@ fn main() {
             let _ = private_fs::private_dir(&app_dir);
             private_fs::tighten_app_dir(&app_dir);
             // [2.0 keys] Open the system password store and move old key files here.
-            let state = AppState::new(app_dir)?;
+            let secrets = Arc::new(secret_store::SecretStore::open(&app_dir, &app.config().identifier));
+            secrets.move_file(&app_dir.join(secret_store::AI_KEYS_FILE), secret_store::AI_KEY_PREFIX);
+            let state = AppState::new(app_dir, secrets)?;
             app.manage(state);
 
             // The main window starts hidden (tauri.conf.json visible: false)
@@ -2947,6 +2966,7 @@ fn main() {
             ai_set_key,
             ai_has_key,
             // [2.0 keys] new commands below
+            secret_store_status,
             ai_chat,
             ai_cancel_stream,
             ai_cli,
