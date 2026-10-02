@@ -20,6 +20,8 @@ import { notify } from '../store/toastStore';
 import { askConfirm } from '../store/dialogStore';
 import { useMcpApprovalStore } from '../store/mcpApprovalStore';
 import type { McpServerDef, McpStatus } from '../utils/mcpTypes';
+import { plainHttpWarning } from '../utils/urlSafety';
+import McpServerSafety from './McpServerSafety';
 
 type McpTransport = McpServerDef['transport'];
 
@@ -97,50 +99,6 @@ function parseMcpConfigPaste(text: string): Partial<typeof blankForm> | null {
   return patch;
 }
 
-/** The safety lines under a server row: the Junos plain-show opt-in and a
- *  warning when a recognised server's tools don't look like it. */
-function McpServerNotes({
-  def,
-  status,
-  onShowOptIn,
-}: {
-  def: McpServerDef;
-  status: McpStatus | undefined;
-  onShowOptIn: (on: boolean) => void;
-}) {
-  const preset = status?.preset;
-  const junos = preset?.id === 'junos-mcp-server';
-  const mismatch = !!preset && status?.presetMismatch === true;
-  if (!junos && !mismatch) return null;
-  return (
-    <div className="px-3 pb-2 space-y-1.5 text-[11px]">
-      {mismatch && (
-        <p className="text-[var(--accent-warning)] leading-snug">
-          This looks like a {preset.label} server, but its tools don&apos;t match. GreenCLI still hides and blocks
-          write tools, but its read-only settings may not apply.
-        </p>
-      )}
-      {junos && (
-        <div>
-          <label className="flex items-center gap-2 text-[var(--text-secondary)] cursor-pointer select-none">
-            <input
-              type="checkbox"
-              checked={def.showOptIn === true}
-              onChange={(e) => onShowOptIn(e.target.checked)}
-              className="accent-[var(--accent)]"
-            />
-            Run plain show commands without asking
-          </label>
-          <p className="mt-0.5 ml-5 text-[10px] text-[var(--text-muted)] leading-snug">
-            Only commands that start with &quot;show&quot; and use safe pipes (match, except, count, display,
-            no-more, last, find, trim). Everything else still asks.
-          </p>
-        </div>
-      )}
-    </div>
-  );
-}
-
 export default function McpServers() {
   const [servers, setServers] = useState<McpServerDef[]>([]);
   const [status, setStatus] = useState<Record<string, McpStatus>>({});
@@ -199,17 +157,6 @@ export default function McpServers() {
   const disconnect = async (name: string) => {
     clearAllowances(name);
     await invoke('mcp_disconnect', { name }).catch(() => {});
-    refresh();
-  };
-
-  /** Junos: run plain show commands without asking. */
-  const setShowOptIn = async (name: string, on: boolean) => {
-    try {
-      await invoke('mcp_set_show_opt_in', { name, on });
-    } catch (e) {
-      notify.error('Could not change this setting', String(e));
-    }
-    clearAllowances(name);
     refresh();
   };
 
@@ -349,6 +296,9 @@ export default function McpServers() {
       notify.warning('Name already in use', `An MCP server named "${def.name}" already exists.`);
       return;
     }
+    // Writes go off again when the program changes (Rust McpConfigStore::upsert);
+    // remember the setting before the save so the user can be told.
+    const writesWereOn = servers.find((s) => s.name === (editingName ?? def.name))?.writes === 'on';
     try {
       // A rename must migrate, not delete-and-recreate: the old save-new +
       // delete-old flow silently wiped the stored credentials (keyed by name)
@@ -367,6 +317,17 @@ export default function McpServers() {
       clearAllowances(def.name);
       if (editingName) clearAllowances(editingName);
       notify.success('MCP server saved', def.name);
+      if (writesWereOn) {
+        const saved = ((await invoke<McpServerDef[]>('mcp_list_servers').catch(() => [])) || []).find(
+          (s) => s.name === def.name
+        );
+        if (saved?.writes === 'off') {
+          notify.info(
+            `${def.name} writes are off again`,
+            "The server's command, folder or URL changed, so GreenCLI turned writes off."
+          );
+        }
+      }
       setShowForm(false);
       setForm({ ...blankForm });
       setCredsSaved(false);
@@ -444,6 +405,18 @@ export default function McpServers() {
                         {st?.toolCount ?? 0} tool{(st?.toolCount ?? 0) === 1 ? '' : 's'}
                       </span>
                     )}
+                    {connected && (st?.hiddenToolCount ?? 0) > 0 && (
+                      <span
+                        className="text-[10px] text-[var(--text-muted)]"
+                        title={
+                          st?.access === 'read-only'
+                            ? 'Hidden from the AI because the login is read-only'
+                            : 'Hidden from the AI because writes are off'
+                        }
+                      >
+                        · {st?.hiddenToolCount} hidden
+                      </span>
+                    )}
                   </div>
                   <div className="text-[10px] text-[var(--text-muted)] font-mono truncate">
                     {s.transport === 'http' ? s.url : `${s.command} ${(s.args || []).join(' ')}`}
@@ -489,7 +462,13 @@ export default function McpServers() {
                   <Trash2 size={12} />
                 </button>
               </div>
-              <McpServerNotes def={s} status={st} onShowOptIn={(on) => setShowOptIn(s.name, on)} />
+              <McpServerSafety
+                def={s}
+                status={st}
+                busy={busy === s.name}
+                onChanged={refresh}
+                onReconnect={connect}
+              />
             </div>
           );
         })}
@@ -560,6 +539,9 @@ export default function McpServers() {
                 onChange={(e) => setForm({ ...form, url: e.target.value })}
                 placeholder="http://127.0.0.1:8010/mcp"
               />
+              {plainHttpWarning(form.url, 'mcp') && (
+                <p className="text-[var(--accent-warning)] text-[10px] mt-1">{plainHttpWarning(form.url, 'mcp')}</p>
+              )}
               <p className="text-[10px] text-[var(--text-muted)] mt-1">
                 The server must already be running in Streamable HTTP mode (e.g. centralmcp's{' '}
                 <code className="text-[var(--accent)]">run_http_router.sh</code>). One process can serve multiple
@@ -611,6 +593,10 @@ export default function McpServers() {
                     onChange={(e) => setForm({ ...form, envText: e.target.value })}
                     placeholder={'CREDS_PATH=/path/credentials.yaml'}
                   />
+                  <p className="text-[10px] text-[var(--text-muted)] mt-1 leading-snug">
+                    Servers get only a few basic variables from GreenCLI (like PATH, HOME, ssh-agent and proxy settings),
+                    plus the ones you add here.
+                  </p>
                 </div>
               </div>
               {/* Credentials (written to a file + injected as an env path on connect) */}
