@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **A website**: <https://choaterboater.github.io/GreenCli/> has download buttons for the latest
+  release, photos of the main screens, the full guide, the help topics and this list. It is
+  rebuilt, with new photos, every time a release is published.
+- New photos of every main screen in `docs/screenshots`, taken by one command
+  (`npm run screenshots`) with made-up demo data.
 - **greencli-mcp** has a seventh read tool, `list_archive_devices`. It lists every name the config
   archive has history under, with the snapshot count and the newest snapshot, so the history of a
   device renamed or deleted in GreenCLI (or of a Quick Connect that was never saved) can be found.

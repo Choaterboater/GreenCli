@@ -2,6 +2,7 @@
 // colors (median cut) and save it as a palette PNG. Screens of the app are
 // mostly flat colors, so this looks the same and is about a third the size.
 // The most used colors are kept exactly, so backgrounds and text stay true.
+// scalePng also makes the small copies the website shows in its photo grid.
 
 import { deflateSync, inflateSync } from 'node:zlib';
 
@@ -26,12 +27,16 @@ function chunk(type, data) {
   return Buffer.concat([head, data, crc]);
 }
 
-/** Decode an 8-bit RGB or RGBA PNG (what Chromium writes) to RGB bytes. */
-function decode(png) {
+/**
+ * Decode an 8-bit RGB or RGBA PNG (what Chromium writes) or an 8-bit palette
+ * PNG (what shrinkPng writes) to RGB bytes. Other kinds give null.
+ */
+export function decodePng(png) {
   let pos = 8;
   let width = 0;
   let height = 0;
-  let channels = 0;
+  let channels = 0; // bytes per pixel in the image data
+  let plte = null;
   const idat = [];
   while (pos < png.length) {
     const len = png.readUInt32BE(pos);
@@ -42,13 +47,16 @@ function decode(png) {
       height = data.readUInt32BE(4);
       const depth = data[8];
       const colorType = data[9];
-      if (depth !== 8 || (colorType !== 2 && colorType !== 6) || data[12] !== 0) return null;
-      channels = colorType === 6 ? 4 : 3;
+      if (depth !== 8 || (colorType !== 2 && colorType !== 3 && colorType !== 6) || data[12] !== 0) return null;
+      channels = colorType === 6 ? 4 : colorType === 3 ? 1 : 3;
+    } else if (type === 'PLTE') {
+      plte = data;
     } else if (type === 'IDAT') {
       idat.push(data);
     }
     pos += 12 + len;
   }
+  if (channels === 1 && !plte) return null;
   const raw = inflateSync(Buffer.concat(idat));
   const stride = width * channels;
   const out = Buffer.alloc(width * height * 3);
@@ -74,9 +82,12 @@ function decode(png) {
       line[i] = (line[i] + add) & 0xff;
     }
     for (let x = 0; x < width; x++) {
-      out[(y * width + x) * 3] = line[x * channels];
-      out[(y * width + x) * 3 + 1] = line[x * channels + 1];
-      out[(y * width + x) * 3 + 2] = line[x * channels + 2];
+      // A palette pixel is an index into PLTE (3 bytes per color).
+      const src = channels === 1 ? plte : line;
+      const at = channels === 1 ? line[x] * 3 : x * channels;
+      out[(y * width + x) * 3] = src[at];
+      out[(y * width + x) * 3 + 1] = src[at + 1];
+      out[(y * width + x) * 3 + 2] = src[at + 2];
     }
     prev = line;
   }
@@ -145,9 +156,49 @@ function palette(counts, keepExact = 48, size = 256) {
  * be read or the smaller one isn't smaller.
  */
 export function shrinkPng(png) {
-  const img = decode(png);
+  const img = decodePng(png);
   if (!img) return png;
-  const { width, height, rgb } = img;
+  const out = encodePalette(img);
+  return out.length < png.length ? out : png;
+}
+
+/**
+ * A copy of `png` made `factor` times smaller each way (each new pixel is the
+ * average of a factor x factor block), with 256 colors. Null when `png` can't
+ * be read.
+ */
+export function scalePng(png, factor) {
+  const img = decodePng(png);
+  if (!img) return null;
+  const width = Math.max(1, Math.floor(img.width / factor));
+  const height = Math.max(1, Math.floor(img.height / factor));
+  const rgb = Buffer.alloc(width * height * 3);
+  const n = factor * factor;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      let r = 0;
+      let g = 0;
+      let b = 0;
+      for (let dy = 0; dy < factor; dy++) {
+        const row = (y * factor + dy) * img.width;
+        for (let dx = 0; dx < factor; dx++) {
+          const i = (row + x * factor + dx) * 3;
+          r += img.rgb[i];
+          g += img.rgb[i + 1];
+          b += img.rgb[i + 2];
+        }
+      }
+      const o = (y * width + x) * 3;
+      rgb[o] = Math.round(r / n);
+      rgb[o + 1] = Math.round(g / n);
+      rgb[o + 2] = Math.round(b / n);
+    }
+  }
+  return encodePalette({ width, height, rgb });
+}
+
+/** Save RGB bytes as a 256-color palette PNG. */
+function encodePalette({ width, height, rgb }) {
   const counts = new Map();
   for (let i = 0; i < rgb.length; i += 3) {
     const c = (rgb[i] << 16) | (rgb[i + 1] << 8) | rgb[i + 2];
@@ -195,12 +246,11 @@ export function shrinkPng(png) {
     plte[i * 3 + 1] = pg[i];
     plte[i * 3 + 2] = pb[i];
   });
-  const out = Buffer.concat([
+  return Buffer.concat([
     Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
     chunk('IHDR', ihdr),
     chunk('PLTE', plte),
     chunk('IDAT', deflateSync(rows, { level: 9 })),
     chunk('IEND', Buffer.alloc(0)),
   ]);
-  return out.length < png.length ? out : png;
 }

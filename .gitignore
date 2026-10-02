@@ -17,3 +17,6 @@ test-results/
 
 # Tauri 2 generated schemas (rebuilt on every build)
 src-tauri/gen/
+
+# The website build (npm run site)
+site-dist/

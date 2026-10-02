@@ -816,6 +816,30 @@ saves the PNGs, plus a README that says what each one shows.
 `npm run screenshots -- --only 03` takes one picture; `--out <folder>` saves them
 somewhere else. The demo hosts, output and AI answers are in `scripts/screenshots/`.
 
+### The website
+
+The site at <https://choaterboater.github.io/GreenCli/> is made from this repo by
+`scripts/build-site.mjs`: the guide from this file, the help topics from
+`src/data/helpContent.ts`, What's new from `CHANGELOG.md`, and these photos. Its download
+buttons link to the files of the latest published release. Nothing is copied by hand.
+
+```bash
+npm run site            # build it into site-dist/
+npm run site:preview    # build it, then open http://127.0.0.1:4173/
+```
+
+The **Pages** workflow (`.github/workflows/pages.yml`) builds it with fresh photos and
+publishes it when a release is published, when these files change on main, and when you
+run it by hand (Actions → **Pages** → **Run workflow**). Set it up once on GitHub:
+
+1. **Settings → Pages → Source: GitHub Actions.**
+2. **Settings → Environments → github-pages → Deployment branches and tags**: add a tag
+   rule `v*`. A published release runs on its tag, and this lets it update the site.
+
+`--shots <folder>` builds with other photos, and `SITE_RELEASE_JSON` (a file, or the JSON
+the GitHub API gives for a release) stands in for the latest release when GitHub can't be
+reached.
+
 ### Gallery
 
 | Main window | Config Editor |

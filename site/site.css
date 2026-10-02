@@ -1,0 +1,1006 @@
+/* GreenCLI site. The app's own colors (src/styles/index.css): dark by
+   default, light when the system asks for it. System fonts only. */
+
+:root {
+  --bg: #0a0e14;
+  --bg-2: #0f141c;
+  --bg-3: #19212c;
+  --bg-code: #070a0f;
+  --border: #212b37;
+  --border-strong: #30404f;
+  --text: #e6edf3;
+  --text-2: #9aa7b4;
+  --muted: #83909e;
+  --accent: #01a982;
+  --accent-hover: #16c79b;
+  --accent-fg: #04130e;
+  --accent-soft: rgba(1, 169, 130, 0.14);
+  --danger: #f0533f;
+  --warning: #f0a83c;
+  --info: #4aa8ff;
+  --info-soft: rgba(74, 168, 255, 0.1);
+  --code: #16c79b;
+  --shadow: 0 10px 40px rgba(0, 0, 0, 0.45);
+  --radius: 10px;
+  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  color-scheme: dark;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #ffffff;
+    --bg-2: #f4f7f9;
+    --bg-3: #e9eef2;
+    --bg-code: #f4f7f9;
+    --border: #d6dde3;
+    --border-strong: #c2ccd4;
+    --text: #16202a;
+    --text-2: #44525e;
+    --muted: #606c78;
+    --accent: #018f6e;
+    --accent-hover: #017357;
+    --accent-fg: #ffffff;
+    --accent-soft: rgba(1, 143, 110, 0.12);
+    --danger: #cf3520;
+    --warning: #b5760a;
+    --info: #0969da;
+    --info-soft: rgba(9, 105, 218, 0.08);
+    --code: #017357;
+    --shadow: 0 10px 30px rgba(22, 32, 42, 0.12);
+    color-scheme: light;
+  }
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 16px/1.6 var(--font);
+  overflow-wrap: break-word;
+  /* The footer stays at the bottom on a short page. */
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+main {
+  flex: 1;
+}
+
+img {
+  max-width: 100%;
+  height: auto;
+}
+
+a {
+  color: var(--accent);
+  text-underline-offset: 2px;
+}
+
+a:hover {
+  color: var(--accent-hover);
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  line-height: 1.25;
+  margin: 1.6em 0 0.6em;
+}
+
+h1 {
+  font-size: 2.1rem;
+  margin-top: 0.4em;
+}
+
+h2 {
+  font-size: 1.6rem;
+}
+
+h3 {
+  font-size: 1.2rem;
+}
+
+code {
+  font-family: var(--mono);
+  font-size: 0.88em;
+  background: var(--bg-3);
+  color: var(--code);
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+  overflow-wrap: anywhere;
+}
+
+pre {
+  background: var(--bg-code);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 14px;
+  overflow-x: auto;
+  line-height: 1.5;
+}
+
+pre code {
+  background: none;
+  color: var(--text);
+  padding: 0;
+  font-size: 0.88rem;
+  overflow-wrap: normal;
+}
+
+hr {
+  border: 0;
+  border-top: 1px solid var(--border);
+  margin: 2.5em 0;
+}
+
+blockquote {
+  margin: 1.2em 0;
+  padding: 10px 16px;
+  border-left: 3px solid var(--info);
+  background: var(--info-soft);
+  border-radius: 0 8px 8px 0;
+}
+
+blockquote p {
+  margin: 0.4em 0;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.wrap {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 0 16px;
+}
+
+.narrow {
+  max-width: 720px;
+}
+
+@media (min-width: 700px) {
+  .wrap {
+    padding: 0 28px;
+  }
+}
+
+.skip {
+  position: absolute;
+  left: -9999px;
+}
+
+.skip:focus {
+  left: 16px;
+  top: 8px;
+  z-index: 10;
+  background: var(--bg-2);
+  padding: 8px 12px;
+}
+
+/* ── Header and footer ── */
+
+.top {
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-2);
+}
+
+.top-in {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 24px;
+  padding-top: 12px;
+  padding-bottom: 12px;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text);
+  text-decoration: none;
+}
+
+.brand:hover {
+  color: var(--text);
+}
+
+.brand-name {
+  font-weight: 700;
+  font-size: 1.15rem;
+}
+
+.brand-by {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+}
+
+.nav a {
+  color: var(--text-2);
+  text-decoration: none;
+  font-size: 0.95rem;
+  padding: 4px 0;
+}
+
+.nav a:hover,
+.nav a[aria-current="page"] {
+  color: var(--accent);
+}
+
+.nav a[aria-current="page"] {
+  font-weight: 600;
+}
+
+@media (max-width: 699px) {
+  .top-in {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .nav {
+    gap: 2px 14px;
+  }
+}
+
+/* On a phone the menu fits one line without GitHub (it is in the footer too). */
+@media (max-width: 479px) {
+  .nav .nav-gh {
+    display: none;
+  }
+}
+
+.foot {
+  border-top: 1px solid var(--border);
+  background: var(--bg-2);
+  margin-top: 0;
+  font-size: 0.92rem;
+  color: var(--text-2);
+}
+
+.foot-in {
+  padding-top: 24px;
+  padding-bottom: 32px;
+}
+
+.foot p {
+  margin: 0.4em 0;
+}
+
+/* ── Buttons ── */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 10px 18px;
+  border-radius: 8px;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-3);
+  color: var(--text);
+  font-weight: 600;
+  text-decoration: none;
+  line-height: 1.2;
+}
+
+.btn:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.btn svg {
+  width: 18px;
+  height: 18px;
+  flex: none;
+}
+
+.btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-fg);
+}
+
+.btn-primary:hover {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+  color: var(--accent-fg);
+}
+
+.btn-small {
+  padding: 8px 14px;
+  font-size: 0.92rem;
+}
+
+/* ── Landing page ── */
+
+.hero {
+  padding: 40px 0 48px;
+  background:
+    radial-gradient(ellipse 70% 60% at 85% 0%, var(--accent-soft), transparent 70%),
+    var(--bg);
+}
+
+.hero-in {
+  display: grid;
+  gap: 32px;
+}
+
+.eyebrow {
+  color: var(--accent);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.8rem;
+  margin: 0;
+}
+
+.hero h1 {
+  font-size: 2.2rem;
+  margin: 0.3em 0 0.4em;
+}
+
+.lead {
+  font-size: 1.12rem;
+  color: var(--text-2);
+  margin: 0 0 1.4em;
+  max-width: 40em;
+}
+
+.hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.hero-meta {
+  color: var(--muted);
+  font-size: 0.92rem;
+  margin: 1.2em 0 0;
+}
+
+.hero-shot a {
+  display: block;
+  border-radius: var(--radius);
+  overflow: hidden;
+  border: 1px solid var(--border-strong);
+  box-shadow: var(--shadow);
+  line-height: 0;
+}
+
+@media (min-width: 1000px) {
+  .hero {
+    padding: 64px 0 72px;
+  }
+
+  .hero-in {
+    grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+    align-items: center;
+    gap: 48px;
+  }
+
+  .hero h1 {
+    font-size: 2.8rem;
+  }
+}
+
+.band {
+  padding: 48px 0 56px;
+}
+
+.band-alt {
+  background: var(--bg-2);
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+
+.band h2 {
+  margin-top: 0;
+}
+
+.section-lead {
+  color: var(--text-2);
+  margin: -0.2em 0 1.5em;
+}
+
+.features,
+.cards {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+}
+
+.feature,
+.card {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 18px 20px;
+}
+
+.band-alt .card {
+  background: var(--bg);
+}
+
+.feature h3,
+.card h3 {
+  margin: 10px 0 6px;
+  font-size: 1.08rem;
+}
+
+.feature p,
+.card p {
+  margin: 0;
+  color: var(--text-2);
+  font-size: 0.96rem;
+}
+
+.feature-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 9px;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.feature-icon svg {
+  width: 21px;
+  height: 21px;
+}
+
+.card {
+  display: block;
+  color: var(--text);
+  text-decoration: none;
+}
+
+.card:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+/* Downloads */
+
+.dl-grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}
+
+.dl-card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 18px 20px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.dl-card h3 {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 1.15rem;
+}
+
+.dl-card h3 svg {
+  width: 22px;
+  height: 22px;
+  color: var(--accent);
+}
+
+.dl-sub {
+  margin: -4px 0 2px;
+  color: var(--text-2);
+  font-size: 0.95rem;
+}
+
+.dl-file {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-family: var(--mono);
+  overflow-wrap: anywhere;
+}
+
+.dl-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.dl-card .btn {
+  align-self: flex-start;
+}
+
+.all-downloads {
+  margin: 20px 0 8px;
+}
+
+.tips {
+  margin: 20px 0 0;
+  padding-left: 1.2em;
+  color: var(--text-2);
+}
+
+.tips li {
+  margin: 0.45em 0;
+}
+
+.tips strong {
+  color: var(--text);
+}
+
+/* Photo grid */
+
+.gallery {
+  display: grid;
+  gap: 22px;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+}
+
+.shot {
+  margin: 0;
+}
+
+.shot a {
+  display: block;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid var(--border-strong);
+  line-height: 0;
+  background: var(--bg-2);
+  aspect-ratio: 16 / 10;
+}
+
+.shot a:hover {
+  border-color: var(--accent);
+}
+
+/* Every photo is 16:10 except the cropped Settings one, which shows whole. */
+.shot img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.shot figcaption {
+  margin-top: 10px;
+  font-size: 0.93rem;
+  color: var(--text-2);
+}
+
+.shot figcaption strong {
+  display: block;
+  color: var(--text);
+}
+
+/* ── Guide pages ── */
+
+.doc-layout {
+  display: grid;
+  gap: 32px;
+  padding-top: 28px;
+  padding-bottom: 64px;
+}
+
+.toc {
+  display: none;
+}
+
+@media (min-width: 960px) {
+  .doc-layout {
+    grid-template-columns: 250px minmax(0, 1fr);
+    gap: 48px;
+  }
+
+  .toc {
+    display: block;
+    position: sticky;
+    top: 16px;
+    align-self: start;
+    max-height: calc(100vh - 32px);
+    overflow-y: auto;
+    padding-right: 8px;
+    font-size: 0.9rem;
+  }
+
+  .toc-mobile {
+    display: none;
+  }
+}
+
+.toc-title {
+  margin: 0 0 8px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+.toc ul,
+.toc-mobile ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.toc li,
+.toc-mobile li {
+  margin: 0;
+}
+
+.toc a,
+.toc-mobile a {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  color: var(--text-2);
+  text-decoration: none;
+  line-height: 1.35;
+}
+
+.toc a:hover,
+.toc-mobile a:hover {
+  background: var(--bg-3);
+  color: var(--text);
+}
+
+.toc a svg,
+.toc-mobile a svg {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  color: var(--accent);
+}
+
+.toc .sub a,
+.toc-mobile .sub a {
+  padding-left: 22px;
+  font-size: 0.86rem;
+  color: var(--muted);
+}
+
+.toc-mobile {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-2);
+  margin: 0 0 24px;
+}
+
+.toc-mobile summary {
+  cursor: pointer;
+  padding: 10px 14px;
+  font-weight: 600;
+}
+
+.toc-mobile ul {
+  padding: 0 6px 10px;
+}
+
+.doc {
+  min-width: 0;
+}
+
+.doc h1 {
+  margin-bottom: 0.5em;
+}
+
+.doc h2 {
+  padding-top: 0.6em;
+  border-top: 1px solid var(--border);
+}
+
+/* The guide's Markdown already has a rule (---) before each part. */
+.doc hr + h2,
+.doc .toc-mobile + h2 {
+  border-top: 0;
+}
+
+.intro hr {
+  display: none;
+}
+
+.doc h2,
+.doc h3,
+.topic {
+  scroll-margin-top: 16px;
+}
+
+.anchor {
+  margin-left: 8px;
+  color: var(--muted);
+  text-decoration: none;
+  font-weight: 400;
+  opacity: 0;
+}
+
+h2:hover .anchor,
+h3:hover .anchor,
+.anchor:focus {
+  opacity: 1;
+}
+
+.intro {
+  color: var(--text-2);
+  font-size: 1.05rem;
+}
+
+.doc li {
+  margin: 0.3em 0;
+}
+
+.doc li > ul,
+.doc li > ol {
+  margin: 0.3em 0;
+}
+
+.table-wrap {
+  overflow-x: auto;
+  margin: 1.2em 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 0.93rem;
+}
+
+th,
+td {
+  text-align: left;
+  vertical-align: top;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+th {
+  background: var(--bg-2);
+  font-weight: 600;
+}
+
+tr:last-child td {
+  border-bottom: 0;
+}
+
+td code {
+  overflow-wrap: normal;
+  white-space: nowrap;
+}
+
+.doc a.zoom {
+  display: block;
+  line-height: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.doc-source {
+  margin-top: 3em;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+/* Help topics */
+
+.topic h2 {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.topic h2 .feature-icon {
+  width: 34px;
+  height: 34px;
+}
+
+.topic h2 .feature-icon svg {
+  width: 19px;
+  height: 19px;
+}
+
+.summary {
+  color: var(--text-2);
+  font-size: 1.05rem;
+  margin-top: -0.2em;
+}
+
+.note {
+  margin: 1em 0;
+  padding: 10px 16px;
+  border-left: 3px solid var(--info);
+  background: var(--info-soft);
+  border-radius: 0 8px 8px 0;
+}
+
+.note p {
+  margin: 0;
+}
+
+.os-switch {
+  display: none;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 0 0 24px;
+  color: var(--text-2);
+  font-size: 0.95rem;
+}
+
+.js .os-switch {
+  display: flex;
+}
+
+.os-switch button {
+  font: inherit;
+  font-weight: 600;
+  padding: 6px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-2);
+  color: var(--text-2);
+  cursor: pointer;
+}
+
+.os-switch button[aria-pressed="true"] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-fg);
+}
+
+.os-label {
+  font-size: 0.8rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--accent);
+  margin: 1.2em 0 0;
+}
+
+/* Without the script both Mac and Windows lines show, with a label. */
+.js .os-mac,
+.js .os-win,
+.js .os-label {
+  display: none;
+}
+
+.js[data-os="mac"] .os-mac,
+.js[data-os="win"] .os-win {
+  display: block;
+}
+
+/* ── Photo viewer ── */
+
+.lightbox {
+  width: 100vw;
+  height: 100vh;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: rgba(5, 8, 12, 0.98);
+  color: #e6edf3;
+}
+
+.lightbox::backdrop {
+  background: rgba(5, 8, 12, 0.6);
+}
+
+.lightbox[open] {
+  display: flex;
+  flex-direction: column;
+}
+
+.lb-stage {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 56px 16px 8px;
+}
+
+.lb-img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border-radius: 6px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.6);
+}
+
+.lb-caption {
+  margin: 0;
+  padding: 8px 16px 18px;
+  text-align: center;
+  font-size: 0.95rem;
+  color: #c9d3dc;
+}
+
+.lb-btn {
+  position: absolute;
+  z-index: 1;
+  width: 44px;
+  height: 44px;
+  border-radius: 999px;
+  border: 1px solid #30404f;
+  background: rgba(15, 20, 28, 0.85);
+  color: #e6edf3;
+  font-size: 28px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.lb-btn:hover {
+  border-color: #01a982;
+}
+
+.lb-close {
+  top: 8px;
+  right: 12px;
+}
+
+.lb-prev,
+.lb-next {
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.lb-prev {
+  left: 12px;
+}
+
+.lb-next {
+  right: 12px;
+}
+
+@media (max-width: 699px) {
+  .lb-prev,
+  .lb-next {
+    top: auto;
+    bottom: 8px;
+    transform: none;
+  }
+
+  .lb-caption {
+    padding: 8px 64px 18px;
+  }
+}
