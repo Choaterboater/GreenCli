@@ -2853,9 +2853,9 @@ fn main() {
                 show_window_fallback(main_window);
             }
 
-            // [2.0 updater] Register the updater here, only when a public key is set.
-            // Updates are on in release builds for the systems release.yml builds;
-            // the public key comes from each release at check time (updater.rs).
+            // [2.0 updater] Updates are on only in release builds for the
+            // systems release.yml builds, with the owner's public key built in
+            // (tauri.conf.json plugins.updater.pubkey); otherwise off (updater.rs).
             updater::register(app);
 
             // Auto-connect enabled MCP servers in the background so the AI's
