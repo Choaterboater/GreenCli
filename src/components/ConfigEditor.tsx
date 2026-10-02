@@ -27,6 +27,7 @@ import {
   XCircle,
   Info,
   EyeOff,
+  Sparkles,
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/tauri';
 import { useSessionStore } from '../store/sessionStore';
@@ -50,9 +51,15 @@ import {
   type ConfigProblem,
 } from '../utils/configProblems';
 import { vendorMismatch } from '../utils/editorStatus';
-import { hideSecretsForCopy } from '../utils/secrets/forCopy';
 import { tabLabel } from '../utils/tabs';
 import { SEND_MARK_TEXT, sendMarkCounts, sendMarkSummary, sendMarks, type SendMark, type SendMarkState } from '../utils/sendMarks';
+import { linesInSpan, selectedLines, spanText, type LineSpan } from '../utils/sendSelection';
+import { jobBlockFromEditor, vendorSteps } from '../utils/changeJobs';
+import { askMenu, buildAskPrompt, secretLinePairs, type AskKind } from '../utils/askAi';
+import { hideSecretsForCopy, hideSecretsInText } from '../utils/secrets/forCopy';
+import { useAiBridge } from '../store/aiBridgeStore';
+import { fenceDeviceLanguage, isOtherVendor, locateTarget, restoreSecrets, withSuggestion } from '../utils/aiReview';
+import { showSidePanel } from './sidePanelActions';
 import { timeAgo } from '../store/recentStore';
 import { useTheme } from '../hooks/useTheme';
 import { isTauri, tauriOpen, tauriSave, tauriReadText, tauriWriteText, browserOpen, browserSave } from '../utils/fileSystem';
@@ -632,6 +639,30 @@ export default function ConfigEditor() {
   const [diffOriginal, setDiffOriginal] = useState('');
   // What the diff's left side is, and the device it came from (null = a file).
   const [diffSource, setDiffSource] = useState<{ label: string; device: string | null } | null>(null);
+  // The Diff view's text models. The React wrapper disposes them before
+  // Monaco lets go of them, which throws; so it keeps them and they are
+  // disposed here a moment after each Diff view closes.
+  const diffModelsRef = useRef<MonacoEditor.ITextModel[]>([]);
+  const disposeDiffModels = useCallback(() => {
+    const models = diffModelsRef.current.splice(0);
+    if (models.length) setTimeout(() => models.forEach((m) => !m.isDisposed() && m.dispose()), 0);
+  }, []);
+  // An AI suggestion under review (Review in Editor in the AI panel): your tab
+  // on the left, the suggestion on the right. Nothing changes until Apply.
+  const [aiReview, setAiReview] = useState<{
+    bufferId: string;
+    proposed: string;
+    where: string;
+    restored: number;
+    markersLeft: number;
+  } | null>(null);
+  const reviewRightRef = useRef<MonacoEditor.ICodeEditor | null>(null);
+  // An applied suggestion waits for the editor to come back, then goes in as
+  // an edit (so Ctrl+Z undoes it) instead of replacing the text outright.
+  const pendingApplyRef = useRef<{ bufferId: string; text: string } | null>(null);
+  useEffect(() => {
+    if (!diffMode && !aiReview) disposeDiffModels();
+  }, [diffMode, aiReview, disposeDiffModels]);
   // Running-configs pulled per device (deviceKey). The send preview only ever
   // diffs against the device it is sending to — one global baseline from
   // whichever switch was pulled last compared against the wrong box.
@@ -642,6 +673,10 @@ export default function ConfigEditor() {
   const [lastSend, setLastSend] = useState<{ bufferId: string; target: string; at: number; marks: SendMark[] } | null>(null);
   const sendMarkIdsRef = useRef(new Map<string, string[]>());
   const [sendProgress, setSendProgress] = useState<{ sent: number; total: number } | null>(null);
+  // The whole lines the editor selection covers (Send selected lines, Ask AI).
+  const [selection, setSelection] = useState<LineSpan | null>(null);
+  const [showSendMenu, setShowSendMenu] = useState(false);
+  const [showAskMenu, setShowAskMenu] = useState(false);
   // Config archive panel (NW-16): store-lifted so Tools / palette can open it.
   const showArchive = useSessionStore((s) => s.showArchive);
   const setShowArchive = useSessionStore((s) => s.setShowArchive);
@@ -652,6 +687,12 @@ export default function ConfigEditor() {
   // problem markers are put back on the new editor's model.
   const [editorEpoch, setEditorEpoch] = useState(0);
   const saveFileRef = useRef<(forcePicker?: boolean) => Promise<void>>();
+  // Monaco actions are added once per mount; they call the latest handlers through this.
+  const editorCommandsRef = useRef<{ sendSelection: () => void; sendSafely: () => void; askAi: (kind: AskKind) => void }>({
+    sendSelection: () => {},
+    sendSafely: () => {},
+    askAi: () => {},
+  });
   const openFileRef = useRef<() => Promise<void>>();
 
   // path={buffer.id} gives each tab its own Monaco model, but the library never
@@ -802,6 +843,64 @@ export default function ConfigEditor() {
       openInNewTab({ ...draft, filePath: null, dirty: true, langExplicit: false });
     }
   }, [inbox, openInNewTab]);
+
+  // Review in Editor: the suggestion as a diff against the lines you asked
+  // about, with the real secrets put back. It opens in a new tab instead when
+  // there is nothing to compare with: no question from the editor, the tab is
+  // closed, the lines changed since, or it is another vendor's config (Convert).
+  const pendingReview = useAiBridge((s) => s.pendingReview);
+  useEffect(() => {
+    if (!pendingReview) return;
+    const review = useAiBridge.getState().takeReview();
+    if (!review) return;
+    showSidePanel('editor');
+    const target = review.target;
+    const buffer = target ? buffersRef.current.find((b) => b.id === target.bufferId) : undefined;
+    const openAlone = (why: string) => {
+      const restoredCode = target ? restoreSecrets(review.code, target.secretLines).text : review.code;
+      const lang = fenceDeviceLanguage(review.language) ?? target?.language ?? 'plaintext';
+      openInNewTab({ name: 'AI suggestion', content: restoredCode, language: lang, filePath: null, dirty: true, langExplicit: lang !== 'plaintext' });
+      showStatus(why);
+    };
+    if (!target || !buffer) {
+      openAlone(target ? 'The tab you asked about is closed: the suggestion opened in a new tab' : 'The suggestion opened in a new tab');
+      return;
+    }
+    if (isOtherVendor(review.language, target.language)) {
+      openAlone('The converted config opened in a new tab');
+      return;
+    }
+    const span = locateTarget(buffer.content, target.original, target.span);
+    if (!span) {
+      openAlone('Those lines changed since you asked: the suggestion opened in a new tab');
+      return;
+    }
+    const { text, restored, markersLeft } = restoreSecrets(review.code, target.secretLines);
+    setDiffMode(false);
+    setActiveId(buffer.id);
+    setAiReview({
+      bufferId: buffer.id,
+      proposed: withSuggestion(buffer.content, span, text),
+      where: target.span ? (span.start === span.end ? `line ${span.start}` : `lines ${span.start}–${span.end}`) : 'the whole tab',
+      restored,
+      markersLeft,
+    });
+  }, [pendingReview, openInNewTab]);
+
+  const applyAiReview = () => {
+    if (!aiReview) return;
+    const next = reviewRightRef.current?.getValue() ?? aiReview.proposed;
+    if (next !== content) pendingApplyRef.current = { bufferId: aiReview.bufferId, text: next };
+    setAiReview(null);
+    reviewRightRef.current = null;
+    showStatus(next !== content ? 'Applied the AI suggestion (Ctrl+Z undoes it)' : 'Nothing to apply: no changes left');
+  };
+  const discardAiReview = () => {
+    setAiReview(null);
+    reviewRightRef.current = null;
+    showStatus('Discarded the AI suggestion');
+  };
+  const reviewing = !!aiReview && aiReview.bufferId === active.id;
 
   const newTab = useCallback(() => {
     openInNewTab({
@@ -1131,6 +1230,17 @@ export default function ConfigEditor() {
     // setupMonaco (beforeMount) — this runs again after every Diff toggle.
     setEditorEpoch((n) => n + 1);
 
+    // An AI suggestion applied in the review: one undoable edit (onChange
+    // then saves it to the tab and marks it unsaved).
+    const apply = pendingApplyRef.current;
+    const model = ed.getModel();
+    if (apply && model && apply.bufferId === activeIdRef.current) {
+      pendingApplyRef.current = null;
+      ed.pushUndoStop();
+      ed.executeEdits('ai-suggestion', [{ range: model.getFullModelRange(), text: apply.text, forceMoveMarkers: true }]);
+      ed.pushUndoStop();
+    }
+
     // Keybindings
     ed.addAction({
       id: 'save-file',
@@ -1156,11 +1266,46 @@ export default function ConfigEditor() {
       keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyM],
       run: () => setShowProblems((open) => !open),
     });
+    // Right-click menu: the device commands, in their own group at the top.
+    ed.addAction({
+      id: 'greencli-send-selection',
+      label: 'Send Selected Lines to Device',
+      contextMenuGroupId: '0_greencli',
+      contextMenuOrder: 1,
+      run: () => editorCommandsRef.current.sendSelection(),
+    });
+    ed.addAction({
+      id: 'greencli-send-safely',
+      label: 'Send Safely as a Change Job…',
+      contextMenuGroupId: '0_greencli',
+      contextMenuOrder: 2,
+      run: () => editorCommandsRef.current.sendSafely(),
+    });
+
+    ed.addAction({
+      id: 'greencli-ask-explain',
+      label: 'Ask AI: Explain These Lines',
+      contextMenuGroupId: '0_greencli',
+      contextMenuOrder: 3,
+      run: () => editorCommandsRef.current.askAi('explain'),
+    });
+    ed.addAction({
+      id: 'greencli-ask-custom',
+      label: 'Ask AI About These Lines…',
+      contextMenuGroupId: '0_greencli',
+      contextMenuOrder: 4,
+      run: () => editorCommandsRef.current.askAi('custom'),
+    });
+
+    setSelection(selectedLines(ed.getSelection()));
+    ed.onDidChangeCursorSelection((e) => setSelection(selectedLines(e.selection)));
+    ed.onDidChangeModel(() => setSelection(selectedLines(ed.getSelection())));
   };
 
   // ─── Send to terminal ───
 
-  const sendToTerminal = async () => {
+  /** Send the tab, or with `span` only the selected lines (Send selected lines). */
+  const sendToTerminal = async (span?: LineSpan) => {
     if (sendingRef.current) return;
     if (pulling) {
       showStatus('Pull in progress — wait for it to finish');
@@ -1171,10 +1316,11 @@ export default function ConfigEditor() {
       showStatus('Not connected — connect the session first');
       return;
     }
-    const prepared = prepareSendLines(content);
+    const allPrepared = prepareSendLines(content);
+    const prepared = span ? linesInSpan(allPrepared, span) : allPrepared;
     const lines = prepared.map((l) => l.text);
     if (lines.length === 0) {
-      showStatus('Nothing to send');
+      showStatus(span ? 'Nothing to send in the selected lines' : 'Nothing to send');
       return;
     }
 
@@ -1185,7 +1331,7 @@ export default function ConfigEditor() {
     // since it is going to a device.
     // Setting a password in plain text is what a send is for, so that tip stays out of the dialog.
     const sendProblems = buildProblems(content, NETWORK_LANGUAGES.has(language) ? language : 'generic').filter(
-      (p) => p.code !== 'plaintext-secret'
+      (p) => p.code !== 'plaintext-secret' && (!span || (p.lineNumber >= span.start && p.lineNumber <= span.end))
     );
     const risky = sendProblems.some((p) => p.severity === 'error' || p.code === 'danger');
     const mismatch = vendorMismatch(
@@ -1193,12 +1339,15 @@ export default function ConfigEditor() {
       profileForSession(activeSession.config, customDeviceProfiles).deviceType,
       target
     );
-    const diffSummary = describeSendBaseline(
-      content,
-      target,
-      baselinesRef.current.get(deviceKey(activeSession.config)),
-      lastBaselineRef.current
-    );
+    // The compare with what you pulled is about the whole tab.
+    const diffSummary = span
+      ? `Only the selected lines ${span.start === span.end ? span.start : `${span.start}–${span.end}`} are sent.`
+      : describeSendBaseline(
+          content,
+          target,
+          baselinesRef.current.get(deviceKey(activeSession.config)),
+          lastBaselineRef.current
+        );
     const preview = lines.slice(0, 12).join('\n');
     const sid = activeSession.sessionId;
     const bufferId = active.id;
@@ -1208,7 +1357,7 @@ export default function ConfigEditor() {
 
     try {
       const ok = await askConfirm({
-        title: `Send ${lines.length} line${lines.length === 1 ? '' : 's'} to ${target}?`,
+        title: `Send ${lines.length}${span ? ' selected' : ''} line${lines.length === 1 ? '' : 's'} to ${target}?`,
         message: [
           mismatch,
           sendProblemNote(sendProblems),
@@ -1280,6 +1429,97 @@ export default function ConfigEditor() {
       cancelSendRef.current = false;
     }
   };
+
+  /** Send safely: hand the tab (or the selected lines) to Change Jobs with this
+   *  device ticked, so it goes out under the vendor's rollback timer after a
+   *  dry run. Nothing is sent from here. */
+  const sendSafely = (span?: LineSpan | null) => {
+    if (!activeSession) {
+      showStatus('Open a device tab first');
+      return;
+    }
+    const text = span ? spanText(content, span) : content;
+    const { deviceType } = profileForSession(activeSession.config, customDeviceProfiles);
+    const { block, removed } = jobBlockFromEditor(text, deviceType);
+    if (!prepareSendLines(block).length) {
+      showStatus(span ? 'Nothing to send in the selected lines' : 'Nothing to send');
+      return;
+    }
+    useSessionStore.getState().openChangeJobWith({ block, sessionId: activeSession.sessionId, removed });
+  };
+
+  /** Ask AI about the selected lines (or the whole tab). Secrets are hidden
+   *  first (nothing goes if that can't run); the editor keeps the real lines
+   *  so an answer can come back as a diff to review. */
+  const askAi = async (kind: AskKind) => {
+    setShowAskMenu(false);
+    const span = selectedLines(editorRef.current?.getSelection());
+    const text = span ? spanText(content, span) : content;
+    if (!text.trim()) {
+      showStatus('Nothing to ask about');
+      return;
+    }
+    let question: string | undefined;
+    if (kind === 'custom') {
+      question = (
+        await askPrompt({
+          title: span ? 'Ask the AI about these lines' : 'Ask the AI about this tab',
+          placeholder: 'What does this do? What is missing?',
+          confirmLabel: 'Ask',
+        })
+      )?.trim();
+      if (!question) return;
+    }
+    const hidden = await hideSecretsInText(text);
+    if (!hidden.ok) {
+      showStatus(
+        hidden.reason === 'too-big'
+          ? 'Not sent to the AI: too big to check for secrets (over 1 MB)'
+          : 'Not sent to the AI: GreenCLI could not check it for secrets on this system'
+      );
+      return;
+    }
+    const inSpan = (n: number) => !span || (n >= span.start && n <= span.end);
+    const found =
+      kind === 'fix' || kind === 'check'
+        ? buildProblems(content, language)
+            .filter((p) => p.severity !== 'info' && inSpan(p.lineNumber))
+            .map((p) => ({ lineNumber: p.lineNumber, message: p.message }))
+        : undefined;
+    const prompt = buildAskPrompt({
+      kind,
+      question,
+      text: hidden.text,
+      language,
+      languageName: LANGUAGE_LIST.find((l) => l.id === language)?.label,
+      tabName: active.name,
+      span,
+      hidden: hidden.hidden,
+      problems: found,
+    });
+    useAiBridge.getState().ask(prompt, {
+      bufferId: active.id,
+      tabName: active.name,
+      language,
+      span,
+      original: text,
+      secretLines: secretLinePairs(text, hidden.text),
+    });
+    showSidePanel('ai');
+  };
+
+  // After each render, like saveFileRef: the right-click items reach the latest handlers.
+  useEffect(() => {
+    editorCommandsRef.current = {
+      askAi: (kind) => void askAi(kind),
+      sendSelection: () => {
+        const span = selectedLines(editorRef.current?.getSelection());
+        if (span) void sendToTerminal(span);
+        else showStatus('Select the lines to send first');
+      },
+      sendSafely: () => sendSafely(selectedLines(editorRef.current?.getSelection())),
+    };
+  });
 
   // Select a line in the editor (from the send-error banner).
   const jumpToLine = (lineNumber: number) => {
@@ -1372,6 +1612,15 @@ export default function ConfigEditor() {
         deviceType: profileForSession(activeSession.config, customDeviceProfiles).deviceType,
       }
     : null;
+  // What "Send safely" protects the change with, for this device.
+  const safeVendor = sendTarget ? vendorSteps(sendTarget.deviceType) : null;
+  const safeSendHint = !safeVendor
+    ? ''
+    : safeVendor.wrapper === 'checkpoint'
+      ? 'Dry run, then checkpoint auto: the switch rolls back unless you confirm.'
+      : safeVendor.wrapper === 'commit-confirmed'
+        ? 'Dry run, then commit confirmed: Junos rolls back unless you confirm.'
+        : `${safeVendor.label} has no rollback timer, but you get a dry run and checks.`;
   const pulledForTarget = activeSession ? baselinesRef.current.get(deviceKey(activeSession.config)) : undefined;
   const sendTargetPull = pulledForTarget ? { at: pulledForTarget.pulledAt, truncated: pulledForTarget.truncated } : undefined;
   const filteredLangs = LANGUAGE_LIST.filter((l) =>
@@ -1729,7 +1978,8 @@ export default function ConfigEditor() {
               }
               setShowCompareMenu(!showCompareMenu);
             }}
-            className={`flex items-center gap-1.5 px-2 py-1 text-xs rounded transition-colors ${
+            disabled={reviewing}
+            className={`flex items-center gap-1.5 px-2 py-1 text-xs rounded transition-colors disabled:opacity-40 ${
               diffMode ? 'text-[var(--accent)] bg-[var(--accent-soft)]' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
             }`}
             title="Compare the editor with what you pulled, or with a file"
@@ -1779,6 +2029,41 @@ export default function ConfigEditor() {
                   <FolderOpen size={12} />
                   A file…
                 </button>
+              </div>
+            </>
+          )}
+        </div>
+
+        {/* Ask AI about the selected lines (or the tab): secrets hidden first. */}
+        <div className="relative">
+          <button
+            onClick={() => setShowAskMenu((open) => !open)}
+            disabled={!content.trim()}
+            className="flex items-center gap-1.5 px-2 py-1 text-xs rounded transition-colors disabled:opacity-40 text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]"
+            title={selection ? 'Ask the AI about the selected lines' : 'Ask the AI about this tab'}
+          >
+            <Sparkles size={12} />
+            Ask AI
+            <ChevronDown size={10} />
+          </button>
+          {showAskMenu && (
+            <>
+              <div className="fixed inset-0 z-20" onClick={() => setShowAskMenu(false)} />
+              <div className="absolute top-full left-0 mt-1 z-30 w-60 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg shadow-xl py-1">
+                <p className="px-3 py-1 text-[10px] text-[var(--text-muted)]">
+                  {selection
+                    ? `About ${selection.start === selection.end ? `line ${selection.start}` : `lines ${selection.start}–${selection.end}`}. Secrets are hidden first.`
+                    : 'About the whole tab (select lines to narrow it). Secrets are hidden first.'}
+                </p>
+                {askMenu(language, problemCounts.error + problemCounts.warning > 0).map((item) => (
+                  <button
+                    key={item.kind}
+                    onClick={() => void askAi(item.kind)}
+                    className="flex items-center w-full px-3 py-1.5 text-xs text-left text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]"
+                  >
+                    {item.label}
+                  </button>
+                ))}
               </div>
             </>
           )}
@@ -1847,19 +2132,63 @@ export default function ConfigEditor() {
           </button>
         )}
         {activeSession && (
-          <button
-            onClick={sendToTerminal}
-            disabled={sending || pulling || !activeSession?.connected}
-            className="flex items-center gap-1.5 px-2.5 py-1 text-xs bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-40 text-[var(--accent-fg)] rounded transition-colors"
-            title={activeSession ? 'Send lines to terminal' : 'No active session'}
-          >
-            <Send size={12} />
-            {sending
-              ? sendProgress
-                ? `Sending ${sendProgress.sent}/${sendProgress.total}…`
-                : 'Sending…'
-              : 'Send'}
-          </button>
+          <div className="relative flex items-stretch">
+            <button
+              onClick={() => void sendToTerminal()}
+              disabled={sending || pulling || !activeSession?.connected}
+              className="flex items-center gap-1.5 pl-2.5 pr-2 py-1 text-xs bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-40 text-[var(--accent-fg)] rounded-l transition-colors"
+              title={activeSession ? 'Send lines to terminal' : 'No active session'}
+            >
+              <Send size={12} />
+              {sending
+                ? sendProgress
+                  ? `Sending ${sendProgress.sent}/${sendProgress.total}…`
+                  : 'Sending…'
+                : 'Send'}
+            </button>
+            <button
+              onClick={() => setShowSendMenu((open) => !open)}
+              disabled={sending || pulling}
+              className="flex items-center px-1 border-l border-black/20 bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-40 text-[var(--accent-fg)] rounded-r transition-colors"
+              title="Send selected lines, or send safely as a Change Job"
+              aria-label="More ways to send"
+            >
+              <ChevronDown size={11} />
+            </button>
+            {showSendMenu && (
+              <>
+                <div className="fixed inset-0 z-20" onClick={() => setShowSendMenu(false)} />
+                <div className="absolute top-full right-0 mt-1 z-30 w-72 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg shadow-xl py-1">
+                  <button
+                    onClick={() => {
+                      setShowSendMenu(false);
+                      if (selection) void sendToTerminal(selection);
+                    }}
+                    disabled={!selection || !activeSession.connected}
+                    className="flex flex-col w-full px-3 py-1.5 text-xs text-left text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] disabled:opacity-40 disabled:hover:bg-transparent"
+                  >
+                    <span>
+                      Send selected lines
+                      {selection ? ` (${selection.start === selection.end ? `line ${selection.start}` : `lines ${selection.start}–${selection.end}`})` : ''}
+                    </span>
+                    <span className="text-[10px] text-[var(--text-muted)]">
+                      {selection ? 'Only these lines go out, one at a time.' : 'Select some lines in the editor first.'}
+                    </span>
+                  </button>
+                  <button
+                    onClick={() => {
+                      setShowSendMenu(false);
+                      sendSafely(selection);
+                    }}
+                    className="flex flex-col w-full px-3 py-1.5 text-xs text-left text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]"
+                  >
+                    <span>Send safely as a Change Job…{selection ? ' (selected lines)' : ''}</span>
+                    <span className="text-[10px] text-[var(--text-muted)]">{safeSendHint}</span>
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
         )}
       </div>
 
@@ -1930,11 +2259,47 @@ export default function ConfigEditor() {
         </div>
       )}
 
+      {/* Reviewing an AI suggestion: what it covers, and Apply / Discard. */}
+      {reviewing && (
+        <div className="flex items-start gap-2 px-3 py-2 border-b border-[var(--bg-tertiary)] bg-[var(--accent-violet-soft)] text-xs flex-shrink-0">
+          <Sparkles size={13} className="text-[var(--accent-violet)] mt-0.5 flex-shrink-0" />
+          <div className="flex-1 min-w-0 text-[var(--text-primary)]">
+            <div className="font-medium">AI suggestion for {aiReview!.where}</div>
+            <div className="text-[11px] text-[var(--text-secondary)]">
+              Left: your tab · Right: the suggestion. The arrow beside a change drops it; you can also edit the right side.
+              {aiReview!.restored > 0 &&
+                ` ${aiReview!.restored} secret ${aiReview!.restored === 1 ? 'line was' : 'lines were'} put back from your tab.`}
+            </div>
+            {aiReview!.markersLeft > 0 && (
+              <div className="flex items-center gap-1 mt-0.5 text-[11px] text-[var(--accent-warning)]">
+                <AlertTriangle size={11} className="flex-shrink-0" />
+                {aiReview!.markersLeft} {aiReview!.markersLeft === 1 ? 'line still says' : 'lines still say'} &lt;secret hidden&gt;: put
+                the real value in before sending.
+              </div>
+            )}
+          </div>
+          <button
+            onClick={applyAiReview}
+            className="px-2.5 py-1 text-xs rounded bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-[var(--accent-fg)] flex-shrink-0"
+          >
+            Apply
+          </button>
+          <button
+            onClick={discardAiReview}
+            className="px-2.5 py-1 text-xs rounded text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] flex-shrink-0"
+          >
+            Discard
+          </button>
+        </div>
+      )}
+
       {/* What the diff compares against — and a warning when a pulled
           baseline is from a different device than the active session. */}
       {diffMode && diffSource && (
         <div className="flex items-center gap-3 px-3 py-1 border-b border-[var(--bg-tertiary)] bg-[var(--bg-secondary)] text-[10px] text-[var(--text-muted)] flex-shrink-0">
-          <span className="truncate">Left: {diffSource.label} · Right: editor</span>
+          <span className="truncate">
+            Left: {diffSource.label} · Right: this tab (edit it here; the arrow beside a change takes the left side)
+          </span>
           {diffSource.device && activeSession && diffSource.device !== deviceKey(activeSession.config) && (
             <span className="flex items-center gap-1 text-[var(--accent-warning)] flex-shrink-0">
               <AlertTriangle size={10} />
@@ -1946,15 +2311,67 @@ export default function ConfigEditor() {
 
       {/* Monaco Editor */}
       <div className="flex-1 overflow-hidden">
-        {diffMode ? (
+        {reviewing ? (
           <DiffEditor
+            key={`review-${active.id}`}
+            original={content}
+            modified={aiReview!.proposed}
+            language={language}
+            theme={editorTheme}
+            beforeMount={setupMonaco}
+            keepCurrentOriginalModel
+            keepCurrentModifiedModel
+            onMount={(diffEditor) => {
+              disposeDiffModels();
+              const { original: leftModel, modified: rightModel } = diffEditor.getModel() ?? {};
+              if (leftModel && rightModel) diffModelsRef.current.push(leftModel, rightModel);
+              reviewRightRef.current = diffEditor.getModifiedEditor();
+            }}
+            options={{
+              readOnly: false,
+              originalEditable: false,
+              renderMarginRevertIcon: true,
+              fixedOverflowWidgets: true,
+              fontSize: fontSize,
+              fontFamily: 'JetBrains Mono, Consolas, "Courier New", monospace',
+              lineHeight: Math.round(fontSize * 1.5),
+              mouseWheelZoom: true,
+              minimap: { enabled: false },
+              scrollBeyondLastLine: false,
+              renderSideBySide: true,
+            }}
+          />
+        ) : diffMode ? (
+          <DiffEditor
+            // One per tab, so a tab switch never feeds one tab's text into another.
+            key={active.id}
             original={diffOriginal}
             modified={content}
             language={language}
             theme={editorTheme}
             beforeMount={setupMonaco}
+            // The right side is the tab itself: edits there land in the tab,
+            // and the arrow beside a change takes the left side's lines.
+            keepCurrentOriginalModel
+            keepCurrentModifiedModel
+            onMount={(diffEditor) => {
+              disposeDiffModels(); // the view this one replaced (a tab switch)
+              const { original: leftModel, modified: rightModel } = diffEditor.getModel() ?? {};
+              if (leftModel && rightModel) diffModelsRef.current.push(leftModel, rightModel);
+              const bufferId = active.id;
+              const right = diffEditor.getModifiedEditor();
+              right.onDidChangeModelContent(() => {
+                const next = right.getValue();
+                setBuffers((prev) =>
+                  prev.map((b) => (b.id === bufferId && b.content !== next ? { ...b, content: next, dirty: true } : b))
+                );
+              });
+            }}
             options={{
-              readOnly: true,
+              readOnly: false,
+              originalEditable: false,
+              renderMarginRevertIcon: true,
+              fixedOverflowWidgets: true,
               fontSize: fontSize,
               fontFamily: 'JetBrains Mono, Consolas, "Courier New", monospace',
               lineHeight: Math.round(fontSize * 1.5),

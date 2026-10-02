@@ -67,6 +67,28 @@ describe('ChangeJobs', () => {
     expect(vi.mocked(invoke).mock.calls.some(([cmd]) => cmd === 'send_data')).toBe(false);
   });
 
+  it('takes a block and device handed over by the Config Editor (Send safely)', async () => {
+    const cx = host('cx1', '10.0.0.1', 'aruba-cx');
+    const tab: Session = { sessionId: 's1', config: cx, connected: true } as Session;
+    useSessionStore.setState({
+      showChangeJobs: false,
+      sessions: [tab],
+      folders: [],
+      changeJobDraft: { block: 'vlan 20\n    name users', sessionId: 's1', removed: ['checkpoint auto 5'] },
+    });
+    render(<ChangeJobs onConnect={vi.fn()} />);
+    useSessionStore.setState({ showChangeJobs: true });
+
+    await waitFor(() =>
+      expect(screen.getByPlaceholderText(/^vlan \$\{vlan\}/)).toHaveValue('vlan 20\n    name users')
+    );
+    expect(screen.getByText('1 device in this job')).toBeInTheDocument();
+    expect(useSessionStore.getState().changeJobDraft).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: /Dry run/ }));
+    expect(screen.getByText('checkpoint auto 5')).toBeInTheDocument();
+    expect(vi.mocked(invoke).mock.calls.some(([cmd]) => cmd === 'send_data')).toBe(false);
+  });
+
   it('blocks Run while a device is missing a variable, until it is left out', () => {
     openWith([host('cx1', '10.0.0.1', 'aruba-cx'), host('cx2', '10.0.0.3', 'aruba-cx')]);
     fireEvent.click(screen.getByText('Core'));
