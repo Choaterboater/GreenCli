@@ -49,14 +49,17 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
 
 // Windows start hidden (tauri.conf.json / pop-out builder: visible: false) so
 // launch never flashes an unpainted white webview. Reveal once React has
-// committed a painted frame (double rAF); the Rust side has a timeout fallback
+// committed a painted frame (double rAF). A webview may not run animation
+// frames while its window is hidden (WebKitGTK doesn't), so a short timer
+// reveals it too, whichever comes first. The Rust side has a 4 s fallback
 // that shows the window anyway if this code never runs.
-requestAnimationFrame(() =>
-  requestAnimationFrame(() => {
-    if (isTauri) {
-      const win = currentWindow();
-      win?.show().catch(() => {});
-      win?.setFocus().catch(() => {});
-    }
-  })
-);
+let revealed = false;
+const reveal = () => {
+  if (revealed || !isTauri) return;
+  revealed = true;
+  const win = currentWindow();
+  win?.show().catch(() => {});
+  win?.setFocus().catch(() => {});
+};
+requestAnimationFrame(() => requestAnimationFrame(reveal));
+setTimeout(reveal, 400);
