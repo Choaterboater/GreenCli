@@ -1,5 +1,6 @@
 // What the config editor underlines: risky lines, placeholders that still need
-// values, terminal junk from a captured log, and the Junos "no commit" tip.
+// values, terminal junk from a captured log, a password in plain text, and
+// the Junos "no commit" tip.
 // Pure (no Monaco import) so it is unit-tested; the editor turns each problem
 // into a marker (squiggle, scrollbar mark, F8 stop) and a row in the list.
 //
@@ -40,6 +41,10 @@ const ESC = /\x1b/;
 const SECRET_MARKER = /<\s*(?:secret\s+hidden|line\s+hidden\s*:\s*secret)\s*>/i;
 const PLACEHOLDER = /\$\{[^}\n]+\}|<[^<>\n]{2,}>/g;
 const JUNOS_EDIT = /^(?:set|delete|replace|deactivate|activate)\b/i;
+// A line about a password, key or community ("password plaintext X",
+// "key plaintext X", "auth-pass plaintext X priv-pass plaintext Y").
+const SECRET_WORD = /pass|key|secret|psk|community/i;
+const PLAINTEXT_VALUE = /\b(?:plaintext|plain-text)\s+("[^"\n]*"|'[^'\n]*'|\S+)/gi;
 const JUNOS_COMMIT = /^commit\b/i;
 
 function indentEnd(raw: string): number {
@@ -101,6 +106,23 @@ export function buildProblems(text: string, language: string): ConfigProblem[] {
             : `Fill in ${match[0]} before sending: the switch would get this text as it is.`,
           code: secret ? 'secret-marker' : 'placeholder',
         });
+      }
+      if (SECRET_WORD.test(raw)) {
+        PLAINTEXT_VALUE.lastIndex = 0;
+        for (let match = PLAINTEXT_VALUE.exec(raw); match; match = PLAINTEXT_VALUE.exec(raw)) {
+          const value = match[1];
+          // A blank or a hidden-secret marker is already an error above.
+          if (/^["']?(?:\$\{|<)/.test(value)) continue;
+          const start = match.index + match[0].length - value.length;
+          add({
+            lineNumber: line.lineNumber,
+            startColumn: start + 1,
+            endColumn: start + value.length + 1,
+            severity: 'info',
+            message: 'A password or key in plain text. Use Copy with secrets hidden before you share this file.',
+            code: 'plaintext-secret',
+          });
+        }
       }
     }
 
