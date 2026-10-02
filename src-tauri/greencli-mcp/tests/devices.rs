@@ -100,6 +100,33 @@ fn many_devices_page_under_the_cap() {
     std::fs::remove_dir_all(dir).ok();
 }
 
+// Casper cuts every list to 50 items and keeps the cursor, so a page with
+// more than 50 would skip devices.
+#[test]
+fn a_page_holds_at_most_fifty_devices() {
+    let dir = temp_dir("devices-fifty");
+    let names: Vec<String> = (0..120).map(|i| format!("sw-access-{i:03}")).collect();
+    let items: Vec<Value> = names
+        .iter()
+        .enumerate()
+        .map(|(i, name)| {
+            json!({"id": format!("id-{i}"), "name": name, "protocol": "ssh",
+                   "host": format!("10.2.0.{i}"), "port": 22, "deviceType": "aruba-cx", "tags": []})
+        })
+        .collect();
+    let data = json!({"version": "1.0", "folders": [{"id": "f", "name": "All", "expanded": true, "items": items}]});
+    std::fs::write(dir.join("sessions.json"), data.to_string()).unwrap();
+    let pages = list_pages(&dir, "list_devices", json!({}), "devices");
+    assert_eq!(page_sizes(&pages), [50, 50, 20]);
+    let seen: Vec<&str> = pages
+        .iter()
+        .flatten()
+        .map(|d| d["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(seen, names);
+    std::fs::remove_dir_all(dir).ok();
+}
+
 #[test]
 fn a_bad_cursor_says_start_again() {
     let dir = fixture_dir("devices-cursor");

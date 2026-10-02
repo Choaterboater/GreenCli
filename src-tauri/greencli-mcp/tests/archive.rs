@@ -492,6 +492,45 @@ fn archive_devices_come_in_pages() {
     std::fs::remove_dir_all(dir).ok();
 }
 
+// Casper cuts every list to 50 items and keeps the cursor, so a page with
+// more than 50 would skip archive names or snapshots.
+#[test]
+fn a_page_holds_at_most_fifty_names_or_snapshots() {
+    let dir = temp_dir("archive-fifty");
+    let names: Vec<String> = (0..120).map(|i| format!("sw-{i:03}")).collect();
+    for name in &names[1..] {
+        write_archive(&dir, name, &[snap(1, "raw", None)]);
+    }
+    // 100 snapshots, as many as the app keeps for one device.
+    let stamps: Vec<u64> = (0..100).rev().map(|i| 1_700_000_000_000 + i).collect();
+    let snaps: Vec<Snap> = stamps.iter().map(|&ts| snap(ts, "raw", None)).collect();
+    write_archive(&dir, &names[0], &snaps);
+
+    let pages = list_pages(&dir, "list_archive_devices", json!({}), "devices");
+    assert_eq!(page_sizes(&pages), [50, 50, 20]);
+    let seen: Vec<&str> = pages
+        .iter()
+        .flatten()
+        .map(|d| d["archiveKey"].as_str().unwrap())
+        .collect();
+    assert_eq!(seen, names);
+
+    let pages = list_pages(
+        &dir,
+        "list_config_history",
+        json!({"device": names[0]}),
+        "snapshots",
+    );
+    assert_eq!(page_sizes(&pages), [50, 50]);
+    let seen: Vec<u64> = pages
+        .iter()
+        .flatten()
+        .map(|r| r["ts"].as_u64().unwrap())
+        .collect();
+    assert_eq!(seen, stamps);
+    std::fs::remove_dir_all(dir).ok();
+}
+
 #[test]
 fn dir_for_matches_the_app() {
     let vectors: Value = serde_json::from_str(include_str!("../testdata/dir_for.json")).unwrap();

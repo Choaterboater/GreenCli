@@ -8,6 +8,10 @@ use serde_json::{json, Value};
 /// counts, the cursor) fits in what is left of 16 KiB.
 pub const PAGE_BUDGET: usize = 12 * 1024;
 
+/// Most items on one page. Casper cuts every list to 50 items and keeps the
+/// cursor, so a longer page would skip the items it cut.
+pub const MAX_PAGE_ITEMS: usize = 50;
+
 pub const BAD_CURSOR: &str = "That cursor doesn't fit this request. Start again without a cursor.";
 
 const PREFIX: &str = "v1:";
@@ -55,15 +59,16 @@ pub fn read_cursor(tool: &str, cursor: &str) -> Option<Cursor> {
     })
 }
 
-/// Items from `start` that fit in `budget` bytes of JSON, and where the next
-/// page starts. At least one item is taken, so each item must be small.
+/// Items from `start` that fit in `budget` bytes of JSON, at most
+/// `MAX_PAGE_ITEMS` of them, and where the next page starts. At least one
+/// item is taken, so each item must be small.
 pub fn take_items(items: &[Value], start: usize, budget: usize) -> (Vec<Value>, Option<usize>) {
     let mut used = 0;
     let mut out = Vec::new();
     let mut i = start;
     while i < items.len() {
         let size = items[i].to_string().len() + 1;
-        if !out.is_empty() && used + size > budget {
+        if out.len() == MAX_PAGE_ITEMS || (!out.is_empty() && used + size > budget) {
             break;
         }
         used += size;
@@ -181,8 +186,25 @@ mod tests {
         assert!(!first.is_empty());
         let next = next.unwrap();
         assert_eq!(next, first.len());
-        let (all, none) = take_items(&items, 0, 1 << 20);
-        assert_eq!(all.len(), 100);
+        let (rest, none) = take_items(&items, 60, 1 << 20);
+        assert_eq!(rest.len(), 40);
+        assert_eq!(rest[0], json!({ "n": 60 }));
         assert!(none.is_none());
+    }
+
+    #[test]
+    fn a_page_holds_at_most_fifty_items() {
+        let items: Vec<Value> = (0..120).map(|i| json!(i)).collect();
+        let mut start = 0;
+        let mut pages = Vec::new();
+        loop {
+            let (page, next) = take_items(&items, start, 1 << 20);
+            pages.push((page.len(), next));
+            match next {
+                Some(n) => start = n,
+                None => break,
+            }
+        }
+        assert_eq!(pages, [(50, Some(50)), (50, Some(100)), (20, None)]);
     }
 }
