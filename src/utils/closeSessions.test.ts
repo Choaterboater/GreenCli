@@ -1,10 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-vi.mock('@tauri-apps/api/tauri', () => ({ invoke: vi.fn(() => Promise.resolve()) }));
-vi.mock('@tauri-apps/api/window', () => ({ WebviewWindow: { getByLabel: vi.fn(() => null) } }));
+vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn(() => Promise.resolve()) }));
+vi.mock('@tauri-apps/api/window', () => ({
+  Window: { getByLabel: vi.fn(async () => null) },
+  getCurrentWindow: vi.fn(() => ({ label: 'main' })),
+}));
 vi.mock('../store/dialogStore', () => ({ askConfirm: vi.fn() }));
 
-import { invoke } from '@tauri-apps/api/tauri';
+import { invoke } from '@tauri-apps/api/core';
 import { askConfirm } from '../store/dialogStore';
 import { useSessionStore } from '../store/sessionStore';
 import { useSettingsStore } from '../store/settingsStore';

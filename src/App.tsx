@@ -1,6 +1,5 @@
 import { useEffect, useCallback, useState, useRef, memo } from 'react';
-import { invoke } from '@tauri-apps/api/tauri';
-import { WebviewWindow } from '@tauri-apps/api/window';
+import { invoke } from '@tauri-apps/api/core';
 import { Search, Plug, TerminalSquare, X, Plus, RefreshCw } from 'lucide-react';
 
 import { CONNECTION_FIELDS, useSessionStore, PromptLogin } from './store/sessionStore';
@@ -16,6 +15,7 @@ import { listen } from '@tauri-apps/api/event';
 import { notify } from './store/toastStore';
 import { useRecentStore, timeAgo, RecentConnection } from './store/recentStore';
 import { armIntentScheduler } from './utils/intentScheduler';
+import { refreshHiddenCopiesAtStart } from './utils/configArchive';
 import {
   buildConnectPayload,
   type ConnectOutcome,
@@ -47,7 +47,10 @@ import {
   tabSwitchIntent,
   withShortcut,
 } from './utils/shortcuts';
-import { appWindow } from '@tauri-apps/api/window';
+import { currentWindow, focusWindow, isTauri } from './utils/tauri';
+import { listenFileDrops } from './utils/fileDrop';
+import { registerBeforeExit } from './utils/beforeExit';
+import { useUpdateCheck } from './hooks/useUpdateCheck';
 import Toaster from './components/Toaster';
 import DialogHost from './components/DialogHost';
 
@@ -398,7 +401,7 @@ function App() {
       } catch {
         /* ignore */
       }
-    });
+    }).catch(() => () => {}); // outside the app: nothing to stop
     return () => {
       un.then((f) => f());
     };
@@ -409,7 +412,7 @@ function App() {
   useEffect(() => {
     const un = listen<HostKeyWarningPayload>('host-key-warning', (e) => {
       toastHostKeyWarning(e.payload?.message);
-    });
+    }).catch(() => () => {}); // outside the app: nothing to stop
     return () => {
       un.then((f) => f());
     };
@@ -452,6 +455,9 @@ function App() {
       cancelled = true;
     };
   }, [addSession]);
+
+  // The quiet once-a-day update check (Settings → Updates).
+  useUpdateCheck();
 
   // First-run: open Help once on an empty workspace, then never again.
   useEffect(() => {
@@ -538,8 +544,7 @@ function App() {
   const isTauriMac =
     typeof navigator !== 'undefined' &&
     /Mac/.test(navigator.userAgent) &&
-    typeof window !== 'undefined' &&
-    '__TAURI_IPC__' in window;
+    isTauri;
 
 
   // Load saved sessions from backend on mount
@@ -702,15 +707,21 @@ function App() {
 
   // Flush a pending debounced persist on window close/reload — secrets typed
   // within the debounce window would otherwise never reach the vault.
+  // Restart to update runs it too (beforeExit), and waits for the save.
   useEffect(() => {
-    const flushPendingPersist = () => {
+    const flushPendingPersist = async () => {
       if (!secretPersistTimerRef.current) return;
       clearTimeout(secretPersistTimerRef.current);
       secretPersistTimerRef.current = null;
-      persistSecrets(useSettingsStore.getState());
+      await persistSecrets(useSettingsStore.getState());
     };
-    window.addEventListener('beforeunload', flushPendingPersist);
-    return () => window.removeEventListener('beforeunload', flushPendingPersist);
+    const onUnload = () => void flushPendingPersist();
+    window.addEventListener('beforeunload', onUnload);
+    const unregister = registerBeforeExit(flushPendingPersist);
+    return () => {
+      window.removeEventListener('beforeunload', onUnload);
+      unregister();
+    };
   }, []);
 
   const activeSession = sessions.find((s) => s.sessionId === activeSessionId);
@@ -978,30 +989,39 @@ function App() {
     return armIntentScheduler(intentScheduling, intentScheduleMinutes);
   }, [intentScheduling, intentScheduleMinutes]);
 
+  // greencli-mcp serves configs only from current hidden copies. After a secret
+  // filter change, make them again once at start. App is the main window only
+  // (pop-outs render PopOutTerminal); outside the app this does nothing.
+  useEffect(() => {
+    refreshHiddenCopiesAtStart();
+  }, []);
+
   // iTerm2-style file drop: while the SFTP browser is closed, dropping a file
   // on the window inserts its shell-quoted path into the active terminal at the
   // cursor (trailing space, no newline) — handy for AI CLIs and scp/sftp typing.
   // The SFTP browser keeps drop priority for uploads whenever it is open.
   const [fileDropHint, setFileDropHint] = useState(false);
   useEffect(() => {
-    const unlisteners = [
-      listen<string[]>('tauri://file-drop', (e) => {
+    // Unlisten once the listener is in place, even when this effect is
+    // cleaned up first (StrictMode double-mount).
+    const unlisten = listenFileDrops({
+      onDrop: (paths) => {
         setFileDropHint(false);
         const st = useSessionStore.getState();
         if (st.showSftp) return; // SftpBrowser owns the drop while open
         const sid = st.activeSessionId;
-        if (!sid || !e.payload?.length) return;
-        const data = e.payload.map(shellQuote).join(' ') + ' ';
+        if (!sid || !paths.length) return;
+        const data = paths.map(shellQuote).join(' ') + ' ';
         invoke('send_data', { sessionId: sid, data }).catch(() => {});
-      }),
-      listen('tauri://file-drop-hover', () => {
+      },
+      onEnter: () => {
         const st = useSessionStore.getState();
         if (!st.showSftp && st.activeSessionId) setFileDropHint(true);
-      }),
-      listen('tauri://file-drop-cancelled', () => setFileDropHint(false)),
-    ];
+      },
+      onLeave: () => setFileDropHint(false),
+    });
     return () => {
-      unlisteners.forEach((p) => p.then((un) => un()));
+      unlisten.then((un) => un()).catch(() => {});
     };
   }, []);
 
@@ -1351,7 +1371,7 @@ function App() {
       // A reused tab living in a pop-out window: bring that window forward —
       // the main window can't show it (setActiveSession ignores it).
       if (st.poppedSessions.includes(tabConfig.id)) {
-        WebviewWindow.getByLabel(`popout-${tabConfig.id}`)?.setFocus().catch(() => {});
+        focusWindow(`popout-${tabConfig.id}`).catch(() => {});
       }
       void handleConnect(tabConfig);
     },
@@ -1432,18 +1452,18 @@ function App() {
       const needsUser = (s: ReturnType<typeof useSessionStore.getState>) =>
         s.showAuthDialog || s.showVaultUnlock;
       if (needsUser(useSessionStore.getState())) {
-        appWindow.setFocus().catch(() => {});
+        currentWindow()?.setFocus().catch(() => {});
         return;
       }
       const stop = useSessionStore.subscribe((s) => {
         if (!needsUser(s)) return;
         clearTimeout(timer);
         stop();
-        appWindow.setFocus().catch(() => {});
+        currentWindow()?.setFocus().catch(() => {});
       });
       // Only the reconnect just requested — stop watching after a minute.
       const timer = setTimeout(stop, 60_000);
-    });
+    }).catch(() => () => {}); // outside the app: nothing to stop
     return () => {
       un.then((f) => f());
     };

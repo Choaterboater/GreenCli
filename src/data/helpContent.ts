@@ -16,6 +16,8 @@ import {
   TerminalSquare,
   Download,
   KeyRound,
+  Database,
+  RefreshCw,
   type LucideIcon,
 } from 'lucide-react';
 import { isMac, platform, shortcutLabel, type ShortcutId } from '../utils/shortcuts';
@@ -82,7 +84,7 @@ export const HELP_TOPICS: HelpTopic[] = [
           'Optionally check **Save to sidebar** to keep the session (never the password).',
         ],
       },
-      { kind: 'note', text: 'All secrets live in owner-only files outside the browser — nothing sensitive is stored in plaintext.' },
+      { kind: 'note', text: 'Secrets are never kept in the browser: AI keys and MCP logins go in the system password store (Keychain on a Mac, Credential Manager on Windows), SSH passwords in the encrypted vault.' },
     ],
     action: { label: 'Open Quick Connect', id: 'open-quick-connect' },
   },
@@ -170,7 +172,7 @@ export const HELP_TOPICS: HelpTopic[] = [
     summary: 'Provider-neutral assistant (Anthropic, OpenRouter, Moonshot, Ollama, Local CLI, Casper).',
     keywords: ['ai', 'assistant', 'claude', 'anthropic', 'openrouter', 'moonshot', 'kimi', 'ollama', 'llm', 'model', 'api key', 'tools', 'secrets', 'hidden', 'redact', 'casper', 'sandbox', 'local cli'],
     blocks: [
-      { kind: 'p', text: 'Settings → **AI Assistant**. The assistant works with any provider — keys are stored owner-only outside the webview, never in the browser.' },
+      { kind: 'p', text: 'Settings → **AI Assistant**. The assistant works with any provider — keys are kept in the system password store (Keychain, Credential Manager), never in the browser.' },
       {
         kind: 'steps',
         items: [
@@ -182,7 +184,7 @@ export const HELP_TOPICS: HelpTopic[] = [
       { kind: 'note', text: 'Responses stream token-by-token; **Stop** actually aborts the provider request, not just the UI. Local CLI and Casper answer all at once, and **Stop** ends the CLI.' },
       {
         kind: 'note',
-        text: '**Casper**: each question gets a fresh folder (or one you pick with **Choose…**; **Check Casper** tests it). GreenCLI never turns Casper’s sandbox off, and won’t start Casper while a port forward or a local MCP server is open. Casper can’t use device tools or MCP servers. Its own file tools can read files outside its folder, including GreenCLI’s saved keys and logs, so only ask it about text you trust.',
+        text: '**Casper**: each question gets a fresh folder (or one you pick with **Choose…**; **Check Casper** tests it). GreenCLI never turns Casper’s sandbox off, and won’t start Casper while a port forward or a local MCP server is open. Casper can’t use device tools or MCP servers. Its own file tools can read files outside its folder, including GreenCLI’s session logs and archived configs, so only ask it about text you trust.',
       },
       {
         kind: 'note',
@@ -221,7 +223,7 @@ export const HELP_TOPICS: HelpTopic[] = [
     title: 'MCP servers',
     icon: Server,
     summary: 'Connect external MCP servers and expose their tools to the AI.',
-    keywords: ['mcp', 'tools', 'centralmcp', 'stdio', 'http', 'streamable', 'server', 'context protocol', 'approval', 'allow writes', 'writes', 'read-only', 'export', '.mcp.json', 'claude code', 'casper', 'junos show'],
+    keywords: ['mcp', 'tools', 'centralmcp', 'stdio', 'http', 'streamable', 'server', 'context protocol', 'approval', 'allow writes', 'writes', 'read-only', 'export', '.mcp.json', 'claude code', 'casper', 'junos show', 'login', 'credentials', 'password store', 'mcp_creds'],
     blocks: [
       { kind: 'p', text: 'The app is an **MCP client**: it connects to external MCP servers — stdio (launches a command) or Streamable HTTP (points at one already running) — and exposes their tools to the AI for every API provider (not Local CLI or Casper).' },
       {
@@ -230,7 +232,7 @@ export const HELP_TOPICS: HelpTopic[] = [
           'Settings → **AI & MCP → MCP Servers** (or **MCP Servers** in the command palette) → Add server.',
           'Click **Paste config JSON instead** to auto-fill from a setup wizard snippet, or fill in by hand.',
           'Stdio: set the **command**, **args** (one per line), and any **env**. HTTP: set the **server URL**.',
-          'Stdio only — for secrets, set a **credentials env var** + paste the content — it is written to a 0600 file and injected via that env var.',
+          'Stdio only — for secrets, set a **credentials env var** + paste the content. It is kept in the system password store; while the server runs it is written to a private (0600) file that the env var points at.',
           'Click **Connect**; the tool count appears in the AI panel.',
         ],
       },
@@ -240,10 +242,39 @@ export const HELP_TOPICS: HelpTopic[] = [
           '**Approval box**: a tool that might change something asks first: **No**, **Yes, this once**, or (for plain reads only) **Yes, until GreenCLI closes**. Router calls and calls where the AI set confirm itself always ask.',
           '**Allow writes** (per server, off by default): with writes off, tools that change or delete things are hidden and blocked, and known servers start with their own read-only settings.',
           'Junos: **Run plain show commands without asking** skips the box for `show …` with safe pipes.',
-          '**Export for Casper / Claude…** saves a `.mcp.json` with every secret turned into a `${NAME}` variable, and lists the names to set.',
+          '**Export for Casper / Claude…** saves a `.mcp.json` with every secret turned into a `${NAME}` variable, and lists the names to set. It also adds greencli-mcp as `greencli`.',
+          '**Login file**: it exists only while its server runs, in `mcp_creds/`, and is deleted when the server stops, exits or fails to connect. Files a crash left are deleted at the next start.',
+          'Removing a server removes its saved login too. If the password store can’t be reached, nothing is removed.',
         ],
       },
       { kind: 'note', text: 'Example: the centralmcp server (Aruba Central / GLP / monitoring / NAC / ops / RAG) routes hundreds of backend tools through a compact set exposed to the AI. Tool names are namespaced `mcp__<server>__<tool>`. Supports stdio (launch command) or Streamable HTTP (point at a URL).' },
+    ],
+    action: { label: 'Open MCP settings', id: 'open-settings', focus: 'mcp' },
+  },
+  {
+    id: 'greencli-mcp',
+    title: 'greencli-mcp (for Casper / Claude Code)',
+    icon: Database,
+    summary: 'A read-only MCP server that lets Casper or Claude Code read your GreenCLI data.',
+    keywords: ['greencli-mcp', 'greencli', 'mcp', 'claude code', 'casper', 'claude mcp add', 'read-only', 'hidden copy', 'make hidden copies', 'config archive', 'diff', 'devices', 'intents'],
+    blocks: [
+      { kind: 'p', text: 'greencli-mcp lets Casper or Claude Code read your GreenCLI data. It can’t change anything: it only reads GreenCLI’s data folder, and never writes a file, opens a network connection or starts a program. It sits next to the app.' },
+      {
+        kind: 'steps',
+        items: [
+          'Settings → **AI & MCP → MCP Servers**: copy its path, or copy the `claude mcp add greencli -- "<path>"` command and run it in a terminal.',
+          'Or use **Export for Casper / Claude…**, which adds it as `greencli`.',
+          'On a Mac, move GreenCLI to Applications first, or the path changes every time it starts.',
+        ],
+      },
+      {
+        kind: 'bullets',
+        items: [
+          'It shows your devices (no passwords, user names, notes or startup commands), config history, configs and diffs with secrets hidden, and intent results.',
+          'Configs come only from **hidden copies** made when a config is captured. If a tool says a snapshot has no hidden copy, or that it is out of date, open **Config archive** and click **Make hidden copies**.',
+          'A diff can’t show a changed password: both sides show it hidden.',
+        ],
+      },
     ],
     action: { label: 'Open MCP settings', id: 'open-settings', focus: 'mcp' },
   },
@@ -270,6 +301,31 @@ export const HELP_TOPICS: HelpTopic[] = [
       { kind: 'note', text: 'Turn it off only for self-signed lab gear; the toggle warns that credentials can be intercepted on untrusted networks while verification is off. The API Explorer’s per-login Verify-TLS checkbox defaults from this setting.' },
     ],
     action: { label: 'Open TLS setting', id: 'open-settings', focus: 'tls' },
+  },
+  {
+    id: 'updates',
+    title: 'Updates',
+    icon: RefreshCw,
+    summary: 'GreenCLI updates itself from its GitHub releases (macOS and Windows).',
+    keywords: ['update', 'updates', 'new version', 'upgrade', 'check for updates', 'restart to update', 'release', 'github', 'signature', 'daily'],
+    blocks: [
+      { kind: 'p', text: 'Settings → **Updates** shows the version, **Check for updates** and **Check once a day** (on by default).' },
+      {
+        kind: 'bullets',
+        items: [
+          'A check downloads a newer version and checks its signature, but never installs it. When it is ready you see “GreenCLI X is ready.” with **Restart to update**.',
+          '**Restart to update** asks first, says how many open sessions will close, and warns about unsaved Config Editor edits. It won’t restart while a Change Job or bulk run is going.',
+          'Updates come only from GreenCLI releases on GitHub. Each release build signs its own files, and the app checks the signature before it installs.',
+          isMac
+            ? 'Run GreenCLI from **Applications**. From the disk image (or straight from Downloads) it offers no update.'
+            : platform === 'windows'
+              ? 'Close Claude Code and Casper before you update. MCP servers stop only when the installer starts, and come back if it fails.'
+              : 'There is no Linux release build, so updates are off on Linux.',
+        ],
+      },
+      { kind: 'note', text: 'Coming from 1.9 or older? It has no updater: install 2.0 by hand once.' },
+    ],
+    action: { label: 'Open Updates', id: 'open-settings', focus: 'updates' },
   },
   {
     id: 'intent',
@@ -334,18 +390,23 @@ export const HELP_TOPICS: HelpTopic[] = [
     id: 'security',
     title: 'Security & your data',
     icon: ShieldCheck,
-    summary: 'What is encrypted, file permissions, where data lives.',
-    keywords: ['security', 'data', 'storage', 'permissions', '0600', 'known_hosts', 'privacy', 'telemetry'],
+    summary: 'What is encrypted, where keys are kept, where data lives.',
+    keywords: ['security', 'data', 'storage', 'permissions', '0600', 'known_hosts', 'privacy', 'telemetry', 'keychain', 'credential manager', 'password store', 'keyring', 'secret_store', 'ai_keys', 'mcp_creds', 'backup', 'downgrade'],
     blocks: [
       {
         kind: 'bullets',
         items: [
-          'Vault & API keys & MCP creds are owner-only (`0600`), written atomically.',
+          'AI keys and MCP logins are kept in the system password store: macOS Keychain, Windows Credential Manager, or the Secret Service on Linux. Settings says where.',
+          'The vault (`vault.enc`) and the other secret files are owner-only (`0600`), written atomically.',
           'SSH uses **TOFU** host-key pinning — a changed key is rejected.',
           'No secrets in browser storage; no telemetry — only the providers and devices you configure.',
         ],
       },
-      { kind: 'p', text: 'Data lives in the OS app-data dir for `com.choatelabs.greencli` (sessions.json, vault.enc, ai_keys.json, mcp_servers.json, known_hosts.json, intents.json).' },
+      {
+        kind: 'note',
+        text: 'Copying the GreenCLI folder to another computer does not copy the AI keys and MCP logins in the password store. Going back to 1.9 loses them, so back up `ai_keys.json` and `mcp_creds.json` before you first run 2.0.',
+      },
+      { kind: 'p', text: 'Data lives in the OS app-data dir for `com.choatelabs.greencli` (sessions.json, vault.enc, secret_store.json, mcp_servers.json, known_hosts.json, intents.json, config_archive/, logs/). `secret_store.json` only says the keys are in the password store. `ai_keys.json` and `mcp_creds.json` are there only when no password store is found (or an old 1.9 file couldn’t be moved; Settings then shows its path).' },
     ],
   },
   {
@@ -434,7 +495,7 @@ export const HELP_TOPICS: HelpTopic[] = [
     title: 'Troubleshooting',
     icon: LifeBuoy,
     summary: 'Common issues and fixes.',
-    keywords: ['troubleshoot', 'problem', 'error', 'fix', 'ollama', 'cert', 'cli', 'path', 'frozen'],
+    keywords: ['troubleshoot', 'problem', 'error', 'fix', 'ollama', 'cert', 'cli', 'path', 'frozen', 'password store', 'keychain', 'hidden copy'],
     blocks: [
       {
         kind: 'bullets',
@@ -443,6 +504,8 @@ export const HELP_TOPICS: HelpTopic[] = [
           'Local CLI not found — the app adds `~/.local/bin`, `~/.cargo/bin`, and Homebrew to PATH; install your CLI there.',
           'Device REST cert error — verification is on by default; for self-signed lab gear turn *Verify device TLS* off in Settings → Connections & Security (heed the interception warning).',
           'Connected tab but no shell — a restricted account/appliance refused a PTY/shell; this now surfaces as a connect error.',
+          '“Can’t reach the system password store” — your keys are still there. Log in to the desktop (on Linux, start a keyring such as GNOME Keyring), then try again.',
+          'greencli-mcp says a snapshot has no hidden copy, or it is out of date — open **Config archive** and click **Make hidden copies**.',
         ],
       },
     ],

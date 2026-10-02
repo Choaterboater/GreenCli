@@ -22,7 +22,7 @@ import {
   ShieldOff,
   Search,
 } from 'lucide-react';
-import { invoke } from '@tauri-apps/api/tauri';
+import { invoke } from '@tauri-apps/api/core';
 import { useSessionStore } from '../store/sessionStore';
 import { useSettingsStore } from '../store/settingsStore';
 import { askConfirm, useDialogStore } from '../store/dialogStore';
@@ -36,6 +36,7 @@ import { listNames } from '../utils/commandRisk';
 import { formatChord } from '../utils/shortcuts';
 import { hostSummary } from '../utils/hosts';
 import { browserOpen, isTauri, tauriOpen, tauriReadText } from '../utils/fileSystem';
+import { holdExit } from '../utils/beforeExit';
 import type { ConnectOutcome } from '../utils/connect';
 import {
   BUILTIN_VARIABLES,
@@ -598,6 +599,8 @@ export default function ChangeJobs({ onConnect }: ChangeJobsProps) {
   // Set from the Run click (before its confirm dialog) until the job ends, so
   // a double click can't start two jobs.
   const runLockRef = useRef(false);
+  // Restart to update waits until the job ends.
+  useEffect(() => (running ? holdExit('A Change Job is running.') : undefined), [running]);
 
   // Close on Escape — unless a confirm dialog is stacked above us. A running
   // job keeps going while the window is closed.

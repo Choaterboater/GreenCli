@@ -3,7 +3,7 @@
 // Without it sendAndCapture returns page 1 only: the device sits at its pager
 // prompt, the buffer stops growing, and the capture "settles" on a fragment.
 
-import { invoke } from '@tauri-apps/api/tauri';
+import { invoke } from '@tauri-apps/api/core';
 import { DeviceProfile } from '../types';
 import { sleep } from './terminal';
 

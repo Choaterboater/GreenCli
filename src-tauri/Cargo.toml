@@ -1,22 +1,30 @@
 [package]
 name = "green-cli"
-version = "1.9.0"
+version = "2.0.0"
 description = "Multi-vendor SSH/Telnet/Serial terminal for network engineers"
 authors = ["ChoateLabs"]
 license = "MIT"
 repository = "https://github.com/Choaterboater/GreenCli"
 edition = "2021"
-rust-version = "1.85"
+rust-version = "1.90"
+# Two binaries (the app and the greencli-mcp shim in src/bin): `cargo run` starts the app.
+default-run = "green-cli"
 
 [build-dependencies]
-tauri-build = { version = "1.5.1", features = [] }
+tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "1.6.0", features = [ "clipboard-read-text", "clipboard-write-text", "window-set-focus", "window-close", "window-start-dragging", "dialog-save", "dialog-open"] }
+tauri = { version = "2", features = [] }
+# Open/Save dialogs and clipboard text (the only plugin APIs the frontend uses;
+# what it may call is limited by capabilities/default.json).
+tauri-plugin-dialog = "2"
+tauri-plugin-clipboard-manager = "2"
 serde = { version = "1.0", features = ["derive"] }
 # float_roundtrip: parse floats exactly like JSON.parse, so the MCP checks in TS and Rust agree on
 # which JSON text is readable (labels.rs read_json_text vs mcpApproval.ts readJsonText).
-serde_json = { version = "1.0", features = ["float_roundtrip"] }
+# preserve_order: objects keep their key order, like JS objects in the TS checks. Tauri 1
+# turned this on for us; Tauri 2 does not, so it is set here (labels.rs tests rely on it).
+serde_json = { version = "1.0", features = ["float_roundtrip", "preserve_order"] }
 tokio = { version = "1.35", features = ["full"] }
 tokio-serial = "5.4"
 async-trait = "0.1"
@@ -41,6 +49,8 @@ portable-pty = "0.8"
 # chrono = "0.4"  # unused
 # directories-next = "2.0"  # unused
 reqwest = { version = "0.12", features = ["json", "cookies", "stream"] }
+# The read-only MCP server (src/bin/greencli-mcp.rs) and its hidden-copy filter version.
+greencli-mcp = { path = "greencli-mcp" }
 
 [features]
 default = ["custom-protocol"]
@@ -49,3 +59,32 @@ custom-protocol = ["tauri/custom-protocol"]
 # russh 0.63 ships RSA via the `rsa` feature (on by default); this flag only
 # un-gates our generator, it no longer pulls openssl.
 rsa-keys = []
+
+# AI keys and MCP logins live in the system password store (secret_store.rs).
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3", features = ["apple-native"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "3", features = ["windows-native"] }
+
+# The Secret Service over D-Bus (needs libdbus-1-dev and pkg-config to build).
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
+
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+# Automatic updates (src/updater.rs). The public key is not in tauri.conf.json:
+# each release build makes a one-time key pair, and the app fetches the key
+# from the same release as the update at check time.
+tauri-plugin-updater = "2.13"
+# Check that a fetched update key is a real minisign public key.
+minisign-verify = "0.2"
+# Version compare for updates (already used by Tauri).
+semver = "1"
+# The updater plugin's own HTTP client (reqwest 0.13): only used to keep its
+# requests on HTTPS and its redirects on GitHub's release hosts.
+reqwest-updater = { package = "reqwest", version = "0.13", default-features = false }
+
+# greencli-mcp, the read-only MCP server that ships next to the app
+# (src/bin/greencli-mcp.rs starts it).
+[workspace]
+members = ["greencli-mcp"]

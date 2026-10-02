@@ -1,7 +1,7 @@
 // ~/.ssh/config scan for the Import hosts dialog (its "~/.ssh/config" tab).
 // Saving goes through the dialog's shared preview, like every other source.
 
-import { invoke } from '@tauri-apps/api/tauri';
+import { invoke } from '@tauri-apps/api/core';
 
 export interface ImportedHost {
   name: string;

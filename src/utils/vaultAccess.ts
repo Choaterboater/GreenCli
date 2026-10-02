@@ -1,7 +1,7 @@
 // The frontend's one route to the credential vault for connect-time secrets
 // (device, shared-login and jump-host passwords).
 
-import { invoke } from '@tauri-apps/api/tauri';
+import { invoke } from '@tauri-apps/api/core';
 import { VaultCredentialSource } from './connect';
 
 /** Live backend vault state for the connect resolvers — the cheap atomic

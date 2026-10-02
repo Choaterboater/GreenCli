@@ -7,7 +7,7 @@
 // re-alerted — transition detection keys off the PERSISTED lastResult, so the
 // "previous state" survives restarts and manual runs.
 
-import { invoke } from '@tauri-apps/api/tauri';
+import { invoke } from '@tauri-apps/api/core';
 import { useSettingsStore } from '../store/settingsStore';
 import { useSessionStore } from '../store/sessionStore';
 import { notify } from '../store/toastStore';

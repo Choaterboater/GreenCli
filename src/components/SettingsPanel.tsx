@@ -17,10 +17,11 @@ import {
   Sparkles,
   Cloud,
   ArchiveRestore,
+  RefreshCw,
   type LucideIcon,
 } from 'lucide-react';
-import { invoke } from '@tauri-apps/api/tauri';
-import { open as openDialog, save as saveDialog } from '@tauri-apps/api/dialog';
+import { invoke } from '@tauri-apps/api/core';
+import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
 import { useSessionStore } from '../store/sessionStore';
 import { useSettingsStore } from '../store/settingsStore';
 import { askConfirm, useDialogStore } from '../store/dialogStore';
@@ -30,10 +31,13 @@ import { notify } from '../store/toastStore';
 import McpServers from './McpServers';
 import AiAgents from './AiAgents';
 import CasperSettings from './CasperSettings';
+import SecretStoreNote from './SecretStoreNote';
+import { saveAiKey } from '../utils/secretStore';
 import HostsManager from './HostsManager';
 import LoginProfiles from './LoginProfiles';
 import TriggersSettings from './TriggersSettings';
 import CentralSettings from './CentralSettings';
+import UpdateSettings from './UpdateSettings';
 import { generateId } from '../utils';
 import { BackupImportMode, createGreenCliBackup, GreenCliBackup, importGreenCliBackup } from '../utils/backup';
 import { sanitizeStandaloneImportedProfiles } from '../utils/deviceProfiles';
@@ -47,6 +51,7 @@ import {
 } from '../utils/settingsSections';
 import LargeModal, { ModalRail, RailItem } from './LargeModal';
 import { plainHttpWarning } from '../utils/urlSafety';
+import { isTauri } from '../utils/tauri';
 
 // Curated best-practices the AI should apply, distilled from Juniper Validated
 // Designs (JVDs). Appended to the references field on request.
@@ -64,8 +69,6 @@ const JVD_REFERENCES = `# Juniper Validated Design (JVD) best-practices
   routes present (bgp.evpn.0), VXLAN VTEPs up, no interface errors/drops.
 - General: out-of-band mgmt, RFC5549 or lo0 /32s, config via automation where managed,
   golden config + commit confirmed.`;
-
-const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
 
 const THEME_OPTIONS: { id: ThemePreference; label: string; Icon: typeof Sun }[] = [
   { id: 'system', label: 'System', Icon: Monitor },
@@ -89,6 +92,7 @@ const GROUP_ICONS: Record<SettingsGroupId, LucideIcon> = {
   automation: Workflow,
   ai: Sparkles,
   integrations: Cloud,
+  updates: RefreshCw,
   backup: ArchiveRestore,
 };
 
@@ -384,7 +388,8 @@ export default function SettingsPanel() {
   }, [showSettings, setShowSettings]);
   const [showApiKey, setShowApiKey] = useState(false);
   const [keyInput, setKeyInput] = useState('');
-  const [keySaved, setKeySaved] = useState(false);
+  // null: unknown (the password store couldn't be asked), not "no key".
+  const [keySaved, setKeySaved] = useState<boolean | null>(false);
   const [profileName, setProfileName] = useState('');
   const [profileBase, setProfileBase] = useState<DeviceType>('generic');
   const [backupBusy, setBackupBusy] = useState<'export' | 'import' | null>(null);
@@ -400,7 +405,7 @@ export default function SettingsPanel() {
     if (providerMeta?.needsKey) {
       invoke<boolean>('ai_has_key', { provider: aiProvider })
         .then(setKeySaved)
-        .catch(() => setKeySaved(false));
+        .catch(() => setKeySaved(null));
     } else {
       setKeySaved(false);
     }
@@ -410,9 +415,10 @@ export default function SettingsPanel() {
     // Don't overwrite a stored key when the (always-empty-on-open) field is
     // blurred without typing — that would silently wipe a saved key.
     if (!keyInput) return;
-    invoke('ai_set_key', { provider: aiProvider, key: keyInput })
-      .then(() => setKeySaved(true))
-      .catch(() => {});
+    // A failed save shows a toast (saveAiKey).
+    void saveAiKey(aiProvider, keyInput).then((ok) => {
+      if (ok) setKeySaved(true);
+    });
   };
 
   // The key otherwise saves only on the input's onBlur. Every close path (Escape,
@@ -426,7 +432,7 @@ export default function SettingsPanel() {
   useEffect(() => {
     if (wasOpenRef.current && !showSettings) {
       const { keyInput: pending, aiProvider: provider } = keyFlushRef.current;
-      if (pending) invoke('ai_set_key', { provider, key: pending }).catch(() => {});
+      if (pending) void saveAiKey(provider, pending);
       // The panel stays mounted across close (App renders it unconditionally),
       // so the typed key would otherwise still be sitting in the input — and
       // behind the reveal toggle — on reopen. Clear it on every close.
@@ -1272,12 +1278,11 @@ export default function SettingsPanel() {
                           <button
                             type="button"
                             onClick={() => {
-                              invoke('ai_set_key', { provider: aiProvider, key: '' })
-                                .then(() => {
-                                  setKeySaved(false);
-                                  setKeyInput('');
-                                })
-                                .catch(() => {});
+                              void saveAiKey(aiProvider, '').then((ok) => {
+                                if (!ok) return;
+                                setKeySaved(false);
+                                setKeyInput('');
+                              });
                             }}
                             className="ml-auto text-[10px] text-[var(--text-muted)] hover:text-[var(--accent-danger)]"
                           >
@@ -1292,7 +1297,13 @@ export default function SettingsPanel() {
                         value={keyInput}
                         onChange={(e) => setKeyInput(e.target.value)}
                         onBlur={saveKey}
-                        placeholder={keySaved ? '•••••••• (saved — type to replace)' : 'Enter API key'}
+                        placeholder={
+                          keySaved
+                            ? '•••••••• (saved — type to replace)'
+                            : keySaved === null
+                              ? "Can't check for a saved key"
+                              : 'Enter API key'
+                        }
                         className="w-full h-8 px-2 pr-8 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)] font-mono"
                       />
                       <button
@@ -1303,9 +1314,10 @@ export default function SettingsPanel() {
                         {showApiKey ? <EyeOff size={12} /> : <Eye size={12} />}
                       </button>
                     </div>
-                    <p className="text-[10px] text-[var(--text-muted)] mt-1">
-                      Stored in the app data dir (outside the browser), sent only to the provider from the Rust backend.
-                    </p>
+                    <SecretStoreNote
+                      after="Sent only to the provider, never kept in the browser."
+                      refreshKey={`${showSettings}:${aiProvider}:${keySaved}`}
+                    />
                   </div>
                 )}
 
@@ -1546,6 +1558,9 @@ export default function SettingsPanel() {
                 </p>
               </div>
             </section>
+          </Section>
+          <Section id="updates">
+            <UpdateSettings />
           </Section>
           <Section id="backup">
             <section id="set-backup">

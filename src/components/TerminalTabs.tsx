@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { X, Plus, PictureInPicture2, RefreshCw, Unplug, Wand2, CopyPlus, Pencil, XCircle, Columns2, Radio } from 'lucide-react';
-import { WebviewWindow } from '@tauri-apps/api/window';
+import { focusWindow } from '../utils/tauri';
 import { useSessionStore } from '../store/sessionStore';
 import { askPrompt } from '../store/dialogStore';
 import { getDeviceIcon, getDeviceLabel } from '../utils';
@@ -195,7 +195,7 @@ export default function TerminalTabs({ onDuplicate, onPopOut, onReconnect, onDis
               onClick={() => {
                 if (isPopped) {
                   // The session lives in its own window — bring that forward.
-                  WebviewWindow.getByLabel(`popout-${session.sessionId}`)?.setFocus();
+                  focusWindow(`popout-${session.sessionId}`).catch(() => {});
                   return;
                 }
                 setActiveSession(session.sessionId);

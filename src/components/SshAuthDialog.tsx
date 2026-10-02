@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { X, KeyRound, Eye, EyeOff, Lock, FolderOpen, FileKey, AlertTriangle, Users } from 'lucide-react';
-import { invoke } from '@tauri-apps/api/tauri';
-import { open as openDialog } from '@tauri-apps/api/dialog';
+import { invoke } from '@tauri-apps/api/core';
+import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { useSessionStore } from '../store/sessionStore';
 import { useSettingsStore } from '../store/settingsStore';
 import { notify } from '../store/toastStore';

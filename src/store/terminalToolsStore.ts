@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { emit, listen } from '@tauri-apps/api/event';
-import { appWindow } from '@tauri-apps/api/window';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 
 export interface PasteHistoryEntry {
   id: string;
@@ -40,7 +40,7 @@ type SyncMsg =
 
 const windowLabel = (() => {
   try {
-    return appWindow.label || 'main';
+    return getCurrentWindow().label || 'main';
   } catch {
     return 'main'; // not running under Tauri (tests / dev browser)
   }

@@ -1,0 +1,29 @@
+[
+  {
+    "id": "i1",
+    "name": "NTP is set",
+    "kind": "config-contains",
+    "description": "SECRET-DESCRIPTION uses key hunter2",
+    "command": "show run | include SECRET-COMMAND",
+    "matcher": { "kind": "contains", "value": "ntp server SECRET-MATCHER", "caseSensitive": true },
+    "severity": "warning",
+    "scope": { "all": true, "tags": [], "deviceTypes": [] },
+    "lastResult": {
+      "status": "fail",
+      "detail": "SECRET-DETAIL radius key abc",
+      "at": 1700000000000,
+      "perDevice": [
+        { "device": "sw-core-01", "status": "pass", "detail": "SECRET-DEVICE-DETAIL-1" },
+        { "device": "sw-core-02", "status": "fail", "detail": "SECRET-DEVICE-DETAIL-2" }
+      ]
+    }
+  },
+  {
+    "id": "i2",
+    "name": "Never run",
+    "kind": "command-output",
+    "command": "SECRET-COMMAND-2",
+    "matcher": { "kind": "regex", "value": "SECRET-REGEX" },
+    "severity": "info"
+  }
+]

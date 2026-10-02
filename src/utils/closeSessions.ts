@@ -1,5 +1,5 @@
-import { invoke } from '@tauri-apps/api/tauri';
-import { WebviewWindow } from '@tauri-apps/api/window';
+import { invoke } from '@tauri-apps/api/core';
+import { closeWindow } from './tauri';
 import { useSessionStore } from '../store/sessionStore';
 import { useSettingsStore } from '../store/settingsStore';
 import { askConfirm } from '../store/dialogStore';
@@ -54,9 +54,7 @@ export async function closeSessions(sessionIds: string[]): Promise<boolean> {
     // A session living in a pop-out window: close that window too, or it
     // would linger showing a dead, disconnected terminal.
     if (st.poppedSessions.includes(sessionId)) {
-      WebviewWindow.getByLabel(`popout-${sessionId}`)
-        ?.close()
-        .catch(() => {});
+      closeWindow(`popout-${sessionId}`).catch(() => {});
     }
     st.removeSession(sessionId);
   }
