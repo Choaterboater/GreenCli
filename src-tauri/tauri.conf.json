@@ -54,7 +54,7 @@
         "providerShortName": null,
         "signingIdentity": null
       },
-      "resources": [],
+      "resources": ["../THIRD_PARTY_NOTICES.txt"],
       "shortDescription": "GreenCLI",
       "targets": "all",
       "windows": {

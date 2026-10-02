@@ -18,28 +18,14 @@ import {
 } from 'lucide-react';
 import { notify } from '../store/toastStore';
 import { askConfirm } from '../store/dialogStore';
+import { useMcpApprovalStore } from '../store/mcpApprovalStore';
+import type { McpServerDef, McpStatus } from '../utils/mcpTypes';
 
-type McpTransport = 'stdio' | 'http';
+type McpTransport = McpServerDef['transport'];
 
-interface McpServerDef {
-  name: string;
-  transport: McpTransport;
-  command: string;
-  args: string[];
-  env: Record<string, string>;
-  cwd?: string;
-  url?: string;
-  credentialsEnvVar?: string;
-  headers?: Record<string, string>;
-  enabled: boolean;
-}
-
-interface McpStatus {
-  name: string;
-  enabled: boolean;
-  connected: boolean;
-  toolCount: number;
-}
+/** Forget every "Yes, for this session" answer for a server: it was
+ *  reconnected, changed or removed, so its tools must ask again. */
+const clearAllowances = (name: string) => useMcpApprovalStore.getState().clearServer(name);
 
 const blankForm = {
   name: '',
@@ -111,6 +97,50 @@ function parseMcpConfigPaste(text: string): Partial<typeof blankForm> | null {
   return patch;
 }
 
+/** The safety lines under a server row: the Junos plain-show opt-in and a
+ *  warning when a recognised server's tools don't look like it. */
+function McpServerNotes({
+  def,
+  status,
+  onShowOptIn,
+}: {
+  def: McpServerDef;
+  status: McpStatus | undefined;
+  onShowOptIn: (on: boolean) => void;
+}) {
+  const preset = status?.preset;
+  const junos = preset?.id === 'junos-mcp-server';
+  const mismatch = !!preset && status?.presetMismatch === true;
+  if (!junos && !mismatch) return null;
+  return (
+    <div className="px-3 pb-2 space-y-1.5 text-[11px]">
+      {mismatch && (
+        <p className="text-[var(--accent-warning)] leading-snug">
+          This looks like a {preset.label} server, but its tools don&apos;t match. GreenCLI still hides and blocks
+          write tools, but its read-only settings may not apply.
+        </p>
+      )}
+      {junos && (
+        <div>
+          <label className="flex items-center gap-2 text-[var(--text-secondary)] cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={def.showOptIn === true}
+              onChange={(e) => onShowOptIn(e.target.checked)}
+              className="accent-[var(--accent)]"
+            />
+            Run plain show commands without asking
+          </label>
+          <p className="mt-0.5 ml-5 text-[10px] text-[var(--text-muted)] leading-snug">
+            Only commands that start with &quot;show&quot; and use safe pipes (match, except, count, display,
+            no-more, last, find, trim). Everything else still asks.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function McpServers() {
   const [servers, setServers] = useState<McpServerDef[]>([]);
   const [status, setStatus] = useState<Record<string, McpStatus>>({});
@@ -154,6 +184,7 @@ export default function McpServers() {
 
   const connect = async (name: string) => {
     setBusy(name);
+    clearAllowances(name);
     try {
       const n = await invoke<number>('mcp_connect', { name });
       notify.success(`${name} connected`, `${n} tool${n === 1 ? '' : 's'} now available to the AI`);
@@ -166,7 +197,19 @@ export default function McpServers() {
   };
 
   const disconnect = async (name: string) => {
+    clearAllowances(name);
     await invoke('mcp_disconnect', { name }).catch(() => {});
+    refresh();
+  };
+
+  /** Junos: run plain show commands without asking. */
+  const setShowOptIn = async (name: string, on: boolean) => {
+    try {
+      await invoke('mcp_set_show_opt_in', { name, on });
+    } catch (e) {
+      notify.error('Could not change this setting', String(e));
+    }
+    clearAllowances(name);
     refresh();
   };
 
@@ -178,6 +221,7 @@ export default function McpServers() {
       danger: true,
     });
     if (!ok) return;
+    clearAllowances(name);
     try {
       await invoke('mcp_delete_server', { name });
       notify.info('MCP server removed', name);
@@ -320,6 +364,8 @@ export default function McpServers() {
       if (form.transport === 'stdio' && form.credsContent.trim()) {
         await invoke('mcp_set_credentials', { name: def.name, content: form.credsContent });
       }
+      clearAllowances(def.name);
+      if (editingName) clearAllowances(editingName);
       notify.success('MCP server saved', def.name);
       setShowForm(false);
       setForm({ ...blankForm });
@@ -379,68 +425,71 @@ export default function McpServers() {
           return (
             <div
               key={s.name}
-              className="flex items-center gap-2 px-3 py-2 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--bg-inset)]"
+              className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--bg-inset)]"
             >
-              <span className="flex-shrink-0" title={s.transport === 'http' ? 'Streamable HTTP' : 'stdio'}>
-                {s.transport === 'http' ? (
-                  <Globe size={15} style={{ color: connected ? 'var(--accent)' : 'var(--text-muted)' }} />
-                ) : (
-                  <Server size={15} style={{ color: connected ? 'var(--accent)' : 'var(--text-muted)' }} />
-                )}
-              </span>
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2">
-                  <span className="text-[13px] font-medium text-[var(--text-primary)] truncate">{s.name}</span>
-                  {connected && (
-                    <span className="flex items-center gap-1 text-[10px] text-[var(--accent-success)]">
-                      <CheckCircle2 size={10} />
-                      {st?.toolCount ?? 0} tool{(st?.toolCount ?? 0) === 1 ? '' : 's'}
-                    </span>
+              <div className="flex items-center gap-2 px-3 py-2">
+                <span className="flex-shrink-0" title={s.transport === 'http' ? 'Streamable HTTP' : 'stdio'}>
+                  {s.transport === 'http' ? (
+                    <Globe size={15} style={{ color: connected ? 'var(--accent)' : 'var(--text-muted)' }} />
+                  ) : (
+                    <Server size={15} style={{ color: connected ? 'var(--accent)' : 'var(--text-muted)' }} />
                   )}
+                </span>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[13px] font-medium text-[var(--text-primary)] truncate">{s.name}</span>
+                    {connected && (
+                      <span className="flex items-center gap-1 text-[10px] text-[var(--accent-success)]">
+                        <CheckCircle2 size={10} />
+                        {st?.toolCount ?? 0} tool{(st?.toolCount ?? 0) === 1 ? '' : 's'}
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-[10px] text-[var(--text-muted)] font-mono truncate">
+                    {s.transport === 'http' ? s.url : `${s.command} ${(s.args || []).join(' ')}`}
+                  </div>
                 </div>
-                <div className="text-[10px] text-[var(--text-muted)] font-mono truncate">
-                  {s.transport === 'http' ? s.url : `${s.command} ${(s.args || []).join(' ')}`}
-                </div>
+                {connected ? (
+                  <button
+                    onClick={() => disconnect(s.name)}
+                    className="flex items-center gap-1 px-2 py-1 text-[11px] rounded-md text-[var(--accent-warning)] hover:bg-[var(--bg-tertiary)]"
+                    title="Disconnect"
+                  >
+                    <Power size={12} />
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => connect(s.name)}
+                    disabled={busy === s.name}
+                    className="flex items-center gap-1 px-2 py-1 text-[11px] rounded-md text-[var(--accent)] hover:bg-[var(--bg-tertiary)] disabled:opacity-50"
+                    title="Connect"
+                  >
+                    {busy === s.name ? <Loader2 size={12} className="animate-spin" /> : <Plug size={12} />}
+                  </button>
+                )}
+                <button
+                  onClick={() => edit(s)}
+                  className="p-1 rounded-md text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]"
+                  title="Edit"
+                >
+                  <PencilLine size={12} />
+                </button>
+                <button
+                  onClick={() => duplicate(s)}
+                  className="p-1 rounded-md text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]"
+                  title="Duplicate"
+                >
+                  <Copy size={12} />
+                </button>
+                <button
+                  onClick={() => remove(s.name)}
+                  className="p-1 rounded-md text-[var(--text-muted)] hover:text-[var(--accent-danger)] hover:bg-[var(--bg-tertiary)]"
+                  title="Remove"
+                >
+                  <Trash2 size={12} />
+                </button>
               </div>
-              {connected ? (
-                <button
-                  onClick={() => disconnect(s.name)}
-                  className="flex items-center gap-1 px-2 py-1 text-[11px] rounded-md text-[var(--accent-warning)] hover:bg-[var(--bg-tertiary)]"
-                  title="Disconnect"
-                >
-                  <Power size={12} />
-                </button>
-              ) : (
-                <button
-                  onClick={() => connect(s.name)}
-                  disabled={busy === s.name}
-                  className="flex items-center gap-1 px-2 py-1 text-[11px] rounded-md text-[var(--accent)] hover:bg-[var(--bg-tertiary)] disabled:opacity-50"
-                  title="Connect"
-                >
-                  {busy === s.name ? <Loader2 size={12} className="animate-spin" /> : <Plug size={12} />}
-                </button>
-              )}
-              <button
-                onClick={() => edit(s)}
-                className="p-1 rounded-md text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]"
-                title="Edit"
-              >
-                <PencilLine size={12} />
-              </button>
-              <button
-                onClick={() => duplicate(s)}
-                className="p-1 rounded-md text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]"
-                title="Duplicate"
-              >
-                <Copy size={12} />
-              </button>
-              <button
-                onClick={() => remove(s.name)}
-                className="p-1 rounded-md text-[var(--text-muted)] hover:text-[var(--accent-danger)] hover:bg-[var(--bg-tertiary)]"
-                title="Remove"
-              >
-                <Trash2 size={12} />
-              </button>
+              <McpServerNotes def={s} status={st} onShowOptIn={(on) => setShowOptIn(s.name, on)} />
             </div>
           );
         })}
