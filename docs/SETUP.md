@@ -301,6 +301,9 @@ live compliance:
     problem with its line, filterable by kind; a click selects it. **F8** / **Shift+F8** steps
     through them. A line the switch rejected on Send shows in red with the switch's own words.
     Comment lines are never flagged. The Send dialog lists them too ("1 error, 2 warnings").
+  - **Quick fixes** (**Ctrl+.** or the light bulb on a problem): strip terminal junk, comment out a
+    risky or rejected line, add `commit confirmed 5` to a Junos tab, or swap a plain-text password
+    for a blank.
   - **Hover cards**: hover an Aruba CX or Junos line to see what it does in plain words and how
     the other vendor writes it (VLANs, access/trunk ports, LAGs, routes, NTP, SNMP, RADIUS, commit
     confirmed …).
@@ -346,6 +349,7 @@ live compliance:
 | `Ctrl+Shift+I` | Toggle AI Assistant |
 | `Ctrl+Shift+E` | Toggle Config Editor |
 | `Ctrl+Shift+M` | Config Editor: show or hide the Problems panel |
+| `Ctrl+.` | Config Editor: quick fixes for the problem under the cursor |
 | `Ctrl+=` / `Ctrl+-` | Zoom terminal font in / out |
 | `Ctrl+0` | Reset terminal font size |
 

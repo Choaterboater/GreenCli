@@ -1,9 +1,11 @@
-// Monaco hookups for the device languages: hover cards. Registered once per
+// Monaco hookups for the device languages: hover cards and quick fixes
+// (Ctrl+. or the light bulb, from the problems' markers). Registered once per
 // Monaco instance from setupMonaco (beforeMount), like the snippets: the
 // editor's onMount runs again after every Diff toggle.
 
 import type * as Monaco from 'monaco-editor';
 import { CARD_LANGUAGES, cardForLine, cardMarkdown } from './commandCards';
+import { quickFixesFor } from './quickFixes';
 
 const registered = new WeakSet<object>();
 
@@ -25,4 +27,45 @@ export function registerEditorProviders(monaco: typeof Monaco): void {
       },
     });
   }
+
+  // Any language: the terminal-junk problem shows up in code files too. Only
+  // GreenCLI's own markers (source "GreenCLI", set by ConfigEditor) get fixes.
+  monaco.languages.registerCodeActionProvider(
+    '*',
+    {
+      provideCodeActions(model, _range, context) {
+        const text = model.getValue();
+        const language = model.getLanguageId();
+        const seen = new Set<string>();
+        const actions: Monaco.languages.CodeAction[] = [];
+        for (const marker of context.markers) {
+          const code = typeof marker.code === 'string' ? marker.code : marker.code?.value;
+          if (marker.source !== 'GreenCLI' || !code) continue;
+          const spot = { lineNumber: marker.startLineNumber, startColumn: marker.startColumn, endColumn: marker.endColumn, code };
+          for (const fix of quickFixesFor(spot, text, language)) {
+            if (seen.has(fix.title)) continue;
+            seen.add(fix.title);
+            actions.push({
+              title: fix.title,
+              kind: 'quickfix',
+              diagnostics: [marker],
+              isPreferred: fix.preferred,
+              edit: {
+                edits: fix.edits.map((edit) => ({
+                  resource: model.uri,
+                  versionId: model.getVersionId(),
+                  textEdit: {
+                    range: new monaco.Range(edit.startLineNumber, edit.startColumn, edit.endLineNumber, edit.endColumn),
+                    text: edit.text,
+                  },
+                })),
+              },
+            });
+          }
+        }
+        return { actions, dispose() {} };
+      },
+    },
+    { providedCodeActionKinds: ['quickfix'] }
+  );
 }

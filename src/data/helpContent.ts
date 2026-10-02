@@ -296,6 +296,7 @@ export const HELP_TOPICS: HelpTopic[] = [
         kind: 'bullets',
         items: [
           '**Config Editor problems**: risky lines, blanks to fill in, terminal junk and a Junos edit with no commit are underlined and counted in the toolbar. Click the count (or **Ctrl+Shift+M**) for the Problems panel; **F8** jumps to the next one. A line the switch rejected shows in red.',
+          '**Quick fixes**: on a problem press **Ctrl+.** (or click the light bulb) to strip terminal junk, comment out a risky line, add commit confirmed 5, or swap a plain-text password for a blank.',
           '**Hover cards**: hover an Aruba CX or Junos line to see what it does and how the other vendor writes it.',
           '**Secrets in code files**: a password, token or key written into a YAML, JSON, Python, shell or .env file gets a warning.',
           '**Copy with secrets hidden**: the eye button next to Copy copies the tab with passwords, keys and SNMP communities hidden, safe for a ticket or chat.',

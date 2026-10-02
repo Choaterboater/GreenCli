@@ -40,6 +40,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   JavaScript/TypeScript, PowerShell and Terraform tabs, a password, token, API key, RADIUS/TACACS
   key or SNMP community written as a value gets a warning. Variables, vault lookups (`{{ … }}`,
   `!vault`, `${ENV}`, `os.environ`), placeholders and UI labels are left alone.
+- **Quick fixes (Ctrl+. or the light bulb)** on Config Editor problems: strip terminal junk from the
+  tab, comment out a risky or rejected line (`!` on Aruba, `#` on Junos) so it isn't sent, add
+  `commit confirmed 5` to a Junos tab, or swap a plain-text password for a blank (`${password}`).
 
 ### Fixed
 - Confirm dialogs kept their text on one line: the Send preview, the problem list and the SFTP
