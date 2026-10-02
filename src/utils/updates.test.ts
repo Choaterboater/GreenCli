@@ -17,6 +17,7 @@ import {
   recordCheck,
   restartToUpdate,
   setDailyCheck,
+  showUpdateReady,
   updateErrorText,
   type UpdateStatus,
 } from './updates';
@@ -296,5 +297,96 @@ describe('restartToUpdate', () => {
     expect(save).not.toHaveBeenCalled();
     expect(calls()).toEqual(['update_status']);
     expect(toasts()[0].message).toBe(UPDATE_TEXT.moveFirst);
+  });
+});
+
+describe('the ready toast', () => {
+  beforeEach(() => {
+    invoke.mockReset();
+    askConfirm.mockReset();
+    useToastStore.getState().clear();
+    useSidePanelStore.getState().setStatus('editor', null);
+    useSidePanelStore.getState().setStatus('ai', null);
+    useSessionStore.setState({ sessions: [] });
+  });
+
+  /** Tap the card's Restart to update as the Toaster does: close it, then run. */
+  function tapRestart() {
+    const card = toasts().find((t) => t.title === 'GreenCLI 2.0.1 is ready.');
+    expect(card?.action?.label).toBe(UPDATE_TEXT.restart);
+    useToastStore.getState().dismiss(card!.id);
+    card!.action!.run();
+  }
+
+  const readyCards = () => toasts().filter((t) => t.title.endsWith(' is ready.'));
+
+  /** Once the tap has settled: the ready card is back, with its button. */
+  async function expectCardBack(version = '2.0.1') {
+    await vi.waitFor(() => expect(readyCards()).toHaveLength(1));
+    const [card] = readyCards();
+    expect(card.title).toBe(`GreenCLI ${version} is ready.`);
+    expect(card.duration).toBe(0);
+    expect(card.action?.label).toBe(UPDATE_TEXT.restart);
+  }
+
+  it('comes back after "Not now", so Restart to update is still there when the job ends', async () => {
+    answer({ update_status: READY });
+    showUpdateReady('2.0.1');
+    const release = holdExit('A Change Job is running.');
+    // The hold is checked as the tap runs, so it can go right after.
+    tapRestart();
+    release();
+    await expectCardBack();
+    const notNow = toasts().find((t) => t.title === 'Not now');
+    expect(notNow?.message).toContain('A Change Job is running.');
+    expect(askConfirm).not.toHaveBeenCalled();
+  });
+
+  it('comes back after Cancel', async () => {
+    askConfirm.mockResolvedValue(false);
+    answer({ update_status: READY });
+    showUpdateReady('2.0.1');
+    tapRestart();
+    await expectCardBack();
+    expect(askConfirm).toHaveBeenCalledTimes(1);
+    expect(calls()).not.toContain('update_install');
+  });
+
+  it('comes back after a failed install, which keeps the update', async () => {
+    askConfirm.mockResolvedValue(true);
+    answer({ update_status: READY, update_install: new Error("Couldn't install the update.") });
+    showUpdateReady('2.0.1');
+    tapRestart();
+    await expectCardBack();
+    expect(toasts().find((t) => t.title === "Couldn't update")).toBeDefined();
+  });
+
+  it('comes back with the update waiting now, and not when none is', async () => {
+    askConfirm.mockResolvedValue(false);
+    answer({ update_status: { ...ON, ready: '2.0.2' } });
+    showUpdateReady('2.0.1');
+    tapRestart();
+    await expectCardBack('2.0.2');
+
+    useToastStore.getState().clear();
+    invoke.mockReset();
+    answer({ update_status: ON });
+    showUpdateReady('2.0.1');
+    tapRestart();
+    await vi.waitFor(() => expect(toasts().map((t) => t.message)).toContain(UPDATE_TEXT.notReady));
+    // Settled: restartToUpdate and the second status read both ran.
+    await vi.waitFor(() => expect(calls()).toEqual(['update_status', 'update_status']));
+    expect(readyCards()).toEqual([]);
+  });
+
+  it('stays closed once the install starts', async () => {
+    askConfirm.mockResolvedValue(true);
+    answer({ update_status: READY, update_install: undefined });
+    showUpdateReady('2.0.1');
+    tapRestart();
+    await vi.waitFor(() => expect(calls()).toContain('update_install'));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(readyCards()).toEqual([]);
+    expect(calls()).toEqual(['update_status', 'update_install']);
   });
 });

@@ -121,8 +121,22 @@ export function dailyCheckDue(now: number, last: number | null): boolean {
 export function showUpdateReady(version: string): void {
   notify.info(UPDATE_TEXT.ready(version), undefined, {
     duration: 0,
-    action: { label: UPDATE_TEXT.restart, run: () => void restartToUpdate(version) },
+    action: {
+      label: UPDATE_TEXT.restart,
+      // The Toaster closes the card before this runs. When nothing installed
+      // (Not now, Cancel, a failed install), bring it back, so the button the
+      // "Not now" message refers to is still there.
+      run: () => void restartToUpdate(version).then((installed) => showAgain(installed, version)),
+    },
   });
+}
+
+/** The ready toast again, for the update still waiting (if any). */
+async function showAgain(installed: boolean, version: string): Promise<void> {
+  if (installed) return;
+  const status = await getUpdateStatus().catch(() => null);
+  const ready = status ? status.ready : version;
+  if (ready) showUpdateReady(ready);
 }
 
 /**
