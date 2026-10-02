@@ -397,9 +397,18 @@ fn check_picked(chosen: &str, ctx: &CliContext) -> Result<PathBuf, String> {
         (raw, false)
     };
     let protected = protected_folders(ctx, home.as_deref());
+    // The PATH a Casper run and the user's tools see.
+    let path_var = super::casper::augmented_path(
+        &std::env::var_os("PATH").unwrap_or_default(),
+        home.as_deref(),
+    );
+    let mut run = super::casper::run_folders(home.as_deref(), &path_var);
+    let canon: Vec<PathBuf> = run.iter().filter_map(|p| canonical(p)).collect();
+    run.extend(canon);
     let rules = FolderRules {
         home: home_canon.as_deref(),
         protected: &protected,
+        run: &run,
         case_insensitive: CASE_INSENSITIVE,
     };
     casper::check_chosen_folder(&path, &rules, is_dir)?;

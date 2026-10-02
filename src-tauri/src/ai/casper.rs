@@ -763,7 +763,66 @@ pub fn sandbox_message(scan: SandboxScan, file: &Path) -> Option<String> {
 pub struct FolderRules<'a> {
     pub home: Option<&'a Path>,
     pub protected: &'a [PathBuf],
+    /// Folders whose files other programs run (run_folders).
+    pub run: &'a [PathBuf],
     pub case_insensitive: bool,
+}
+
+/// Folders whose files other programs run later, outside Casper's sandbox: a
+/// file Casper writes there (a `git` on PATH, a Claude Code hook, a login
+/// item) would run unsandboxed. The folders on `path_var`, the tool and
+/// autostart folders in the home folder, and the system folders.
+pub fn run_folders(home: Option<&Path>, path_var: &OsStr) -> Vec<PathBuf> {
+    let mut list: Vec<PathBuf> = std::env::split_paths(path_var)
+        .filter(|p| p.is_absolute() && p.parent().is_some())
+        .collect();
+    if let Some(home) = home {
+        for sub in [
+            ".claude",
+            ".cursor",
+            ".vscode",
+            ".codeium",
+            ".config",
+            ".local/bin",
+            ".local/share/applications",
+            "Library/LaunchAgents",
+        ] {
+            list.push(home.join(sub));
+        }
+    }
+    if cfg!(windows) {
+        for var in [
+            "SystemRoot",
+            "ProgramFiles",
+            "ProgramFiles(x86)",
+            "ProgramData",
+        ] {
+            if let Some(v) = std::env::var_os(var).filter(|v| !v.is_empty()) {
+                list.push(PathBuf::from(v));
+            }
+        }
+        if let Some(app_data) = std::env::var_os("APPDATA").filter(|v| !v.is_empty()) {
+            list.push(
+                PathBuf::from(app_data).join(r"Microsoft\Windows\Start Menu\Programs\Startup"),
+            );
+        }
+    } else {
+        for dir in [
+            "/usr",
+            "/etc",
+            "/opt",
+            "/bin",
+            "/sbin",
+            "/lib",
+            "/var",
+            "/Library",
+            "/System",
+            "/Applications",
+        ] {
+            list.push(PathBuf::from(dir));
+        }
+    }
+    list
 }
 
 fn parts(p: &Path, case_insensitive: bool) -> Vec<String> {
@@ -798,21 +857,34 @@ pub fn check_chosen_folder(chosen: &Path, rules: &FolderRules, is_dir: bool) -> 
         );
     }
     if !is_dir {
-        return Err(format!("Casper's working folder {} isn't there any more. Pick another in Settings → AI & MCP, or use GreenCLI's folder.", chosen.display()));
+        return Err(format!("Casper's working folder {} isn't there any more. Pick another in Settings → AI & MCP, or leave it on a fresh folder for each question.", chosen.display()));
     }
     let Some(home) = rules.home else {
-        return Err("Casper's working folder can't be checked because GreenCLI can't find your home folder. Use GreenCLI's folder.".to_string());
+        return Err("Casper's working folder can't be checked because GreenCLI can't find your home folder. Leave it on a fresh folder for each question.".to_string());
     };
     let ci = rules.case_insensitive;
     if within(home, chosen, ci) {
-        return Err("Casper can't work in your home folder, or in a folder that holds it. Pick a project folder, or use GreenCLI's folder.".to_string());
+        return Err("Casper can't work in your home folder, or in a folder that holds it. Pick a project folder, or leave it on a fresh folder for each question.".to_string());
     }
     if rules
         .protected
         .iter()
         .any(|p| within(chosen, p, ci) || within(p, chosen, ci))
     {
-        return Err("Casper can't work in a folder that holds GreenCLI's or Casper's own files. Pick a project folder, or use GreenCLI's folder.".to_string());
+        return Err("Casper can't work in a folder that holds GreenCLI's or Casper's own files. Pick a project folder, or leave it on a fresh folder for each question.".to_string());
+    }
+    let other_apps = chosen.components().any(|c| match c {
+        std::path::Component::Normal(name) => crate::export_file::REFUSED_FOLDERS
+            .contains(&name.to_string_lossy().to_lowercase().as_str()),
+        _ => false,
+    });
+    if other_apps
+        || rules
+            .run
+            .iter()
+            .any(|p| within(chosen, p, ci) || within(p, chosen, ci))
+    {
+        return Err("Casper can't work in a folder whose files other programs run. Pick a project folder, or leave it on a fresh folder for each question.".to_string());
     }
     Ok(())
 }
@@ -1939,9 +2011,14 @@ mod tests {
             PathBuf::from("/Users/me/Library/Caches/com.greencli.app"),
             home.join(".casper"),
         ];
+        let run = run_folders(
+            Some(&home),
+            OsStr::new("/usr/bin:/Users/me/.local/bin:relative"),
+        );
         let rules = FolderRules {
             home: Some(&home),
             protected: &protected,
+            run: &run,
             case_insensitive: false,
         };
         let check = |p: &str| check_chosen_folder(Path::new(p), &rules, true);
@@ -1955,6 +2032,7 @@ mod tests {
         let no_home = FolderRules {
             home: None,
             protected: &protected,
+            run: &run,
             case_insensitive: false,
         };
         assert!(
@@ -1974,10 +2052,31 @@ mod tests {
         assert!(check("/Users/me/.casper").unwrap_err().contains(own));
         assert!(check("/Users/me/code/net-lab").is_ok());
         assert!(check("/Users/me/.casperx").is_ok());
+        let runs = "folder whose files other programs run";
+        for p in [
+            "/Users/me/.local/bin",
+            "/Users/me/.local",
+            "/Users/me/.claude",
+            "/Users/me/.config/autostart",
+            "/Users/me/Library/LaunchAgents",
+            "/Users/me/code/x/.vscode",
+            "/usr/local/bin",
+            "/usr/local",
+            "/etc",
+            "/opt/tools",
+        ] {
+            assert!(check(p).unwrap_err().contains(runs), "{p}");
+        }
+        // A relative PATH entry is ignored.
+        assert!(check("/Users/me/code/relative").is_ok());
+        assert!(check("/Users/me")
+            .unwrap_err()
+            .contains("leave it on a fresh folder for each question"));
 
         let ci = FolderRules {
             home: Some(&home),
             protected: &protected,
+            run: &run,
             case_insensitive: true,
         };
         assert!(check_chosen_folder(Path::new("/users/ME"), &ci, true).is_err());

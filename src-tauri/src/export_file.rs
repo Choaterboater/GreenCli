@@ -36,7 +36,9 @@ const REFUSED_FILES: &[&str] = &[
     "mcp_creds.json",
 ];
 
-const REFUSED_FOLDERS: &[&str] = &[
+/// Other apps' own folders. Casper's working folder check refuses them too
+/// (ai::casper::check_chosen_folder), so the two lists stay one.
+pub(crate) const REFUSED_FOLDERS: &[&str] = &[
     ".claude",
     ".casper",
     ".vscode",
