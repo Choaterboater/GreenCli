@@ -326,7 +326,22 @@ live compliance:
     you scroll.
   - **Snippets**: pick one from *Snippets*, or type its name at the start of a line
     (`cx-access`, `junos-trunk`, …). **Tab** moves to the next blank.
-  - **Diff**: compare with a running-config you pulled (kept per device) or with a file.
+  - **Diff**: compare with a running-config you pulled (kept per device) or with a file. The
+    right side is your tab: edit it there, or click the arrow beside a change to take the left
+    side's lines.
+  - **Send selected lines**: select lines, then the arrow next to **Send** (or right-click) →
+    *Send selected lines*. Only those lines go out.
+  - **Send safely as a Change Job**: the arrow next to **Send** (or right-click) opens Change
+    Jobs with the tab (or the selected lines) and this device filled in. You get a dry run, then
+    the vendor's rollback timer (AOS-CX `checkpoint auto`, Junos `commit confirmed`): the switch
+    rolls back unless you confirm.
+  - **Ask AI** (toolbar, or right-click): explain the selected lines (or the tab), check them for
+    mistakes, fix the problems found, convert Aruba CX ↔ Junos, or ask your own question.
+    Secrets are hidden before anything goes to the AI.
+  - **Review in Editor**: a code block in the AI's answer opens as a diff against the lines you
+    asked about. Drop a change with the arrow beside it, edit the right side, then **Apply** (one
+    edit, **Ctrl+Z** undoes it) or **Discard**. Secrets the AI only saw as `<secret hidden>` get
+    their real value back. A converted config opens in a new tab.
   - **From a session**: select text, right-click → **Open in Editor**. It opens in a new tab
     in the device's language.
 - **Bulk Runner**: run one command across many sessions; export CSV (each row labelled

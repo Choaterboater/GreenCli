@@ -281,7 +281,7 @@ export const HELP_TOPICS: HelpTopic[] = [
     title: 'Tunnels, SFTP & tools',
     icon: Waypoints,
     summary: 'Port forwarding, file transfer, triggers, config editor, bulk runner.',
-    keywords: ['tunnel', 'forward', 'socks', 'sftp', 'file', 'upload', 'download', 'trigger', 'bulk', 'editor', 'problems', 'snippet', 'f8', 'ctrl+shift+m', 'status', 'send to', 'vendor', 'copy', 'secrets', 'hidden', 'share', 'ticket', 'hover', 'junos', 'quick fix', 'ctrl+.', 'symbol', 'outline', 'ctrl+shift+o', 'diff', 'compare', 'comment'],
+    keywords: ['tunnel', 'forward', 'socks', 'sftp', 'file', 'upload', 'download', 'trigger', 'bulk', 'editor', 'problems', 'snippet', 'f8', 'ctrl+shift+m', 'status', 'send to', 'vendor', 'copy', 'secrets', 'hidden', 'share', 'ticket', 'hover', 'junos', 'quick fix', 'ctrl+.', 'symbol', 'outline', 'ctrl+shift+o', 'diff', 'compare', 'comment', 'selection', 'send safely', 'change job', 'rollback', 'ask ai', 'explain', 'convert', 'review', 'apply', 'suggestion'],
     blocks: [
       {
         kind: 'bullets',
@@ -305,7 +305,11 @@ export const HELP_TOPICS: HelpTopic[] = [
           '**After a Send**: bars beside the lines show what reached the switch (green), what it rejected (red) and what was never sent (grey).',
           '**Config Editor smarts**: **Ctrl+/** comments a line (`!` Aruba, `#` Junos); a double-click picks `1/1/5` or `ge-0/0/0.100` whole.',
           '**Snippets**: type `cx-access`, `junos-trunk`, … at the start of a line, or pick from *Snippets*; **Tab** moves to the next blank.',
-          '**Diff**: compare the editor with the running-config you pulled, or with a file.',
+          '**Diff**: compare the editor with the running-config you pulled, or with a file. Edit your tab on the right; the arrow beside a change takes the left side.',
+          '**Send selected lines**: select lines, then the arrow next to Send (or right-click). Only those lines go out.',
+          '**Send safely**: the arrow next to Send opens Change Jobs with the tab and this device filled in: a dry run, then the switch\'s own rollback timer.',
+          '**Ask AI** (editor toolbar or right-click): explain, check, fix, or convert Aruba ↔ Junos the selected lines. Secrets are hidden first.',
+          '**Review in Editor**: an AI answer\'s code opens as a diff against the lines you asked about. Apply or Discard; Ctrl+Z undoes an Apply.',
         ],
       },
     ],

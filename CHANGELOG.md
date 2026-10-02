@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.8.0] - 2026-10-02
+
+### Added
+- **Send selected lines**: select lines in the Config Editor, then the arrow next to **Send** (or
+  right-click) → *Send selected lines*. Only those lines go out, with the usual confirm,
+  stop-at-first-error and send bars.
+- **Send safely as a Change Job**: the arrow next to **Send** (or right-click) opens Change Jobs
+  with the tab (or the selected lines) and this device already filled in. You get a dry run,
+  then the switch's own rollback timer (AOS-CX `checkpoint auto`, Junos `commit confirmed`).
+  Lines the job adds itself (`commit`, `checkpoint auto`) are taken out and named.
+- **Ask AI about these lines** (editor toolbar, or right-click): explain them, check them for
+  mistakes, fix the problems GreenCLI found, convert Aruba CX ↔ Junos, or ask your own question.
+  It covers the selected lines, or the whole tab. Secrets are hidden before anything goes to the
+  AI, and nothing goes if they can't be.
+- **Review AI suggestions as a diff**: code in the AI's answer gets **Review in Editor**. It opens
+  a diff against the lines you asked about. Drop a change with the arrow beside it, edit the right
+  side, then **Apply** (Ctrl+Z undoes it) or **Discard**. Nothing changes until you click. Lines
+  the AI only saw as `<secret hidden>` get their real value back from your tab. A converted
+  config, or lines that changed since you asked, open in a new tab instead.
+- **Edit in the Diff view**: when you compare with what you pulled or with a file, the right
+  side is your tab. Edit it there, or click the arrow beside a change to take the left side's
+  lines.
+
+### Fixed
+- Leaving the Diff view no longer throws a "TextModel got disposed" error.
+- Code blocks without a language in the AI panel show as blocks, not as inline code.
+
 ## [1.7.0] - 2026-10-02
 
 ### Added
