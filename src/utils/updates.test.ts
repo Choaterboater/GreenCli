@@ -9,6 +9,7 @@ vi.mock('../store/dialogStore', () => ({ askConfirm }));
 import {
   DAY_MS,
   UPDATE_TEXT,
+  checkForUpdate,
   dailyCheckDue,
   dailyCheckOn,
   dailyUpdateCheck,
@@ -145,6 +146,32 @@ describe('dailyUpdateCheck', () => {
     expect(toasts()).toEqual([]);
   });
 
+  /** The daily check on day `day`, answering update_check with `version`. */
+  async function checkOnDay(day: number, version: string | null) {
+    answer({ update_status: ON, update_check: version });
+    await dailyUpdateCheck(NOW + day * DAY_MS);
+  }
+  const cards = () => toasts().map((t) => `${t.title} x${t.count}`);
+
+  it('replaces the ready card when a newer version replaced the waiting one', async () => {
+    await checkOnDay(0, '2.0.1');
+    await checkOnDay(1, '2.0.2');
+    expect(cards()).toEqual(['GreenCLI 2.0.2 is ready. x1']);
+  });
+
+  it('closes the ready card when nothing is waiting any more (its release withdrawn)', async () => {
+    await checkOnDay(0, '2.0.1');
+    await checkOnDay(1, null);
+    expect(toasts()).toEqual([]);
+  });
+
+  it('shows the same waiting version again as one card, not counted up', async () => {
+    await checkOnDay(0, '2.0.1');
+    await checkOnDay(1, '2.0.1');
+    await checkOnDay(2, '2.0.1');
+    expect(cards()).toEqual(['GreenCLI 2.0.1 is ready. x1']);
+  });
+
   it('only logs errors, and waits a day before trying again', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     answer({ update_status: ON, update_check: new Error(UPDATE_TEXT.checkFailed) });
@@ -155,6 +182,39 @@ describe('dailyUpdateCheck', () => {
     await dailyUpdateCheck(NOW + 60_000);
     expect(invoke).not.toHaveBeenCalled();
     warn.mockRestore();
+  });
+});
+
+describe('checkForUpdate (Settings)', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    invoke.mockReset();
+    useToastStore.getState().clear();
+  });
+
+  const cards = () => toasts().map((t) => `${t.title} x${t.count}`);
+
+  it('closes the ready card when it finds nothing waiting', async () => {
+    showUpdateReady('2.0.1');
+    answer({ update_check: null });
+    await expect(checkForUpdate()).resolves.toBeNull();
+    expect(toasts()).toEqual([]);
+  });
+
+  it('brings a ready card on screen up to the version now waiting', async () => {
+    showUpdateReady('2.0.1');
+    answer({ update_check: '2.0.2' });
+    await expect(checkForUpdate()).resolves.toBe('2.0.2');
+    expect(cards()).toEqual(['GreenCLI 2.0.2 is ready. x1']);
+    answer({ update_check: '2.0.2' });
+    await checkForUpdate();
+    expect(cards()).toEqual(['GreenCLI 2.0.2 is ready. x1']);
+  });
+
+  it('puts up no card itself: Settings shows the answer', async () => {
+    answer({ update_check: '2.0.1' });
+    await expect(checkForUpdate()).resolves.toBe('2.0.1');
+    expect(toasts()).toEqual([]);
   });
 });
 

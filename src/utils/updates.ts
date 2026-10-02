@@ -7,7 +7,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { isTauri } from './tauri';
 import { askConfirm } from '../store/dialogStore';
-import { notify } from '../store/toastStore';
+import { notify, useToastStore } from '../store/toastStore';
 import { useSessionStore } from '../store/sessionStore';
 import { useSidePanelStore } from '../store/sidePanelStore';
 import { exitHolds, runBeforeExit } from './beforeExit';
@@ -74,6 +74,9 @@ export async function getUpdateStatus(): Promise<UpdateStatus | null> {
 export async function checkForUpdate(): Promise<string | null> {
   const version = await invoke<string | null>('update_check');
   recordCheck();
+  // A ready card still on screen says what this check found.
+  if (!version) hideUpdateReady();
+  else if (readyCardOnScreen() && readyCard?.version !== version) showUpdateReady(version);
   return version;
 }
 
@@ -122,9 +125,28 @@ export function dailyCheckDue(now: number, last: number | null): boolean {
   return last === null || last > now || now - last >= DAY_MS;
 }
 
-/** The sticky "GreenCLI X is ready." toast with its Restart to update button. */
+/** The ready card showUpdateReady put up last (the Toaster may have closed it since). */
+let readyCard: { id: string; version: string } | null = null;
+
+function readyCardOnScreen(): boolean {
+  const id = readyCard?.id;
+  return !!id && useToastStore.getState().toasts.some((t) => t.id === id);
+}
+
+/** Close the "GreenCLI X is ready." card, if it is on screen. */
+export function hideUpdateReady(): void {
+  if (readyCard) useToastStore.getState().dismiss(readyCard.id);
+  readyCard = null;
+}
+
+/**
+ * The sticky "GreenCLI X is ready." toast with its Restart to update button.
+ * It replaces the card already up, so a newer version never stacks a second
+ * card and the same one never counts up as ×N.
+ */
 export function showUpdateReady(version: string): void {
-  notify.info(UPDATE_TEXT.ready(version), undefined, {
+  hideUpdateReady();
+  const id = notify.info(UPDATE_TEXT.ready(version), undefined, {
     duration: 0,
     action: {
       label: UPDATE_TEXT.restart,
@@ -134,6 +156,7 @@ export function showUpdateReady(version: string): void {
       run: () => void restartToUpdate(version).then((installed) => showAgain(installed, version)),
     },
   });
+  readyCard = { id, version };
 }
 
 /** The ready toast again, for the update still waiting (if any). */
@@ -158,7 +181,9 @@ export async function dailyUpdateCheck(now = Date.now()): Promise<void> {
     // Counted when it starts, so a failing check waits a day like a good one.
     recordCheck(now);
     const version = await invoke<string | null>('update_check');
+    // Nothing waiting any more (its release withdrawn): the card goes too.
     if (version) showUpdateReady(version);
+    else hideUpdateReady();
   } catch (e) {
     console.warn('Daily update check failed:', e);
   }
