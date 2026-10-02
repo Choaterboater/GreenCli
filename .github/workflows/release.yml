@@ -140,8 +140,11 @@ jobs:
           # any release (the installers become workflow artifacts below).
           # Why manual runs can turn it off: a run builds under the app's
           # current version (tauri-action substitutes __VERSION__ from
-          # tauri.conf.json), so before the version bump it would add files
-          # to the already published release of that version (e.g. v1.9.0).
+          # tauri.conf.json), so before the version bump it would make a
+          # second draft release with the same tag as the already published
+          # one (e.g. v1.9.0). tauri-action v1 never changes a published
+          # release, but the extra draft is confusing: untick publish to only
+          # build.
           # A release/** push always publishes: push one only after the bump.
           tagName: ${{ (github.event_name != 'workflow_dispatch' || inputs.publish) && (github.ref_type == 'tag' && github.ref_name || 'v__VERSION__') || '' }}
           releaseName: ${{ (github.event_name != 'workflow_dispatch' || inputs.publish) && (github.ref_type == 'tag' && format('GreenCli {0}', github.ref_name) || 'GreenCli v__VERSION__') || '' }}

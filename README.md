@@ -29,7 +29,7 @@ One cockpit for **Aruba · Juniper · Mist**. A modern, cross-platform terminal,
 |-------|------------|
 | Frontend | React 18 + TypeScript + Tailwind CSS |
 | Terminal | xterm.js 5.x |
-| Shell | Tauri 1.6 (Rust + WebView) |
+| Shell | Tauri 2 (Rust + WebView) |
 | SSH | russh 0.63 (Rust native SSH library) |
 | Telnet | tokio async TCP |
 | Serial | tokio-serial |
@@ -110,7 +110,7 @@ green-cli/
 
 - [Node.js](https://nodejs.org/) 18+ and npm
 - [Rust](https://rustup.rs/) stable toolchain, 1.85+ (MSRV)
-- OS-specific build tools for Tauri: [Tauri Prerequisites](https://tauri.app/v1/guides/getting-started/prerequisites)
+- OS-specific build tools for Tauri: [Tauri Prerequisites](https://v2.tauri.app/start/prerequisites/)
 
 ### Install Dependencies
 
