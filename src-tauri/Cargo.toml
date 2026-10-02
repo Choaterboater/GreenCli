@@ -61,6 +61,18 @@ rsa-keys = []
 
 # [2.0 updater] updater dependency table goes below.
 #
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+# Automatic updates (src/updater.rs). The public key is not in tauri.conf.json:
+# each release build makes a one-time key pair, and the app fetches that
+# release's public key at check time.
+tauri-plugin-updater = "2.13"
+# Check that a fetched update key is a real minisign public key.
+minisign-verify = "0.2"
+# Version compare for updates (already used by Tauri).
+semver = "1"
+# The updater plugin's own HTTP client (reqwest 0.13): only used to keep its
+# requests on HTTPS and its redirects on GitHub's release hosts.
+reqwest-updater = { package = "reqwest", version = "0.13", default-features = false }
 
 # [2.0 greencli-mcp] [workspace] table goes below.
 #

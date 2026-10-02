@@ -20,6 +20,7 @@ mod session_log;
 mod sftp;
 mod ssh;
 mod telnet;
+mod updater;
 mod vault;
 
 #[cfg(test)]
@@ -2853,6 +2854,9 @@ fn main() {
             }
 
             // [2.0 updater] Register the updater here, only when a public key is set.
+            // Updates are on in release builds for the systems release.yml builds;
+            // the public key comes from each release at check time (updater.rs).
+            updater::register(app);
 
             // Auto-connect enabled MCP servers in the background so the AI's
             // tools survive an app restart without reconnecting each one by hand.
@@ -2904,6 +2908,9 @@ fn main() {
             vault_is_unlocked,
             vault_is_initialized,
             // [2.0 updater] new commands below
+            updater::update_status,
+            updater::update_check,
+            updater::update_install,
             list_serial_ports,
             get_terminal_output,
             pop_out_session,
