@@ -959,13 +959,15 @@ pub fn url_host(url: &str) -> UrlHost {
 }
 
 /// Casper's sandboxed commands may reach this computer's local ports. A port
-/// forward (to a device network) or a local MCP server makes that a way out,
-/// so GreenCLI won't start Casper while one is open.
+/// forward (to a device network) or a web MCP server on this computer makes
+/// that a way out, so GreenCLI won't start Casper while one is open or set up.
+/// A web MCP server counts whether or not GreenCLI is connected to it: GreenCLI
+/// doesn't start it, so disconnecting doesn't stop it.
 pub fn bridge_problem(forwards: &[(String, u16)], loopback_mcp: &[String]) -> Option<String> {
     if let Some((_, port)) = forwards.first() {
         return Some(format!("Casper's commands can reach this computer's local ports, and GreenCLI has a port forward open on port {port} (Tunnels). Close it, or ask with another AI provider."));
     }
-    loopback_mcp.first().map(|name| format!("Casper's commands can reach this computer's local ports, and the MCP server \"{name}\" is connected and may run on this computer. Disconnect it in MCP Servers, or ask with another AI provider."))
+    loopback_mcp.first().map(|name| format!("Casper's commands can reach this computer's local ports, and the web MCP server \"{name}\" may run on this computer. Disconnecting it isn't enough, because it keeps running. Remove it in MCP Servers, or ask with another AI provider."))
 }
 
 /// Shown when a port forward is opened while Casper answers.
@@ -2139,7 +2141,7 @@ mod tests {
         );
         let m = bridge_problem(&[], &["central".into()]).unwrap();
         assert!(
-            m.contains("MCP server \"central\" is connected and may run on this computer"),
+            m.contains("web MCP server \"central\" may run on this computer"),
             "{m}"
         );
     }

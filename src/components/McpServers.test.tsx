@@ -303,6 +303,28 @@ describe('McpServers form help', () => {
   });
 });
 
+describe('McpServers save', () => {
+  it('saves only the fields of the chosen transport', async () => {
+    defs = [];
+    status = [];
+    render(<McpServers />);
+    fireEvent.click(await screen.findByRole('button', { name: /Add server/ }));
+    fireEvent.change(screen.getByPlaceholderText('centralmcp'), { target: { value: 'lab' } });
+    fireEvent.click(screen.getByRole('button', { name: /Streamable HTTP/ }));
+    fireEvent.change(screen.getByPlaceholderText('http://127.0.0.1:8010/mcp'), {
+      target: { value: 'http://127.0.0.1:8000/mcp' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /^Stdio/ }));
+    fireEvent.change(screen.getByPlaceholderText('uv'), { target: { value: 'uvx' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('mcp_save_server', expect.anything()));
+    const saved = vi.mocked(invoke).mock.calls.find(([cmd]) => cmd === 'mcp_save_server')?.[1] as { def: McpServerDef };
+    expect(saved.def.transport).toBe('stdio');
+    expect(saved.def.command).toBe('uvx');
+    expect(saved.def.url).toBeUndefined();
+  });
+});
+
 describe('allowWritesMessage', () => {
   it('names the read-only settings only when a pinned server is connected', () => {
     const base =

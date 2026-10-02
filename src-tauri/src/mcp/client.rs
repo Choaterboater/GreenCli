@@ -1278,6 +1278,14 @@ impl McpClient {
         self.caller.clone()
     }
 
+    /// The address a web (http) connection really talks to; None for stdio.
+    pub fn web_url(&self) -> Option<String> {
+        match &self.caller.io {
+            ClientIo::Http { url, .. } => Some(url.to_string()),
+            ClientIo::Stdio { .. } => None,
+        }
+    }
+
     /// The current tool list, cloned (no network call).
     fn tool_list(&self) -> Vec<McpToolInfo> {
         self.tools.lock().map(|g| g.clone()).unwrap_or_default()
@@ -1797,6 +1805,30 @@ impl McpManager {
         self.store.load()
     }
 
+    /// Every web MCP server address GreenCLI knows, with the server's name:
+    /// each saved http server's address, whatever its state (GreenCLI doesn't
+    /// start web servers, so disconnecting one doesn't stop it), and the
+    /// address each live http connection really uses (it differs after an edit
+    /// that wasn't followed by a reconnect). A stdio server's leftover url
+    /// doesn't count.
+    pub fn web_urls(&self) -> Vec<(String, String)> {
+        let mut urls: Vec<(String, String)> = self
+            .store
+            .load()
+            .into_iter()
+            .filter(|d| d.transport == McpTransport::Http)
+            .filter_map(|d| d.url.map(|url| (d.name, url)))
+            .collect();
+        for (name, client) in &self.clients {
+            if let Some(url) = client.web_url() {
+                if !urls.iter().any(|(n, u)| n == name && *u == url) {
+                    urls.push((name.clone(), url));
+                }
+            }
+        }
+        urls
+    }
+
     /// For the export: the read-only settings connect would add to each saved
     /// server whose writes are off (keyed by name). Servers with writes on are
     /// left out.
@@ -2157,7 +2189,9 @@ pub async fn connect_server(
         let mgr = manager.lock().await;
         mgr.resolve_connect_def(name).map_err(|e| e.to_string())?
     };
-    let web = resolved.def.url.is_some();
+    // Only an http server is a web server: a stdio server keeps a url the form
+    // left behind, but GreenCLI starts it over pipes.
+    let web = resolved.def.transport == McpTransport::Http;
     if web {
         if let Some(why) = web_refused() {
             return Err(why);
@@ -2564,6 +2598,32 @@ mod tests {
     }
 
     // ─── manager ───
+
+    #[tokio::test]
+    async fn web_urls_cover_saved_and_live_web_servers_only() {
+        let mut mgr = McpManager::new(temp_dir());
+        let mut web = def("web", "", &[]);
+        web.transport = McpTransport::Http;
+        web.url = Some("https://mcp.example.com/mcp".into());
+        mgr.save_config(web).unwrap();
+        // A stdio server with a url the form left behind is not a web server.
+        let mut left = def("left", "uvx", &["x"]);
+        left.url = Some("http://127.0.0.1:8000/mcp".into());
+        mgr.save_config(left).unwrap();
+        assert_eq!(
+            mgr.web_urls(),
+            vec![("web".to_string(), "https://mcp.example.com/mcp".to_string())]
+        );
+        // "web" was edited to a remote address but is still connected to the old one.
+        mgr.install_client("web".into(), fake_client("web", vec![]));
+        assert_eq!(
+            mgr.web_urls(),
+            vec![
+                ("web".to_string(), "https://mcp.example.com/mcp".to_string()),
+                ("web".to_string(), "http://127.0.0.1:9/mcp".to_string()),
+            ]
+        );
+    }
 
     #[tokio::test]
     async fn all_tools_reports_the_map_key_after_a_rename() {

@@ -2573,24 +2573,13 @@ async fn ai_bridges(state: &AppState) -> (Vec<(String, u16)>, Vec<String>) {
         .map(|(meta, _)| (meta.kind.clone(), meta.local_port))
         .collect();
     forwards.sort_by_key(|(_, port)| *port);
-    let web_servers: Vec<(String, String)> = {
-        let mgr = state.mcp_manager.lock().await;
-        let connected: std::collections::HashSet<String> = mgr
-            .status()
-            .iter()
-            .filter(|s| s.get("connected").and_then(|c| c.as_bool()) == Some(true))
-            .filter_map(|s| s.get("name").and_then(|n| n.as_str()).map(str::to_string))
-            .collect();
-        mgr.list_configs()
-            .into_iter()
-            .filter(|d| connected.contains(&d.name))
-            .filter_map(|d| d.url.map(|url| (d.name, url)))
-            .collect()
-    };
+    // Every saved web server, connected or not (GreenCLI doesn't start them,
+    // so they keep listening), and the address each live connection uses.
+    let web_servers: Vec<(String, String)> = state.mcp_manager.lock().await.web_urls();
     // Name lookups run without the manager lock held.
     let mut local_mcp: Vec<String> = Vec::new();
     for (name, url) in web_servers {
-        if ai::mcp_url_is_local(&url).await {
+        if !local_mcp.contains(&name) && ai::mcp_url_is_local(&url).await {
             local_mcp.push(name);
         }
     }

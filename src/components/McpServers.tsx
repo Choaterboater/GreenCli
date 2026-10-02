@@ -286,16 +286,19 @@ export default function McpServers() {
       const i = line.indexOf(':');
       if (i > 0) headers[line.slice(0, i).trim()] = line.slice(i + 1).trim();
     });
+    // Only the fields of the chosen transport: a URL left in the form after switching to stdio
+    // would otherwise be saved, hidden, and make the server look like a web server.
+    const stdio = form.transport === 'stdio';
     const def: McpServerDef = {
       name,
       transport: form.transport,
-      command: form.command.trim(),
-      args,
-      env,
-      cwd: form.cwd.trim() || undefined,
-      url: form.url.trim() || undefined,
-      credentialsEnvVar: form.credsEnvVar.trim() || undefined,
-      headers: Object.keys(headers).length ? headers : undefined,
+      command: stdio ? form.command.trim() : '',
+      args: stdio ? args : [],
+      env: stdio ? env : {},
+      cwd: stdio ? form.cwd.trim() || undefined : undefined,
+      url: stdio ? undefined : form.url.trim() || undefined,
+      credentialsEnvVar: stdio ? form.credsEnvVar.trim() || undefined : undefined,
+      headers: !stdio && Object.keys(headers).length ? headers : undefined,
       enabled: form.enabled,
     };
     // Saving under a name that already belongs to ANOTHER server silently
