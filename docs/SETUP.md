@@ -9,8 +9,9 @@ feature overview see the top-level [`README.md`](../README.md); for the work log
 [`ROADMAP.md`](../ROADMAP.md).
 
 > 💡 **In-app help:** the same documentation is built into the app — press **`F1`**
-> (or the **?** in the title bar, or `Ctrl+K` → "Help") to open a searchable Help panel
-> with per-topic quick actions and an "Ask the AI" button.
+> (or **Help**, the **?** at the bottom of the bar on the left, or the command palette →
+> "Help & Documentation") to open a searchable Help panel with per-topic quick actions and an
+> "Ask the AI" button.
 
 ---
 
@@ -18,7 +19,7 @@ feature overview see the top-level [`README.md`](../README.md); for the work log
 
 | Need | Why |
 |------|-----|
-| [Node.js](https://nodejs.org/) 18+ and npm | Build the React/TypeScript frontend |
+| [Node.js](https://nodejs.org/) 22 (or 20.19 and newer) and npm | Build and test the React/TypeScript frontend |
 | [Rust](https://rustup.rs/) stable, **1.90+** (MSRV) | Build the Tauri/Rust backend |
 | Tauri 2 OS build tools | Native webview + bundling — see [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) |
 
@@ -348,7 +349,8 @@ GreenCLI 2.0 keeps AI keys and MCP logins in the system password store, not in f
 
 ## 4. Connecting to devices
 
-Open **Quick Connect** (`Ctrl+T`) or double-click a saved host in the sidebar.
+Open **Quick Connect** (`Cmd+T` on a Mac, `Ctrl+Shift+T` on Windows) or double-click a saved host
+in the sidebar.
 
 - **Protocols**: SSH, Telnet, Serial, and Local (a local shell / CLI).
 - **Local presets**: Default Shell, Claude CLI, Kimi CLI, Copilot CLI and **Casper**. Set
@@ -366,14 +368,15 @@ Open **Quick Connect** (`Ctrl+T`) or double-click a saved host in the sidebar.
 - **Save to sidebar** persists the session (including jump-host and local
   command/args/cwd) to `sessions.json` — never the password.
 
-> **Settings layout:** Settings (`Ctrl+,`) is organized into left-nav groups —
+> **Settings layout:** Settings (`Cmd+,` / `Ctrl+,`) is organized into left-nav groups —
 > **Appearance**, **Terminal**, **Connections & Security**, **Automation**, **AI & MCP**,
 > **Integrations**, **Updates**, **Backup & Reset** — so paths below read
 > "Settings → *group* → *section*".
 
 ### Credential vault
 
-Unlock the vault from the command palette (`Ctrl+K` → "Unlock credential vault") with a
+Unlock the vault from the command palette (`Cmd+K` on a Mac, `Ctrl+Shift+P` on Windows →
+"Unlock credential vault") with a
 master password (Argon2id-derived key, AES-256-GCM) — the app also prompts the first
 time you save a credential on connect.
 Saved SSH passwords are stored encrypted and offered automatically on the next connect.
@@ -384,7 +387,7 @@ preserved so nothing is silently lost.
 
 ## 5. AI assistant (provider-neutral)
 
-Open the AI panel from the title bar. Settings → **AI & MCP → AI Assistant**:
+Open the AI panel with **AI** in the bar on the left. Settings → **AI & MCP → AI Assistant**:
 
 1. **Provider** — pick one:
    - **Anthropic** (Claude) — needs an API key.
@@ -643,7 +646,7 @@ The API Explorer's per-login *Verify TLS* checkbox defaults from this setting.
 
 ## 9. Network Intent (desired state / assurance)
 
-Header **Tools** menu → **Network Intent**. Declare what *should* be true and check
+**Network Intent** in the bar on the left (the target icon). Declare what *should* be true and check
 live compliance:
 
 1. **Add an intent**: a name; **kind** (config or operational); a **command** to run;
@@ -669,7 +672,7 @@ live compliance:
   or an XML export), Aruba Central, Juniper Mist or `~/.ssh/config`. Every source shows a preview;
   hosts already saved (same host, port and user) are skipped and passwords are never imported.
 - **Host keys** (same Settings section): view / forget / re-trust known-host fingerprints.
-- **Tunnels** (header **Tools** menu): local (`-L`) and dynamic SOCKS5 (`-D`) forwards over any SSH
+- **SSH Tunnels** (bar on the left): local (`-L`) and dynamic SOCKS5 (`-D`) forwards over any SSH
   session. Stopping a tunnel (or disconnecting the session) tears down its connections.
 - **SFTP**: browse/upload/download/mkdir/rename/delete on an SSH session. Uploads
   confirm before overwriting an existing remote file; dropped files confirm the target.
@@ -736,27 +739,31 @@ live compliance:
 
 ## 11. Keyboard shortcuts
 
-| Shortcut | Action |
-|----------|--------|
-| `Ctrl+T` | Quick Connect |
-| `Ctrl+W` | Close active tab |
-| `Ctrl+F` | Search terminal |
-| `Ctrl+,` | Settings |
-| `F1` | Help & documentation |
-| `Ctrl+B` | Toggle sidebar |
-| `Ctrl+K` | Command palette |
-| `Ctrl+1`–`Ctrl+9` | Jump to tab N |
-| `Ctrl+Tab` | Cycle to next tab |
-| `Ctrl+Shift+A` | Toggle API Explorer |
-| `Ctrl+Shift+I` | Toggle AI Assistant |
-| `Ctrl+Shift+E` | Toggle Config Editor |
-| `Ctrl+Shift+M` | Config Editor: show or hide the Problems panel |
-| `Ctrl+.` | Config Editor: quick fixes for the problem under the cursor |
-| `Ctrl+Shift+O` | Config Editor: Go to Symbol (interfaces, VLANs, sections) |
-| `Ctrl+=` / `Ctrl+-` | Zoom terminal font in / out |
-| `Ctrl+0` | Reset terminal font size |
+| Action | Mac | Windows and Linux |
+|--------|-----|-------------------|
+| Quick Connect | `Cmd+T` | `Ctrl+Shift+T` |
+| Command palette | `Cmd+K` | `Ctrl+Shift+P` |
+| Find in the terminal | `Cmd+F` | `Ctrl+Shift+F` |
+| Find next / previous | `Cmd+G` / `Cmd+Shift+G` (or `F3` / `Shift+F3`) | `F3` / `Shift+F3` |
+| Close the active tab | `Cmd+W` | `Ctrl+Shift+W` |
+| Next / previous tab | `Ctrl+Tab` / `Ctrl+Shift+Tab` (or `Cmd+Shift+]` / `[`) | `Ctrl+Tab` / `Ctrl+Shift+Tab` (or `Ctrl+PgDn` / `PgUp`) |
+| Go to tab 1 to 9 | `Cmd+1` … `Cmd+9` | `Alt+1` … `Alt+9` |
+| Settings | `Cmd+,` | `Ctrl+,` |
+| Help | `F1` | `F1` |
+| Show or hide the sidebar | `Cmd+B` | `Ctrl+B` |
+| Config Editor / API Explorer / AI Assistant | `Cmd+Shift+E` / `A` / `I` | `Ctrl+Shift+E` / `A` / `I` |
+| Zoom the font in / out / back | `Cmd+=` / `Cmd+-` / `Cmd+0` | `Ctrl+=` / `Ctrl+-` / `Ctrl+0` |
+| Config Editor: Problems panel | `Cmd+Shift+M` | `Ctrl+Shift+M` |
+| Config Editor: next / previous problem | `F8` / `Shift+F8` | `F8` / `Shift+F8` |
+| Config Editor: quick fixes | `Cmd+.` | `Ctrl+.` |
+| Config Editor: Go to Symbol | `Cmd+Shift+O` | `Ctrl+Shift+O` |
+| Config Editor: comment a line | `Cmd+/` | `Ctrl+/` |
 
-(On macOS use `Cmd` instead of `Ctrl`.)
+On Windows and Linux, plain `Ctrl+T`, `Ctrl+F`, `Ctrl+K` and `Ctrl+W` belong to the device shell
+inside a session (transpose, forward, kill-line, delete-word), so GreenCLI uses the `Ctrl+Shift`
+keys. The plain ones still work when the terminal doesn't have the focus. `Ctrl+1`–`9` also stay
+with the device, so tabs use `Alt+1`–`9`. The Help panel (`F1`) shows the keys for the computer
+you are on.
 
 ---
 
