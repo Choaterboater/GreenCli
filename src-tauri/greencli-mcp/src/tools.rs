@@ -93,7 +93,8 @@ pass nextCursor to get the next one.",
         title: "Get config diff",
         description: "Shows what changed between two saved config snapshots, as a unified diff \
 of the copies with secrets hidden. A changed password or key looks the same on both sides, so \
-a diff can't show a changed secret. Default: the newest snapshot against the one before it.",
+a diff can't show a changed secret. Default: the newest snapshot against the one before it. \
+Two snapshots that differ in too many places are refused: use get_config on each.",
         params: &[
             DEVICE,
             Param {

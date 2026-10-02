@@ -72,6 +72,23 @@ fn history_marks_which_snapshots_can_be_read() {
     );
     let (_, body, _) = call(&dir, "list_config_history", json!({"device": "sw2"}));
     assert_eq!(body["snapshots"][0]["hasHiddenCopy"], false);
+    // The index says there is a copy, but the file is gone.
+    let folder = dir.join("config_archive").join(dir_for("sw1"));
+    std::fs::remove_file(folder.join("200.hidden.json")).unwrap();
+    let (_, body, _) = call(&dir, "list_config_history", json!({"device": "sw1"}));
+    assert_eq!(body["snapshots"][1]["hasHiddenCopy"], false);
+    // A copy the index doesn't stamp with this filter.
+    let mut index: Value =
+        serde_json::from_slice(&std::fs::read(dir.join("config_archive/index.json")).unwrap())
+            .unwrap();
+    index["devices"]["sw1"][0]["hiddenFilter"] = json!(F + 1);
+    std::fs::write(
+        dir.join("config_archive/index.json"),
+        serde_json::to_vec(&index).unwrap(),
+    )
+    .unwrap();
+    let (_, body, _) = call(&dir, "list_config_history", json!({"device": "sw1"}));
+    assert_eq!(body["snapshots"][0]["hasHiddenCopy"], false);
     let (is_error, body, _) = call(&dir, "list_config_history", json!({"device": "nope"}));
     assert!(is_error);
     assert!(error_text(&body).contains("no config history"));

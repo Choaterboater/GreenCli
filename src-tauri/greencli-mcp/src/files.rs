@@ -39,3 +39,8 @@ pub fn read_capped(path: &Path, cap: u64) -> Result<ReadFile, ReadError> {
     }
     Ok(ReadFile::Bytes(bytes))
 }
+
+/// Whether `path` is a plain file of at most `cap` bytes, without reading it.
+pub fn is_plain_file(path: &Path, cap: u64) -> bool {
+    fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_file() && m.len() <= cap)
+}
