@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import {
   Plus,
@@ -128,7 +128,17 @@ export default function McpServers() {
   const [busy, setBusy] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({ ...blankForm });
-  const [credsSaved, setCredsSaved] = useState(false);
+  // null: the password store couldn't be asked, not "no login".
+  const [credsSaved, setCredsSaved] = useState<boolean | null>(false);
+  const [credsCheckError, setCredsCheckError] = useState<string | null>(null);
+  // Bumped whenever the form changes server, so a slow check for the server
+  // an earlier Edit opened can't land on another one.
+  const credsCheck = useRef(0);
+  const resetCredsSaved = () => {
+    credsCheck.current += 1;
+    setCredsSaved(false);
+    setCredsCheckError(null);
+  };
   // Credentials are masked by default; toggle only reveals them while editing.
   const [showCreds, setShowCreds] = useState(false);
   // The name the form was opened on, so a rename can move the server instead of
@@ -260,10 +270,17 @@ export default function McpServers() {
       credsContent: '',
       enabled: s.enabled !== false,
     });
-    setCredsSaved(false);
+    resetCredsSaved();
+    const check = credsCheck.current;
     invoke<boolean>('mcp_has_credentials', { name: s.name })
-      .then(setCredsSaved)
-      .catch(() => setCredsSaved(false));
+      .then((has) => {
+        if (credsCheck.current === check) setCredsSaved(has === true);
+      })
+      .catch((e) => {
+        if (credsCheck.current !== check) return;
+        setCredsSaved(null);
+        setCredsCheckError(keyCheckError(e));
+      });
     setShowConfigPaste(false);
     setConfigPasteText('');
     setShowCreds(false);
@@ -289,7 +306,7 @@ export default function McpServers() {
       credsContent: '',
       enabled: s.enabled !== false,
     });
-    setCredsSaved(false);
+    resetCredsSaved();
     setShowConfigPaste(false);
     setConfigPasteText('');
     setShowCreds(false);
@@ -408,7 +425,7 @@ export default function McpServers() {
       await configSaved();
       setShowForm(false);
       setForm({ ...blankForm });
-      setCredsSaved(false);
+      resetCredsSaved();
       setShowCreds(false);
       setEditingName(null);
       setShowConfigPaste(false);
@@ -505,7 +522,7 @@ export default function McpServers() {
           <button
             onClick={() => {
               setForm({ ...blankForm });
-              setCredsSaved(false);
+              resetCredsSaved();
               setShowCreds(false);
               setEditingName(null);
               setShowConfigPaste(false);
@@ -865,7 +882,9 @@ export default function McpServers() {
                     placeholder={
                       credsSaved
                         ? '•••••••• saved — type to replace the credentials file'
-                        : 'Paste the server\'s credentials file (e.g. centralmcp credentials.yaml)…\ncentral_account:\n  client_id: ...\n  client_secret: ...\n  base_url: ...'
+                        : credsSaved === null
+                          ? "Can't check for a saved login. Type to replace it."
+                          : 'Paste the server\'s credentials file (e.g. centralmcp credentials.yaml)…\ncentral_account:\n  client_id: ...\n  client_secret: ...\n  base_url: ...'
                     }
                   />
                   <button
@@ -877,6 +896,7 @@ export default function McpServers() {
                     {showCreds ? <EyeOff size={13} /> : <Eye size={13} />}
                   </button>
                 </div>
+                {credsCheckError && <p className="text-[10px] text-[var(--accent-warning)]">{credsCheckError}</p>}
                 <SecretStoreNote
                   after="On connect it's written to a private file that the env var above points at. The file is deleted when the server stops."
                   refreshKey={showForm}
@@ -900,7 +920,7 @@ export default function McpServers() {
               onClick={() => {
                 setShowForm(false);
                 setForm({ ...blankForm });
-                setCredsSaved(false);
+                resetCredsSaved();
                 setEditingName(null);
                 setShowConfigPaste(false);
                 setConfigPasteText('');
