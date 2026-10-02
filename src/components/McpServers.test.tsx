@@ -9,7 +9,7 @@ vi.mock('../store/dialogStore', async (importOriginal) => ({
 
 import { invoke } from '@tauri-apps/api/tauri';
 import McpServers from './McpServers';
-import { allowWritesMessage } from './McpServerSafety';
+import { allowWritesMessage, writesOffHelp } from './McpServerSafety';
 import { askConfirm } from '../store/dialogStore';
 import { useMcpApprovalStore } from '../store/mcpApprovalStore';
 import { useToastStore } from '../store/toastStore';
@@ -194,6 +194,43 @@ describe('McpServers writes switch', () => {
     expect(screen.getByText('· 5 hidden')).toHaveAttribute('title', 'Hidden from the AI because the login is read-only');
   });
 
+  it('lets writes go off on a read-only login when they are on', async () => {
+    defs = [plainDef({ writes: 'on' })];
+    status = [st({ writes: 'on', access: 'read-only', connected: false })];
+    render(<McpServers />);
+    const box = await screen.findByRole('checkbox', { name: 'Allow writes' });
+    expect(box).toBeChecked();
+    expect(box).not.toBeDisabled();
+    expect(
+      screen.getByText(
+        'This login is read-only (checked by the server), so changes are blocked anyway. You can still turn writes off.'
+      )
+    ).toBeInTheDocument();
+    fireEvent.click(box);
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('mcp_set_writes', { name: 'central', writes: 'off' }));
+  });
+
+  it('says the restart failed instead of saying writes are on', async () => {
+    defs = [plainDef()];
+    status = [st()];
+    vi.mocked(askConfirm).mockResolvedValue(true);
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === 'mcp_list_servers') return defs;
+      if (cmd === 'mcp_status') return status;
+      if (cmd === 'mcp_connect') throw new Error('bad credentials');
+      return null;
+    });
+    render(<McpServers />);
+    fireEvent.click(await screen.findByRole('checkbox', { name: 'Allow writes' }));
+    await waitFor(() => expect(toastTitles()).toContain('central writes setting saved'));
+    expect(toastTitles()).toContain('central failed to connect');
+    expect(toastTitles()).not.toContain('central writes are on');
+    const toast = useToastStore.getState().toasts.find((t) => t.title === 'central writes setting saved');
+    expect(toast?.message).toBe(
+      'Writes are on for the next start, but the restart failed. Restart this server once it can connect.'
+    );
+  });
+
   it('shows the restart, upgrade, pins and login lines', async () => {
     defs = [plainDef({ writes: undefined })];
     status = [
@@ -274,5 +311,19 @@ describe('allowWritesMessage', () => {
     const pinned = st({ pins: { kind: 'pinned', shown: ['X=1'], confirmed: false } });
     expect(allowWritesMessage('c', { ...pinned, connected: false })).toBe(base);
     expect(allowWritesMessage('c', pinned)).toBe(`${base}\n\nGreenCLI will restart c without its read-only settings: X=1.`);
+  });
+});
+
+describe('writesOffHelp', () => {
+  it('says what happens to command tools on each kind of server', () => {
+    const base = 'Writes are off. Tools that change settings or delete things are hidden from the AI and blocked.';
+    expect(writesOffHelp('junos-mcp-server')).toBe(`${base} Command tools only run show commands.`);
+    expect(writesOffHelp('netmiko-mcp')).toBe(
+      `${base} On this server, every tool it doesn't mark as read-only is hidden too.`
+    );
+    expect(writesOffHelp('central-mcp-server')).toBe(writesOffHelp('oxidized-librenms'));
+    expect(writesOffHelp('hpe-networking-mcp')).toBe(`${base} Its invoke_tool and invoke_tools_batch tools are hidden too.`);
+    expect(writesOffHelp('netbox')).toBe(`${base} Tools that run commands still ask you every time.`);
+    expect(writesOffHelp(undefined)).toBe(`${base} Some servers also hide their command tools; the rest ask you every time.`);
   });
 });

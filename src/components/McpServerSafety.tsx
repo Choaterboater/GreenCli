@@ -3,15 +3,30 @@ import { invoke } from '@tauri-apps/api/tauri';
 import { askConfirm } from '../store/dialogStore';
 import { useMcpApprovalStore } from '../store/mcpApprovalStore';
 import { notify } from '../store/toastStore';
-import type { McpServerDef, McpStatus, McpWrites } from '../utils/mcpTypes';
+import type { McpPresetId, McpServerDef, McpStatus, McpWrites } from '../utils/mcpTypes';
 
 /** Forget every "Yes, for this session" answer for a server: its tools must ask again. */
 const clearAllowances = (name: string) => useMcpApprovalStore.getState().clearServer(name);
 
-const WRITES_OFF_HELP =
-  'Writes are off. Tools that change settings or delete things are hidden from the AI and blocked. Tools that run commands still ask you every time.';
 const WRITES_ON_HELP = 'Writes are on. Tools that change things still ask you every time.';
 const READ_ONLY_LOGIN = "This login is read-only (checked by the server). Writes can't be turned on here.";
+const READ_ONLY_LOGIN_ON =
+  'This login is read-only (checked by the server), so changes are blocked anyway. You can still turn writes off.';
+
+/** Presets whose tools are all hidden while writes are off, unless the server marks them read-only. */
+const HIDES_UNMARKED: ReadonlySet<McpPresetId> = new Set(['central-mcp-server', 'netmiko-mcp', 'oxidized-librenms']);
+
+/** The help line while writes are off. What happens to command tools depends on the server. Exported for tests. */
+export function writesOffHelp(preset: McpPresetId | undefined): string {
+  const base = 'Writes are off. Tools that change settings or delete things are hidden from the AI and blocked.';
+  if (preset === 'junos-mcp-server') return `${base} Command tools only run show commands.`;
+  if (preset === 'hpe-networking-mcp') return `${base} Its invoke_tool and invoke_tools_batch tools are hidden too.`;
+  if (preset && HIDES_UNMARKED.has(preset)) {
+    return `${base} On this server, every tool it doesn't mark as read-only is hidden too.`;
+  }
+  if (preset) return `${base} Tools that run commands still ask you every time.`;
+  return `${base} Some servers also hide their command tools; the rest ask you every time.`;
+}
 
 /** The confirm text before writes go on. Exported for tests. */
 export function allowWritesMessage(name: string, status: McpStatus | undefined): string {
@@ -39,7 +54,8 @@ export default function McpServerSafety({
   status: McpStatus | undefined;
   busy: boolean;
   onChanged: () => void | Promise<void>;
-  onReconnect: (name: string) => Promise<void>;
+  /** Restarts the server; true when it connected. */
+  onReconnect: (name: string) => Promise<boolean>;
 }) {
   const [working, setWorking] = useState(false);
   const name = def.name;
@@ -48,6 +64,8 @@ export default function McpServerSafety({
   const preset = status?.preset ?? null;
   const pins = status?.pins;
   const disabled = busy || working;
+  // A read-only login can't turn writes on, but writes that are already on can always go off.
+  const lockedOff = readOnlyLogin && writes === 'off';
 
   const setWrites = async (next: McpWrites) => {
     if (next === 'on') {
@@ -70,14 +88,24 @@ export default function McpServerSafety({
       return;
     }
     clearAllowances(name);
+    let restarted = true;
     try {
       // Restart so the server runs with (or without) its read-only settings.
-      if (status?.connected) await onReconnect(name);
+      if (status?.connected) restarted = await onReconnect(name);
     } finally {
       setWorking(false);
     }
-    if (next === 'on') notify.success(`${name} writes are on`, 'Tools that change things still ask you every time.');
-    else notify.info(`${name} writes are off`, 'Tools that change settings or delete things are hidden from the AI.');
+    if (!restarted) {
+      // The old connection keeps running with the old setting.
+      notify.warning(
+        `${name} writes setting saved`,
+        `Writes are ${next} for the next start, but the restart failed. Restart this server once it can connect.`
+      );
+    } else if (next === 'on') {
+      notify.success(`${name} writes are on`, 'Tools that change things still ask you every time.');
+    } else {
+      notify.info(`${name} writes are off`, 'Tools that change settings or delete things are hidden from the AI.');
+    }
     await onChanged();
   };
 
@@ -108,20 +136,26 @@ export default function McpServerSafety({
       <div>
         <label
           className={`flex items-center gap-2 text-[var(--text-secondary)] select-none ${
-            readOnlyLogin || disabled ? 'opacity-70' : 'cursor-pointer'
+            lockedOff || disabled ? 'opacity-70' : 'cursor-pointer'
           }`}
         >
           <input
             type="checkbox"
             checked={writes === 'on'}
-            disabled={readOnlyLogin || disabled}
+            disabled={lockedOff || disabled}
             onChange={(e) => setWrites(e.target.checked ? 'on' : 'off')}
             className="accent-[var(--accent)]"
           />
           Allow writes
         </label>
         <p className="mt-0.5 ml-5 text-[10px] text-[var(--text-muted)] leading-snug">
-          {readOnlyLogin ? READ_ONLY_LOGIN : writes === 'on' ? WRITES_ON_HELP : WRITES_OFF_HELP}
+          {readOnlyLogin
+            ? writes === 'on'
+              ? READ_ONLY_LOGIN_ON
+              : READ_ONLY_LOGIN
+            : writes === 'on'
+              ? WRITES_ON_HELP
+              : writesOffHelp(preset?.id)}
         </p>
       </div>
 

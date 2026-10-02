@@ -140,14 +140,17 @@ export default function McpServers() {
     return () => clearInterval(t);
   }, [refresh]);
 
-  const connect = async (name: string) => {
+  /** Connects (or restarts) a server; true when it worked. Errors are shown here, never thrown. */
+  const connect = async (name: string): Promise<boolean> => {
     setBusy(name);
     clearAllowances(name);
     try {
       const n = await invoke<number>('mcp_connect', { name });
       notify.success(`${name} connected`, `${n} tool${n === 1 ? '' : 's'} now available to the AI`);
+      return true;
     } catch (e) {
       notify.error(`${name} failed to connect`, String(e));
+      return false;
     } finally {
       setBusy(null);
       refresh();
