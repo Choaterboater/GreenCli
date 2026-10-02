@@ -1,0 +1,937 @@
+// The AI panel's CLI providers: Local CLI (any locally installed agent CLI)
+// and Casper. Both run without a shell through cli_run::run_cli_process, so
+// Stop, the timeout and quitting GreenCLI stop them.
+//
+// Casper gets more care than a generic CLI (see casper.rs for the pure
+// parts): only known options, a working folder of its own, no start while
+// its sandbox is off or a local port leads into the network, and a version
+// check. No Tauri here: main.rs gathers the app's folders, forwards and MCP
+// servers into a CliContext.
+
+use super::casper::{self, CasperVersion, FolderRules, RunEnd, SandboxScan};
+use super::cli_run::{run_cli_process, RunOpts};
+use super::floor_char_boundary;
+use crate::error::AppError;
+use crate::private_fs;
+use std::borrow::Cow;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
+
+/// What a CLI run needs from the app.
+pub struct CliContext {
+    /// GreenCLI's data folder (keys, sessions, MCP servers, logs).
+    pub app_dir: PathBuf,
+    /// GreenCLI's cache folder; Casper's per-question folders live under it.
+    pub cache_dir: Option<PathBuf>,
+    /// Casper only: the folder the user picked; None or blank = a fresh folder per question.
+    pub work_folder: Option<String>,
+    /// The Casper provider asked for this run (refuses any program but Casper).
+    pub as_casper: bool,
+    /// Open local/dynamic port forwards (kind, local port), and connected MCP
+    /// servers on this computer (names).
+    pub bridges: (Vec<(String, u16)>, Vec<String>),
+    /// More folders Casper may not work in (the session-log folder, if set).
+    pub extra_protected: Vec<PathBuf>,
+    /// Tripped by Stop.
+    pub cancel: Option<Arc<AtomicBool>>,
+}
+
+/// The result of Settings → Check Casper.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CasperCheck {
+    pub ok: bool,
+    pub version: Option<String>,
+    pub work_folder: String,
+    pub message: String,
+    pub folder_ok: bool,
+    pub folder_message: Option<String>,
+    pub warnings: Vec<String>,
+}
+
+/// How long a generic Local CLI may run.
+const CLI_TIMEOUT: Duration = Duration::from_secs(180);
+/// Leftover question folders older than this are removed.
+const STALE_RUN: Duration = Duration::from_secs(60 * 60);
+/// Windows and macOS compare folder names without case.
+const CASE_INSENSITIVE: bool = cfg!(any(windows, target_os = "macos"));
+
+fn api(msg: impl Into<String>) -> AppError {
+    AppError::ApiError(msg.into())
+}
+
+// ─── Command line ───
+
+/// Tokenize a configured CLI command into program + argv WITHOUT a shell, so
+/// metacharacters (`&`, `|`, `;`, backticks, …) in the string are passed
+/// literally to the program instead of being interpreted. Supports single and
+/// double quotes. With `backslash_escapes` (unix), a backslash outside single
+/// quotes escapes the next character; on Windows a backslash is a path
+/// separator and is kept as typed (quotes handle spaces).
+fn split_command_with(cmd: &str, backslash_escapes: bool) -> Result<Vec<String>, String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut escaped = false;
+    let mut has_token = false;
+    for c in cmd.chars() {
+        if escaped {
+            cur.push(c);
+            escaped = false;
+            continue;
+        }
+        match c {
+            '\\' if backslash_escapes && !in_single => escaped = true,
+            '\'' if !in_double => {
+                in_single = !in_single;
+                has_token = true;
+            }
+            '"' if !in_single => {
+                in_double = !in_double;
+                has_token = true;
+            }
+            c if c.is_whitespace() && !in_single && !in_double => {
+                if has_token {
+                    out.push(std::mem::take(&mut cur));
+                    has_token = false;
+                }
+            }
+            c => {
+                cur.push(c);
+                has_token = true;
+            }
+        }
+    }
+    if escaped {
+        cur.push('\\');
+    }
+    if in_single || in_double {
+        return Err("CLI command has an unterminated quote".into());
+    }
+    if has_token {
+        out.push(cur);
+    }
+    if out.is_empty() {
+        return Err("Empty CLI command".into());
+    }
+    Ok(out)
+}
+
+fn split_command(cmd: &str) -> Result<Vec<String>, AppError> {
+    split_command_with(cmd, !cfg!(windows)).map_err(AppError::ApiError)
+}
+
+/// Same refusal as MCP stdio server spawning (mcp::client::validate_stdio_command):
+/// a shell interpreter named AS the CLI would re-introduce shell interpretation
+/// of its args (`sh -c …`), defeating the no-shell spawn. `env` is an exec
+/// wrapper that would do the same for whatever it starts.
+fn refuse_program(argv0: &str) -> Result<(), AppError> {
+    let file_name = argv0
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(argv0)
+        .to_ascii_lowercase();
+    const REFUSED: [&str; 12] = [
+        "sh",
+        "bash",
+        "zsh",
+        "fish",
+        "cmd",
+        "cmd.exe",
+        "powershell",
+        "powershell.exe",
+        "pwsh",
+        "pwsh.exe",
+        "env",
+        "env.exe",
+    ];
+    if REFUSED.contains(&file_name.as_str()) {
+        return Err(api(format!(
+            "Refusing to launch shell interpreter '{}' as an AI CLI (its args would be \
+             shell-interpreted). Configure the CLI binary directly (e.g. `claude`, `kimi`, \
+             an absolute path) instead.",
+            argv0
+        )));
+    }
+    Ok(())
+}
+
+/// Cap the prompt at 64 KiB. When over, keep the HEAD *and* the TAIL: the
+/// prompt ends with the user's question, so dropping the tail would silently
+/// discard it. Cuts land on UTF-8 char boundaries.
+fn cap_prompt(prompt: &str) -> Cow<'_, str> {
+    const MAX_PROMPT_BYTES: usize = 64 * 1024;
+    const HEAD_BYTES: usize = 8 * 1024; // the tail gets the remaining ~56 KiB
+    if prompt.len() <= MAX_PROMPT_BYTES {
+        return Cow::Borrowed(prompt);
+    }
+    let head_end = floor_char_boundary(prompt, HEAD_BYTES);
+    let tail_start = floor_char_boundary(prompt, prompt.len() - (MAX_PROMPT_BYTES - HEAD_BYTES));
+    Cow::Owned(format!(
+        "{}\n…[input truncated]…\n{}",
+        &prompt[..head_end],
+        &prompt[tail_start..]
+    ))
+}
+
+// ─── Dispatch ───
+
+/// Run an AI CLI one-shot with the prompt on stdin and return its answer.
+/// Casper (asked for by the Casper provider, or typed as the Local CLI
+/// command) goes through `run_casper`; any other CLI keeps its old handling.
+pub async fn cli_passthrough(
+    command: &str,
+    prompt: &str,
+    ctx: CliContext,
+) -> Result<String, AppError> {
+    if command.trim().is_empty() {
+        return Err(api("Empty CLI command"));
+    }
+    let argv = split_command(command.trim())?;
+    refuse_program(&argv[0])?;
+    // Before the kimi/claude rewrites below: `--model moonshot/kimi-k2` must
+    // never get kimi's --quiet.
+    if ctx.as_casper
+        || casper::is_casper_program(&argv[0])
+        || casper::refuse_batch_shim(&argv[0]).is_err()
+    {
+        return run_casper(argv, prompt, ctx)
+            .await
+            .map_err(AppError::ApiError);
+    }
+
+    // Normalize the command: kimi needs --quiet for non-interactive piped stdin.
+    let command = {
+        let cmd = command.trim();
+        if cmd.contains("kimi") && !cmd.contains("--quiet") && !cmd.contains("--print") {
+            format!("{} --quiet", cmd)
+        } else {
+            cmd.to_string()
+        }
+    };
+
+    // claude CLI: keep one-shot `-p` runs fast and cheap. Without an explicit
+    // --model it inherits the user's Claude Code default (often Opus — slow and
+    // pricey for a chat sidekick), and at startup it connects to every MCP
+    // server in the user's Claude config (which can be dozens of tools and many
+    // seconds) — pure overhead here, since GreenCli pipes a prompt and reads
+    // text back. Both injections defer to anything the user set explicitly in
+    // the command string.
+    let command = {
+        let is_claude = command
+            .split_whitespace()
+            .next()
+            .map(|p| p == "claude" || p.ends_with("/claude"))
+            .unwrap_or(false);
+        if is_claude {
+            let mut c = command;
+            if !c.contains("--model") {
+                c.push_str(" --model haiku");
+            }
+            if !c.contains("--mcp-config") && !c.contains("--strict-mcp-config") {
+                c.push_str(" --strict-mcp-config");
+            }
+            c
+        } else {
+            command
+        }
+    };
+
+    let argv = split_command(&command)?;
+    refuse_program(&argv[0])?;
+    let prompt = cap_prompt(prompt);
+    let run = run_cli_process(
+        &argv,
+        prompt.as_bytes().to_vec(),
+        RunOpts {
+            cwd: None,
+            env: Vec::new(),
+            timeout: CLI_TIMEOUT,
+            cancel: ctx.cancel.clone(),
+        },
+    )
+    .await
+    .map_err(|e| api(format!("Failed to launch '{}': {}", command, e)))?;
+
+    let code = match run.end {
+        RunEnd::Exited(code) => code,
+        RunEnd::Cancelled => return Err(api("Stopped.")),
+        // A CLI stuck on an OAuth/login prompt, interactive mode, or a blocking
+        // shell profile would otherwise hang the AI chat forever.
+        RunEnd::TimedOut => {
+            return Err(api(format!(
+                "Local CLI timed out after 180s — is it waiting for input/login? \
+                 Run `{}` once in a terminal to complete any login/setup, or switch \
+                 providers in Settings → AI Assistant.",
+                command
+            )))
+        }
+    };
+    let mut out = String::from_utf8_lossy(&run.stdout).to_string();
+    if code != Some(0) {
+        let err = String::from_utf8_lossy(&run.stderr);
+        if out.trim().is_empty() {
+            out = err.to_string();
+        } else {
+            out.push_str(&format!("\n[stderr] {}", err));
+        }
+    }
+    // Strip CLI session-resume noise (e.g. kimi's "To resume this session: ...")
+    let cleaned: Vec<&str> = out
+        .lines()
+        .filter(|l| !l.starts_with("To resume this session"))
+        .collect();
+    Ok(cleaned.join("\n").trim().to_string())
+}
+
+// ─── Casper ───
+
+/// $HOME (USERPROFILE on Windows), as Casper reads it.
+fn home_dir() -> Option<PathBuf> {
+    let var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    std::env::var_os(var)
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+}
+
+fn canonical(p: &Path) -> Option<PathBuf> {
+    std::fs::canonicalize(p)
+        .ok()
+        .map(|c| casper::plain_path(&c))
+}
+
+fn picked_folder(ctx: &CliContext) -> Option<&str> {
+    ctx.work_folder
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+}
+
+/// Folders Casper may not work in, as given and canonical.
+fn protected_folders(ctx: &CliContext, home: Option<&Path>) -> Vec<PathBuf> {
+    let mut list: Vec<PathBuf> = vec![ctx.app_dir.clone()];
+    list.extend(ctx.cache_dir.clone());
+    list.extend(home.map(|h| h.join(".casper")));
+    list.extend(ctx.extra_protected.iter().cloned());
+    let canon: Vec<PathBuf> = list
+        .iter()
+        .map(PathBuf::as_path)
+        .filter_map(canonical)
+        .collect();
+    list.extend(canon);
+    list
+}
+
+/// Check the picked folder; returns it canonical.
+fn check_picked(chosen: &str, ctx: &CliContext) -> Result<PathBuf, String> {
+    let home = home_dir();
+    let home_canon = home.as_deref().and_then(canonical);
+    let raw = PathBuf::from(chosen);
+    let (path, is_dir) = if raw.is_absolute() {
+        match canonical(&raw) {
+            Some(p) => {
+                let d = p.is_dir();
+                (p, d)
+            }
+            None => (raw, false),
+        }
+    } else {
+        (raw, false)
+    };
+    let protected = protected_folders(ctx, home.as_deref());
+    let rules = FolderRules {
+        home: home_canon.as_deref(),
+        protected: &protected,
+        case_insensitive: CASE_INSENSITIVE,
+    };
+    casper::check_chosen_folder(&path, &rules, is_dir)?;
+    Ok(path)
+}
+
+fn file_list(files: &[PathBuf]) -> String {
+    files
+        .iter()
+        .map(|f| f.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn exists(p: &Path) -> bool {
+    p.exists()
+}
+
+/// Question folders in use in this process; the stale sweep never removes them.
+fn active_runs() -> &'static Mutex<HashSet<PathBuf>> {
+    static ACTIVE: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
+    ACTIVE.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+/// One question's folder: deleted when dropped, however the run ends.
+struct RunFolder(PathBuf);
+
+impl RunFolder {
+    fn new(dir: PathBuf) -> Self {
+        if let Ok(mut set) = active_runs().lock() {
+            set.insert(dir.clone());
+        }
+        RunFolder(dir)
+    }
+}
+
+impl Drop for RunFolder {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+        if let Ok(mut set) = active_runs().lock() {
+            set.remove(&self.0);
+        }
+    }
+}
+
+/// Remove question folders an earlier run left behind (a crash, a kill).
+fn sweep_stale_runs(root: &Path) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    let active = active_runs().lock().map(|s| s.clone()).unwrap_or_default();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !entry.file_name().to_string_lossy().starts_with("run-") || active.contains(&path) {
+            continue;
+        }
+        let Ok(meta) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
+        let old = meta
+            .modified()
+            .ok()
+            .and_then(|m| m.elapsed().ok())
+            .is_some_and(|age| age > STALE_RUN);
+        if meta.is_dir() && old {
+            let _ = std::fs::remove_dir_all(&path);
+        }
+    }
+}
+
+/// Where a Casper question runs.
+struct WorkPlace {
+    dir: PathBuf,
+    /// The user picked it (else it is GreenCLI's fresh folder).
+    picked: bool,
+    /// Deletes GreenCLI's fresh folder when dropped.
+    _cleanup: Option<RunFolder>,
+}
+
+fn io_msg(e: impl std::fmt::Display) -> String {
+    format!("GreenCLI couldn't make Casper's working folder: {e}")
+}
+
+const NO_CACHE_DIR: &str =
+    "GreenCLI can't find its cache folder, so it can't give Casper a working folder.";
+
+/// The folder that holds the fresh per-question folders, created and checked.
+fn ready_work_root(ctx: &CliContext) -> Result<PathBuf, String> {
+    let cache = ctx.cache_dir.as_deref().ok_or(NO_CACHE_DIR)?;
+    let root = casper::work_root(cache);
+    private_fs::private_dir(&root).map_err(io_msg)?;
+    let found = casper::instruction_files_above(&root, home_dir().as_deref(), &exists);
+    if !found.is_empty() {
+        return Err(format!(
+            "GreenCLI's Casper folder {} has instruction files above it ({}). Remove them, then try again.",
+            root.display(),
+            file_list(&found)
+        ));
+    }
+    Ok(root)
+}
+
+fn prepare_work_place(ctx: &CliContext) -> Result<WorkPlace, String> {
+    if let Some(chosen) = picked_folder(ctx) {
+        let dir = check_picked(chosen, ctx)?;
+        return Ok(WorkPlace {
+            dir,
+            picked: true,
+            _cleanup: None,
+        });
+    }
+    let root = ready_work_root(ctx)?;
+    sweep_stale_runs(&root);
+    let dir = root.join(casper::run_folder_name(rand::random()));
+    let cleanup = RunFolder::new(dir.clone());
+    private_fs::private_dir(&dir).map_err(io_msg)?;
+    let dot = dir.join(".casper");
+    private_fs::private_dir(&dot).map_err(io_msg)?;
+    let mut deny = vec![ctx.app_dir.clone()];
+    deny.extend(ctx.extra_protected.iter().cloned());
+    private_fs::write_private(
+        &dot.join("project.yaml"),
+        casper::project_yaml(&deny).as_bytes(),
+    )
+    .map_err(io_msg)?;
+    Ok(WorkPlace {
+        dir,
+        picked: false,
+        _cleanup: Some(cleanup),
+    })
+}
+
+/// A config file's text; None when it doesn't exist. Any other read error is
+/// the Unsure message (fail closed).
+fn read_config(file: &Path) -> Result<Option<String>, String> {
+    match std::fs::read_to_string(file) {
+        Ok(text) => Ok(Some(text)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(_) => Err(casper::sandbox_message(SandboxScan::Unsure, file).unwrap_or_default()),
+    }
+}
+
+fn scan_file(text: Option<&str>, file: &Path) -> Result<(), String> {
+    let scan = text.map_or(SandboxScan::On, casper::scan_sandbox_setting);
+    match casper::sandbox_message(scan, file) {
+        Some(m) => Err(m),
+        None => Ok(()),
+    }
+}
+
+/// Refuse when Casper's own config turns the sandbox off, or can't be read:
+/// `~/.casper/config.yaml` and the selected profile's `config.yaml`.
+/// `picked` is the user's folder (its `.casper/project.yaml` can pick a profile).
+fn check_sandbox(picked: Option<&Path>) -> Result<(), String> {
+    let home = home_dir()
+        .ok_or("GreenCLI can't find your home folder, so it can't check Casper's settings.")?;
+    let casper_home = home.join(".casper");
+    let global_file = casper_home.join("config.yaml");
+    let global = read_config(&global_file)?;
+    scan_file(global.as_deref(), &global_file)?;
+    let project = match picked {
+        Some(dir) => read_config(&dir.join(".casper").join("project.yaml"))?,
+        None => None,
+    };
+    let env = match std::env::var_os("CASPER_PROFILE") {
+        None => None,
+        Some(v) => Some(v.into_string().map_err(|_| {
+            "GreenCLI couldn't read the CASPER_PROFILE setting, so it can't check Casper's sandbox."
+                .to_string()
+        })?),
+    };
+    let profile = casper::selected_profile(env.as_deref(), project.as_deref(), global.as_deref())
+        .map_err(|bad| format!("GreenCLI couldn't tell which Casper profile is in use (\"{bad}\" isn't a profile name), so it can't check that profile's sandbox setting. Fix the profile name, then try again."))?;
+    let profile_file = casper_home
+        .join("profiles")
+        .join(&profile)
+        .join("config.yaml");
+    let text = read_config(&profile_file)?;
+    scan_file(text.as_deref(), &profile_file)
+}
+
+/// The Casper program as an absolute path, before any folder change.
+fn resolve_casper(argv0: &str) -> Result<PathBuf, String> {
+    let current = std::env::var_os("PATH").unwrap_or_default();
+    #[cfg(unix)]
+    let path = casper::augmented_path(&current, home_dir().as_deref());
+    #[cfg(not(unix))]
+    let path = current;
+    let local_app_data = std::env::var_os("LOCALAPPDATA");
+    casper::resolve_program(
+        argv0,
+        &path,
+        cfg!(windows),
+        local_app_data.as_deref(),
+        &|p: &Path| p.is_file(),
+    )?
+    .ok_or_else(|| casper::NOT_INSTALLED.to_string())
+}
+
+fn spawn_error(e: std::io::Error) -> String {
+    if e.kind() == std::io::ErrorKind::NotFound {
+        casper::NOT_INSTALLED.to_string()
+    } else {
+        format!("Couldn't start Casper: {e}")
+    }
+}
+
+fn path_arg(p: &Path) -> Result<String, String> {
+    p.to_str().map(str::to_string).ok_or_else(|| {
+        format!(
+            "GreenCLI can't start Casper from {} (the path isn't plain text). Move Casper to another folder.",
+            p.display()
+        )
+    })
+}
+
+/// `casper --version`: 0.2.21 or newer. A program that passed is remembered
+/// for this session (unless `use_cache` is false, as in Check Casper).
+async fn ensure_casper_version(
+    resolved: &Path,
+    argv0: &str,
+    cancel: Option<Arc<AtomicBool>>,
+    cwd: Option<&Path>,
+    use_cache: bool,
+) -> Result<Option<CasperVersion>, String> {
+    let cached = || {
+        casper::version_cache()
+            .lock()
+            .map(|c| c.contains(resolved))
+            .unwrap_or(false)
+    };
+    if use_cache && cached() {
+        return Ok(None);
+    }
+    let run = run_cli_process(
+        &[path_arg(resolved)?, "--version".to_string()],
+        Vec::new(),
+        RunOpts {
+            cwd,
+            env: Vec::new(),
+            timeout: casper::VERSION_TIMEOUT,
+            cancel,
+        },
+    )
+    .await
+    .map_err(spawn_error)?;
+    let code = match run.end {
+        RunEnd::Cancelled => return Err("Stopped.".to_string()),
+        RunEnd::TimedOut => {
+            return Err(format!(
+                "GreenCLI ran \"{argv0} --version\" but it didn't answer within 15 seconds. Check that the Casper command in Settings → AI & MCP starts Casper."
+            ))
+        }
+        RunEnd::Exited(code) => code,
+    };
+    let found = casper::parse_version(&String::from_utf8_lossy(&run.stdout));
+    let hint = casper::stderr_hint(&String::from_utf8_lossy(&run.stderr));
+    if let Some(problem) = casper::version_problem(found, argv0, code, &hint) {
+        return Err(problem);
+    }
+    if let Ok(mut c) = casper::version_cache().lock() {
+        c.insert(resolved.to_path_buf());
+    }
+    Ok(found)
+}
+
+/// Casper's checks before it runs: the program, its options, local bridges.
+fn casper_argv(argv: &[String], ctx: &CliContext) -> Result<Vec<String>, String> {
+    casper::refuse_batch_shim(&argv[0])?;
+    if ctx.as_casper {
+        casper::refuse_not_casper(&argv[0])?;
+    }
+    casper::normalize_cli_argv(argv)
+}
+
+async fn run_casper(argv: Vec<String>, prompt: &str, ctx: CliContext) -> Result<String, String> {
+    let argv0 = argv[0].clone();
+    let mut argv = casper_argv(&argv, &ctx)?;
+    if let Some(problem) = casper::bridge_problem(&ctx.bridges.0, &ctx.bridges.1) {
+        return Err(problem);
+    }
+    // The fresh folder is deleted when `place` drops, on every return below.
+    let place = prepare_work_place(&ctx)?;
+    let ceiling = casper::git_ceiling(&place.dir)?;
+    check_sandbox(place.picked.then_some(place.dir.as_path()))?;
+    let resolved = resolve_casper(&argv0)?;
+    let version_cwd = if place.picked {
+        place.dir.clone()
+    } else {
+        place
+            .dir
+            .parent()
+            .map_or_else(|| place.dir.clone(), Path::to_path_buf)
+    };
+    ensure_casper_version(
+        &resolved,
+        &argv0,
+        ctx.cancel.clone(),
+        Some(&version_cwd),
+        true,
+    )
+    .await?;
+    argv[0] = path_arg(&resolved)?;
+    let prompt = cap_prompt(prompt);
+    let run = run_cli_process(
+        &argv,
+        prompt.as_bytes().to_vec(),
+        RunOpts {
+            cwd: Some(&place.dir),
+            env: vec![("GIT_CEILING_DIRECTORIES", ceiling)],
+            timeout: casper::TIMEOUT,
+            cancel: ctx.cancel.clone(),
+        },
+    )
+    .await
+    .map_err(spawn_error)?;
+    let out = casper::parse_json_lines(&String::from_utf8_lossy(&run.stdout));
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    casper::casper_reply(
+        run.end,
+        &out,
+        &stderr,
+        place.picked.then_some(place.dir.as_path()),
+    )
+}
+
+/// Settings → Check Casper: the folder, the command, the sandbox setting, the
+/// program and its version, without sending a question. The folder check
+/// always runs. Sign-in and model show up only when a question is asked.
+pub async fn casper_check(command: &str, ctx: CliContext) -> CasperCheck {
+    let mut warnings: Vec<String> = Vec::new();
+    // The folder, on its own.
+    let (folder, folder_message) = match picked_folder(&ctx) {
+        Some(chosen) => match check_picked(chosen, &ctx) {
+            Ok(dir) => {
+                let home = home_dir().as_deref().and_then(canonical);
+                let files = casper::instruction_files_above(&dir, home.as_deref(), &exists);
+                if !files.is_empty() {
+                    warnings.push(format!(
+                        "Casper will follow the instruction files it finds here: {}.",
+                        file_list(&files)
+                    ));
+                }
+                (Some(dir), None)
+            }
+            Err(m) => (None, Some(m)),
+        },
+        None => match ready_work_root(&ctx) {
+            Ok(root) => (Some(root), None),
+            Err(m) => (None, Some(m)),
+        },
+    };
+    let folder_ok = folder_message.is_none();
+    let picked = picked_folder(&ctx).is_some();
+    let work_folder = match (&folder, picked_folder(&ctx)) {
+        (Some(dir), _) => dir.display().to_string(),
+        (None, Some(chosen)) => chosen.to_string(),
+        (None, None) => ctx
+            .cache_dir
+            .as_deref()
+            .map(|c| casper::work_root(c).display().to_string())
+            .unwrap_or_default(),
+    };
+
+    let chain = async {
+        if command.trim().is_empty() {
+            return Err(
+                "Put the Casper command in Settings → AI & MCP (usually just casper).".to_string(),
+            );
+        }
+        let argv = split_command_with(command.trim(), !cfg!(windows))?;
+        refuse_program(&argv[0]).map_err(|e| match e {
+            AppError::ApiError(m) => m,
+            other => other.to_string(),
+        })?;
+        let argv = casper_argv(&argv, &ctx)?;
+        if let Some(problem) = casper::bridge_problem(&ctx.bridges.0, &ctx.bridges.1) {
+            warnings.push(problem);
+        }
+        let picked_dir = folder.as_deref().filter(|_| picked);
+        check_sandbox(picked_dir)?;
+        let resolved = resolve_casper(&argv[0])?;
+        ensure_casper_version(
+            &resolved,
+            &argv[0],
+            ctx.cancel.clone(),
+            folder.as_deref(),
+            false,
+        )
+        .await
+    }
+    .await;
+
+    let version = chain
+        .as_ref()
+        .ok()
+        .copied()
+        .flatten()
+        .map(|v| v.to_string());
+    let message = match &chain {
+        Err(m) => m.clone(),
+        Ok(_) if !folder_ok => folder_message.clone().unwrap_or_default(),
+        Ok(found) => {
+            let v = found.map(|v| v.to_string()).unwrap_or_default();
+            let place = if picked {
+                work_folder.clone()
+            } else {
+                "a fresh, empty folder for each question".to_string()
+            };
+            format!("Found Casper {v}. It works in {place}. Sign-in and model are checked when you ask your first question.")
+        }
+    };
+    CasperCheck {
+        ok: chain.is_ok() && folder_ok,
+        version,
+        work_folder,
+        message,
+        folder_ok,
+        folder_message,
+        warnings,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ctx(as_casper: bool) -> CliContext {
+        CliContext {
+            app_dir: std::env::temp_dir().join("greencli-cli-test-app"),
+            cache_dir: Some(std::env::temp_dir().join("greencli-cli-test-cache")),
+            work_folder: None,
+            as_casper,
+            bridges: (Vec::new(), Vec::new()),
+            extra_protected: Vec::new(),
+            cancel: None,
+        }
+    }
+
+    #[test]
+    fn split_command_windows_mode_keeps_backslashes() {
+        assert_eq!(
+            split_command_with(r"C:\Users\x\casper.exe --verbose", false).unwrap(),
+            vec![
+                r"C:\Users\x\casper.exe".to_string(),
+                "--verbose".to_string()
+            ]
+        );
+        assert_eq!(
+            split_command_with(r#""C:\Program Files\casper\casper.exe" --model a/b"#, false)
+                .unwrap(),
+            vec![
+                r"C:\Program Files\casper\casper.exe".to_string(),
+                "--model".to_string(),
+                "a/b".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn split_command_unix_mode_unchanged() {
+        assert_eq!(
+            split_command_with(r"C:\Users\x\casper.exe", true).unwrap(),
+            vec!["C:Usersxcasper.exe".to_string()]
+        );
+        assert_eq!(
+            split_command_with(r#"claude --name "my assistant" a\ b 'c\d'"#, true).unwrap(),
+            vec!["claude", "--name", "my assistant", "a b", r"c\d"]
+                .into_iter()
+                .map(String::from)
+                .collect::<Vec<_>>()
+        );
+        assert!(split_command_with("claude \"open", true).is_err());
+        assert!(split_command_with("   ", true).is_err());
+    }
+
+    #[test]
+    fn refuse_program_covers_shells_and_env() {
+        for p in [
+            "sh",
+            "/bin/bash",
+            "env",
+            "/usr/bin/env",
+            r"C:\Windows\System32\cmd.exe",
+        ] {
+            assert!(refuse_program(p).is_err(), "{p}");
+        }
+        assert!(refuse_program("claude").is_ok());
+    }
+
+    #[test]
+    fn cap_prompt_keeps_head_and_tail() {
+        let small = "hello";
+        assert_eq!(cap_prompt(small), "hello");
+        let big = format!("{}QUESTION", "é".repeat(50_000));
+        let capped = cap_prompt(&big);
+        assert!(capped.len() < big.len());
+        assert!(capped.ends_with("QUESTION"));
+        assert!(capped.contains("[input truncated]"));
+    }
+
+    #[tokio::test]
+    async fn cli_passthrough_refuses_no_sandbox_before_spawn() {
+        let e = cli_passthrough("casper --no-sandbox", "hi", ctx(false))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("won't turn off Casper's sandbox"), "{e}");
+        let e = cli_passthrough("/nowhere/casper --mcp x", "hi", ctx(true))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("doesn't connect Casper's servers"), "{e}");
+    }
+
+    #[tokio::test]
+    async fn as_casper_refuses_other_program() {
+        let e = cli_passthrough("bun x.ts", "hi", ctx(true))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("must start Casper itself"), "{e}");
+        let e = cli_passthrough("env casper", "hi", ctx(true))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("Refusing to launch"), "{e}");
+    }
+
+    #[tokio::test]
+    async fn bridges_refuse_before_any_folder() {
+        let mut c = ctx(true);
+        c.bridges = (vec![("local".into(), 8443)], Vec::new());
+        let e = cli_passthrough("casper", "hi", c)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("port forward open on port 8443"), "{e}");
+    }
+
+    #[test]
+    fn default_folder_is_made_and_removed() {
+        let base =
+            std::env::temp_dir().join(format!("greencli-cli-test-{}", rand::random::<u64>()));
+        let mut c = ctx(true);
+        c.app_dir = base.join("app");
+        c.cache_dir = Some(base.join("cache"));
+        let dir = {
+            let place = prepare_work_place(&c).unwrap();
+            assert!(!place.picked);
+            let yaml = std::fs::read_to_string(place.dir.join(".casper/project.yaml")).unwrap();
+            assert!(yaml.contains("denyRead"));
+            assert!(yaml.contains(&*c.app_dir.to_string_lossy()));
+            assert!(place
+                .dir
+                .starts_with(base.join("cache").join("casper-work")));
+            place.dir.clone()
+        };
+        assert!(!dir.exists());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn stale_runs_are_swept_but_active_ones_kept() {
+        let root = std::env::temp_dir().join(format!("greencli-sweep-{}", rand::random::<u64>()));
+        let fresh = root.join("run-0000000000000001");
+        std::fs::create_dir_all(&fresh).unwrap();
+        let keep = root.join("other");
+        std::fs::create_dir_all(&keep).unwrap();
+        sweep_stale_runs(&root);
+        assert!(fresh.exists(), "a fresh folder isn't stale");
+        assert!(keep.exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn picked_folder_inside_app_dir_is_refused() {
+        let base =
+            std::env::temp_dir().join(format!("greencli-cli-test-{}", rand::random::<u64>()));
+        let mut c = ctx(true);
+        c.app_dir = base.join("app");
+        std::fs::create_dir_all(c.app_dir.join("logs")).unwrap();
+        let e = check_picked(&c.app_dir.join("logs").to_string_lossy(), &c).unwrap_err();
+        assert!(e.contains("GreenCLI's or Casper's own files"), "{e}");
+        let e = check_picked("relative/folder", &c).unwrap_err();
+        assert!(e.contains("full path"), "{e}");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+}
