@@ -14,3 +14,6 @@ src-tauri/ai_keys.json
 # Playwright run artifacts — regenerated on every local run, never commit
 playwright-report/
 test-results/
+
+# Tauri 2 generated schemas (rebuilt on every build)
+src-tauri/gen/

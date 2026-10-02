@@ -45,7 +45,7 @@ use vault::CredentialVault;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use tauri::{AppHandle, Manager, State, WindowEvent};
+use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
 use tokio::sync::Mutex as AsyncMutex;
 
 // ─── Shared Application State ───
@@ -296,7 +296,7 @@ async fn write_and_emit(
         })
         .await;
     }
-    let _ = app.emit_all(
+    let _ = app.emit(
         "terminal_data",
         TerminalDataEvent {
             session_id: session_id.to_string(),
@@ -364,7 +364,7 @@ fn spawn_forwarder(
             .remove_session_if(&session_id, generation)
             .await;
         if peer_closed {
-            let _ = app.emit_all(
+            let _ = app.emit(
                 "connection_status",
                 ConnectionStatusEvent {
                     session_id,
@@ -441,7 +441,7 @@ fn spawn_ssh_supervisor(
         loop {
             if !first {
                 // Reconnect path (the initial connection is made by the caller).
-                let _ = app.emit_all(
+                let _ = app.emit(
                     "connection_status",
                     ConnectionStatusEvent {
                         session_id: session_id.clone(),
@@ -483,7 +483,7 @@ fn spawn_ssh_supervisor(
                             // recorded for an already-known host) so the
                             // frontend can toast it.
                             if let Some(ref warning) = resp.warning {
-                                let _ = app.emit_all(
+                                let _ = app.emit(
                                     "host-key-warning",
                                     serde_json::json!({
                                         "sessionId": session_id,
@@ -513,7 +513,7 @@ fn spawn_ssh_supervisor(
                             // where we lost ownership during connect().
                             close_session_forwards(&forwards, &session_id).await;
                             rx = nrx;
-                            let _ = app.emit_all(
+                            let _ = app.emit(
                                 "connection_status",
                                 ConnectionStatusEvent {
                                     session_id: session_id.clone(),
@@ -546,7 +546,7 @@ fn spawn_ssh_supervisor(
                                 .await
                             {
                                 close_session_forwards(&forwards, &session_id).await;
-                                let _ = app.emit_all(
+                                let _ = app.emit(
                                     "connection_status",
                                     ConnectionStatusEvent {
                                         session_id: session_id.clone(),
@@ -684,7 +684,7 @@ fn spawn_ssh_supervisor(
                 // port-forwards — their tasks hold a clone of the dead handle.
                 if session_manager.remove_session_if(&session_id, generation).await {
                     close_session_forwards(&forwards, &session_id).await;
-                    let _ = app.emit_all(
+                    let _ = app.emit(
                         "connection_status",
                         ConnectionStatusEvent {
                             session_id: session_id.clone(),
@@ -801,7 +801,7 @@ async fn connect(
             // handshake (a NEW key algorithm was recorded for an already-known
             // host) so the frontend can toast it.
             if let Some(ref warning) = response.warning {
-                let _ = app.emit_all(
+                let _ = app.emit(
                     "host-key-warning",
                     serde_json::json!({
                         "sessionId": session_id,
@@ -816,7 +816,7 @@ async fn connect(
                 .map_err(|e| e.to_string())?;
             apply_remembered_size(&state, &session_id, requested_size).await;
 
-            let _ = app.emit_all(
+            let _ = app.emit(
                 "connection_status",
                 ConnectionStatusEvent {
                     session_id: session_id.clone(),
@@ -870,7 +870,7 @@ async fn connect(
             // Emit "connected" BEFORE spawning the forwarder (mirrors SSH), so an
             // instantly-dying stream can't emit "disconnected" first and leave a
             // ghost connected tab.
-            let _ = app.emit_all(
+            let _ = app.emit(
                 "connection_status",
                 ConnectionStatusEvent {
                     session_id: session_id.clone(),
@@ -917,7 +917,7 @@ async fn connect(
             apply_remembered_size(&state, &session_id, None).await;
 
             // Emit "connected" before spawning the forwarder (see telnet note).
-            let _ = app.emit_all(
+            let _ = app.emit(
                 "connection_status",
                 ConnectionStatusEvent {
                     session_id: session_id.clone(),
@@ -962,7 +962,7 @@ async fn connect(
             apply_remembered_size(&state, &session_id, None).await;
 
             // Emit "connected" before spawning the forwarder (see telnet note).
-            let _ = app.emit_all(
+            let _ = app.emit(
                 "connection_status",
                 ConnectionStatusEvent {
                     session_id: session_id.clone(),
@@ -1019,7 +1019,7 @@ async fn disconnect(
     // in the Tunnels UI. (forwards are keyed by forward id, not session id.)
     close_session_forwards(&state.forwards, &session_id).await;
 
-    let _ = app.emit_all(
+    let _ = app.emit(
         "connection_status",
         ConnectionStatusEvent {
             session_id,
@@ -1403,14 +1403,14 @@ async fn list_folder(path: String) -> Result<folder::FolderListing, String> {
 /// Pop a session out into its own OS window. The new window loads the same
 /// React app; the frontend sees the `popout-<sessionId>` window label and
 /// renders a terminal-only view for that session. Terminal data is emitted via
-/// emit_all, so the new window receives the stream with no extra routing. When
+/// emit (to every window), so the new window receives the stream with no extra routing. When
 /// the pop-out closes, `popout_closed` tells the main window to restore the tab.
 ///
 /// Sync (main thread) on macOS/Linux: an off-thread WindowBuilder on macOS
 /// yielded a window that couldn't be moved/managed. But on Windows a window
 /// built inside a SYNC command deadlocks (WebView2 can't create a webview from
 /// inside the IPC callback — see the "Known issues" on tauri's
-/// WindowBuilder::build), freezing the whole app, so there it is async.
+/// WebviewWindowBuilder::build), freezing the whole app, so there it is async.
 #[cfg(not(windows))]
 #[tauri::command]
 fn pop_out_session(
@@ -1437,11 +1437,11 @@ fn open_pop_out_window(
     title: Option<String>,
 ) -> Result<(), String> {
     let label = format!("popout-{}", session_id);
-    if let Some(w) = app.get_window(&label) {
+    if let Some(w) = app.get_webview_window(&label) {
         let _ = w.set_focus();
         return Ok(());
     }
-    let win = tauri::WindowBuilder::new(app, &label, tauri::WindowUrl::App("index.html".into()))
+    let win = tauri::WebviewWindowBuilder::new(app, &label, tauri::WebviewUrl::App("index.html".into()))
         .title(title.unwrap_or_else(|| "GreenCli".into()))
         .inner_size(960.0, 600.0)
         .min_inner_size(480.0, 320.0)
@@ -1449,12 +1449,15 @@ fn open_pop_out_window(
         // a pop-out never flashes an unpainted white webview; the fallback
         // below guarantees it appears even if the frontend fails to run.
         .visible(false)
+        // Same origin as the main window (https://tauri.localhost on Windows,
+        // as in 1.x), so the pop-out shares its saved settings and theme.
+        .use_https_scheme(true)
         .build()
         .map_err(|e| e.to_string())?;
     let notify_app = app.clone();
     win.on_window_event(move |ev| {
         if let WindowEvent::Destroyed = ev {
-            let _ = notify_app.emit_all("popout_closed", &session_id);
+            let _ = notify_app.emit("popout_closed", &session_id);
         }
     });
     show_window_fallback(win);
@@ -1465,7 +1468,7 @@ fn open_pop_out_window(
 /// after its first painted frame, but if the bundle ever fails to execute the
 /// window would otherwise stay invisible forever. Show it after a grace period
 /// regardless.
-fn show_window_fallback(win: tauri::Window) {
+fn show_window_fallback(win: tauri::WebviewWindow) {
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_secs(4)).await;
         if !win.is_visible().unwrap_or(true) {
@@ -2614,7 +2617,7 @@ async fn cli_context(
         .collect();
     ai::CliContext {
         app_dir: state.app_dir.clone(),
-        cache_dir: app.path_resolver().app_cache_dir(),
+        cache_dir: app.path().app_cache_dir().ok(),
         work_folder,
         as_casper,
         bridges: if with_bridges {
@@ -2697,7 +2700,7 @@ async fn ai_chat_stream(
     state.ai_cancels.lock().await.finish(&stream_id, &cancel);
 
     if let Err(e) = result {
-        let _ = app.emit_all(
+        let _ = app.emit(
             "ai_error",
             serde_json::json!({ "streamId": stream_id, "error": e.to_string() }),
         );
@@ -2728,47 +2731,51 @@ async fn ai_cancel_stream(stream_id: String, state: State<'_, AppState>) -> Resu
 /// field. Windows/Linux route Ctrl+C/V through the webview directly and would
 /// only gain an unwanted visible menu bar, so the menu is macOS-only.
 #[cfg(target_os = "macos")]
-fn macos_menu() -> tauri::Menu {
-    use tauri::{AboutMetadata, Menu, MenuItem, Submenu};
-    let app_menu = Submenu::new(
+fn macos_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu::Menu<R>> {
+    use tauri::menu::{AboutMetadata, Menu, PredefinedMenuItem, Submenu};
+    let app_menu = Submenu::with_items(
+        app,
         "GreenCLI",
-        Menu::new()
-            .add_native_item(MenuItem::About(
-                "GreenCLI".to_string(),
-                AboutMetadata::default(),
-            ))
-            .add_native_item(MenuItem::Separator)
-            .add_native_item(MenuItem::Services)
-            .add_native_item(MenuItem::Separator)
-            .add_native_item(MenuItem::Hide)
-            .add_native_item(MenuItem::HideOthers)
-            .add_native_item(MenuItem::ShowAll)
-            .add_native_item(MenuItem::Separator)
-            .add_native_item(MenuItem::Quit),
-    );
-    let edit_menu = Submenu::new(
+        true,
+        &[
+            &PredefinedMenuItem::about(app, Some("About GreenCLI"), Some(AboutMetadata::default()))?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::services(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::hide(app, None)?,
+            &PredefinedMenuItem::hide_others(app, None)?,
+            &PredefinedMenuItem::show_all(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::quit(app, None)?,
+        ],
+    )?;
+    let edit_menu = Submenu::with_items(
+        app,
         "Edit",
-        Menu::new()
-            .add_native_item(MenuItem::Undo)
-            .add_native_item(MenuItem::Redo)
-            .add_native_item(MenuItem::Separator)
-            .add_native_item(MenuItem::Cut)
-            .add_native_item(MenuItem::Copy)
-            .add_native_item(MenuItem::Paste)
-            .add_native_item(MenuItem::SelectAll),
-    );
-    let window_menu = Submenu::new(
+        true,
+        &[
+            &PredefinedMenuItem::undo(app, None)?,
+            &PredefinedMenuItem::redo(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::cut(app, None)?,
+            &PredefinedMenuItem::copy(app, None)?,
+            &PredefinedMenuItem::paste(app, None)?,
+            &PredefinedMenuItem::select_all(app, None)?,
+        ],
+    )?;
+    // `maximize` is the native "Zoom" item on macOS.
+    let window_menu = Submenu::with_items(
+        app,
         "Window",
-        Menu::new()
-            .add_native_item(MenuItem::Minimize)
-            .add_native_item(MenuItem::Zoom)
-            .add_native_item(MenuItem::Separator)
-            .add_native_item(MenuItem::CloseWindow),
-    );
-    Menu::new()
-        .add_submenu(app_menu)
-        .add_submenu(edit_menu)
-        .add_submenu(window_menu)
+        true,
+        &[
+            &PredefinedMenuItem::minimize(app, None)?,
+            &PredefinedMenuItem::maximize(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::close_window(app, None)?,
+        ],
+    )?;
+    Menu::with_items(app, &[&app_menu, &edit_menu, &window_menu])
 }
 
 fn main() {
@@ -2785,16 +2792,16 @@ fn main() {
         );
     }));
 
-    let builder = tauri::Builder::default();
+    let builder = tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_clipboard_manager::init());
     #[cfg(target_os = "macos")]
-    let builder = builder.menu(macos_menu());
+    let builder = builder.menu(macos_menu);
 
     builder
         .setup(|app| {
-            let app_dir = app
-                .path_resolver()
-                .app_data_dir()
-                .expect("Failed to get app data dir");
+            // `<data dir>/com.choatelabs.greencli`, the same folder as 1.x.
+            let app_dir = app.path().app_data_dir()?;
             // Saved sessions, intents, MCP servers and archived configs can hold
             // secrets: keep the folder this user's only, and fix files an older
             // version wrote world-readable.
@@ -2807,13 +2814,13 @@ fn main() {
             // and is revealed by the frontend after its first painted frame,
             // eliminating the white flash at launch. Guarantee it appears even
             // if the frontend fails to run.
-            if let Some(main_window) = app.get_window("main") {
+            if let Some(main_window) = app.get_webview_window("main") {
                 show_window_fallback(main_window);
             }
 
             // Auto-connect enabled MCP servers in the background so the AI's
             // tools survive an app restart without reconnecting each one by hand.
-            let handle = app.handle();
+            let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let state = handle.state::<AppState>();
                 let defs = {
@@ -2951,7 +2958,7 @@ fn main() {
                 // A Local CLI or Casper answer still running: stop it and what
                 // it started (kill_on_drop never runs either, see below).
                 ai::stop_all_cli_runs();
-                // Tauri v1 leaves via std::process::exit after the event loop, so
+                // Tauri leaves via std::process::exit after the event loop, so
                 // kill_on_drop destructors never run — reap MCP server children
                 // explicitly or they outlive the app (not every server exits on
                 // stdin EOF).

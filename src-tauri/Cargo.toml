@@ -6,17 +6,23 @@ authors = ["ChoateLabs"]
 license = "MIT"
 repository = "https://github.com/Choaterboater/GreenCli"
 edition = "2021"
-rust-version = "1.85"
+rust-version = "1.90"
 
 [build-dependencies]
-tauri-build = { version = "1.5.1", features = [] }
+tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "1.6.0", features = [ "clipboard-read-text", "clipboard-write-text", "window-set-focus", "window-close", "window-start-dragging", "dialog-save", "dialog-open"] }
+tauri = { version = "2", features = [] }
+# Open/Save dialogs and clipboard text (the only plugin APIs the frontend uses;
+# what it may call is limited by capabilities/default.json).
+tauri-plugin-dialog = "2"
+tauri-plugin-clipboard-manager = "2"
 serde = { version = "1.0", features = ["derive"] }
 # float_roundtrip: parse floats exactly like JSON.parse, so the MCP checks in TS and Rust agree on
 # which JSON text is readable (labels.rs read_json_text vs mcpApproval.ts readJsonText).
-serde_json = { version = "1.0", features = ["float_roundtrip"] }
+# preserve_order: objects keep their key order, like JS objects in the TS checks. Tauri 1
+# turned this on for us; Tauri 2 does not, so it is set here (labels.rs tests rely on it).
+serde_json = { version = "1.0", features = ["float_roundtrip", "preserve_order"] }
 tokio = { version = "1.35", features = ["full"] }
 tokio-serial = "5.4"
 async-trait = "0.1"

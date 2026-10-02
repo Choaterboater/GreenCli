@@ -265,11 +265,11 @@ pub async fn chat_stream(
     stream_id: &str,
     cancel: Arc<AtomicBool>,
 ) -> Result<(), AppError> {
-    use tauri::Manager;
+    use tauri::Emitter;
 
     // Stop pressed before this run was registered: send nothing at all.
     if cancel.load(Ordering::Relaxed) {
-        let _ = app.emit_all("ai_done", serde_json::json!({ "streamId": stream_id }));
+        let _ = app.emit("ai_done", serde_json::json!({ "streamId": stream_id }));
         return Ok(());
     }
 
@@ -293,7 +293,7 @@ pub async fn chat_stream(
     let rb = build_request(&client, &req.provider, &key, &req.base_url)?;
     // A Stop while waiting for the provider's first byte drops the request.
     let Some(sent) = cancel::until_cancelled(rb.json(&req.body).send(), &cancel).await else {
-        let _ = app.emit_all("ai_done", serde_json::json!({ "streamId": stream_id }));
+        let _ = app.emit("ai_done", serde_json::json!({ "streamId": stream_id }));
         return Ok(());
     };
     let mut resp =
@@ -334,7 +334,7 @@ pub async fn chat_stream(
                 *saw_done = true;
                 return false;
             }
-            let _ = app.emit_all(
+            let _ = app.emit(
                 "ai_chunk",
                 serde_json::json!({ "streamId": stream_id, "data": data }),
             );
@@ -380,14 +380,14 @@ pub async fn chat_stream(
 
     if cancel.load(Ordering::Relaxed) {
         // Cancelled: still emit done so the frontend tears down its listeners.
-        let _ = app.emit_all("ai_done", serde_json::json!({ "streamId": stream_id }));
+        let _ = app.emit("ai_done", serde_json::json!({ "streamId": stream_id }));
         return Ok(());
     }
     if !emitted_any && !saw_done {
         // 200 OK but nothing streamable (captive portal/proxy HTML, a non-stream JSON
         // body, or a provider that ignored stream:true) — surface it instead of a
         // silent blank reply.
-        let _ = app.emit_all(
+        let _ = app.emit(
             "ai_error",
             serde_json::json!({
                 "streamId": stream_id,
@@ -396,7 +396,7 @@ pub async fn chat_stream(
         );
         return Ok(());
     }
-    let _ = app.emit_all("ai_done", serde_json::json!({ "streamId": stream_id }));
+    let _ = app.emit("ai_done", serde_json::json!({ "streamId": stream_id }));
     Ok(())
 }
 

@@ -12,7 +12,7 @@
 //   can't hold up Stop or the timeout.
 // - stdout and stderr are drained on their own tasks, keeping the last 1 MiB
 //   of each, so a runaway CLI can't fill memory before the timeout.
-// - Each running CLI is recorded, so quitting GreenCLI can stop it: Tauri v1
+// - Each running CLI is recorded, so quitting GreenCLI can stop it: Tauri
 //   leaves through std::process::exit, so kill_on_drop never runs on quit.
 //
 // Known limit (Windows only): when the CLI exits by itself, a process it
@@ -385,7 +385,7 @@ async fn stop_child(child: &mut tokio::process::Child) {
     let _ = child.wait().await;
 }
 
-/// Stop every CLI that is still running. Called when GreenCLI quits (Tauri v1
+/// Stop every CLI that is still running. Called when GreenCLI quits (Tauri
 /// exits without running kill_on_drop): TERM each group, wait 1.2 s, then
 /// KILL them (Windows: taskkill /T /F). Sync, std::process only.
 pub fn stop_all_cli_runs() {

@@ -1,0 +1,21 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "What the GreenCLI windows may call: the same short list Tauri 1 allowed, plus show (setFocus no longer reveals a hidden window) and the window list (needed to find a window by label).",
+  "local": true,
+  "windows": ["main", "popout-*"],
+  "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "core:event:allow-emit",
+    "core:window:allow-start-dragging",
+    "core:window:allow-set-focus",
+    "core:window:allow-close",
+    "core:window:allow-get-all-windows",
+    "core:window:allow-show",
+    "dialog:allow-open",
+    "dialog:allow-save",
+    "clipboard-manager:allow-read-text",
+    "clipboard-manager:allow-write-text"
+  ]
+}
