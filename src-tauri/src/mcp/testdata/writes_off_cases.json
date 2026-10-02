@@ -1,0 +1,71 @@
+[
+  {
+    "name": "push_cli_config",
+    "hides": true
+  },
+  {
+    "name": "push_cli_config",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "hides": true
+  },
+  {
+    "name": "apply_config_command",
+    "hides": true
+  },
+  {
+    "name": "run_delete_script",
+    "hides": true
+  },
+  {
+    "name": "push_config",
+    "hides": true
+  },
+  {
+    "name": "get_and_apply_config",
+    "hides": true
+  },
+  {
+    "name": "get_and_apply_config",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "hides": false
+  },
+  {
+    "name": "execute_command",
+    "hides": false
+  },
+  {
+    "name": "cx_run_cli",
+    "hides": false
+  },
+  {
+    "name": "aos8_show_command",
+    "hides": false
+  },
+  {
+    "name": "aos8_get_migration_run",
+    "hides": false
+  },
+  {
+    "name": "run_show_status",
+    "hides": false
+  },
+  {
+    "name": "exec_set_status",
+    "hides": false
+  },
+  {
+    "name": "get_device",
+    "hides": false
+  },
+  {
+    "name": "get_device",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "hides": false
+  }
+]

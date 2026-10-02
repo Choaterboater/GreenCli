@@ -1,0 +1,304 @@
+import { describe, expect, it } from 'vitest';
+import {
+  aiConfirm,
+  buildPlan,
+  isRouter,
+  isRouterName,
+  needsApproval,
+  planLabel,
+  previewSwitchedOff,
+  routedCalls,
+  skippedCheck,
+  unreadableJsonText,
+} from './mcpApproval';
+
+const schema = { type: 'object' as const };
+
+describe('routedCalls', () => {
+  it('finds the real tool behind a router call', () => {
+    expect(routedCalls('invoke_tool', { name: 'port_bounce', arguments: { serial_number: 'SG1' } })).toEqual([
+      { name: 'port_bounce', arguments: { serial_number: 'SG1' } },
+    ]);
+    expect(routedCalls('invoke_tool', { tool: 'get_x', args: { a: 1 } })).toEqual([
+      { name: 'get_x', arguments: { a: 1 } },
+    ]);
+    expect(
+      routedCalls('invoke_tools_batch', { calls: [{ name: 'a' }, { tool_name: 'b', params: { c: 1 } }] })
+    ).toEqual([
+      { name: 'a', arguments: {} },
+      { name: 'b', arguments: { c: 1 } },
+    ]);
+  });
+
+  it('does not pick one of two different names', () => {
+    expect(routedCalls('call_tool', { name: 'get_status', tool_name: 'delete_vlan' })).toEqual([]);
+    expect(routedCalls('call_tool', { name: 'get_status', tool: 'get_status' })).toEqual([
+      { name: 'get_status', arguments: {} },
+    ]);
+    const plan = buildPlan({
+      server: 's',
+      tool: 'invoke_tools_batch',
+      label: 'read',
+      schema,
+      arguments: { name: 'get_a', tool: 'delete_b', calls: [{ name: 'get_c' }] },
+    });
+    expect(plan.routed.map((call) => call.name)).toEqual(['get_c']);
+    expect(plan.routerUnclear).toBe(true);
+  });
+
+  it('is empty for a tool that is not a router', () => {
+    expect(routedCalls('get_device', { name: 'delete_site' })).toEqual([]);
+    expect(routedCalls('get_device', { list: [{ name: 'a' }], filter: { site: 'x' } })).toEqual([]);
+  });
+
+  it('finds a batch router written the pydantic way, with $ref into $defs', () => {
+    const pydantic = {
+      type: 'object' as const,
+      properties: { calls: { type: 'array', items: { $ref: '#/$defs/Call' } } },
+      $defs: { Call: { type: 'object', properties: { name: { type: 'string' }, arguments: { type: 'object' } } } },
+    };
+    // A read-only hint on the router (label 'read') never lowers what it runs.
+    const plan = buildPlan({ server: 's', tool: 'helper', label: 'read', schema: pydantic, arguments: { calls: [{ name: 'delete_x' }] } });
+    expect(plan.router).toBe(true);
+    expect(plan.routed.map((call) => call.name)).toEqual(['delete_x']);
+    expect(plan.routerUnclear).toBe(false);
+    expect(planLabel(plan)).toBe('destructive');
+    expect(needsApproval(plan)).toBe(true);
+  });
+
+  it('finds a router behind anyOf, or one level down in an object', () => {
+    const anyOf = { type: 'object' as const, anyOf: [{ properties: { tool: {}, args: {} } }] };
+    expect(routedCalls('helper', { tool: 'delete_x' }, anyOf)).toEqual([{ name: 'delete_x', arguments: {} }]);
+    expect(routedCalls('helper', { request: { method: 'delete_x', params: {} } })).toEqual([
+      { name: 'delete_x', arguments: {} },
+    ]);
+  });
+
+  it('counts a list under calls, requests, items or steps as a batch when an entry names a tool', () => {
+    const plan = buildPlan({ server: 's', tool: 'helper', label: 'read', schema, arguments: { calls: [{ name: 'delete_x' }] } });
+    expect(plan.routed.map((call) => call.name)).toEqual(['delete_x']);
+    expect(planLabel(plan)).toBe('destructive');
+  });
+
+  it('calls a router unclear when two arguments keys are set', () => {
+    const decoy = buildPlan({
+      server: 's',
+      tool: 'helper',
+      label: 'read',
+      schema,
+      arguments: { name: 'lookup', args: {}, params: { name: 'delete_x', arguments: {} } },
+    });
+    expect(decoy.routerUnclear).toBe(true);
+    expect(planLabel(decoy)).toBe('destructive');
+    expect(buildPlan({ server: 's', tool: 'call_tool', label: 'read', schema, arguments: { name: 'get_a', args: { x: 1 }, arguments: { y: 2 } } }).routerUnclear).toBe(true);
+  });
+
+  it('follows a $ref loop without hanging', () => {
+    const loop = {
+      type: 'object' as const,
+      $ref: '#/$defs/Node',
+      $defs: { Node: { type: 'object', properties: { child: { $ref: '#/$defs/Node' }, title: {} } } },
+    };
+    expect(isRouter('get_tree', loop, { child: {} })).toBe(false);
+  });
+
+  it('finds a router by its name words or its shape', () => {
+    for (const name of ['call_read_tool', 'callTool', 'call-tool', 'tool_call', 'use_tool', 'proxy_tool']) {
+      expect(isRouterName(name)).toBe(true);
+    }
+    for (const name of ['get_route', 'get_proxy_config', 'list_tools', 'show_call_log']) {
+      expect(isRouterName(name)).toBe(false);
+    }
+    expect(isRouter('helper', { type: 'object', properties: { toolName: {}, params: {} } })).toBe(true);
+    expect(isRouter('helper', { type: 'object' }, { name: 'delete_site', arguments: {} })).toBe(true);
+    expect(isRouter('helper', { type: 'object', properties: { name: {}, title: {} } })).toBe(false);
+  });
+
+  it('finds a router by any tool-name key next to any arguments key', () => {
+    expect(isRouter('helper', { type: 'object', properties: { name: {}, params: {} } })).toBe(true);
+    for (const args of [
+      { method: 'delete_site', params: {} },
+      { name: 'delete_site', args: {} },
+      { function: 'delete_site', arguments: {} },
+      { tool: 'delete_site', parameters: {} },
+      { name: 'delete_site', input: {} },
+    ]) {
+      expect(routedCalls('helper', args)).toEqual([{ name: 'delete_site', arguments: {} }]);
+    }
+  });
+
+  it('finds a batch router inside a list, by its entries or its schema', () => {
+    expect(routedCalls('helper', { requests: [{ method: 'get_a', params: { x: 1 } }, { method: 'reboot_b' }] })).toEqual([
+      { name: 'get_a', arguments: { x: 1 } },
+      { name: 'reboot_b', arguments: {} },
+    ]);
+    const batchSchema = {
+      type: 'object' as const,
+      properties: { ops: { type: 'array', items: { type: 'object', properties: { tool: {}, input: {} } } } },
+    };
+    expect(isRouter('helper', batchSchema)).toBe(true);
+    expect(routedCalls('helper', { ops: [{ tool: 'delete_x' }] }, batchSchema)).toEqual([{ name: 'delete_x', arguments: {} }]);
+  });
+
+  it('reads the tool name from any key that may hold it', () => {
+    expect(routedCalls('call_tool', { toolName: 'get_x' })).toEqual([{ name: 'get_x', arguments: {} }]);
+    expect(routedCalls('call_tool', { name: 'get_status', toolName: 'delete_vlan' })).toEqual([]);
+    expect(routedCalls('call_tool', { name: 'get_status', method: 'delete_vlan' })).toEqual([]);
+  });
+});
+
+describe('JSON text in the arguments', () => {
+  const nest = (inner: unknown, levels: number): unknown => {
+    let value = inner;
+    for (let i = 0; i < levels; i++) value = { a: value };
+    return value;
+  };
+  const plan = (args: Record<string, unknown>) =>
+    buildPlan({ server: 's', tool: 'helper', label: 'read', schema: { type: 'object' }, arguments: args });
+
+  it('reads JSON text as if it were there in place', () => {
+    const p = plan({ request: { name: 'get_status', arguments: {} }, batch: JSON.stringify([{ name: 'delete_vlan', arguments: {} }]) });
+    expect(p.routed.map((call) => call.name)).toEqual(['get_status', 'delete_vlan']);
+    expect(p.routerUnclear).toBe(false);
+    // Its arguments are read too.
+    expect(routedCalls('helper', { request: JSON.stringify({ name: 'set_vlan', arguments: { vlan: 10 } }) })).toEqual([
+      { name: 'set_vlan', arguments: { vlan: 10 } },
+    ]);
+  });
+
+  it('reads JSON text down to MAX_DEPTH, and fails closed past it', () => {
+    const call = { name: 'delete_vlan', arguments: {} };
+    // The text sits at depth 30 and holds a call at depth 31: read.
+    const shallow = plan({ request: { name: 'get_status', arguments: {} }, deep: nest(JSON.stringify(call), 28) });
+    expect(shallow.routed.map((c) => c.name)).toEqual(['get_status', 'delete_vlan']);
+    expect(shallow.routerUnclear).toBe(false);
+    // The JSON it holds goes past MAX_DEPTH: the search can't see it all.
+    const deep = plan({ request: { name: 'get_status', arguments: {} }, deep: nest(JSON.stringify(nest(call, 4)), 28) });
+    expect(deep.routed.map((c) => c.name)).toEqual(['get_status']);
+    expect(deep.routerUnclear).toBe(true);
+  });
+
+  it('makes any call unclear when a JSON text in it cannot be read, router or not', () => {
+    const p = buildPlan({ server: 's', tool: 'get_device', label: 'read', schema: { type: 'object' }, arguments: { filter: '{oops' } });
+    expect([p.router, p.routerUnclear, planLabel(p), needsApproval(p)]).toEqual([false, true, 'external-action', true]);
+    const fine = buildPlan({ server: 's', tool: 'get_device', label: 'read', schema: { type: 'object' }, arguments: { filter: '{"site": 1}' } });
+    expect([fine.routerUnclear, needsApproval(fine)]).toEqual([false, false]);
+  });
+
+  it('reads 1e400, a lone \\ud800 and nesting past MAX_DEPTH as unreadable, and as a skipped check', () => {
+    const deepForce = (n: number) => {
+      let text = '{"force": true}';
+      for (let i = 1; i < n; i++) text = `{"a": ${text}}`;
+      return text;
+    };
+    for (const args of [
+      { calls: '[{"name":"delete_vlan","arguments":{"x":1e400}}]' },
+      { calls: '[{"name":"delete_vlan","arguments":{"x":"\\ud800"}}]' },
+      { request: '{"calls":[{"name":"delete_vlan"}], "x":1e400}' },
+      { options: '{"force": true, "n": 1e400}' },
+      { payload: deepForce(40) },
+      { a: { b: ['[1e400]'] } },
+    ]) {
+      const p = buildPlan({ server: 's', tool: 'helper', label: 'read', schema: { type: 'object' }, arguments: args });
+      expect([args, unreadableJsonText(args), skippedCheck(args), p.routerUnclear, needsApproval(p)]).toEqual([args, true, true, true, true]);
+    }
+    expect(skippedCheck({ payload: deepForce(20) })).toBe(true);
+    expect(skippedCheck({ payload: deepForce(20).replace('true', 'false'), ports: '[1, 2]' })).toBe(false);
+  });
+});
+
+describe('buildPlan and planLabel', () => {
+  it('marks a router that names nothing as unclear', () => {
+    const plan = buildPlan({ server: 's', tool: 'invoke_tool', label: 'read', schema, arguments: {} });
+    expect(plan.routerUnclear).toBe(true);
+    expect(planLabel(plan)).toBe('external-action');
+  });
+
+  it('marks a batch with an entry it cannot read as unclear', () => {
+    const plan = buildPlan({
+      server: 's',
+      tool: 'invoke_tools_batch',
+      label: 'read',
+      schema,
+      arguments: { calls: [{ name: 'get_a' }, { nope: 1 }] },
+    });
+    expect(plan.routed).toHaveLength(1);
+    expect(plan.routerUnclear).toBe(true);
+  });
+
+  it('marks a batch unclear when an entry names nothing, and judges the rest', () => {
+    const plan = buildPlan({
+      server: 's',
+      tool: 'helper',
+      label: 'read',
+      schema,
+      arguments: { steps: [{ tool: 'get_a', input: {} }, { foo: 1 }] },
+    });
+    expect(plan.router).toBe(true);
+    expect(plan.routerUnclear).toBe(true);
+    const clear = buildPlan({
+      server: 's',
+      tool: 'helper',
+      label: 'read',
+      schema,
+      arguments: { calls: [{ name: 'get_a', arguments: {} }, { name: 'delete_b', arguments: {} }] },
+    });
+    expect(clear.routerUnclear).toBe(false);
+    // The strictest routed tool wins, whatever the router's own label says.
+    expect(planLabel(clear)).toBe('destructive');
+  });
+
+  it('marks a router that runs another router as unclear', () => {
+    const plan = buildPlan({
+      server: 's',
+      tool: 'invoke_tool',
+      label: 'read',
+      schema,
+      arguments: { name: 'invoke_tools_batch', arguments: { calls: [{ name: 'delete_x' }] } },
+    });
+    expect(plan.routerUnclear).toBe(true);
+    const shaped = buildPlan({
+      server: 's',
+      tool: 'call_tool',
+      label: 'read',
+      schema,
+      arguments: { name: 'get_status', arguments: { method: 'delete_x', params: {} } },
+    });
+    expect(shaped.routerUnclear).toBe(true);
+  });
+
+  it('judges a router call by the tool it runs', () => {
+    const plan = buildPlan({
+      server: 's',
+      tool: 'invoke_read_tool',
+      label: 'read',
+      schema,
+      arguments: { name: 'delete_site' },
+    });
+    expect(planLabel(plan)).toBe('destructive');
+    expect(needsApproval(plan)).toBe(true);
+  });
+});
+
+describe('the AI skipping a check', () => {
+  it('finds confirm=yes anywhere, in any spelling', () => {
+    expect(aiConfirm({ Confirm: 'yes' })).toEqual(['Confirm']);
+    expect(aiConfirm({ arguments: { force: 1 } })).toEqual(['arguments.force']);
+    expect(aiConfirm({ confirm: false })).toEqual([]);
+    expect(aiConfirm({ force: 't', confirmed: ' T ' })).toEqual(['force', 'confirmed']);
+    // A server that reads `if (args.force)` takes these as yes too.
+    expect(aiConfirm({ force: 'f', confirm: 2, confirmed: 'no', confirmation: {} })).toEqual([
+      'force',
+      'confirm',
+      'confirmed',
+      'confirmation',
+    ]);
+    expect(aiConfirm({ force: null })).toEqual([]);
+  });
+
+  it('finds a preview switch turned off', () => {
+    expect(previewSwitchedOff({ dry_run: false })).toEqual(['dry_run']);
+    expect(previewSwitchedOff({ 'dry-run': 'false' })).toEqual(['dry-run']);
+    expect(previewSwitchedOff({ dry_run: true })).toEqual([]);
+  });
+});

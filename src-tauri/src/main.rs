@@ -6,6 +6,8 @@ mod api;
 mod central;
 mod config_archive;
 mod error;
+mod export_file;
+mod folder;
 mod intent;
 mod local;
 mod mcp;
@@ -24,7 +26,7 @@ use api::{Aos8Client, ArubaCxClient, AossClient, JunosClient, MistClient};
 use central::CentralClient;
 use error::AppError;
 use local::{LocalConfig, LocalConnection};
-use mcp::{McpClient, McpManager, McpServerDef};
+use mcp::{McpManager, McpServerDef, McpToolInfo, McpWrites};
 use serde::{Deserialize, Serialize};
 use serial::{client::SerialConfig, SerialConnection};
 use session::{SessionFolder, SessionManager, SessionStore, StoredSession};
@@ -82,7 +84,7 @@ struct AppState {
     /// out under a brief map lock and run the (up-to-30s) network round-trip
     /// WITHOUT holding it — holding the map lock across the await serialized
     /// every API command behind the slowest device (see mcp_call's
-    /// caller_for() pattern).
+    /// call_target() pattern).
     api_clients: Arc<AsyncMutex<HashMap<String, Arc<ArubaCxClient>>>>,
     aos8_clients: Arc<AsyncMutex<HashMap<String, Arc<Aos8Client>>>>,
     aoss_clients: Arc<AsyncMutex<HashMap<String, Arc<AossClient>>>>,
@@ -113,9 +115,16 @@ struct AppState {
     session_logs: SessionLogs,
     /// Active SSH port-forwards keyed by forward id (meta + listener task).
     forwards: ForwardsMap,
-    /// Cancellation flags for in-flight AI streams, keyed by stream id, so the
-    /// frontend Stop button can actually abort the backend request/egress.
-    ai_cancels: Arc<AsyncMutex<HashMap<String, Arc<std::sync::atomic::AtomicBool>>>>,
+    /// Cancellation flags for in-flight AI streams and CLI runs, keyed by id,
+    /// so the frontend Stop button can actually abort the backend
+    /// request/egress, even when Stop arrives before the run is registered.
+    ai_cancels: Arc<AsyncMutex<ai::cancel::CancelBook>>,
+    /// In-flight MCP tool calls the AI panel's Stop can cancel, keyed by the
+    /// call id the panel sends with `mcp_call`.
+    mcp_calls: Arc<mcp::cancel::CallRegistry>,
+    /// Casper questions in progress: no port forward opens and no web MCP
+    /// server connects meanwhile (Casper's commands may reach local ports).
+    casper_runs: Arc<std::sync::atomic::AtomicUsize>,
     app_dir: std::path::PathBuf,
 }
 
@@ -145,7 +154,9 @@ impl AppState {
             last_input: Arc::new(AsyncMutex::new(HashMap::new())),
             session_logs: Arc::new(AsyncMutex::new(HashMap::new())),
             forwards: Arc::new(AsyncMutex::new(HashMap::new())),
-            ai_cancels: Arc::new(AsyncMutex::new(HashMap::new())),
+            ai_cancels: Arc::new(AsyncMutex::new(ai::cancel::CancelBook::default())),
+            mcp_calls: Arc::new(mcp::cancel::CallRegistry::new()),
+            casper_runs: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             app_dir,
         })
     }
@@ -1337,9 +1348,23 @@ async fn read_file_text(path: String) -> Result<String, String> {
     // async: sync commands run on the main thread, and a multi-MB log/capture
     // read froze the whole UI for its duration.
     tauri::async_runtime::spawn_blocking(move || {
+        // A pipe or a device (/dev/zero) would block or never end.
+        if let Some(why) = folder::not_a_plain_file(std::path::Path::new(&path)) {
+            return Err(why);
+        }
         std::fs::read(&path)
             .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
             .map_err(|e| format!("Failed to read {}: {}", path, e))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Read a file the folder view opens: plain files only, at most 5 MB.
+#[tauri::command]
+async fn read_folder_file(path: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        folder::read_text_file(std::path::Path::new(&path), folder::MAX_OPEN_BYTES)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -1353,6 +1378,26 @@ async fn write_file_text(path: String, contents: String) -> Result<(), String> {
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// MCP export: write the .mcp.json the user picked. Owner-only, never through
+/// a link, never over another app's settings file (see export_file.rs).
+#[tauri::command]
+async fn mcp_export_write(path: String, contents: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        export_file::write_export(std::path::Path::new(&path), contents.as_bytes())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Folder view in the Config Editor: list a folder the user picked,
+/// read-only (heavy folders skipped, symlinks never followed; see folder.rs).
+#[tauri::command]
+async fn list_folder(path: String) -> Result<folder::FolderListing, String> {
+    tauri::async_runtime::spawn_blocking(move || folder::list_folder(std::path::Path::new(&path)))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 /// Pop a session out into its own OS window. The new window loads the same
@@ -1573,6 +1618,13 @@ async fn mcp_list_servers(state: State<'_, AppState>) -> Result<serde_json::Valu
     serde_json::to_value(mgr.list_configs()).map_err(|e| e.to_string())
 }
 
+/// The read-only settings the export adds for servers whose writes are off.
+#[tauri::command]
+async fn mcp_export_pins(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let mgr = state.mcp_manager.lock().await;
+    serde_json::to_value(mgr.export_pins()).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 async fn mcp_save_server(def: McpServerDef, state: State<'_, AppState>) -> Result<(), String> {
     let mgr = state.mcp_manager.lock().await;
@@ -1602,29 +1654,17 @@ async fn mcp_delete_server(name: String, state: State<'_, AppState>) -> Result<(
     res.map_err(|e| e.to_string())
 }
 
-/// Spawn + handshake with a configured server; returns the discovered tool
-/// count. The (slow) spawn/handshake runs WITHOUT the manager lock held, so
-/// other MCP commands stay responsive while a server is connecting.
+/// Spawn + handshake with a configured server (with read-only pins while its
+/// writes are off); returns how many tools the AI can use. The (slow)
+/// spawn/handshake runs WITHOUT the manager lock held, so other MCP commands
+/// stay responsive while a server is connecting (see mcp::connect_server).
 #[tauri::command]
 async fn mcp_connect(name: String, state: State<'_, AppState>) -> Result<usize, String> {
-    // 1) brief lock: resolve def + materialise credentials.
-    let def = {
-        let mgr = state.mcp_manager.lock().await;
-        mgr.resolve_connect_def(&name).map_err(|e| e.to_string())?
-    };
-    // 2) unlocked: spawn + handshake (connect the NEW client before touching the
-    //    old one, so a failed reconnect leaves the existing connection intact).
-    let client = McpClient::connect(&def).await.map_err(|e| e.to_string())?;
-    let count = client.tools.lock().map(|g| g.len()).unwrap_or(0);
-    // 3) brief lock: swap in; shut down any displaced client outside the lock.
-    let old = {
-        let mut mgr = state.mcp_manager.lock().await;
-        mgr.install_client(name, client)
-    };
-    if let Some(old) = old {
-        old.shutdown().await;
-    }
-    Ok(count)
+    // A web server may run on this computer, where Casper's commands could
+    // reach it: none connects while Casper answers.
+    let runs = state.casper_runs.clone();
+    let casper_busy = move || ai::casper::casper_busy(&runs).then(|| ai::casper::BUSY_MCP.to_string());
+    mcp::connect_server(&state.mcp_manager, &name, &casper_busy).await
 }
 
 #[tauri::command]
@@ -1652,22 +1692,66 @@ async fn mcp_all_tools(state: State<'_, AppState>) -> Result<serde_json::Value, 
     serde_json::to_value(mgr.all_tools()).map_err(|e| e.to_string())
 }
 
+/// One tool of a connected server, as the AI panel checks it right before a
+/// call. No network call; None when the server or tool is gone.
+#[tauri::command]
+async fn mcp_tool_info(
+    server: String,
+    tool: String,
+    state: State<'_, AppState>,
+) -> Result<Option<McpToolInfo>, String> {
+    let mgr = state.mcp_manager.lock().await;
+    Ok(mgr.tool_info(&server, &tool))
+}
+
 /// Invoke a tool on a connected MCP server (used by the AI assistant).
+/// GreenCLI checks the call again here (writes off, read-only login, the
+/// Read-only Auditor when `read_only` is set); a refusal starts "Not run: ".
+/// `call_id` lets the panel's Stop cancel it (mcp_cancel_call).
 #[tauri::command]
 async fn mcp_call(
     server: String,
     tool: String,
     args: serde_json::Value,
+    call_id: Option<String>,
+    read_only: Option<bool>,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
-    // Clone the caller handle under a brief lock, then release it before the
-    // (up-to-60s) tool round-trip so MCP stays responsive / parallelisable.
-    let caller = {
-        let mgr = state.mcp_manager.lock().await;
-        mgr.caller_for(&server)
-    };
-    let caller = caller.ok_or_else(|| format!("MCP server '{}' is not connected", server))?;
-    caller.call_tool(&tool, args).await.map_err(|e| e.to_string())
+    // The caller handle is cloned under a brief lock, which is released before
+    // the tool round-trip so MCP stays responsive / parallelisable.
+    mcp::run_call(
+        &state.mcp_manager,
+        &state.mcp_calls,
+        &server,
+        &tool,
+        args,
+        call_id.as_deref(),
+        read_only.unwrap_or(false),
+    )
+    .await
+}
+
+/// Stop one MCP call (the AI panel's Stop). Always Ok: a call that already
+/// finished, or hasn't started yet, is handled by the registry.
+#[tauri::command]
+async fn mcp_cancel_call(call_id: String, state: State<'_, AppState>) -> Result<(), String> {
+    state.mcp_calls.cancel(&call_id);
+    Ok(())
+}
+
+/// Turn a server's writes on or off. The settings page reconnects it after,
+/// so its read-only pins match; hiding and refusing change at once.
+#[tauri::command]
+async fn mcp_set_writes(name: String, writes: McpWrites, state: State<'_, AppState>) -> Result<(), String> {
+    let mgr = state.mcp_manager.lock().await;
+    mgr.set_writes(&name, writes)
+}
+
+/// Junos servers: run plain `show` commands without asking.
+#[tauri::command]
+async fn mcp_set_show_opt_in(name: String, on: bool, state: State<'_, AppState>) -> Result<(), String> {
+    let mgr = state.mcp_manager.lock().await;
+    mgr.set_show_opt_in(&name, on).map_err(|e| e.to_string())
 }
 
 /// Store the credentials-file content for an MCP server (kept in the app data
@@ -1890,6 +1974,10 @@ async fn ssh_start_forward(
     remote_port: Option<u16>,
     state: State<'_, AppState>,
 ) -> Result<ssh::forward::ForwardMeta, String> {
+    // Casper's commands may reach local ports: no new forward while it answers.
+    if ai::casper::casper_busy(&state.casper_runs) {
+        return Err(ai::casper::BUSY_FORWARD.to_string());
+    }
     let handle = state
         .session_manager.get_ssh_handle(&session_id)
         .await
@@ -1924,7 +2012,14 @@ async fn ssh_start_forward(
         remote_host,
         remote_port,
     };
-    state.forwards.lock().await.insert(id, (meta.clone(), task));
+    // Checked again under the lock the bridge look reads, so a Casper run
+    // that started meanwhile either sees this forward or it closes here.
+    let mut forwards = state.forwards.lock().await;
+    if ai::casper::casper_busy(&state.casper_runs) {
+        task.abort();
+        return Err(ai::casper::BUSY_FORWARD.to_string());
+    }
+    forwards.insert(id, (meta.clone(), task));
     Ok(meta)
 }
 
@@ -2461,12 +2556,128 @@ async fn ai_chat(
         .map_err(|e| e.to_string())
 }
 
-/// Run a locally installed AI CLI one-shot with the prompt on stdin.
-#[tauri::command]
-async fn ai_cli(command: String, prompt: String) -> Result<String, String> {
-    ai::cli_passthrough(&command, &prompt)
+/// Register a cancel flag the Stop button (ai_cancel_stream) can trip. A Stop
+/// that came first gives a flag that is already tripped; a reused id trips
+/// the displaced run's flag (see ai::cancel::CancelBook).
+async fn register_ai_cancel(
+    state: &AppState,
+    id: &str,
+    who: &str,
+) -> Arc<std::sync::atomic::AtomicBool> {
+    let (cancel, displaced) = state.ai_cancels.lock().await.register(id);
+    if displaced {
+        log::warn!("{who}: id '{id}' reused — cancelling the displaced run");
+    }
+    cancel
+}
+
+/// Open local/dynamic port forwards, and connected MCP servers whose URL may
+/// lead to this computer: ways out of Casper's sandbox (it may reach local
+/// ports). Called with a CasperRunGuard already held, so a forward or server
+/// added after this look is refused instead (see casper_busy).
+async fn ai_bridges(state: &AppState) -> (Vec<(String, u16)>, Vec<String>) {
+    let mut forwards: Vec<(String, u16)> = state
+        .forwards
+        .lock()
         .await
-        .map_err(|e| e.to_string())
+        .values()
+        .filter(|(meta, task)| {
+            (meta.kind == "local" || meta.kind == "dynamic") && !task.is_finished()
+        })
+        .map(|(meta, _)| (meta.kind.clone(), meta.local_port))
+        .collect();
+    forwards.sort_by_key(|(_, port)| *port);
+    // Every saved web server, connected or not (GreenCLI doesn't start them,
+    // so they keep listening), and the address each live connection uses.
+    let web_servers = state.mcp_manager.lock().await.web_urls();
+    // Name lookups (connected servers only, all at once) run without the
+    // manager lock held.
+    let local_mcp = ai::local_mcp_servers(web_servers).await;
+    (forwards, local_mcp)
+}
+
+/// What a CLI run needs from the app (see ai::CliContext).
+async fn cli_context(
+    state: &AppState,
+    app: &AppHandle,
+    work_folder: Option<String>,
+    as_casper: bool,
+    log_folder: Option<String>,
+    cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
+    with_bridges: bool,
+) -> ai::CliContext {
+    // The session-log folder: the user's, or `<app data>/logs` (resolved the
+    // way session logging resolves it). Casper may not work in it.
+    let extra_protected = session_log::resolve_dir(&state.app_dir, log_folder.as_deref())
+        .ok()
+        .into_iter()
+        .collect();
+    ai::CliContext {
+        app_dir: state.app_dir.clone(),
+        cache_dir: app.path_resolver().app_cache_dir(),
+        work_folder,
+        as_casper,
+        bridges: if with_bridges {
+            ai_bridges(state).await
+        } else {
+            (Vec::new(), Vec::new())
+        },
+        extra_protected,
+        cancel,
+    }
+}
+
+/// Run a locally installed AI CLI (Local CLI or Casper) one-shot with the
+/// prompt on stdin. `run_id` lets Stop (ai_cancel_stream) end it.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn ai_cli(
+    command: String,
+    prompt: String,
+    run_id: Option<String>,
+    work_folder: Option<String>,
+    as_casper: Option<bool>,
+    log_folder: Option<String>,
+    state: State<'_, AppState>,
+    app: AppHandle,
+) -> Result<String, String> {
+    let cancel = match &run_id {
+        Some(id) => Some(register_ai_cancel(&state, id, "ai_cli").await),
+        None => None,
+    };
+    let as_casper = as_casper.unwrap_or(false);
+    // Counted before the bridge look, and until Casper has finished.
+    let casper = ai::is_casper_command(&command, as_casper);
+    let _casper_run = casper.then(|| ai::casper::CasperRunGuard::start(&state.casper_runs));
+    let ctx = cli_context(
+        &state,
+        &app,
+        work_folder,
+        as_casper,
+        log_folder,
+        cancel.clone(),
+        casper,
+    )
+    .await;
+    let result = ai::cli_passthrough(&command, &prompt, ctx).await;
+    if let (Some(id), Some(flag)) = (&run_id, &cancel) {
+        state.ai_cancels.lock().await.finish(id, flag);
+    }
+    result.map_err(|e| e.to_string())
+}
+
+/// Settings → Check Casper: the folder, the command, Casper's sandbox
+/// setting, the program and its version. Sends no question.
+#[tauri::command]
+async fn ai_casper_check(
+    command: String,
+    work_folder: Option<String>,
+    log_folder: Option<String>,
+    state: State<'_, AppState>,
+    app: AppHandle,
+) -> Result<ai::CasperCheck, String> {
+    let ctx = cli_context(&state, &app, work_folder, true, log_folder, None, true).await;
+    Ok(ai::casper_check(&command, ctx).await)
 }
 
 /// Streaming chat — emits `ai_chunk`/`ai_done`/`ai_error` events for stream_id.
@@ -2478,26 +2689,12 @@ async fn ai_chat_stream(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     // Register a cancel flag the Stop button (ai_cancel_stream) can trip.
-    let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    // A reused stream id must not silently replace a live stream's flag (the
-    // displaced stream would leak, uncancellable, running to completion and
-    // being billed): trip the OLD flag so that stream aborts before we swap in.
-    if let Some(displaced) = state
-        .ai_cancels
-        .lock()
-        .await
-        .insert(stream_id.clone(), cancel.clone())
-    {
-        log::warn!(
-            "ai_chat_stream: stream id '{stream_id}' reused — cancelling the displaced stream"
-        );
-        displaced.store(true, std::sync::atomic::Ordering::Relaxed);
-    }
+    let cancel = register_ai_cancel(&state, &stream_id, "ai_chat_stream").await;
 
-    let result = ai::chat_stream(&state.ai_keys, request, &app, &stream_id, cancel).await;
+    let result = ai::chat_stream(&state.ai_keys, request, &app, &stream_id, cancel.clone()).await;
 
     // Always deregister the flag, success or failure.
-    state.ai_cancels.lock().await.remove(&stream_id);
+    state.ai_cancels.lock().await.finish(&stream_id, &cancel);
 
     if let Err(e) = result {
         let _ = app.emit_all(
@@ -2513,9 +2710,13 @@ async fn ai_chat_stream(
 /// provider request/egress instead of running to completion (and being billed).
 #[tauri::command]
 async fn ai_cancel_stream(stream_id: String, state: State<'_, AppState>) -> Result<(), String> {
-    if let Some(flag) = state.ai_cancels.lock().await.get(&stream_id) {
-        flag.store(true, std::sync::atomic::Ordering::Relaxed);
-    }
+    // Not registered yet (Stop pressed while the request was on its way)?
+    // The book remembers it, so the run starts already stopped.
+    state
+        .ai_cancels
+        .lock()
+        .await
+        .cancel(&stream_id, std::time::Instant::now());
     Ok(())
 }
 
@@ -2620,30 +2821,15 @@ fn main() {
                     mgr.list_configs()
                 };
                 for def in defs.into_iter().filter(|d| d.enabled) {
-                    let resolved = {
-                        let mgr = state.mcp_manager.lock().await;
-                        mgr.resolve_connect_def(&def.name)
-                    };
-                    let resolved = match resolved {
-                        Ok(r) => r,
-                        Err(e) => {
-                            log::warn!("MCP auto-connect '{}': {}", def.name, e);
-                            continue;
-                        }
-                    };
-                    // Spawn/handshake runs WITHOUT the manager lock (same pattern
-                    // as mcp_connect) so a slow server can't block MCP commands.
-                    match McpClient::connect(&resolved).await {
-                        Ok(client) => {
-                            let old = {
-                                let mut mgr = state.mcp_manager.lock().await;
-                                mgr.install_client(def.name.clone(), client)
-                            };
-                            if let Some(old) = old {
-                                old.shutdown().await;
-                            }
-                        }
-                        Err(e) => log::warn!("MCP auto-connect '{}' failed: {}", def.name, e),
+                    // Same path as mcp_connect (pins while writes are off; no
+                    // web server while Casper answers); the spawn/handshake runs
+                    // WITHOUT the manager lock so a slow server can't block MCP
+                    // commands.
+                    let runs = state.casper_runs.clone();
+                    let casper_busy =
+                        move || ai::casper::casper_busy(&runs).then(|| ai::casper::BUSY_MCP.to_string());
+                    if let Err(e) = mcp::connect_server(&state.mcp_manager, &def.name, &casper_busy).await {
+                        log::warn!("MCP auto-connect '{}' failed: {}", def.name, e);
                     }
                 }
             });
@@ -2684,6 +2870,8 @@ fn main() {
             reveal_log_folder,
             read_file_text,
             write_file_text,
+            list_folder,
+            read_folder_file,
             generate_keypair,
             api_login,
             api_get_interfaces,
@@ -2717,8 +2905,10 @@ fn main() {
             ai_chat,
             ai_cancel_stream,
             ai_cli,
+            ai_casper_check,
             ai_chat_stream,
             mcp_list_servers,
+            mcp_export_pins,
             mcp_save_server,
             mcp_rename_server,
             mcp_delete_server,
@@ -2726,9 +2916,14 @@ fn main() {
             mcp_disconnect,
             mcp_status,
             mcp_all_tools,
+            mcp_tool_info,
             mcp_call,
+            mcp_cancel_call,
+            mcp_set_show_opt_in,
+            mcp_set_writes,
             mcp_set_credentials,
             mcp_has_credentials,
+            mcp_export_write,
             list_known_hosts,
             remove_known_host,
             import_ssh_config,
@@ -2753,6 +2948,9 @@ fn main() {
         .expect("error while running tauri application")
         .run(|app_handle, event| {
             if let tauri::RunEvent::Exit = event {
+                // A Local CLI or Casper answer still running: stop it and what
+                // it started (kill_on_drop never runs either, see below).
+                ai::stop_all_cli_runs();
                 // Tauri v1 leaves via std::process::exit after the event loop, so
                 // kill_on_drop destructors never run — reap MCP server children
                 // explicitly or they outlive the app (not every server exits on

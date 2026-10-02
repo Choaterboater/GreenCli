@@ -1,5 +1,12 @@
-import { useEffect, useRef, useState } from 'react';
-import { useDialogStore } from '../store/dialogStore';
+import { useEffect, useRef, useState, type CSSProperties } from 'react';
+import { useDialogStore, type DialogChoice } from '../store/dialogStore';
+
+/** Button colours for a choice's tone. */
+function toneStyle(tone: DialogChoice['tone']): CSSProperties | undefined {
+  if (tone === 'danger') return { background: 'var(--danger-solid)', color: 'var(--danger-solid-fg)' };
+  if (tone === 'accent') return { background: 'var(--accent)', color: 'var(--accent-fg)' };
+  return undefined;
+}
 
 export default function DialogHost() {
   const current = useDialogStore((s) => s.current);
@@ -8,6 +15,7 @@ export default function DialogHost() {
   const inputRef = useRef<HTMLInputElement>(null);
   const confirmRef = useRef<HTMLButtonElement>(null);
   const cancelRef = useRef<HTMLButtonElement>(null);
+  const firstChoiceRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     if (current) {
@@ -15,10 +23,13 @@ export default function DialogHost() {
       // Focus + select after mount, so Enter/Escape act on the dialog instead
       // of the terminal behind it. Danger confirms (reset, delete, disconnect)
       // focus Cancel: a stray Enter meant for the terminal must not confirm.
+      // A choice focuses its first button ("No"), so a stray Enter runs nothing.
       setTimeout(() => {
         if (current.type === 'prompt') {
           inputRef.current?.focus();
           inputRef.current?.select();
+        } else if (current.type === 'choice') {
+          firstChoiceRef.current?.focus();
         } else if (current.danger) {
           cancelRef.current?.focus();
         } else {
@@ -36,6 +47,8 @@ export default function DialogHost() {
   };
 
   const onConfirm = () => {
+    // A choice is made with its own buttons only.
+    if (current.type === 'choice') return;
     if (current.type === 'prompt') {
       // Resolve the value as typed — an empty submit is a deliberate "clear"
       // (e.g. removing a session's tags), distinct from Cancel (null).
@@ -53,7 +66,7 @@ export default function DialogHost() {
       }}
     >
       <div
-        className="surface-elevated animate-scale-in w-[420px] max-w-[90vw] p-5"
+        className={`surface-elevated animate-scale-in ${current.type === 'choice' ? 'w-[560px]' : 'w-[420px]'} max-w-[90vw] p-5`}
         role="dialog"
         aria-modal="true"
         aria-label={current.title}
@@ -98,26 +111,70 @@ export default function DialogHost() {
           />
         )}
 
-        <div className="mt-5 flex items-center justify-end gap-2">
-          <button
-            ref={cancelRef}
-            onClick={() => finish(null)}
-            className="px-3.5 h-9 text-[13px] rounded-[var(--radius)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] transition-colors"
-          >
-            {current.cancelLabel ?? 'Cancel'}
-          </button>
-          <button
-            ref={confirmRef}
-            onClick={onConfirm}
-            className="px-4 h-9 text-[13px] font-semibold rounded-[var(--radius)] transition-colors"
-            style={{
-              background: current.danger ? 'var(--danger-solid)' : 'var(--accent)',
-              color: current.danger ? 'var(--danger-solid-fg)' : 'var(--accent-fg)',
-            }}
-          >
-            {current.confirmLabel ?? (current.danger ? 'Delete' : 'OK')}
-          </button>
-        </div>
+        {current.type === 'choice' ? (
+          <>
+            {current.notes && current.notes.length > 0 && (
+              <ul className="mt-2 list-disc pl-5 space-y-1 text-[13px] text-[var(--text-secondary)] leading-relaxed">
+                {current.notes.map((note, i) => (
+                  <li key={i} className="break-words">
+                    {note}
+                  </li>
+                ))}
+              </ul>
+            )}
+            {current.details !== undefined && (
+              <div className="mt-3">
+                {current.detailsLabel && (
+                  <div className="mb-1 text-[11px] text-[var(--text-muted)]">{current.detailsLabel}</div>
+                )}
+                <pre className="max-h-[40vh] overflow-auto whitespace-pre-wrap break-all font-mono text-[12px] p-2 rounded-[var(--radius)] bg-[var(--bg-inset)] text-[var(--text-primary)]">
+                  {current.details}
+                </pre>
+              </div>
+            )}
+            <div className="mt-5 flex flex-wrap items-stretch justify-end gap-2">
+              {(current.choices ?? []).map((choice, i) => (
+                <button
+                  key={choice.value}
+                  ref={i === 0 ? firstChoiceRef : undefined}
+                  onClick={() => finish(choice.value)}
+                  className={`flex flex-col items-start px-3.5 py-1.5 min-h-9 max-w-[220px] text-left text-[13px] rounded-[var(--radius)] transition-colors ${
+                    choice.tone === 'danger' || choice.tone === 'accent'
+                      ? 'font-semibold'
+                      : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
+                  }`}
+                  style={toneStyle(choice.tone)}
+                >
+                  <span>{choice.label}</span>
+                  {choice.detail && (
+                    <span className="text-[11px] font-normal opacity-75 leading-snug">{choice.detail}</span>
+                  )}
+                </button>
+              ))}
+            </div>
+          </>
+        ) : (
+          <div className="mt-5 flex items-center justify-end gap-2">
+            <button
+              ref={cancelRef}
+              onClick={() => finish(null)}
+              className="px-3.5 h-9 text-[13px] rounded-[var(--radius)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] transition-colors"
+            >
+              {current.cancelLabel ?? 'Cancel'}
+            </button>
+            <button
+              ref={confirmRef}
+              onClick={onConfirm}
+              className="px-4 h-9 text-[13px] font-semibold rounded-[var(--radius)] transition-colors"
+              style={{
+                background: current.danger ? 'var(--danger-solid)' : 'var(--accent)',
+                color: current.danger ? 'var(--danger-solid-fg)' : 'var(--accent-fg)',
+              }}
+            >
+              {current.confirmLabel ?? (current.danger ? 'Delete' : 'OK')}
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

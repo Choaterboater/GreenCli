@@ -24,11 +24,12 @@ import { open as openDialog, save as saveDialog } from '@tauri-apps/api/dialog';
 import { useSessionStore } from '../store/sessionStore';
 import { useSettingsStore } from '../store/settingsStore';
 import { askConfirm, useDialogStore } from '../store/dialogStore';
-import { AI_PROVIDERS, AI_CLI_PRESETS, TerminalSettings, TerminalColorScheme, TERMINAL_SCHEMES, DeviceType, DEVICE_TYPES, DeviceProfile, SessionFolder, ThemePreference } from '../types';
+import { AI_PROVIDERS, AI_CLI_PRESETS, isCliProvider, TerminalSettings, TerminalColorScheme, TERMINAL_SCHEMES, DeviceType, DEVICE_TYPES, DeviceProfile, SessionFolder, ThemePreference } from '../types';
 import { useSystemTheme } from '../hooks/useTheme';
 import { notify } from '../store/toastStore';
 import McpServers from './McpServers';
 import AiAgents from './AiAgents';
+import CasperSettings from './CasperSettings';
 import HostsManager from './HostsManager';
 import LoginProfiles from './LoginProfiles';
 import TriggersSettings from './TriggersSettings';
@@ -45,6 +46,7 @@ import {
   type SettingsGroupId,
 } from '../utils/settingsSections';
 import LargeModal, { ModalRail, RailItem } from './LargeModal';
+import { plainHttpWarning } from '../utils/urlSafety';
 
 // Curated best-practices the AI should apply, distilled from Juniper Validated
 // Designs (JVDs). Appended to the references field on request.
@@ -1244,7 +1246,18 @@ export default function SettingsPanel() {
                       </button>
                     ))}
                   </div>
+                  {isCliProvider(aiProvider) && (
+                    <p className="text-[11px] text-[var(--text-muted)] mt-2 leading-relaxed">
+                      <strong className="text-[var(--text-secondary)]">
+                        GreenCLI gives {aiProvider === 'casper' ? 'Casper' : 'Local CLI'} only your question
+                      </strong>{' '}
+                      (with the device name and your agent&apos;s instructions), not your SSH sessions, GreenCLI&apos;s
+                      tools or GreenCLI&apos;s MCP servers. The Assistant tools switches below are not used.
+                    </p>
+                  )}
                 </div>
+
+                {aiProvider === 'casper' && <CasperSettings />}
 
                 {/* Key-based providers: API key (stored in Rust, never in localStorage) */}
                 {providerMeta?.needsKey && (
@@ -1389,6 +1402,11 @@ export default function SettingsPanel() {
                         placeholder="http://localhost:11434"
                         className="w-full h-8 px-2 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)] font-mono"
                       />
+                      {plainHttpWarning(settings.ollamaUrl || '', 'ollama') && (
+                        <p className="text-[var(--accent-warning)] text-[10px] mt-1">
+                          {plainHttpWarning(settings.ollamaUrl || '', 'ollama')}
+                        </p>
+                      )}
                     </div>
                     <div>
                       <label className="block text-xs text-[var(--text-secondary)] mb-1.5">Model</label>
@@ -1411,7 +1429,17 @@ export default function SettingsPanel() {
                   <label className="block text-xs text-[var(--text-secondary)] mb-1.5">
                     Assistant tools <span className="text-[var(--text-muted)]">(opt-in)</span>
                   </label>
-                  <div className="space-y-2.5 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--bg-inset)] p-2.5">
+                  <div
+                    className={`space-y-2.5 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--bg-inset)] p-2.5${
+                      isCliProvider(aiProvider) ? ' opacity-60' : ''
+                    }`}
+                  >
+                    {isCliProvider(aiProvider) && (
+                      <p className="text-[11px] text-[var(--text-secondary)]">
+                        Not used by {aiProvider === 'casper' ? 'Casper' : 'Local CLI'}. These apply when you pick
+                        another provider.
+                      </p>
+                    )}
                     {(
                       [
                         { key: 'aiUseTerminal', label: 'Run device CLI commands', hint: 'Execute show/config on the active SSH/terminal session' },

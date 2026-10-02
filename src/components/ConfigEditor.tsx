@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useCallback, useMemo, useDeferredValue } f
 import Editor, { DiffEditor, OnMount } from '@monaco-editor/react';
 import ConfigArchive from './ConfigArchive';
 import ProblemsPanel from './ProblemsPanel';
+import FolderPane from './FolderPane';
 import EditorStatusBar from './EditorStatusBar';
 import { copyText } from '../utils/clipboard';
 import type { editor as MonacoEditor } from 'monaco-editor';
@@ -28,6 +29,7 @@ import {
   Info,
   EyeOff,
   Sparkles,
+  FolderTree,
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/tauri';
 import { useSessionStore } from '../store/sessionStore';
@@ -62,7 +64,8 @@ import { fenceDeviceLanguage, isOtherVendor, locateTarget, restoreSecrets, withS
 import { showSidePanel } from './sidePanelActions';
 import { timeAgo } from '../store/recentStore';
 import { useTheme } from '../hooks/useTheme';
-import { isTauri, tauriOpen, tauriSave, tauriReadText, tauriWriteText, browserOpen, browserSave } from '../utils/fileSystem';
+import { isTauri, tauriOpen, tauriOpenFolder, tauriListFolder, tauriReadFolderFile, tauriSave, tauriReadText, tauriWriteText, browserOpen, browserSave } from '../utils/fileSystem';
+import { cannotOpen, joinPath, relativeTo, type FolderEntry, type FolderListing } from '../utils/folderTree';
 import {
   prepareSendLines,
   runConfigSend,
@@ -182,6 +185,9 @@ function detectLanguage(filePath: string): string {
 }
 
 // ─── Language list for picker ───
+
+/** localStorage: the folder the folder view showed last. */
+const FOLDER_KEY = 'greencli.editor.folder';
 
 const LANGUAGE_LIST = [
   { id: 'aruba-cx',         label: 'Aruba CX' },
@@ -992,6 +998,95 @@ export default function ConfigEditor() {
     }
   }, [ingest]);
 
+  // ─── Folder view ───
+  // A folder's files as a tree beside the editor (desktop app only). The last
+  // folder is remembered and listed again the next time the view opens.
+  const [folder, setFolder] = useState<FolderListing | null>(null);
+  const [showFolder, setShowFolder] = useState(false);
+  const [folderLoading, setFolderLoading] = useState(false);
+  /** Lists a folder and shows it. False when it can't be opened (the reason is shown unless quiet). */
+  const loadFolder = useCallback(async (root: string, quiet = false): Promise<boolean> => {
+    setFolderLoading(true);
+    try {
+      setFolder(await tauriListFolder(root));
+      setShowFolder(true);
+      try {
+        localStorage.setItem(FOLDER_KEY, root);
+      } catch {
+        /* storage blocked: just not remembered */
+      }
+      return true;
+    } catch (e) {
+      if (!quiet) showStatus(String(e));
+      return false;
+    } finally {
+      setFolderLoading(false);
+    }
+  }, []);
+  const pickFolder = useCallback(async () => {
+    const root = await tauriOpenFolder().catch(() => null);
+    if (root) await loadFolder(root);
+  }, [loadFolder]);
+  /** Opens the remembered folder. When it is gone (moved, deleted, a drive that isn't there),
+   *  forgets it and asks for another one, so the folder view never gets stuck on it. */
+  const openRemembered = useCallback(
+    async (root: string) => {
+      if (await loadFolder(root, true)) return;
+      try {
+        localStorage.removeItem(FOLDER_KEY);
+      } catch {
+        /* storage blocked */
+      }
+      showStatus(`Can't open the folder ${root}. It may have moved. Pick another folder.`);
+      await pickFolder();
+    },
+    [loadFolder, pickFolder]
+  );
+  const toggleFolder = () => {
+    if (!isTauri) {
+      showStatus('The folder view needs the desktop app');
+      return;
+    }
+    if (showFolder) {
+      setShowFolder(false);
+      return;
+    }
+    if (folder) {
+      setShowFolder(true);
+      return;
+    }
+    let remembered: string | null = null;
+    try {
+      remembered = localStorage.getItem(FOLDER_KEY);
+    } catch {
+      /* storage blocked */
+    }
+    void (remembered ? openRemembered(remembered) : pickFolder());
+  };
+  // A click in the tree: go to the file's tab, or open it in a new one.
+  const openFromFolder = useCallback(
+    async (entry: FolderEntry) => {
+      if (!folder) return;
+      const why = cannotOpen(entry);
+      if (why) {
+        showStatus(why);
+        return;
+      }
+      const path = joinPath(folder.root, entry.path);
+      const existing = buffersRef.current.find((b) => b.filePath === path);
+      if (existing) {
+        setActiveId(existing.id);
+        return;
+      }
+      try {
+        ingest(basename(path), path, await tauriReadFolderFile(path));
+      } catch (e) {
+        showStatus(`Open failed: ${e}`);
+      }
+    },
+    [folder, ingest]
+  );
+
   // Toggle the active buffer between the cleaned view and the raw capture.
   const toggleRaw = () => {
     const raw = rawCapturesRef.current.get(active.id);
@@ -1714,6 +1809,17 @@ export default function ConfigEditor() {
         {/* File actions — icon-only group with tooltips */}
         <div className="flex items-center gap-0.5">
           <button
+            onClick={toggleFolder}
+            className={`p-1.5 rounded transition-colors ${
+              showFolder ? 'text-[var(--accent)] bg-[var(--accent-soft)]' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
+            }`}
+            title={showFolder ? 'Hide the folder' : 'Open a folder (its files as a tree)'}
+            aria-label={showFolder ? 'Hide the folder' : 'Open a folder'}
+            aria-pressed={showFolder}
+          >
+            <FolderTree size={13} />
+          </button>
+          <button
             onClick={openFile}
             className="p-1.5 rounded text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] transition-colors"
             title="Open file (Ctrl+O)"
@@ -2309,8 +2415,20 @@ export default function ConfigEditor() {
         </div>
       )}
 
-      {/* Monaco Editor */}
-      <div className="flex-1 overflow-hidden">
+      {/* Monaco Editor, with the folder tree on its left */}
+      <div className="flex-1 flex min-h-0">
+      {showFolder && folder && (
+        <FolderPane
+          listing={folder}
+          activePath={relativeTo(folder.root, active.filePath)}
+          loading={folderLoading}
+          onOpen={(entry) => void openFromFolder(entry)}
+          onPickFolder={() => void pickFolder()}
+          onRefresh={() => void loadFolder(folder.root)}
+          onClose={() => setShowFolder(false)}
+        />
+      )}
+      <div className="flex-1 overflow-hidden min-w-0">
         {reviewing ? (
           <DiffEditor
             key={`review-${active.id}`}
@@ -2436,6 +2554,7 @@ export default function ConfigEditor() {
           }}
         />
         )}
+      </div>
       </div>
       {showProblems && (
         <ProblemsPanel

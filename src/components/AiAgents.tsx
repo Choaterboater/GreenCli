@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Bot, Plus, Trash2, ChevronDown, ChevronRight } from 'lucide-react';
 import { useSettingsStore } from '../store/settingsStore';
-import { AI_PROVIDERS, AI_CLI_PRESETS, AiProvider } from '../types';
+import { AI_PROVIDERS, AI_CLI_PRESETS, AiProvider, isCliProvider } from '../types';
 import { generateId } from '../utils';
 import { askConfirm } from '../store/dialogStore';
 
@@ -39,6 +39,7 @@ export default function AiAgents() {
   const addAiAgent = useSettingsStore((s) => s.addAiAgent);
   const updateAiAgent = useSettingsStore((s) => s.updateAiAgent);
   const removeAiAgent = useSettingsStore((s) => s.removeAiAgent);
+  const globalProvider = useSettingsStore((s) => s.aiProvider);
   const [openId, setOpenId] = useState<string | null>(null);
 
   const createAgent = () => {
@@ -192,7 +193,11 @@ export default function AiAgents() {
                   {agent.provider && (
                     <div>
                       <label className="block text-[11px] text-[var(--text-secondary)] mb-1">
-                        {agent.provider === 'local-cli' ? 'CLI command' : 'Model'}
+                        {agent.provider === 'local-cli'
+                          ? 'CLI command'
+                          : agent.provider === 'casper'
+                            ? 'Casper command'
+                            : 'Model'}
                       </label>
 
                       {agent.provider === 'anthropic' && (
@@ -236,6 +241,15 @@ export default function AiAgents() {
                         </>
                       )}
 
+                      {agent.provider === 'casper' && (
+                        <input
+                          value={agent.model || ''}
+                          onChange={(e) => updateAiAgent(agent.id, { model: e.target.value })}
+                          placeholder="casper (uses the Casper command in AI Assistant)"
+                          className="w-full h-8 px-2 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg text-[12px] text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)] font-mono"
+                        />
+                      )}
+
                       {(agent.provider === 'ollama' ||
                         agent.provider === 'openrouter' ||
                         agent.provider === 'moonshot') && (
@@ -266,6 +280,13 @@ export default function AiAgents() {
                         </>
                       )}
                     </div>
+                  )}
+
+                  {isCliProvider(agent.provider || globalProvider) && (
+                    <p className="text-[10px] text-[var(--text-muted)]">
+                      This provider answers from the question only. It can&apos;t use GreenCLI&apos;s device tools or MCP
+                      servers. Its instructions are sent with each question.
+                    </p>
                   )}
 
                   <p className="text-[10px] text-[var(--text-muted)]">

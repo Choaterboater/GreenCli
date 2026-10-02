@@ -7,7 +7,7 @@
   },
   "package": {
     "productName": "GreenCLI",
-    "version": "1.8.0"
+    "version": "1.9.0"
   },
   "tauri": {
     "allowlist": {
@@ -54,7 +54,7 @@
         "providerShortName": null,
         "signingIdentity": null
       },
-      "resources": [],
+      "resources": ["../THIRD_PARTY_NOTICES.txt"],
       "shortDescription": "GreenCLI",
       "targets": "all",
       "windows": {
