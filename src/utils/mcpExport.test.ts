@@ -432,7 +432,9 @@ describe('buildMcpExport: passwords under short names', () => {
     expect(argsOf(['-p', '3.12', 'tool'])).toEqual(['-p', '3.12', 'tool']);
     const npx = build([def({ name: 's', command: 'npx', args: ['-y', '-p', '@scope/pkg', 'pkg-cli', '-p', 'Secret!1'] })]);
     expect(stdioOf(npx.file.mcpServers.s).args).toEqual(['-y', '-p', '@scope/pkg', 'pkg-cli', '-p', '${S_P_SECRET}']);
-    expect(argsOf(['tool', '-p', '127.0.0.1:8080:80/tcp'])).toEqual(['tool', '-p', '127.0.0.1:8080:80/tcp']);
+    expect(argsOf(['tool', '-p', '127.0.0.1:8080:80'])).toEqual(['tool', '-p', '127.0.0.1:8080:80']);
+    // Only digits and colons count as a port mapping: a /tcp after it is hidden, with a note.
+    expect(argsOf(['tool', '-p', '127.0.0.1:8080:80/tcp'])).toEqual(['tool', '-p', '${S_P_SECRET}']);
     const docker = ['run', '-i', '--rm', '-P', 'ghcr.io/org/mcp:1', '-p', '8080:80'];
     expect(stdioOf(build([def({ name: 's', command: 'docker', args: docker })]).file.mcpServers.s).args).toEqual(docker);
   });
@@ -966,18 +968,33 @@ describe('buildMcpExport: network logins', () => {
       PLATFORM: 'linux:arm64',
       MODE: 'read:only',
       HOST: 'host:8080',
-      DB: 'db.example.com:5432/app',
-      PORTS: '127.0.0.1:8080:80/tcp',
-      GHCR: 'ghcr.io/x/y:1.2',
+      ONE_PORT: 'db:1',
+      TOP_PORT: 'db:65535',
+      PORTS: '127.0.0.1:8080:80',
+      MAPPING: '8080:80',
+      V6: '[::1]:8080',
       REPO: 'git@github.com:org/repo',
       REPO_GIT: 'git@github.com:repo.git',
-      SSH_DIR: 'me@host:/srv/x',
+      REPO_DOT_GIT: 'me@host:org/repo.git',
       WIN: 'C:\\tools\\mcp',
-      LIBS: 'lib:/usr/lib',
-      BIND: 'fe80::1',
-      MAC: 'aa:bb:cc:dd:ee:ff',
-      AT: '12:30:00',
+      WIN_SLASH: 'C:/tools/mcp',
       URL: 'https://h/x',
+      JDBC: 'jdbc:postgresql://db:5432/app',
+      NPM: 'npm:@modelcontextprotocol/server-filesystem',
+      JSR: 'jsr:@std/x',
+      NODE_MOD: 'node:fs',
+      FILE: 'file:./x',
+      DATA: 'data:text/plain,hi',
+      GH: 'github:org/repo',
+      GIT_HTTPS: 'git+https:github.com/org/repo',
+      GIT_SSH: 'git+ssh:github.com/org/repo',
+      PATH: '/usr/bin:/bin',
+      PYTHONPATH: 'src:lib',
+      NODE_PATH: 'lib:/usr/lib',
+      LD_LIBRARY_PATH: '/opt/lib:/usr/lib',
+      DYLD_LIBRARY_PATH: '/opt/lib:/usr/lib',
+      CLASSPATH: 'a.jar:b.jar',
+      MANPATH: '/usr/man:/opt/man',
       NOTE: 'two words:here',
       REFS: '${DB_USER}:${DB_PASS}',
       HALF: 'admin:${DB_PASS}',
@@ -998,14 +1015,36 @@ describe('buildMcpExport: network logins', () => {
       L: 'admin@corp.com:Hunter22',
       WEB: 'httpd:2.4-alpine',
       CACHE: 'redis:alpine',
-      VERSIONS: 'node:22-slim',
       MY_IMAGE_TAG_LIST: 'jdoe:123-dev,x',
+      // Any user part counts: a domain login, a percent-encoded address, punctuation, a flag.
+      NOTE8: 'CORP\\jdoe:Hunter22',
+      NOTE7: 'jdoe%40corp.com:Hunter22',
+      NOTE10: 'j_doe!:Hunter22',
+      NOTE6: '--auth=jdoe:123-dev',
+      // A / in the password is no longer taken for a remote or a host:port/path.
+      NOTE2: 'jdoe@corp.com:Summer/2024',
+      NOTE3: 'root:2024/Spring',
+      SSH_DIR: 'me@host:/srv/x',
+      DB: 'db.example.com:5432/app',
+      PORT_TCP: '127.0.0.1:8080:80/tcp',
+      // Not a port: 0 and over 65535.
+      ZERO: 'admin:0',
+      BIG: 'admin:65536',
+      // Volumes only after -v, --volume or --mount; folder lists only under PATH and its kin.
+      VOL: 'mcp-test:/mcp',
+      LIBS: 'lib:/usr/local/lib',
+      // Shaped like user:password with no rule to keep them.
+      BIND: 'fe80::1',
+      MAC: 'aa:bb:cc:dd:ee:ff',
+      AT: '12:30:00',
+      GHCR: 'ghcr.io/x/y:1.2',
+      NOT_A_PACKAGE: 'npmx:Hunter22',
     };
     const r = build([def({ name: 's', command: 'uvx', args: ['x'], env: { ...plain, ...hidden } })]);
     const s = stdioOf(r.file.mcpServers.s);
     for (const [key, value] of Object.entries(plain)) expect([key, s.env?.[key]]).toEqual([key, value]);
     for (const [key, value] of Object.entries(hidden)) {
-      expect([key, s.env?.[key]]).toEqual([key, expect.stringMatching(/^\$\{[A-Z_]+\}$/)]);
+      expect([key, s.env?.[key]]).toEqual([key, expect.stringMatching(/^\$\{[A-Z0-9_]+\}$/)]);
       expect(r.text).not.toContain(value);
     }
     const note = r.notes.find((n) => n.startsWith('s: env WEB '));
@@ -1051,6 +1090,89 @@ describe('buildMcpExport: network logins', () => {
       '-H',
       'Accept:application/json',
     ]);
+  });
+});
+
+describe('buildMcpExport: the user:password rule, both ways', () => {
+  it('keeps package specifiers, volumes after -v/--volume/--mount, git remotes and ports', () => {
+    // The official sqlite MCP server config, and deno's npm: and jsr: specifiers.
+    const sqlite = ['run', '--rm', '-i', '-v', 'mcp-test:/mcp', 'mcp/sqlite', '--db-path', '/mcp/test.db'];
+    expect(stdioOf(build([def({ name: 's', command: 'docker', args: sqlite })]).file.mcpServers.s).args).toEqual(sqlite);
+    const kept = [
+      'run',
+      '-A',
+      'npm:@modelcontextprotocol/server-filesystem',
+      'jsr:@std/x',
+      '--volume',
+      '/srv/data:/data:ro',
+      '--volume=${PWD}:/app',
+      '--mount',
+      './cfg:/etc/cfg:rw',
+      '-v',
+      '~/x:/x:z',
+      'git@github.com:org/repo',
+      'me@host:org/repo.git',
+      'localhost:8080',
+      '8080:80',
+      '127.0.0.1:8080:80',
+      'C:\\tools\\mcp',
+      'C:/tools/mcp',
+      'PATH=/usr/bin:/bin',
+      'CLASSPATH=a.jar:b.jar',
+      'https://h/x',
+    ];
+    expect(argsOf(kept)).toEqual(kept);
+  });
+
+  it('hides every other user:password-shaped arg, whatever the user part looks like', () => {
+    const r = build([
+      def({
+        name: 's',
+        command: 'uvx',
+        args: [
+          'tool',
+          '-u',
+          'CORP\\jdoe:Hunter22',
+          'jdoe%40corp.com:Hunter23',
+          'j_doe!:Hunter24',
+          '--auth=jdoe:123-dev',
+          'jdoe@corp.com:Summer/2024',
+          'root:2024/Spring',
+          '--note',
+          'mcp-test:/mcp',
+          'LIBS=lib:/usr/lib',
+          'me@host:/srv/x',
+          'npmx:Hunter25',
+        ],
+      }),
+    ]);
+    const args = stdioOf(r.file.mcpServers.s).args;
+    expect(args[0]).toBe('tool');
+    expect(args[1]).toBe('-u');
+    expect(args[5]).toMatch(/^--auth=\$\{[A-Z0-9_]+\}$/);
+    expect(args[8]).toBe('--note');
+    expect(args[10]).toMatch(/^LIBS=\$\{[A-Z0-9_]+\}$/);
+    for (const i of [2, 3, 4, 6, 7, 9, 11, 12]) expect([i, args[i]]).toEqual([i, expect.stringMatching(/^\$\{[A-Z0-9_]+\}$/)]);
+    for (const secret of ['Hunter22', 'Hunter23', 'Hunter24', '123-dev', 'Summer/2024', '2024/Spring', 'mcp-test', '/usr/lib', '/srv/x', 'Hunter25']) {
+      expect([secret, r.text.includes(secret)]).toEqual([secret, false]);
+    }
+    expect(r.notes.join('\n')).toContain('argument 3 looked like user:password');
+  });
+
+  it('hides the findings\' env values and keeps the exempt names', () => {
+    const r = build([
+      def({
+        name: 's',
+        command: 'uvx',
+        args: ['x'],
+        env: { NOTE8: 'CORP\\jdoe:Hunter22', IMAGE: 'CORP\\jdoe:Hunter22', APP_TAG: 'jdoe:123-dev', PYTHON_VERSION: 'python:3.12' },
+      }),
+    ]);
+    const env = stdioOf(r.file.mcpServers.s).env;
+    expect(env?.NOTE8).toBe('${NOTE8_SECRET}');
+    expect(env?.IMAGE).toBe('CORP\\jdoe:Hunter22');
+    expect(env?.APP_TAG).toBe('jdoe:123-dev');
+    expect(env?.PYTHON_VERSION).toBe('python:3.12');
   });
 });
 

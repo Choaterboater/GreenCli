@@ -185,31 +185,63 @@ function isSecretFlagName(flag: string): boolean {
   return isSecretFieldName(flag) && lastPart(snakeKey(flag)) !== 'enable';
 }
 
-/** user:password typed as one value. GreenCLI can't tell a password from an image tag by its shape
- *  (jdoe:123-dev and node:20-alpine look alike), so every value shaped like this is hidden unless its
- *  name says what it is (isPlainValueName). The user part is a name or one ${NAME}; the rest is any
- *  text with no spaces that is not only ${NAME}s. */
-const USER_PART = /^(?:[A-Za-z0-9_][\w.@+-]{0,63}|\$\{[A-Za-z_][A-Za-z0-9_]*\})$/;
-/** host:port with a numeric port, maybe a port mapping or a path after it (localhost:8080,
- *  db:5432/app, 127.0.0.1:8080:80/tcp). */
-const NUMERIC_PORT = /^\d{1,5}(?::\d{1,5})*(?:\/\S*)?$/;
-/** An IPv6 address, a MAC address or a time (fe80::1, aa:bb:cc:dd:ee:ff, 12:30:00): hex digits,
- *  dots and two or more colons. */
-const HEX_COLONS = /^[0-9A-Fa-f.]*(?::[0-9A-Fa-f.]*){2,}$/;
-/** An ssh or git remote: git@github.com:org/repo, me@host:/srv/x, git@host:repo.git. */
-const REMOTE = /^[\w.+-]+@[\w.-]+:(?:[^\s/]*\/\S*|\S+\.git)$/;
+/** user:password typed as one value: one or more non-space characters, a colon, one or more
+ *  non-space characters. GreenCLI can't tell a password from an image tag by its shape (jdoe:123-dev
+ *  and node:20-alpine look alike, and CORP\jdoe or jdoe%40corp.com is as good a user as jdoe), so
+ *  every value shaped like this is hidden unless userPassKept says it is something else, or its name
+ *  says what it is (isPlainValueName). */
+const USER_PASS = /^\S+:\S+$/;
+/** Package specifiers (deno, npm): npm:@scope/pkg, jsr:@std/x, node:fs, file:..., data:...,
+ *  github:org/repo, git+https:..., git+ssh:.... */
+const PACKAGE_SCHEME = /^(?:npm|jsr|node|file|data|github|git\+https|git\+ssh):/;
+/** host:port, or a port mapping: only digits and colons after the host (localhost:8080, 8080:80,
+ *  127.0.0.1:8080:80). Each number is a port, 1 to 65535. */
+const PORT_LIST = /^\d{1,5}(?::\d{1,5})*$/;
+/** A Windows drive path: C:\tools, C:/tools. */
+const DRIVE_PATH = /^[A-Za-z]:[\\/]/;
+/** A git remote: the ssh user is git (git@github.com:org/repo), or the value ends in .git. */
+const GIT_REMOTE = /^git@[^\s@:]+:\S+$|\.git$/;
+/** A Docker volume or bind mount: name:/path or /host:/container, maybe with :ro or :rw (and the
+ *  SELinux z or Z). Only the value right after -v, --volume or --mount. */
+const VOLUME = /^(?:[A-Za-z0-9][\w.-]*|[/~.][^\s:]*|\$\{[A-Za-z_][A-Za-z0-9_]*\}[^\s:]*):\/[^\s:]*(?::(?:ro|rw|z|Z)(?:,(?:ro|rw|z|Z))*)?$/;
+const VOLUME_FLAGS = new Set(['-v', '--volume', '--mount']);
+/** Env names whose value is a list of folders joined by colons (bin:/usr/bin). */
+const PATH_LIST_NAMES = new Set(['PATH', 'PYTHONPATH', 'NODE_PATH', 'LD_LIBRARY_PATH', 'DYLD_LIBRARY_PATH', 'CLASSPATH', 'MANPATH']);
 
-function looksLikeUserPass(value: string): boolean {
-  if (/\s/.test(value) || onlyReferences(value)) return false;
-  const colon = value.indexOf(':');
-  if (colon < 1) return false;
-  const user = value.slice(0, colon);
-  const pass = value.slice(colon + 1);
-  if (!pass || !USER_PART.test(user) || onlyReferences(pass)) return false;
-  // Not an address (https://, jdbc:postgresql://), a Windows drive path (C:\x), a path list
-  // (bin:/usr/bin), host:port, an IPv6 or MAC address, or an ssh or git remote.
-  if (URL_START.test(value) || (user.length === 1 && /^[/\\]/.test(pass)) || /^~?\/[^\s/]*\//.test(pass)) return false;
-  return !NUMERIC_PORT.test(pass) && !HEX_COLONS.test(value) && !REMOTE.test(value);
+/** Where a value sits: the env name or NAME= it is under, or the flag right before it. */
+interface UserPassPlace {
+  envName?: string;
+  flag?: string;
+}
+
+function isPort(digits: string): boolean {
+  const n = Number(digits);
+  return n >= 1 && n <= 65535;
+}
+
+/** host:port or a port mapping (PORT_LIST), also with an [IPv6] host. */
+function hostPort(value: string): boolean {
+  const rest = value.startsWith('[') ? /^\[[0-9A-Fa-f:.]+\]:(.+)$/.exec(value)?.[1] : value.slice(value.indexOf(':') + 1);
+  return rest !== undefined && PORT_LIST.test(rest) && rest.split(':').every(isPort);
+}
+
+/** The user:password-shaped values that stay plain: an address with a scheme and //, a package
+ *  specifier, host:port, a Windows drive path, a git remote, a volume after -v/--volume/--mount and
+ *  a folder list under PATH and its kin. */
+function userPassKept(value: string, place: UserPassPlace): boolean {
+  if (URL_START.test(value) || PACKAGE_SCHEME.test(value) || hostPort(value) || DRIVE_PATH.test(value) || GIT_REMOTE.test(value)) {
+    return true;
+  }
+  if (place.flag !== undefined && VOLUME_FLAGS.has(place.flag) && VOLUME.test(value)) return true;
+  return place.envName !== undefined && PATH_LIST_NAMES.has(place.envName.toUpperCase());
+}
+
+/** A user:password-shaped value (USER_PASS) that is not kept by userPassKept. Only ${NAME}s, or
+ *  only ${NAME}s after the colon (admin:${DB_PASS}), hold no password to hide. */
+function looksLikeUserPass(value: string, place: UserPassPlace): boolean {
+  if (!USER_PASS.test(value) || onlyReferences(value)) return false;
+  if (onlyReferences(value.slice(value.indexOf(':') + 1))) return false;
+  return !userPassKept(value, place);
 }
 
 /** Names that clearly hold no secret, so a user:password-shaped value under them stays plain:
@@ -636,11 +668,12 @@ function hideUserPassArgs(s: Server, args: readonly string[]): string[] {
     const named = flagged ? { name: flagged[2], value: flagged.at(-1)! } : bare ? { name: bare[1], value: bare[2] } : undefined;
     if (named) {
       const { name, value } = named;
-      if (HEADER_FLAG.test(name) || !looksLikeUserPass(value) || isPlainValueName(name)) return arg;
+      const place = flagged ? { flag: `${flagged[1]}${name}` } : { envName: name };
+      if (HEADER_FLAG.test(name) || !looksLikeUserPass(value, place) || isPlainValueName(name)) return arg;
       const head = arg.slice(0, arg.length - value.length);
       return head + hideUserPass(s, value, { raw: name, where: `argument ${head.trim()}`, prefix: true });
     }
-    if (!looksLikeUserPass(arg)) return arg;
+    if (!looksLikeUserPass(arg, { flag: i > 0 ? args[i - 1] : undefined })) return arg;
     const flag = i > 0 ? FLAG.exec(args[i - 1])?.[1] : undefined;
     if (flag !== undefined && (HEADER_FLAG.test(flag) || isPlainValueName(flag))) return arg;
     return hideUserPass(s, arg, { raw: flag ?? `ARG_${n}`, where: `argument ${n}`, prefix: true });
@@ -1172,7 +1205,7 @@ export function buildMcpExport(servers: readonly McpServerDef[], options: McpExp
     if (b.env) {
       b.env = b.env.map(([k, v]) => [
         k,
-        looksLikeUserPass(v) && !isPlainValueName(k) ? hideUserPass(b.s, v, { raw: k, where: `env ${k}`, prefix: false }) : v,
+        looksLikeUserPass(v, { envName: k }) && !isPlainValueName(k) ? hideUserPass(b.s, v, { raw: k, where: `env ${k}`, prefix: false }) : v,
       ]);
     }
     if (b.args) b.args = hideUserPassArgs(b.s, b.args);
