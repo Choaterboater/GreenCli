@@ -146,8 +146,6 @@ pub fn tighten_app_dir(app_dir: &Path) {
             "intents.json.corrupt",
             "mcp_servers.json",
             "mcp_servers.json.tmp",
-            "ai_keys.json",
-            "mcp_creds.json",
             "secret_store.json",
         ] {
             let p = app_dir.join(name);

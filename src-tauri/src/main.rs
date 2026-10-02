@@ -1649,8 +1649,8 @@ async fn mcp_save_server(def: McpServerDef, state: State<'_, AppState>) -> Resul
     mgr.save_config(def).map_err(|e| e.to_string())
 }
 
-/// Rename a server, migrating its stored credentials, materialised creds file,
-/// and live connection to the new name (deleting + re-adding loses all three).
+/// Rename a server, moving its stored login and live connection to the new
+/// name (deleting + re-adding loses both). See mcp::rename_server.
 #[tauri::command]
 async fn mcp_rename_server(from: String, to: String, state: State<'_, AppState>) -> Result<(), String> {
     mcp::rename_server(&state.mcp_manager, &from, &to).await
