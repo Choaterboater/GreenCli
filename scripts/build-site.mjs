@@ -209,16 +209,17 @@ function preparePhotos() {
 
 /** A photo that opens big when clicked (site.js), or as a plain link without JS. */
 function zoomLink(photo, base, { hero = false, className = '' } = {}) {
+  const label = photo.about.replace(/`/g, '');
   const full = `${base}screenshots/${photo.file}`;
   const thumb = `${base}screenshots/thumbs/${photo.file}`;
   const img = hero
     ? `<img src="${esc(full)}" srcset="${esc(thumb)} ${photo.thumbSize.width}w, ${esc(full)} ${photo.size.width}w" ` +
       `sizes="(min-width: 1000px) 660px, calc(100vw - 32px)" width="${photo.size.width}" height="${photo.size.height}" ` +
-      `alt="${esc(photo.about)}" fetchpriority="high">`
+      `alt="${esc(label)}" fetchpriority="high">`
     : `<img src="${esc(thumb)}" width="${photo.thumbSize.width}" height="${photo.thumbSize.height}" ` +
-      `alt="${esc(photo.about)}" loading="lazy" decoding="async">`;
+      `alt="${esc(label)}" loading="lazy" decoding="async">`;
   const cls = className ? ` class="${className}"` : '';
-  return `<a${cls} href="${esc(full)}" data-zoom data-caption="${esc(photo.about.replace(/`/g, ''))}">${img}</a>`;
+  return `<a${cls} href="${esc(full)}" data-zoom data-caption="${esc(label)}">${img}</a>`;
 }
 
 function galleryHtml(photos, base) {
@@ -274,13 +275,13 @@ const DOWNLOADS = [
   {
     os: 'macOS',
     icon: 'Laptop',
-    sub: 'Apple Silicon (M1 and newer)',
+    sub: 'Apple Silicon (M1 and newer) · macOS\u00a013.3\u00a0or\u00a0newer',
     files: [{ label: 'Download .dmg', match: /(aarch64|arm64)\.dmg$/i }],
   },
   {
     os: 'macOS',
     icon: 'Laptop',
-    sub: 'Intel',
+    sub: 'Intel · macOS\u00a013.3\u00a0or\u00a0newer',
     files: [{ label: 'Download .dmg', match: /(x64|x86_64|intel)\.dmg$/i }],
   },
   {
@@ -489,7 +490,7 @@ function helpPage() {
     );
   });
   const intro =
-    '<p class="intro">The same help as in the app. In GreenCLI, press F1 (or click ? in the title bar) to open it.</p>\n' +
+    '<p class="intro">The same help as in the app. In GreenCLI, press F1, or click Help (the ?) at the bottom of the bar on the left.</p>\n' +
     '<div class="os-switch" role="group" aria-label="Show the keys for">' +
     '<span>Show the keys for:</span>' +
     '<button type="button" data-os-pick="mac" aria-pressed="true">Mac</button>' +

@@ -14,7 +14,7 @@
     /* storage blocked: fall back to the visitor's system */
   }
   if (os !== 'mac' && os !== 'win') {
-    os = /win/i.test(navigator.platform || navigator.userAgent || '') ? 'win' : 'mac';
+    os = /mac|iphone|ipad/i.test(navigator.platform || navigator.userAgent || '') ? 'mac' : 'win';
   }
   root.setAttribute('data-os', os);
 
