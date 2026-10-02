@@ -13,7 +13,9 @@
 // Secrets become ${NAME}. Both tools expand ${NAME} in command, args, env and headers. Claude Code also
 // expands it in url; Casper does not (manager.ts:793), so we add a note when a url has one.
 // GreenCLI itself never expands ${...} (client.rs sends values verbatim), so a ${X} the user typed
-// changes meaning once exported. The summary says so.
+// changes meaning once exported. Where Claude Code would send it to a remote server (an http server,
+// and addresses and -H headers in stdio args) it gets a new name made from the server's name, so a
+// key already set in the user's shell is not sent there by mistake. Elsewhere the summary says so.
 //
 // Casper line numbers and the two regexes marked "casper" below are from casper @ ad678b6.
 //
@@ -43,7 +45,7 @@ export interface VariablePlace {
   origin?: string;
 }
 
-export type VariableWhy = 'secret' | 'basic-auth' | 'credentials-file' | 'already-a-reference';
+export type VariableWhy = 'secret' | 'basic-auth' | 'credentials-file' | 'already-a-reference' | 'renamed-reference';
 
 export interface VariableToSet {
   name: string;
@@ -52,6 +54,10 @@ export interface VariableToSet {
   scheme?: string;
   /** credentials-file only: the server's name in GreenCLI. */
   greencliName?: string;
+  /** secret only: the value sits in an address and must be set percent-encoded (%40 for @). */
+  urlEncoded?: boolean;
+  /** renamed-reference only: the ${NAME} the user wrote in GreenCLI. */
+  from?: string;
   /** First-seen order, no duplicates. */
   places: VariablePlace[];
 }
@@ -134,8 +140,11 @@ function lastPart(snake: string): string {
 }
 
 // The reused helpers return false for these last name parts (checked: MIST_KEY, OPENAI_KEY,
-// x-functions-key, GITHUB_PAT, ?sig=, ...). Here over-hiding only adds a variable to set.
-const EXTRA_SECRET_LAST = new Set(['key', 'keys', 'jwt', 'pat', 'sas', 'sig', 'signature', 'session', 'sessionid', 'auth']);
+// x-functions-key, GITHUB_PAT, ?sig=, SWITCH_PW, --pwd, ...). Here over-hiding only adds a variable to set.
+const EXTRA_SECRET_LAST = new Set([
+  'key', 'keys', 'jwt', 'pat', 'sas', 'sig', 'signature', 'session', 'sessionid', 'auth',
+  'pw', 'pwd', 'passwd', 'pass', 'privkey', 'cookie',
+]);
 
 function isPublicKeyName(name: string): boolean {
   const key = snakeKey(name);
@@ -146,6 +155,11 @@ function isPublicKeyName(name: string): boolean {
 export function isSecretFieldName(name: string): boolean {
   if (isPublicKeyName(name)) return false;
   return isSecretName(name) || isSecretKey(name) || EXTRA_SECRET_LAST.has(lastPart(snakeKey(name)));
+}
+
+/** For env keys: isSecretFieldName, but never a variable every shell has (PWD is the working folder). */
+function isSecretEnvKey(key: string): boolean {
+  return !STANDARD_VARS.has(key.toUpperCase()) && isSecretFieldName(key);
 }
 
 /** For URL query names: isSecretFieldName plus code and auth.
@@ -239,6 +253,18 @@ function tokenShaped(value: string): boolean {
   );
 }
 
+/** 32 or more hex digits, with or without dashes (a UUID, an API key in hex). In an address it is
+ *  usually a key or a private link, so it is treated as one. */
+function longHexId(value: string): boolean {
+  return /^[0-9a-f-]+$/i.test(value) && value.replace(/-/g, '').length >= 32;
+}
+
+/** A path segment or query value that looks like a key. */
+function urlPartLooksSecret(value: string, query: boolean): boolean {
+  if (onlyReferences(value)) return false;
+  return (query ? looksLikeSecretValue(value) : tokenShaped(value)) || longHexId(value);
+}
+
 /** Last-resort check for a value no name rule caught. */
 export function looksLikeSecretValue(value: string): boolean {
   const v = value.replace(REFERENCE, '');
@@ -269,7 +295,8 @@ const REFUSED_FILES = new Set([
 ]);
 const REFUSED_FOLDERS = new Set(['.claude', '.casper', '.vscode', '.cursor', '.codeium', 'mcp_creds', 'com.choatelabs.greencli']);
 
-/** null when fine; otherwise the plain-English reason the path is refused. */
+/** null when fine; otherwise the plain-English reason the path is refused. A quick check on the text;
+ *  src-tauri/src/export_file.rs checks the real path again (links too). Keep the two lists in step. */
 export function refusedExportPath(path: string): string | null {
   const parts = path.split(/[\\/]/).map((part) => part.toLowerCase());
   const base = parts.at(-1) ?? '';
@@ -287,6 +314,11 @@ export function refusedExportPath(path: string): string | null {
 interface Entry {
   variable: VariableToSet;
   value?: string;
+}
+
+interface TakeExtra {
+  scheme?: string;
+  urlEncoded?: boolean;
 }
 
 /** Hands out variable names: no two variables share a name (ignoring case, as Windows does), and the
@@ -309,20 +341,30 @@ class NameBook {
     return this.byName.get(name)?.variable.why === 'already-a-reference';
   }
 
-  take(base: string, value: string | undefined, why: VariableWhy, place: VariablePlace, scheme?: string): string {
+  /** A name for this value. With no place, the variable is only for the sweep and is listed only
+   *  if the sweep uses it. */
+  take(base: string, value: string | undefined, why: VariableWhy, place: VariablePlace | undefined, extra: TakeExtra = {}): string {
+    const { scheme, urlEncoded } = extra;
     for (let i = 1; ; i++) {
       const name = i === 1 ? base : `${base}_${i}`;
       const entry = this.byName.get(name);
-      if (entry && entry.variable.why === why && entry.variable.scheme === scheme && value !== undefined && entry.value === value) {
-        this.addPlace(name, place);
+      if (
+        entry &&
+        entry.variable.why === why &&
+        entry.variable.scheme === scheme &&
+        entry.variable.urlEncoded === urlEncoded &&
+        value !== undefined &&
+        entry.value === value
+      ) {
+        if (place) this.addPlace(name, place);
         return name;
       }
       if (!this.taken.has(name.toUpperCase())) {
-        const variable: VariableToSet = { name, why, ...(scheme ? { scheme } : {}), places: [] };
+        const variable: VariableToSet = { name, why, ...(scheme ? { scheme } : {}), ...(urlEncoded ? { urlEncoded } : {}), places: [] };
         this.byName.set(name, { variable, value });
         this.taken.add(name.toUpperCase());
         this.order.push(variable);
-        this.addPlace(name, place);
+        if (place) this.addPlace(name, place);
         return name;
       }
     }
@@ -339,11 +381,13 @@ class NameBook {
     if (!same) variable.places.push(place);
   }
 
-  /** Values to look for again in the whole file, longest first. */
+  /** Values to look for again in the whole file, longest first. Only variables that stand for the
+   *  plain text itself: not a base64 login, not a percent-encoded value, not a renamed ${NAME}. */
   literals(): { name: string; value: string }[] {
     const out: { name: string; value: string }[] = [];
     for (const [name, entry] of this.byName) {
-      if (entry.value !== undefined && entry.value.length >= 6 && !hasReference(entry.value)) out.push({ name, value: entry.value });
+      const plain = entry.variable.why === 'secret' && !entry.variable.urlEncoded;
+      if (plain && entry.value !== undefined && entry.value.length >= 6 && !hasReference(entry.value)) out.push({ name, value: entry.value });
     }
     return out.sort((a, b) => b.value.length - a.value.length);
   }
@@ -360,6 +404,7 @@ interface Server {
   origin?: string;
   notes: string[];
   defaultsNoted: Set<string>;
+  renamedNoted: Set<string>;
 }
 
 interface SecretOptions {
@@ -370,6 +415,7 @@ interface SecretOptions {
   prefix: boolean;
   why?: 'secret' | 'basic-auth';
   scheme?: string;
+  urlEncoded?: boolean;
 }
 
 function placeOf(s: Server, where: string): VariablePlace {
@@ -386,7 +432,73 @@ function secretName(s: Server, value: string, o: SecretOptions): string {
   let base = o.prefix ? withPrefix(s, o.raw) : toEnvName(o.raw);
   // Casper hides a variable's value from the AI's shell output only when the name looks secret.
   if (!isCasperSecretName(base)) base += '_SECRET';
-  return s.book.take(base, value, o.why ?? 'secret', placeOf(s, o.where), o.scheme);
+  return s.book.take(base, value, o.why ?? 'secret', placeOf(s, o.where), { scheme: o.scheme, urlEncoded: o.urlEncoded });
+}
+
+/** A variable only for the sweep: the plain text of a secret that the file holds in another form
+ *  (base64 in a Basic header, percent-encoded in an address). Listed only if the sweep finds it. */
+function sweepOnly(s: Server, raw: string, value: string): void {
+  if (value.length < 6) return;
+  let base = withPrefix(s, raw);
+  if (!isCasperSecretName(base)) base += '_SECRET';
+  s.book.take(base, value, 'secret', undefined);
+}
+
+/** A secret found inside an address. raw is the text as written there; when it is percent-encoded,
+ *  the variable must be set encoded too, and the plain text gets its own sweep variable. */
+function hideUrlPart(s: Server, raw: string, o: SecretOptions, guess = false): string {
+  const plain = safeDecode(raw);
+  const urlEncoded = plain !== raw;
+  const opts: SecretOptions = { ...o, ...(urlEncoded ? { urlEncoded } : {}) };
+  const name = guess ? guessed(s, raw, opts) : ref(secretName(s, raw, opts));
+  if (urlEncoded) sweepOnly(s, `${o.raw}_PLAIN`, plain);
+  return name;
+}
+
+/** A ${NAME} the user wrote where Claude Code would fill it in and send it to a remote server.
+ *  GreenCLI sent the text as it is, so the export gives it a new name made from the server's name:
+ *  a key already set in the user's shell (ANTHROPIC_API_KEY, GITHUB_TOKEN) is then never sent to
+ *  that server unless the user sets the new name on purpose. keep: names left as they are. */
+function renameRefs(s: Server, text: string, where: string, origin = s.origin, keep?: (name: string) => boolean): string {
+  if (!hasReference(text)) return text;
+  return text.replace(REFERENCE, (whole, name: string, fallback: string | undefined) => {
+    if (keep?.(name)) return whole;
+    const place: VariablePlace = origin ? { server: s.name, where, origin } : { server: s.name, where };
+    const fresh = s.book.take(`${s.prefix}_${toEnvName(name)}`, name, 'renamed-reference', place);
+    const variable = s.book.get(fresh);
+    if (variable) variable.from = name;
+    if (isCasperSecretName(name) && !s.renamedNoted.has(name)) {
+      s.renamedNoted.add(name);
+      s.notes.push(
+        `${s.name}: ${where} used \${${name}}, which looks like one of your own keys. It is now \${${fresh}}, so a key already set in your shell is not sent to ${origin ?? 'this server'} by mistake. Set ${fresh} only if you trust that server.`,
+      );
+    }
+    return '${' + fresh + (fallback !== undefined ? `:-${fallback}` : '') + '}';
+  });
+}
+
+/** Args whose ${NAME}s are sent to a remote server: an address, or a header after -H/--header. */
+function remoteArgAt(args: readonly string[], i: number): boolean {
+  const arg = args[i];
+  if (arg.includes('://')) return true;
+  const eq = FLAG_EQ.exec(arg) ?? FLAG_SPACE.exec(arg);
+  if (eq && HEADER_FLAG.test(eq[2])) return true;
+  const prev = i > 0 ? FLAG.exec(args[i - 1])?.[1] : undefined;
+  return prev !== undefined && HEADER_FLAG.test(prev);
+}
+
+/** The origin of the first http(s) address in the args (mcp-remote's server), if any. */
+function remoteOriginOf(args: readonly string[]): string | undefined {
+  for (const arg of args) {
+    const at = arg.search(/https?:\/\//i);
+    if (at < 0) continue;
+    try {
+      return new URL(arg.slice(at).replace(REFERENCE, 'x')).origin;
+    } catch {
+      continue;
+    }
+  }
+  return undefined;
 }
 
 /** Remove ${X:-default} defaults: every one in a secret position, and secret-looking ones elsewhere. */
@@ -422,23 +534,38 @@ function guessed(s: Server, value: string, o: SecretOptions): string {
   return ref(name);
 }
 
-/** The query rule: secret-named values become ${NAME}; every other pair keeps its bytes. */
-function hideQuery(s: Server, query: string, whereFor: (name: string) => string): string {
+/** The query rule: secret-named values become ${NAME}, and so do values that look like keys whatever
+ *  their name (?k=ghp_..., a bare ?ghp_...). Every other pair keeps its bytes. whereFor gets "?name="
+ *  or "query" for a pair with no name. */
+function hideQuery(s: Server, query: string, whereFor: (label: string) => string): string {
   return query
     .split('&')
     .map((pair) => {
       const eq = pair.indexOf('=');
-      if (eq <= 0) return pair;
-      const left = pair.slice(0, eq);
-      const right = pair.slice(eq + 1);
+      const left = eq < 0 ? '' : pair.slice(0, eq);
+      const right = eq < 0 ? pair : pair.slice(eq + 1);
+      const keep = eq < 0 ? '' : `${left}=`;
       const name = safeDecode(left);
-      const value = safeDecode(right);
-      if (!value || !isSecretQueryName(name)) return pair;
-      const v = stripDefaults(s, right, true);
-      if (onlyReferences(v)) return `${left}=${v}`;
-      return `${left}=${ref(secretName(s, value, { raw: name, where: whereFor(name), prefix: true }))}`;
+      if (!right) return pair;
+      const label = name ? `?${name}=` : 'query';
+      if (name && isSecretQueryName(name)) {
+        const v = stripDefaults(s, right, true);
+        if (onlyReferences(v)) return `${keep}${v}`;
+        return keep + hideUrlPart(s, right, { raw: name, where: whereFor(label), prefix: true });
+      }
+      if (!urlPartLooksSecret(safeDecode(right), true)) return pair;
+      return keep + hideUrlPart(s, right, { raw: name || 'QUERY', where: whereFor(label), prefix: true }, true);
     })
     .join('&');
+}
+
+/** The path rule: a segment that looks like a key (a long random word, or 32+ hex digits such as a
+ *  UUID) becomes ${NAME}. Private links often carry the key in the path. */
+function hidePath(s: Server, path: string, o: { raw: string; where: string; prefix: boolean }): string {
+  return path
+    .split('/')
+    .map((segment) => (segment && urlPartLooksSecret(safeDecode(segment), false) ? hideUrlPart(s, segment, o, true) : segment))
+    .join('/');
 }
 
 const URL_START = /^((?:[a-z][a-z0-9+.-]*:)+)\/\//i;
@@ -448,12 +575,12 @@ interface UrlOptions {
   /** env key, or "URL" for an arg. */
   owner: string;
   ownerPrefix: boolean;
-  loginWhere: string;
-  queryWhere: (name: string) => string;
+  /** "argument 2" or "env DATABASE_URL". */
+  where: string;
 }
 
-/** Hide the password (or a token used as the user name) and secret query values in an address
- *  inside an arg or env value. String work that follows WHATWG's split points. */
+/** Hide the password (or a token used as the user name), key-like path segments and secret query
+ *  values in an address inside an arg or env value. String work that follows WHATWG's split points. */
 function hideInUrl(s: Server, raw: string, o: UrlOptions): string {
   const m = URL_START.exec(raw);
   if (!m) return raw;
@@ -463,6 +590,7 @@ function hideInUrl(s: Server, raw: string, o: UrlOptions): string {
   const end = rest.search(special ? /[/?#\\]/ : /[/?#]/);
   let authority = end < 0 ? rest : rest.slice(0, end);
   let tail = end < 0 ? '' : rest.slice(end);
+  const loginWhere = `password in the address in ${o.where}`;
 
   const at = authority.lastIndexOf('@');
   if (at >= 0) {
@@ -473,16 +601,17 @@ function hideInUrl(s: Server, raw: string, o: UrlOptions): string {
       const user = userinfo.slice(0, colon);
       const password = userinfo.slice(colon + 1);
       if (password) {
-        const name = { raw: `${o.owner}_PASSWORD`, where: o.loginWhere, prefix: o.ownerPrefix };
         const v = stripDefaults(s, password, true);
-        const hidden = onlyReferences(v) ? v : ref(secretName(s, safeDecode(password), name));
+        const hidden = onlyReferences(v)
+          ? v
+          : hideUrlPart(s, password, { raw: `${o.owner}_PASSWORD`, where: loginWhere, prefix: o.ownerPrefix });
         authority = `${user}:${hidden}@${host}`;
       }
     } else if (userinfo && ['http', 'https', 'ws', 'wss'].includes(last)) {
       const v = stripDefaults(s, userinfo, true);
       const hidden = onlyReferences(v)
         ? v
-        : ref(secretName(s, safeDecode(userinfo), { raw: `${o.owner}_TOKEN`, where: o.loginWhere, prefix: o.ownerPrefix }));
+        : hideUrlPart(s, userinfo, { raw: `${o.owner}_TOKEN`, where: loginWhere, prefix: o.ownerPrefix });
       authority = `${hidden}@${host}`;
     }
   }
@@ -491,8 +620,10 @@ function hideInUrl(s: Server, raw: string, o: UrlOptions): string {
   const fragment = hash < 0 ? '' : tail.slice(hash);
   tail = hash < 0 ? tail : tail.slice(0, hash);
   const q = tail.indexOf('?');
-  if (q >= 0) tail = tail.slice(0, q + 1) + hideQuery(s, tail.slice(q + 1), o.queryWhere);
-  return m[0] + authority + tail + fragment;
+  const path = q < 0 ? tail : tail.slice(0, q);
+  const query = q < 0 ? '' : '?' + hideQuery(s, tail.slice(q + 1), (label) => `${o.where} ${label}`);
+  const hiddenPath = hidePath(s, path, { raw: `${o.owner}_PATH`, where: `address path in ${o.where}`, prefix: o.ownerPrefix });
+  return m[0] + authority + hiddenPath + query + fragment;
 }
 
 // ─── stdio ───
@@ -502,12 +633,41 @@ const BARE_EQ = /^([A-Za-z_][\w.-]*)=([\s\S]*)$/;
 const FLAG_SPACE = /^(--?)([A-Za-z][\w.-]*)([ \t]+)(\S[\s\S]*)$/;
 const HEADER_ARG = /^([A-Za-z][\w-]*)(:[ \t]*)(\S[\s\S]*)$/;
 const FLAG = /^--?([A-Za-z][\w.-]*)$/;
-const FLAG_LIKE = /^--?[A-Za-z][\w-]*$/;
+/** A real flag (--kebab-case, a short group like -v or -xvf, or --name=value). "-abcdef123" and
+ *  "--weird--" are not: after --password they are the password. */
+const PLAIN_FLAG = /^(?:--[A-Za-z][A-Za-z0-9]*(?:[-_][A-Za-z0-9]+)*|-[A-Za-z]{1,3})$/;
 /** mcp-remote and curl style: --header "Authorization: Bearer x", -H "...". */
 const HEADER_FLAG = /^(?:h|header|headers)$/i;
 
 function isNoOrStdin(flag: string): boolean {
   return /^no[-_]/i.test(flag) || /[-_]stdin$/i.test(flag);
+}
+
+function isPlainFlag(arg: string): boolean {
+  return PLAIN_FLAG.test(arg) || FLAG_EQ.test(arg);
+}
+
+/** -p and -P: the password flag of many switch and controller tools. Not when the value is a port, a
+ *  port mapping or a version (-p 22, -p 8080:80, uv's -p 3.12), not a package runner's own -p
+ *  (npx -p pkg), and never for docker and podman, where -p publishes a port and -P takes no value. */
+const PORT_OR_VERSION = /^(?:v?\d+(?:\.\d+)*|[\d.:[\]]+(?:\/(?:tcp|udp))?)$/i;
+const RUNNERS = new Set(['npx', 'pnpx', 'pnpm', 'bunx', 'bun', 'npm', 'yarn', 'uvx', 'uv', 'pipx']);
+const CONTAINERS = new Set(['docker', 'podman', 'nerdctl']);
+const RUNNER_VALUE_FLAG = /^(?:-[pP]|--package|--python|--from|--with)$/;
+
+function isShortPasswordFlag(dashes: string, flag: string): boolean {
+  return dashes === '-' && (flag === 'p' || flag === 'P');
+}
+
+/** Index of the first arg that is not the package runner's own (0 when the command is no runner, all
+ *  of them for docker and podman). */
+function runnerFlagsEnd(command: string, args: readonly string[]): number {
+  const base = (command.trim().split(/[\\/]/).at(-1) ?? '').toLowerCase().replace(/\.(?:exe|cmd)$/, '');
+  if (CONTAINERS.has(base)) return args.length;
+  if (!RUNNERS.has(base)) return 0;
+  let i = 0;
+  while (i < args.length && args[i].startsWith('-')) i += RUNNER_VALUE_FLAG.test(args[i]) ? 2 : 1;
+  return i;
 }
 
 /** `Name: value` in an arg. In a header position every header but the safe list counts; elsewhere only
@@ -535,22 +695,23 @@ function argValue(s: Server, value: string, o: ArgValueOptions): string {
     if (header !== undefined) return header;
   }
   if (URL_START.test(value)) {
-    const hidden = hideInUrl(s, value, {
-      owner: 'URL',
-      ownerPrefix: true,
-      loginWhere: `password in the address in argument ${o.n}`,
-      queryWhere: (name) => `argument ${o.n} ?${name}=`,
-    });
+    const hidden = hideInUrl(s, value, { owner: 'URL', ownerPrefix: true, where: `argument ${o.n}` });
     if (hidden !== value) return hidden;
   }
-  if (!value.startsWith('-') && !onlyReferences(value) && looksLikeSecretValue(value)) {
+  if (!isPlainFlag(value) && !onlyReferences(value) && looksLikeSecretValue(value)) {
     return guessed(s, value, { raw: o.base, where: `argument ${o.n}`, prefix: true });
   }
   return value;
 }
 
-function exportArgs(s: Server, args: readonly string[]): string[] {
+function exportArgs(s: Server, command: string, args: readonly string[]): string[] {
   const out: string[] = [];
+  const runnerEnd = runnerFlagsEnd(command, args);
+  /** Whether this flag's value is a secret. at: the flag's index. */
+  const secretFlag = (dashes: string, flag: string, value: string | undefined, at: number): boolean =>
+    isShortPasswordFlag(dashes, flag)
+      ? at >= runnerEnd && value !== undefined && !PORT_OR_VERSION.test(value)
+      : isSecretFieldName(flag) && !isNoOrStdin(flag);
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     const n = i + 1;
@@ -568,7 +729,7 @@ function exportArgs(s: Server, args: readonly string[]): string[] {
       const [, dashes, name, value] = m;
       out.push(
         `${dashes}${name}=` +
-          (isSecretFieldName(name)
+          ((isShortPasswordFlag(dashes, name) ? secretFlag(dashes, name, value, i) : isSecretFieldName(name))
             ? hideKeepingScheme(s, value, { raw: name, where: `argument ${dashes}${name}=`, prefix: true })
             : argValue(s, value, { n, base: name, headerPosition: HEADER_FLAG.test(name), checkHeader: true })),
       );
@@ -592,7 +753,7 @@ function exportArgs(s: Server, args: readonly string[]): string[] {
       const [, dashes, flag, space, value] = m;
       out.push(
         `${dashes}${flag}${space}` +
-          (isSecretFieldName(flag) && !isNoOrStdin(flag)
+          (secretFlag(dashes, flag, value, i)
             ? hideKeepingScheme(s, value, { raw: flag, where: `argument ${dashes}${flag}`, prefix: true })
             : argValue(s, value, { n, base: flag, headerPosition: HEADER_FLAG.test(flag), checkHeader: true })),
       );
@@ -604,12 +765,12 @@ function exportArgs(s: Server, args: readonly string[]): string[] {
       out.push(header);
       continue;
     }
-    // 6. --token, then its value in the next arg.
+    // 6. --token, then its value in the next arg (even one starting with "-", unless it is a real flag).
     const flag = FLAG.exec(arg)?.[1];
-    if (flag !== undefined && isSecretFieldName(flag) && !isNoOrStdin(flag)) {
+    const next = args[i + 1];
+    if (flag !== undefined && secretFlag(arg.startsWith('--') ? '--' : '-', flag, next, i)) {
       out.push(arg);
-      const next = args[i + 1];
-      if (next !== undefined && !FLAG_LIKE.test(next)) {
+      if (next !== undefined && !isPlainFlag(next)) {
         out.push(hideKeepingScheme(s, next, { raw: flag, where: `argument ${arg}`, prefix: true }));
         i++;
       }
@@ -623,17 +784,12 @@ function exportArgs(s: Server, args: readonly string[]): string[] {
 
 function exportEnvValue(s: Server, key: string, value: string): string {
   if (value === '') return value;
-  if (isSecretFieldName(key)) return hideWhole(s, value, { raw: key, where: `env ${key}`, prefix: false });
+  if (isSecretEnvKey(key)) return hideKeepingScheme(s, value, { raw: key, where: `env ${key}`, prefix: false });
   if (onlyReferences(stripDefaults(s, value, false))) return value;
   const m = SCHEME.exec(value);
   if (m && m[2].length >= 8) return hideKeepingScheme(s, value, { raw: key, where: `env ${key}`, prefix: false }, 8);
   if (URL_START.test(value)) {
-    const hidden = hideInUrl(s, value, {
-      owner: key,
-      ownerPrefix: false,
-      loginWhere: `password in the address in env ${key}`,
-      queryWhere: (name) => `env ${key} ?${name}=`,
-    });
+    const hidden = hideInUrl(s, value, { owner: key, ownerPrefix: false, where: `env ${key}` });
     if (hidden !== value) return hidden;
   }
   if (looksLikeSecretValue(value)) return guessed(s, value, { raw: key, where: `env ${key}`, prefix: false });
@@ -756,27 +912,43 @@ export function buildMcpExport(servers: readonly McpServerDef[], options: McpExp
     }
   }
 
-  // Steps 3 and 4: normalize, then reserve every ${NAME} the user wrote, before any new name is made.
+  // Steps 3 and 4: normalize, then reserve every ${NAME} the user wrote that stays as it is, before any
+  // new name is made. The ones sent to a remote server (every one in an http server, and in a stdio
+  // server's addresses and -H headers) are renamed in step 5 instead; see renameRefs.
   const prepared = kept.map(({ def, url }) => {
     const name = names.get(def) ?? exportServerName(def.name);
-    const s: Server = { book, name, prefix: toEnvName(name), notes: [], defaultsNoted: new Set() };
-    const texts: string[] = [];
+    const s: Server = { book, name, prefix: toEnvName(name), notes: [], defaultsNoted: new Set(), renamedNoted: new Set() };
     let credVar: string | undefined;
+    let keepRef: ((name: string) => boolean) | undefined;
     if (url) {
       s.origin = url.origin;
-      texts.push(url.search, ...sortedEntries(def.headers).map(([, v]) => v));
     } else {
       if (withCredentials.has(def.name)) credVar = def.credentialsEnvVar?.trim() || 'CREDS_PATH';
-      texts.push(def.command, ...(def.args ?? []), ...sortedEntries(def.env).filter(([k]) => k !== credVar).map(([, v]) => v));
+      const env = sortedEntries(def.env).filter(([k]) => k !== credVar);
+      // A stdio server's own env keys (mcp-remote's --header "Authorization:${AUTH_HEADER}") and HOME and
+      // the like stay: the server itself fills those in.
+      const envKeys = new Set(env.map(([k]) => k));
+      keepRef = (ref) => envKeys.has(ref) || STANDARD_VARS.has(ref);
+      const args = def.args ?? [];
+      const texts = [def.command, ...env.map(([, v]) => v)];
+      args.forEach((arg, i) => {
+        if (!remoteArgAt(args, i)) texts.push(arg);
+      });
+      for (const text of texts) for (const m of text.matchAll(REFERENCE)) book.reserve(m[1]);
+      args.forEach((arg, i) => {
+        if (remoteArgAt(args, i)) for (const m of arg.matchAll(REFERENCE)) if (keepRef?.(m[1])) book.reserve(m[1]);
+      });
     }
-    for (const text of texts) for (const m of text.matchAll(REFERENCE)) book.reserve(m[1]);
-    return { def, url, s, credVar };
+    return { def, url, s, credVar, keepRef };
   });
 
   // Step 5: transform.
-  const built: Built[] = prepared.map(({ def, url, s, credVar }) => {
+  const built: Built[] = prepared.map(({ def, url, s, credVar, keepRef }) => {
     if (!url) {
-      const args = exportArgs(s, def.args ?? []);
+      const raw = def.args ?? [];
+      const remote = remoteOriginOf(raw);
+      const renamed = raw.map((arg, i) => (remoteArgAt(raw, i) ? renameRefs(s, arg, `argument ${i + 1}`, remote, keepRef) : arg));
+      const args = exportArgs(s, def.command, renamed);
       const env = sortedEntries(def.env)
         .filter(([key]) => key !== credVar)
         .map(([key, value]): [string, string] => [key, exportEnvValue(s, key, value)]);
@@ -801,8 +973,9 @@ export function buildMcpExport(servers: readonly McpServerDef[], options: McpExp
     }
 
     const login = url.username || url.password ? `${safeDecode(url.username)}:${safeDecode(url.password)}` : undefined;
-    const headers = sortedEntries(def.headers).map(([name, value]): [string, string] => {
-      if (value === '') return [name, value];
+    const headers = sortedEntries(def.headers).map(([name, given]): [string, string] => {
+      if (given === '') return [name, given];
+      const value = renameRefs(s, given, `header ${name}`);
       const o: SecretOptions = { raw: name, where: `header ${name}`, prefix: true };
       if (isSecretHeaderName(name)) return [name, hideKeepingScheme(s, value, o)];
       if (!onlyReferences(value) && looksLikeSecretValue(value)) return [name, guessed(s, value, o)];
@@ -812,6 +985,10 @@ export function buildMcpExport(servers: readonly McpServerDef[], options: McpExp
       if (!headers.some(([name]) => name.toLowerCase() === 'authorization')) {
         const name = secretName(s, login, { raw: 'AUTHORIZATION', where: 'header Authorization', prefix: true, why: 'basic-auth' });
         headers.push(['Authorization', `Basic ${ref(name)}`]);
+        // The variable is the login in base64. The plain login (and password) elsewhere in the file
+        // get their own variables from the sweep.
+        sweepOnly(s, 'LOGIN', login);
+        if (url.password) sweepOnly(s, 'PASSWORD', safeDecode(url.password));
         headers.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
         s.notes.push(`${s.name}: the login in the address was moved to an Authorization header, because Claude Code and Casper don't accept it in the address.`);
       } else {
@@ -821,11 +998,9 @@ export function buildMcpExport(servers: readonly McpServerDef[], options: McpExp
       }
     }
     // The address as reqwest sent it: no login, no #fragment, "\" read as "/".
-    const path = url.pathname
-      .split('/')
-      .map((segment) => (tokenShaped(segment) ? guessed(s, segment, { raw: 'URL_PATH', where: 'address path', prefix: true }) : segment))
-      .join('/');
-    const query = url.search ? '?' + hideQuery(s, url.search.slice(1), (name) => `address ?${name}=`) : '';
+    const path = hidePath(s, url.pathname, { raw: 'URL_PATH', where: 'address path', prefix: true });
+    const search = renameRefs(s, url.search, 'address');
+    const query = search ? '?' + hideQuery(s, search.slice(1), (label) => `address ${label}`) : '';
     return {
       s,
       def,
@@ -918,6 +1093,9 @@ export function buildMcpExport(servers: readonly McpServerDef[], options: McpExp
         STANDARD_VARS,
       );
     }
+    if (b.def.enabled === false) {
+      s.notes.push(`${s.name}: it is turned off in GreenCLI, but Claude Code and Casper will offer to start it. Remove it from the file if you don't want it.`);
+    }
     keptNames.add(s.name);
     notes.push(...s.notes);
   }
@@ -962,7 +1140,11 @@ function variableText(v: VariableToSet): string {
   const places = placesText(v.places);
   switch (v.why) {
     case 'secret':
-      return `the secret that was in ${places}.` + (v.scheme ? ` Set just the token, without "${v.scheme}".` : '');
+      return (
+        `the secret that was in ${places}.` +
+        (v.scheme ? ` Set just the token, without "${v.scheme}".` : '') +
+        (v.urlEncoded ? ' It sits in an address, so set it URL-encoded, the way it was written there (for example %40 for @ and %2F for /).' : '')
+      );
     case 'basic-auth':
       return `the login that was in the address of ${places}: the user name, a colon, then the password (for a token with no password, the token and a colon), base64-encoded. To make it without saving it in your shell history, run base64, type the text, then press Control-D twice.`;
     case 'credentials-file': {
@@ -970,7 +1152,9 @@ function variableText(v: VariableToSet): string {
       return `the full path to a credentials file for ${server}. GreenCLI keeps its saved copy private and does not show it again, so use your own copy: the credentials you pasted into ${server} in GreenCLI, saved in a file that only you can read (chmod 600). Set this to that file's full path.`;
     }
     case 'already-a-reference':
-      return `already written as a variable in ${places}. GreenCLI sent it as plain text, but Claude Code and Casper will fill it in from your environment. Set it only if this server should get it.`;
+      return `already written as a variable in ${places}. GreenCLI sent it as plain text, but Claude Code and Casper will fill it in from your environment. If it is already set in your shell, this server gets it. Remove it from the file unless this server should have it.`;
+    case 'renamed-reference':
+      return `written as \${${v.from ?? ''}} in ${places}. GreenCLI sent that text as it is, but Claude Code fills it in and sends it to the server. So it has a new name, and a ${v.from ?? ''} already set in your shell is not sent there by mistake. Set it only if you trust that server.`;
   }
 }
 

