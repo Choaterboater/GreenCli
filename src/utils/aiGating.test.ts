@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { aiIsWriteCommand, aiMcpLooksWrite, CONTROL_CHARS, normalizeLineBreaks } from './aiGating';
+import { aiIsWriteCommand, CONTROL_CHARS, normalizeLineBreaks } from './aiGating';
 
 describe('aiIsWriteCommand', () => {
   it('flags obvious writes', () => {
@@ -64,24 +64,5 @@ describe('CONTROL_CHARS', () => {
 describe('normalizeLineBreaks', () => {
   it('turns every line break into \\n so the dialog shows each line', () => {
     expect(normalizeLineBreaks('a\rb\r\nc\nd')).toBe('a\nb\nc\nd');
-  });
-});
-
-describe('aiMcpLooksWrite', () => {
-  it('flags write-looking tool names', () => {
-    expect(aiMcpLooksWrite('delete_device')).toBe(true);
-    expect(aiMcpLooksWrite('set_config')).toBe(true);
-    expect(aiMcpLooksWrite('reboot_ap')).toBe(true);
-    expect(aiMcpLooksWrite('create_site')).toBe(true);
-    expect(aiMcpLooksWrite('apply_template')).toBe(true);
-    expect(aiMcpLooksWrite('mcp_write_config')).toBe(true);
-  });
-
-  it('passes read-looking tool names', () => {
-    expect(aiMcpLooksWrite('get_device')).toBe(false);
-    expect(aiMcpLooksWrite('list_sites')).toBe(false);
-    expect(aiMcpLooksWrite('read_config')).toBe(false);
-    expect(aiMcpLooksWrite('show_status')).toBe(false);
-    expect(aiMcpLooksWrite('search_clients')).toBe(false);
   });
 });

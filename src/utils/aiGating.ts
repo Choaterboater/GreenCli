@@ -40,18 +40,3 @@ export function aiIsWriteCommand(cmd: string): boolean {
     return true; // unknown verb (set/no/interface/vlan/…): confirm to be safe
   });
 }
-
-/** MCP tool names are opaque, so confirm anything that looks like a write. */
-export function aiMcpLooksWrite(tool: string): boolean {
-  // Verbs are matched as snake_case/kebab SEGMENTS: a plain `\b` suffix never
-  // fires between word characters, so `delete_device` used to slip through.
-  const looksRead =
-    /(^|[_\s-])(get|list|read|show|describe|search|find|query|fetch|status|inspect)(?=$|[_\s-])/i.test(
-      tool
-    );
-  const looksWrite =
-    /(^|[_\s-])(write|create|update|delete|remove|set|put|post|patch|reboot|erase|apply|deploy|provision|add|modify|enable|disable|move|rename)(?=$|[_\s-])/i.test(
-      tool
-    );
-  return looksWrite && !looksRead;
-}

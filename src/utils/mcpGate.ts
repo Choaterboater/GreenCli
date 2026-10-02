@@ -1,0 +1,243 @@
+// The single decision for an AI-issued MCP call: run it, ask the user, or
+// refuse. Pure: no Tauri, no stores. Uses Casper's tool labels (mcpLabels.ts)
+// and approval checks (mcpApproval.ts), and GreenCLI's preset rules.
+//
+// What it promises:
+// - A call that might write, run commands or delete always asks, and so does
+//   any router call (invoke_tool and friends) and any call where the AI set
+//   confirm=true or turned off a preview switch.
+// - Only a tool whose name clearly reads, and that the server just doesn't
+//   mark read-only, can be allowed for the session.
+// - Labels only get stricter: the server's hints, the name, the preset and
+//   the Rust label are combined with strictest().
+
+import {
+  aiConfirm,
+  buildPlan,
+  isRouterName,
+  MAX_DEPTH,
+  planLabel,
+  previewSwitchedOff,
+  type ApprovalPlan,
+} from './mcpApproval';
+import {
+  NOUN_USES,
+  READ_WORDS,
+  SAFETY_RANK,
+  WRITE_WORDS,
+  nameLabel,
+  strictest,
+  toolLabel,
+  toolWords,
+  type CapabilitySafety,
+} from './mcpLabels';
+import { JUNOS_PRESET, junosShow, presetNotes, presetTighten } from './mcpPresets';
+import { showName } from './mcpShow';
+import type { McpToolInfo } from './mcpTypes';
+
+export type McpAnswer = 'no' | 'once' | 'session';
+
+/** Calls at or above this label ask the user. */
+export const ASK_AT: CapabilitySafety = 'external-action';
+
+export const TOO_DEEP = 'Not run: the arguments are nested too deeply to check (over 32 levels).';
+
+export const writesOffText = (server: string) =>
+  `Not run: ${server} writes are off. Only the user can turn them on, in Settings → MCP Servers.`;
+export const readOnlyLoginText = (server: string) => `Not run: ${server} login is read-only.`;
+
+export function rank(label: CapabilitySafety): number {
+  return SAFETY_RANK[label];
+}
+
+/** The tool's own label: the server's hints and the name (Casper's toolLabel), the preset's
+ *  tighten rules, and the Rust label when there is one. Never looser than any of them. */
+export function effectiveLabel(tool: McpToolInfo): CapabilitySafety {
+  const own = toolLabel(tool);
+  return strictest(own, presetTighten(tool.preset, tool.name, own), tool.label ?? 'read');
+}
+
+/**
+ * "Clearly reads by its name": the first action word of the name is a read word (get, list,
+ * show, ...), nothing in the name says otherwise (nameLabel is read), and it is not a router.
+ * GreenCLI addition to the spec rule: a router name (invoke_read_tool_x) never counts, since
+ * what it runs is decided by its arguments.
+ */
+export function readNamed(name: string): boolean {
+  if (isRouterName(name)) return false;
+  const skipped = new Set(NOUN_USES.get(name) ?? []);
+  const words = toolWords(name).filter((word) => !skipped.has(word));
+  const firstAction = words.find((word) => READ_WORDS.has(word) || WRITE_WORDS.has(word));
+  return firstAction !== undefined && READ_WORDS.has(firstAction) && nameLabel(name) === 'read';
+}
+
+/** planLabel(plan), raised to at least 'external-action' for each routed call whose name is not readNamed. */
+export function callLabel(plan: ApprovalPlan): CapabilitySafety {
+  const unclearNames = plan.routed.some((call) => !readNamed(call.name));
+  return strictest(planLabel(plan), ...(unclearNames ? ['external-action' as const] : []));
+}
+
+/** Deepest nesting of arrays/objects in args (top-level object = 1). Iterative, so a very deep
+ *  value can't overflow the stack. */
+export function argsDepth(args: unknown): number {
+  let deepest = 0;
+  const stack: Array<[unknown, number]> = [[args, 1]];
+  while (stack.length) {
+    const [value, depth] = stack.pop()!;
+    if (typeof value !== 'object' || value === null) continue;
+    if (depth > deepest) deepest = depth;
+    for (const item of Array.isArray(value) ? value : Object.values(value)) {
+      if (typeof item === 'object' && item !== null) stack.push([item, depth + 1]);
+    }
+  }
+  return deepest;
+}
+
+function stable(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stable);
+  if (typeof value === 'object' && value !== null) {
+    const out: Record<string, unknown> = {};
+    for (const key of Object.keys(value).sort()) out[key] = stable((value as Record<string, unknown>)[key]);
+    return out;
+  }
+  return value;
+}
+
+/** Stable JSON of name, description, inputSchema, annotations, _meta, preset, label (keys sorted).
+ *  A tool the server redefines (or that changes preset or label) gets a new fingerprint. */
+export function toolFingerprint(tool: McpToolInfo): string {
+  return JSON.stringify(
+    stable({
+      name: tool.name,
+      description: tool.description,
+      inputSchema: tool.inputSchema,
+      annotations: tool.annotations ?? null,
+      _meta: tool._meta ?? null,
+      preset: tool.preset ?? null,
+      label: tool.label ?? null,
+    })
+  );
+}
+
+export interface McpGateInput {
+  tool: McpToolInfo;
+  args: Record<string, unknown>;
+  /** The caller checks the stored fingerprint (mcpApprovalStore). */
+  allowedForSession: boolean;
+  /** Honoured from A3 (the Read-only Auditor); A2 passes it through. */
+  readOnlyAgent: boolean;
+}
+
+export type McpGateDecision =
+  | { kind: 'run'; label: CapabilitySafety; why: 'read' | 'session' | 'junos-show' }
+  | { kind: 'ask'; label: CapabilitySafety; plan: ApprovalPlan; notes: string[]; choices: McpAnswer[]; danger: boolean }
+  | { kind: 'refuse'; text: string };
+
+export function decideMcpCall(input: McpGateInput): McpGateDecision {
+  const { tool, args } = input;
+  const plan = buildPlan({
+    server: tool.server,
+    tool: tool.name,
+    label: effectiveLabel(tool),
+    schema: tool.inputSchema,
+    arguments: args,
+  });
+  const label = callLabel(plan);
+  // Casper's walk() stops silently past MAX_DEPTH, so a deeper confirm or dry_run switch would go
+  // unseen: refuse rather than guess.
+  if (argsDepth(args) > MAX_DEPTH) return { kind: 'refuse', text: TOO_DEEP };
+  const skipped = aiConfirm(args).length + previewSwitchedOff(args).length > 0;
+  const js = tool.preset === JUNOS_PRESET ? junosShow(tool.name, args) : 'n/a';
+  // A3: steps 6-8 (read-only login, writes off, Read-only Auditor) go here.
+  const router = isRouterName(tool.name);
+
+  if (
+    js === 'all-show' &&
+    tool.name !== 'execute_junos_pfe_command' &&
+    tool.showOptIn === true &&
+    !skipped &&
+    plan.routed.length === 0 &&
+    !plan.routerUnclear
+  ) {
+    return { kind: 'run', label, why: 'junos-show' };
+  }
+  // A router call always asks, whatever its label.
+  if (rank(label) < rank(ASK_AT) && !skipped && !router) return { kind: 'run', label, why: 'read' };
+
+  const sessionOk =
+    label === 'external-action' &&
+    readNamed(tool.name) &&
+    !skipped &&
+    !router &&
+    plan.routed.length === 0 &&
+    !plan.routerUnclear;
+  if (sessionOk && input.allowedForSession) return { kind: 'run', label, why: 'session' };
+
+  return {
+    kind: 'ask',
+    label,
+    plan,
+    notes: approvalNotes(plan, tool, label),
+    choices: sessionOk ? ['no', 'once', 'session'] : ['no', 'once'],
+    danger: rank(label) >= rank('write'),
+  };
+}
+
+/** "a", "a and b", "a, b and c" */
+function joinWords(words: string[]): string {
+  if (words.length <= 1) return words.join('');
+  return `${words.slice(0, -1).join(', ')} and ${words[words.length - 1]}`;
+}
+
+/** The key at the end of a walk() path ("calls[0].arguments.force" -> "force"). */
+function lastKey(path: string): string {
+  return path.slice(path.lastIndexOf('.') + 1);
+}
+
+const LABEL_NOTES: Partial<Record<CapabilitySafety, string>> = {
+  'external-action': "The server doesn't say this tool only reads, so it might change something",
+  write: 'This tool can change settings',
+  exec: 'This tool runs commands',
+  destructive: 'This tool can delete, restart or disconnect things',
+};
+
+/** The notes in the approval box, in order. Every name goes through showName. */
+export function approvalNotes(plan: ApprovalPlan, tool: McpToolInfo, label: CapabilitySafety): string[] {
+  const notes: string[] = [];
+  const labelNote = LABEL_NOTES[label];
+  if (labelNote) notes.push(labelNote);
+
+  const through = showName(tool.name);
+  const routed = plan.routed.map((call) => showName(call.name));
+  if (routed.length === 1 && !plan.routerUnclear) {
+    notes.push(`Runs ${routed[0]} through ${through}`);
+  } else if (routed.length > 0) {
+    const unseen = plan.routerUnclear ? ", and tools GreenCLI can't see" : '';
+    notes.push(`Runs ${routed.length} tool${routed.length === 1 ? '' : 's'} through ${through}: ${routed.join(', ')}${unseen}`);
+  } else if (plan.routerUnclear) {
+    notes.push(`Runs a tool GreenCLI can't see, through ${through}`);
+  }
+
+  const confirms = [...new Set(aiConfirm(plan.arguments).map((path) => `${showName(lastKey(path))}=true`))];
+  if (confirms.length) {
+    notes.push(`The AI set ${joinWords(confirms)}. That skips the server's own check, so only your Yes lets it run`);
+  }
+  const previews = [...new Set(previewSwitchedOff(plan.arguments).map((path) => showName(lastKey(path))))];
+  if (previews.length) {
+    notes.push(`The AI turned off ${joinWords(previews)}, so this makes the change instead of only showing it`);
+  }
+
+  notes.push(...presetNotes(tool.preset, tool.name));
+  if (
+    tool.preset === JUNOS_PRESET &&
+    tool.name !== 'execute_junos_pfe_command' &&
+    tool.showOptIn !== true &&
+    junosShow(tool.name, plan.arguments) === 'all-show'
+  ) {
+    notes.push(
+      'Plain show command. To run these without asking, turn on "Run plain show commands without asking" ' +
+        'for this server in Settings → MCP Servers'
+    );
+  }
+  return notes;
+}

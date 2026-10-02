@@ -44,18 +44,20 @@ import { invoke } from '@tauri-apps/api/tauri';
 import { listen } from '@tauri-apps/api/event';
 import { useSessionStore } from '../store/sessionStore';
 import { useSettingsStore } from '../store/settingsStore';
-import { askConfirm } from '../store/dialogStore';
+import { askConfirm, cancelDialogs } from '../store/dialogStore';
 import { ChatMessage, Session, AiProvider, AI_PROVIDERS } from '../types';
 import { sleep, stripAnsi, sendAndCapture } from '../utils/terminal';
 import {
   aiIsWriteCommand,
-  aiMcpLooksWrite,
   AI_DANGER_CMD,
   CONTROL_CHARS,
   normalizeLineBreaks,
 } from '../utils/aiGating';
 import { pickAiSession } from '../utils/aiSession';
 import { hiddenSecretGate } from '../utils/secrets/gate';
+import { runMcpTool } from '../utils/mcpRun';
+import { cancelActiveMcpCalls, defaultMcpDeps } from '../utils/mcpRunDeps';
+import type { McpToolInfo } from '../utils/mcpTypes';
 import {
   prepareToolResult,
   rawErr,
@@ -171,6 +173,7 @@ ${references && references.trim()
 - The send_terminal_command tool RETURNS the device's output to you — run a show command, read the result, then explain or act on it
 - Send commands one at a time and interpret each result before the next
 - For configuration changes, always confirm with the user before executing — ask "Shall I apply this?" This applies to EVERY tool that can write or change state, not just send_terminal_command — including MCP tools. Some MCP servers name their write/destructive tool explicitly (e.g. a router-pattern server exposing invoke_read_tool for reads and a separate invoke_tool for writes) — treat that naming as a hard signal, not a suggestion, and always confirm before using the write path.
+- GreenCLI checks every MCP call itself: it asks the user before calls that might change something, and refuses some. A result that starts with "Not run:" did not run. Tell the user; don't retry it another way.
 - Format configs in code blocks for easy copying to the Config Editor panel
 - You can execute show/diagnostic commands freely; be cautious with config changes
 - GreenCLI hides device secrets (passwords, hashes, keys, SNMP communities, private keys) before you see any tool output: each value shows as \`<secret hidden>\`, and a whole line as \`<line hidden: secret>\`. Never put either marker in a command, REST body or tool argument: GreenCLI refuses the call, because it would write the marker over the real secret. To change a line that holds a hidden secret, leave that line alone or ask the user to make the change. If a result says its output is not shown, the tool ran but GreenCLI could not check the output for secrets on this system`;
@@ -340,14 +343,11 @@ async function tryDeviceLogin(session: Session, loginCmd: string): Promise<boole
 
 // ─── MCP tool plumbing (provider-neutral) ───
 
-interface McpToolDef {
-  server: string;
-  name: string;
-  description: string;
-  inputSchema: Record<string, unknown>;
+/** One MCP tool as mcp_all_tools lists it, plus its provider-safe name. */
+type McpToolDef = McpToolInfo & {
   /** Unique, provider-safe tool name, assigned once (handles collisions). */
   safeName?: string;
-}
+};
 
 type McpResolve = Map<string, { server: string; tool: string }>;
 
@@ -378,12 +378,15 @@ async function executeTool(
   name: string,
   args: Record<string, unknown>,
   activeSession: Session | undefined,
-  mcpResolve?: McpResolve,
-  shouldCancel?: () => boolean
+  mcpResolve: McpResolve,
+  shouldCancel: () => boolean,
+  readOnlyAgent: boolean
 ): Promise<ToolOutcome> {
   const refusal = hiddenSecretGate(args);
   if (refusal) return { text: refusal, isError: true };
-  return prepareToolResult(await executeToolRaw(name, args, activeSession, mcpResolve, shouldCancel));
+  return prepareToolResult(
+    await executeToolRaw(name, args, activeSession, mcpResolve, shouldCancel, readOnlyAgent)
+  );
 }
 
 /** Runs one tool and returns its raw, uncapped output. Only executeTool may call this. */
@@ -391,8 +394,9 @@ async function executeToolRaw(
   name: string,
   args: Record<string, unknown>,
   activeSession: Session | undefined,
-  mcpResolve?: McpResolve,
-  shouldCancel?: () => boolean
+  mcpResolve: McpResolve,
+  shouldCancel: () => boolean,
+  readOnlyAgent: boolean
 ): Promise<RawToolOutcome> {
   // Re-resolve the live session: a multi-step run can outlast the user switching
   // tabs or the device disconnecting, and the value captured at send time would
@@ -402,25 +406,11 @@ async function executeToolRaw(
       useSessionStore.getState().sessions.find((s) => s.sessionId === activeSession!.sessionId) ??
       activeSession;
   }
-  // Route MCP tools to the connected server. executeTool caps the result like
-  // every builtin tool — a 145-tool cloud server can return megabytes of JSON.
-  const mcp = mcpResolve?.get(name);
-  if (mcp) {
-    if (aiMcpLooksWrite(mcp.tool)) {
-      const ok = await askConfirm({
-        title: `Run MCP tool ${mcp.tool}?`,
-        message: JSON.stringify(args).slice(0, 500),
-        confirmLabel: 'Run tool',
-        danger: true,
-      });
-      if (!ok) return rawErr('User declined to run this MCP tool.');
-    }
-    try {
-      return rawJson(await invoke<string>('mcp_call', { server: mcp.server, tool: mcp.tool, args }));
-    } catch (e) {
-      return rawErr(`MCP tool ${mcp.server}/${mcp.tool} failed: ${e}`);
-    }
-  }
+  // Route MCP tools to the connected server, through the approval gate
+  // (utils/mcpRun.ts). executeTool caps the result like every builtin tool —
+  // a 145-tool cloud server can return megabytes of JSON.
+  const mcp = mcpResolve.get(name);
+  if (mcp) return runMcpTool(mcp.server, mcp.tool, args, { readOnlyAgent, shouldCancel }, defaultMcpDeps());
   // Aruba AOS-CX on-box REST (no Central). Auto-logs-in with the SSH creds.
   if (name === 'aruba_cx_rest') {
     const host = activeSession?.config.host;
@@ -434,6 +424,7 @@ async function executeToolRaw(
         message: body || 'This request may change switch state.',
         confirmLabel: 'Run request',
         danger: method.toUpperCase() === 'DELETE',
+        group: 'ai',
       });
       if (!ok) return rawErr('User declined this write request.');
     }
@@ -484,6 +475,7 @@ async function executeToolRaw(
         message: body || 'This request may change switch state.',
         confirmLabel: 'Run request',
         danger: method.toUpperCase() === 'DELETE',
+        group: 'ai',
       });
       if (!ok) return rawErr('User declined this write request.');
     }
@@ -538,6 +530,7 @@ async function executeToolRaw(
         message: command,
         confirmLabel: 'Run command',
         danger: AI_DANGER_CMD.test(command),
+        group: 'ai',
       });
       if (!ok) return rawErr('User declined to run this command.');
     }
@@ -755,7 +748,8 @@ async function callAnthropicWithTools(
   mcpResolve: McpResolve,
   builtinTools: BuiltinTool[],
   shouldCancel: () => boolean,
-  onDelta: (text: string) => void
+  onDelta: (text: string) => void,
+  readOnlyAgent: boolean
 ): Promise<string> {
   const messages = [...conversationHistory];
 
@@ -795,7 +789,7 @@ async function callAnthropicWithTools(
     const toolResults: AnthropicToolResultBlock[] = [];
     for (const tu of round.toolUses) {
       if (shouldCancel()) throw new Error('cancelled');
-      const outcome = await executeTool(tu.name, tu.input, activeSession, mcpResolve, shouldCancel);
+      const outcome = await executeTool(tu.name, tu.input, activeSession, mcpResolve, shouldCancel, readOnlyAgent);
       onToolCall({ name: tu.name, args: tu.input, result: outcome.text, isError: outcome.isError, note: outcome.note });
       toolResults.push({
         type: 'tool_result',
@@ -841,7 +835,8 @@ async function callOpenAiCompatWithTools(
   mcpResolve: McpResolve,
   builtinTools: BuiltinTool[],
   shouldCancel: () => boolean,
-  onDelta: (text: string) => void
+  onDelta: (text: string) => void,
+  readOnlyAgent: boolean
 ): Promise<string> {
   const toOpenAi = (m: AnthropicMessage) => ({
     role: m.role,
@@ -915,7 +910,7 @@ async function callOpenAiCompatWithTools(
       } catch {
         /* ignore malformed args */
       }
-      const outcome = await executeTool(tc.name, args, activeSession, mcpResolve, shouldCancel);
+      const outcome = await executeTool(tc.name, args, activeSession, mcpResolve, shouldCancel, readOnlyAgent);
       onToolCall({ name: tc.name, args, result: outcome.text, isError: outcome.isError, note: outcome.note });
       messages.push({ role: 'tool', tool_call_id: tc.id, content: outcome.text });
     }
@@ -1436,7 +1431,9 @@ export default function AiAssistant() {
           mcpResolve,
           builtinTools,
           shouldCancel,
-          onDelta
+          onDelta,
+          // A3 wires the Read-only Auditor here.
+          false
         );
       } else if (provider === 'local-cli') {
         // One-shot CLI — no token streaming. An agent may override the CLI command.
@@ -1467,7 +1464,9 @@ export default function AiAssistant() {
           mcpResolve,
           builtinTools,
           shouldCancel,
-          onDelta
+          onDelta,
+          // A3 wires the Read-only Auditor here.
+          false
         );
       }
 
@@ -1523,6 +1522,9 @@ export default function AiAssistant() {
     pendingTextRef.current = null;
     setIsLoading(false);
     cancelActiveAiStreams();
+    // Settle any approval box the run left open (as No) and cancel MCP calls in flight.
+    cancelDialogs('ai');
+    cancelActiveMcpCalls();
     setMessages((prev) =>
       prev.length && prev[prev.length - 1].role === 'assistant' && !prev[prev.length - 1].content
         ? prev.slice(0, -1)
@@ -1545,6 +1547,8 @@ export default function AiAssistant() {
       }
       pendingTextRef.current = null;
       cancelActiveAiStreams();
+      cancelDialogs('ai');
+      cancelActiveMcpCalls();
     },
     []
   );
