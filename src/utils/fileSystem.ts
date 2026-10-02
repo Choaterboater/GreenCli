@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/tauri';
 import { open as openDialog, save as saveDialog } from '@tauri-apps/api/dialog';
+import type { FolderListing } from './folderTree';
 
 export const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
 
@@ -12,9 +13,20 @@ export async function tauriOpen(): Promise<string | null> {
   return typeof result === 'string' ? result : null;
 }
 
-export async function tauriSave(defaultName: string): Promise<string | null> {
+/** Pick a folder (Folder view in the Config Editor). */
+export async function tauriOpenFolder(): Promise<string | null> {
+  const result = await openDialog({ title: 'Open Folder', directory: true, multiple: false });
+  return typeof result === 'string' ? result : null;
+}
+
+/** List a folder, read-only (the backend skips .git, node_modules … and symlinks). */
+export async function tauriListFolder(path: string): Promise<FolderListing> {
+  return invoke<FolderListing>('list_folder', { path });
+}
+
+export async function tauriSave(defaultName: string, title = 'Save File'): Promise<string | null> {
   const result = await saveDialog({
-    title: 'Save File',
+    title,
     defaultPath: defaultName,
     filters: [{ name: 'All Files', extensions: ['*'] }],
   });
@@ -23,6 +35,11 @@ export async function tauriSave(defaultName: string): Promise<string | null> {
 
 export async function tauriReadText(path: string): Promise<string> {
   return invoke<string>('read_file_text', { path });
+}
+
+/** A file from the folder view: plain files only, at most 5 MB (checked again in Rust). */
+export async function tauriReadFolderFile(path: string): Promise<string> {
+  return invoke<string>('read_folder_file', { path });
 }
 
 export async function tauriWriteText(path: string, data: string): Promise<void> {

@@ -1,5 +1,14 @@
 import { describe, it, expect } from 'vitest';
-import { aiIsWriteCommand, aiMcpLooksWrite, CONTROL_CHARS, normalizeLineBreaks } from './aiGating';
+import {
+  AUDITOR_REFUSAL,
+  aiIsWriteCommand,
+  auditorAllowsCommand,
+  CONTROL_CHARS,
+  isReadOnlyAgent,
+  auditorStages,
+  normalizeLineBreaks,
+} from './aiGating';
+import { BUILTIN_AGENTS } from '../types';
 
 describe('aiIsWriteCommand', () => {
   it('flags obvious writes', () => {
@@ -54,6 +63,354 @@ describe('aiIsWriteCommand', () => {
   });
 });
 
+describe('file-writing pipes and redirects', () => {
+  it('asks before a read that writes a file', () => {
+    expect(aiIsWriteCommand('show configuration | save /var/tmp/c.txt')).toBe(true);
+    expect(aiIsWriteCommand('show log messages | save /var/log/messages')).toBe(true);
+    expect(aiIsWriteCommand('show log messages | s /var/log/messages')).toBe(true);
+    expect(aiIsWriteCommand('show configuration | append /var/tmp/c.txt')).toBe(true);
+    expect(aiIsWriteCommand('show configuration | tee /var/tmp/c.txt')).toBe(true);
+    expect(aiIsWriteCommand('show running-config | redirect flash:x')).toBe(true);
+    expect(aiIsWriteCommand('echo x > /etc/motd')).toBe(true);
+    expect(aiIsWriteCommand('cat a >> b')).toBe(true);
+  });
+
+  it('still passes safe pipes', () => {
+    expect(aiIsWriteCommand('show interfaces terse | match ge-')).toBe(false);
+    expect(aiIsWriteCommand('show configuration | display set | no-more')).toBe(false);
+    expect(aiIsWriteCommand('show running-config | include hostname')).toBe(false);
+    expect(aiIsWriteCommand('show version | trim 5')).toBe(false);
+  });
+});
+
+describe('auditorAllowsCommand', () => {
+  it('allows plain reads and safe pipes', () => {
+    expect(auditorAllowsCommand('show version')).toBe(true);
+    expect(auditorAllowsCommand('show configuration | display set | no-more')).toBe(true);
+    expect(auditorAllowsCommand('show interfaces terse | match ge- | count')).toBe(true);
+    expect(auditorAllowsCommand('show running-config | include hostname')).toBe(true);
+    expect(auditorAllowsCommand('show run | inc vlan')).toBe(true);
+    expect(auditorAllowsCommand('cat /var/log/messages | grep error | tail -n 20')).toBe(true);
+    expect(auditorAllowsCommand('ping 10.0.0.1 count 5')).toBe(true);
+    expect(auditorAllowsCommand('show version\nshow vlan')).toBe(true);
+  });
+
+  it('refuses writes, file-writing pipes and shell tricks', () => {
+    expect(auditorAllowsCommand('configure')).toBe(false);
+    expect(auditorAllowsCommand('show configuration | save /var/tmp/c.txt')).toBe(false);
+    expect(auditorAllowsCommand('show log messages | save /var/log/messages')).toBe(false);
+    expect(auditorAllowsCommand('show log messages | s /var/log/messages')).toBe(false);
+    expect(auditorAllowsCommand('show configuration | compare rollback 1')).toBe(false);
+    expect(auditorAllowsCommand('show version | request message all message hi')).toBe(false);
+    expect(auditorAllowsCommand('cat a | sort -o b')).toBe(false);
+    expect(auditorAllowsCommand('show version || reboot')).toBe(false);
+    expect(auditorAllowsCommand('echo x > file')).toBe(false);
+    expect(auditorAllowsCommand('cat a; rm b')).toBe(false);
+    expect(auditorAllowsCommand('show version & reboot')).toBe(false);
+    expect(auditorAllowsCommand('echo `reboot`')).toBe(false);
+    expect(auditorAllowsCommand('echo $(reboot)')).toBe(false);
+    expect(auditorAllowsCommand('cat <(reboot)')).toBe(false);
+    expect(auditorAllowsCommand('set system host-name x')).toBe(false);
+    expect(auditorAllowsCommand('show version\nrequest system reboot')).toBe(false);
+    expect(auditorAllowsCommand('show version\x1a')).toBe(false);
+  });
+
+  it('refuses reads that change a Linux box or never end', () => {
+    expect(auditorAllowsCommand('date -s "2020-01-01 00:00"')).toBe(false);
+    expect(auditorAllowsCommand('date --set=2020-01-01')).toBe(false);
+    expect(auditorAllowsCommand('date 010100002020')).toBe(false);
+    expect(auditorAllowsCommand('less /var/log/x')).toBe(false);
+    expect(auditorAllowsCommand('more /etc/passwd')).toBe(false);
+    expect(auditorAllowsCommand('monitor traffic interface ge-0/0/0')).toBe(false);
+    expect(auditorAllowsCommand('tail -f /var/log/x')).toBe(false);
+    expect(auditorAllowsCommand('tail -fn 20 /var/log/x')).toBe(false);
+    expect(auditorAllowsCommand('tail --follow=name /var/log/x')).toBe(false);
+    expect(auditorAllowsCommand('cat /var/log/x | tail -f')).toBe(false);
+    // The old +Nf form: start at line N, then follow.
+    for (const cmd of ['tail +1f /etc/hostname', 'tail +f /var/log/x', 'tail +10F /var/log/x', 'tail -q +1f x', 'show log | tail +5f']) {
+      expect([cmd, auditorAllowsCommand(cmd)]).toEqual([cmd, false]);
+    }
+    // Plain shows of the same words still pass.
+    expect(auditorAllowsCommand('date')).toBe(true);
+    expect(auditorAllowsCommand('date -u')).toBe(true);
+    expect(auditorAllowsCommand('date -u +%F')).toBe(false);
+    expect(auditorAllowsCommand('tail -n 50 /var/log/x')).toBe(true);
+    expect(auditorAllowsCommand('show log messages | last 20')).toBe(true);
+  });
+
+  it('refuses ping without a count, which runs until Ctrl-C', () => {
+    for (const cmd of ['ping 8.8.8.8', 'do ping 8.8.8.8', 'ping -n 8.8.8.8', 'ping -c 0 8.8.8.8', 'ping 8.8.8.8 count', 'ping']) {
+      expect([cmd, auditorAllowsCommand(cmd)]).toEqual([cmd, false]);
+    }
+    for (const cmd of [
+      'ping -c 4 8.8.8.8',
+      'ping -c4 8.8.8.8',
+      'ping 8.8.8.8 -c 3',
+      'ping -n 4 8.8.8.8',
+      'ping 10.0.0.1 count 5',
+      'ping 10.0.0.1 repetitions 5',
+      'ping 10.0.0.1 repeat 5',
+      'do ping 10.0.0.1 repetitions 3',
+    ]) {
+      expect([cmd, auditorAllowsCommand(cmd)]).toEqual([cmd, true]);
+    }
+    // traceroute ends by itself.
+    expect(auditorAllowsCommand('traceroute 8.8.8.8')).toBe(true);
+  });
+
+  it('refuses cat, head and tail with no file, which wait on the keyboard', () => {
+    for (const cmd of ['cat', 'cat -', 'cat -n', 'head', 'head -n 20', 'tail', 'tail -n 50', 'tail -c 100 -', 'less']) {
+      expect([cmd, auditorAllowsCommand(cmd)]).toEqual([cmd, false]);
+    }
+    for (const cmd of ['cat /etc/hosts', 'cat -n /etc/hosts', 'head -n 20 /var/log/x', 'head -20 x', 'tail -n50 x', 'tail -- x']) {
+      expect([cmd, auditorAllowsCommand(cmd)]).toEqual([cmd, true]);
+    }
+    // As a pipe stage they read the pipe.
+    expect(auditorAllowsCommand('show log messages | tail -n 20')).toBe(true);
+  });
+
+  it('skips the value of a long option or BSD tail -b, so it is not taken for a file', () => {
+    for (const cmd of ['head --lines 5', 'tail --lines 3', 'head --bytes 100', 'head --lin 5', 'tail -b 5', 'tail -qn 5', 'tail --sleep-interval 2']) {
+      expect([cmd, auditorAllowsCommand(cmd)]).toEqual([cmd, false]);
+    }
+    for (const cmd of ['head --lines 5 /var/log/x', 'head --lines=5 /var/log/x', 'tail -b 5 x', 'head --quiet x', 'tail -qn 5 x']) {
+      expect([cmd, auditorAllowsCommand(cmd)]).toEqual([cmd, true]);
+    }
+  });
+
+  it('refuses files that wait on the keyboard or never end', () => {
+    for (const cmd of [
+      'cat /dev/stdin',
+      'cat /dev/tty',
+      'cat /dev/fd/0',
+      'cat /proc/self/fd/0',
+      'cat /dev/zero',
+      'head -n 5 /dev/random',
+      'tail -n 5 /dev/urandom',
+      'cat /etc/hosts /dev/stdin',
+      'cat "/dev/zero"',
+      'cat /d\\ev/zero',
+      'cat //dev/./zero',
+      'cat /tmp/../dev/zero',
+      'cat /proc/kmsg',
+      'cat /d?v/zero',
+      'cat $Z',
+      'cat -- /dev/stdin',
+      'show log | tail /dev/zero',
+    ]) {
+      expect([cmd, auditorAllowsCommand(cmd)]).toEqual([cmd, false]);
+    }
+    expect(auditorAllowsCommand('cat /dev/null')).toBe(true);
+    // A pattern is the shell's to expand, so the check can't see the files: refused.
+    expect(auditorAllowsCommand('cat /var/log/*.log')).toBe(false);
+    expect(auditorAllowsCommand('cat /proc/cpuinfo')).toBe(true);
+  });
+
+  it('refuses tail +N with no file and paths that climb with ..', () => {
+    for (const cmd of [
+      'tail +2',
+      'tail -q +2',
+      'cat /proc/self/../self/fd/0',
+      'cat /proc/1/../self/fd/0',
+      'cat /proc/1/../kmsg',
+      'show x | grep y /proc/self/../self/fd/1',
+      'head -n 5 ../../dev/zero',
+    ]) {
+      expect([cmd, auditorAllowsCommand(cmd)]).toEqual([cmd, false]);
+    }
+    // tail +N with a file reads the file from line N; a grep pattern of .. is not a path.
+    for (const cmd of ['tail +2 /var/log/x', 'show log | grep ..', 'cat /etc/hosts']) {
+      expect([cmd, auditorAllowsCommand(cmd)]).toEqual([cmd, true]);
+    }
+  });
+
+  it('refuses pings that go on for hours, and ping.exe without a count', () => {
+    for (const cmd of [
+      'ping -c 999999999 8.8.8.8',
+      'ping 8.8.8.8 count 100000000',
+      'ping -c101 8.8.8.8',
+      'ping -c 2 -i 86400 8.8.8.8',
+      'ping 10.0.0.1 count 5 interval 3600',
+      'ping -c 2 -w 999999 8.8.8.8',
+      'ping 10.0.0.1 count 5 wait 86400',
+      'ping.exe -t 8.8.8.8',
+      'PING.EXE 8.8.8.8',
+      'ping -n 4 -t 8.8.8.8',
+      'ping /n 4 /t 8.8.8.8',
+      'ping -c 4 -c 0 8.8.8.8',
+    ]) {
+      expect([cmd, auditorAllowsCommand(cmd)]).toEqual([cmd, false]);
+    }
+    for (const cmd of [
+      'ping -c 100 8.8.8.8',
+      'ping -c 5 -i 0.2 8.8.8.8',
+      'ping -c 3 -W 2 8.8.8.8',
+      'ping.exe -n 4 -w 1000 8.8.8.8',
+      'ping /n 4 8.8.8.8',
+      'ping 10.0.0.1 count 5 wait 2 rapid',
+    ]) {
+      expect([cmd, auditorAllowsCommand(cmd)]).toEqual([cmd, true]);
+    }
+  });
+
+  it('reads quoted and escaped words the way the shell does before any word check', () => {
+    // Follow, written with quotes, backslashes or empty quotes: the shell hands tail +1f, -F, -f, --follow.
+    for (const cmd of [
+      'tail "+1f" /var/log/x',
+      "tail '+f' /var/log/x",
+      'tail \\+1f /var/log/x',
+      'tail ""+1f x',
+      'cat x | tail "+1f"',
+      'tail "-f" x',
+      "tail '-F' x",
+      'tail \\-f x',
+      'tail "--follow" x',
+      'tail -""f x',
+      "tail '-'f x",
+      'tail "+1 f" x',
+      'show log | tail "-f"',
+      'show log | t\\ail -f',
+      'tail"" -f x',
+      'do tail -f /var/log/x',
+      'DO tail -f /var/log/x',
+    ]) {
+      expect([cmd, auditorAllowsCommand(cmd)]).toEqual([cmd, false]);
+    }
+    // The same words, quoted, in files, pings, date and sh.
+    for (const cmd of [
+      'cat "/dev/zero"',
+      "cat '/dev/stdin'",
+      'cat ""',
+      'head -n 5 "/dev/zero"',
+      'cat"" /dev/zero',
+      'ping "8.8.8.8"',
+      'ping -c "0" 8.8.8.8',
+      "ping -c 4 '-t' 8.8.8.8",
+      'ping"" 8.8.8.8',
+      'date "-s" 2020-01-01',
+      'date"" -s 2020-01-01',
+      'sh "-c" id',
+      "sh '/tmp/x'",
+      'show log | grep x "/dev/zero"',
+    ]) {
+      expect([cmd, auditorAllowsCommand(cmd)]).toEqual([cmd, false]);
+    }
+    // Plain reads still pass when they are quoted.
+    for (const cmd of [
+      'tail -n 20 "/var/log/my file"',
+      "tail '-n' 20 /var/log/x",
+      'tail "+2" /var/log/x',
+      'cat "/etc/hosts"',
+      'ping -c "4" 8.8.8.8',
+      'show log | match "error"',
+      'show log | tail "-n" 5',
+    ]) {
+      expect([cmd, auditorAllowsCommand(cmd)]).toEqual([cmd, true]);
+    }
+  });
+
+  it('refuses a stage whose words cannot be worked out for sure', () => {
+    for (const cmd of [
+      'tail "-f x',
+      "tail '-f x",
+      'tail -f\\',
+      "tail $'-f' x",
+      'tail $"-f" x',
+      'tail ${F} x',
+      'tail $F x',
+      'show log | tail $F',
+      'ping -c $N 8.8.8.8',
+      "ping $'-t' 8.8.8.8",
+      'cat #',
+      'cat x #',
+      'tail {-f,x}',
+      'cat {/dev/zero,x}',
+      'head -n 5 x ${y}',
+      'show log | match "a',
+    ]) {
+      expect([cmd, auditorAllowsCommand(cmd)]).toEqual([cmd, false]);
+    }
+  });
+
+  it('holds the raw text to a short list of characters, so the shell has nothing to interpret', () => {
+    for (const cmd of [
+      'tail$IFS-f /var/log/messages',
+      'cat$IFS/dev/zero',
+      'ping$IFS10.0.0.1',
+      'date$IFS-s 2020',
+      "sh''utdown -h now",
+      'sh\\utdown -h now',
+      "do sh''utdown -h now",
+      'sh""red -u /etc/passwd',
+      'show version | include "a$b"',
+      'show version | include "a\\b"',
+      "show version | include 'it\"s'",
+      'show version # comment',
+      'show version!',
+      'show ~',
+      'show version\u00a0| tee x',
+      'show version\nsh""utdown -h now',
+      '?',
+    ]) {
+      expect([cmd, auditorAllowsCommand(cmd)]).toEqual([cmd, false]);
+    }
+    for (const cmd of [
+      'show running-config | include "vlan 10"',
+      'show interfaces terse | match ge-0/0/1',
+      'show log messages | last 20',
+      'ping 10.1.1.1 count 3',
+      'ping -c 3 10.1.1.1',
+      'do show vlan',
+      'show version\n\nshow vlan',
+      "  show interface 1/1/1 | include 'up'  ",
+      'show ip interface brief | exclude unassigned',
+      'SHOW VERSION',
+    ]) {
+      expect([cmd, auditorAllowsCommand(cmd)]).toEqual([cmd, true]);
+    }
+  });
+
+  it('takes only an exact read verb first, and an allowed filter first in every later stage', () => {
+    for (const cmd of ['shutdown -h now', 'showx', 'show-tech', 'shred -u x', 'do', 'do do show version', 'cat.exe /etc/hosts',
+      'show version | sort -o x', 'show version | uniq', 'show version || reboot', 'show version |', '| show version', 'show version | "tee" x']) {
+      expect([cmd, auditorAllowsCommand(cmd)]).toEqual([cmd, false]);
+    }
+    for (const cmd of ['PING.EXE -n 4 8.8.8.8', 'tracert 8.8.8.8', 'whoami', 'show version | "include" Junos', 'show version|count']) {
+      expect([cmd, auditorAllowsCommand(cmd)]).toEqual([cmd, true]);
+    }
+  });
+
+  it('refuses sh when it runs a shell rather than meaning show', () => {
+    for (const cmd of ['sh -c "id"', 'sh script.sh', 'sh /tmp/x', 'do sh -c id']) {
+      expect([cmd, auditorAllowsCommand(cmd)]).toEqual([cmd, false]);
+    }
+    // The `sh` short form is refused: on a Linux server it starts a shell or runs a script.
+    for (const cmd of ['sh', 'do sh', 'sh ip route', 'sh run | inc vlan', 'sh myscript']) {
+      expect(auditorAllowsCommand(cmd)).toBe(false);
+    }
+    expect(auditorAllowsCommand('show ip route')).toBe(true);
+    expect(auditorAllowsCommand('do show run | inc vlan')).toBe(true);
+  });
+});
+
+describe('auditorStages', () => {
+  it('splits stages and words, and drops the quotes of a whole quoted word', () => {
+    expect(auditorStages('show running-config | include "vlan 10"')).toEqual([['show', 'running-config'], ['include', 'vlan 10']]);
+    expect(auditorStages("tail '-n' 20 x|grep a")).toEqual([['tail', '-n', '20', 'x'], ['grep', 'a']]);
+    expect(auditorStages('cat ""')).toEqual([['cat', '']]);
+    expect(auditorStages('show x |')).toEqual([['show', 'x'], []]);
+  });
+  it('refuses any character outside the list, and quotes glued to a word', () => {
+    for (const line of [
+      'tail$IFS-f x', 'cat x; id', 'cat x & id', 'echo `id`', 'cat \\x', 'cat (x)', 'cat {a,b}', 'cat [x]', 'cat #',
+      'cat *', 'cat ?', 'cat !x', 'cat ~/x', 'cat ^x', 'date +%F', 'cat > x', 'cat < x', "sh''utdown", 'tail"" -f',
+      'tail -""f', '"a""b"', 'cat "a$b"', "cat 'a\\b'", 'cat "a\'b"', 'cat "x', 'show\u00a0version',
+    ]) {
+      expect([line, auditorStages(line)]).toEqual([line, null]);
+    }
+  });
+});
+
 describe('CONTROL_CHARS', () => {
   it('ignores line breaks and printable text', () => {
     expect(CONTROL_CHARS.test('show version\nshow vlan\r\n')).toBe(false);
@@ -67,21 +424,44 @@ describe('normalizeLineBreaks', () => {
   });
 });
 
-describe('aiMcpLooksWrite', () => {
-  it('flags write-looking tool names', () => {
-    expect(aiMcpLooksWrite('delete_device')).toBe(true);
-    expect(aiMcpLooksWrite('set_config')).toBe(true);
-    expect(aiMcpLooksWrite('reboot_ap')).toBe(true);
-    expect(aiMcpLooksWrite('create_site')).toBe(true);
-    expect(aiMcpLooksWrite('apply_template')).toBe(true);
-    expect(aiMcpLooksWrite('mcp_write_config')).toBe(true);
+describe('isReadOnlyAgent', () => {
+  const auditor = BUILTIN_AGENTS[0];
+  it('covers the built-in Read-only Auditor', () => {
+    expect(auditor.id).toBe('agent-auditor');
+    expect(auditor.readOnly).toBe(true);
+    expect(isReadOnlyAgent(auditor)).toBe(true);
+  });
+  it('covers an Auditor saved before the flag, or renamed', () => {
+    expect(isReadOnlyAgent({ id: 'agent-auditor', name: 'Read-only Auditor' })).toBe(true);
+    expect(isReadOnlyAgent({ id: 'agent-auditor', name: 'My audits' })).toBe(true);
+  });
+  it('covers one re-created by name', () => {
+    expect(isReadOnlyAgent({ id: 'agent-123', name: '  read-only AUDITOR ' })).toBe(true);
+  });
+  it('honours the readOnly flag', () => {
+    expect(isReadOnlyAgent({ id: 'agent-9', name: 'Night shift', readOnly: true })).toBe(true);
+  });
+  it('leaves other agents and no agent alone', () => {
+    expect(isReadOnlyAgent(BUILTIN_AGENTS[1])).toBe(false);
+    expect(isReadOnlyAgent({ id: 'agent-9', name: 'Junos Expert', readOnly: false })).toBe(false);
+    expect(isReadOnlyAgent(undefined)).toBe(false);
+  });
+  it('tells the model what to do instead', () => {
+    expect(AUDITOR_REFUSAL.startsWith('Not run: ')).toBe(true);
+    expect(AUDITOR_REFUSAL).toContain('Give the user the exact commands to run instead.');
+  });
+});
+
+describe('auditorAllowsCommand: write words as plain read arguments', () => {
+  it('lets reads whose arguments or filters hold a write word through', () => {
+    for (const cmd of ['show system commit', 'show system boot-messages', 'show boot-history', 'show log messages | match commit']) {
+      expect(auditorAllowsCommand(cmd)).toBe(true);
+    }
   });
 
-  it('passes read-looking tool names', () => {
-    expect(aiMcpLooksWrite('get_device')).toBe(false);
-    expect(aiMcpLooksWrite('list_sites')).toBe(false);
-    expect(aiMcpLooksWrite('read_config')).toBe(false);
-    expect(aiMcpLooksWrite('show_status')).toBe(false);
-    expect(aiMcpLooksWrite('search_clients')).toBe(false);
+  it('still refuses a pipe that writes a file', () => {
+    for (const cmd of ['show configuration | save /var/tmp/x', 'show log messages | append x', 'show run | redirect flash:x']) {
+      expect(auditorAllowsCommand(cmd)).toBe(false);
+    }
   });
 });

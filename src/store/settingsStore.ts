@@ -34,6 +34,8 @@ interface SettingsState extends TerminalSettings {
   setOpenrouterModel: (model: string) => void;
   setMoonshotModel: (model: string) => void;
   setLocalCliCommand: (command: string) => void;
+  setCasperCommand: (command: string) => void;
+  setCasperWorkFolder: (folder: string) => void;
   setAiReferences: (refs: string) => void;
   // AI agents (per-session personas)
   addAiAgent: (agent: AiAgent) => void;
@@ -83,6 +85,8 @@ export const useSettingsStore = create<SettingsState>()(
       setOpenrouterModel: (openrouterModel) => set({ openrouterModel }),
       setMoonshotModel: (moonshotModel) => set({ moonshotModel }),
       setLocalCliCommand: (localCliCommand) => set({ localCliCommand }),
+      setCasperCommand: (casperCommand) => set({ casperCommand }),
+      setCasperWorkFolder: (casperWorkFolder) => set({ casperWorkFolder }),
       setAiReferences: (aiReferences) => set({ aiReferences }),
 
       addAiAgent: (agent) => set((s) => ({ aiAgents: [...(s.aiAgents ?? []), agent] })),

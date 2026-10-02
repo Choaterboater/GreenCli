@@ -1,0 +1,643 @@
+[
+  {
+    "args": {
+      "Confirm": "yes"
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "arguments": {
+        "force": 1
+      }
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "dry_run": false
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "dry-run": "false"
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "dry_run": true
+    },
+    "skipped": false
+  },
+  {
+    "args": {
+      "confirm": false
+    },
+    "skipped": false
+  },
+  {
+    "args": {
+      "a": {
+        "a": {
+          "a": {
+            "a": {
+              "a": {
+                "a": {
+                  "a": {
+                    "a": {
+                      "a": {
+                        "a": {
+                          "a": {
+                            "a": {
+                              "a": {
+                                "a": {
+                                  "a": {
+                                    "a": {
+                                      "a": {
+                                        "a": {
+                                          "a": {
+                                            "a": {
+                                              "a": {
+                                                "a": {
+                                                  "a": {
+                                                    "a": {
+                                                      "a": {
+                                                        "a": {
+                                                          "a": {
+                                                            "a": {
+                                                              "a": {
+                                                                "a": {
+                                                                  "a": {
+                                                                    "a": {
+                                                                      "confirm": true
+                                                                    }
+                                                                  }
+                                                                }
+                                                              }
+                                                            }
+                                                          }
+                                                        }
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "a": {
+        "a": {
+          "a": {
+            "a": {
+              "a": {
+                "a": {
+                  "a": {
+                    "a": {
+                      "a": {
+                        "a": {
+                          "a": {
+                            "a": {
+                              "a": {
+                                "a": {
+                                  "a": {
+                                    "a": {
+                                      "a": {
+                                        "a": {
+                                          "a": {
+                                            "a": {
+                                              "a": {
+                                                "a": {
+                                                  "a": {
+                                                    "a": {
+                                                      "a": {
+                                                        "a": {
+                                                          "a": {
+                                                            "a": {
+                                                              "a": {
+                                                                "a": {
+                                                                  "a": {
+                                                                    "confirm": true
+                                                                  }
+                                                                }
+                                                              }
+                                                            }
+                                                          }
+                                                        }
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "a": {
+        "a": {
+          "a": {
+            "a": {
+              "a": {
+                "a": {
+                  "a": {
+                    "a": {
+                      "a": {
+                        "a": {
+                          "a": {
+                            "a": {
+                              "a": {
+                                "a": {
+                                  "a": {
+                                    "a": {
+                                      "a": {
+                                        "a": {
+                                          "a": {
+                                            "a": {
+                                              "a": {
+                                                "a": {
+                                                  "a": {
+                                                    "a": {
+                                                      "a": {
+                                                        "a": {
+                                                          "a": {
+                                                            "a": {
+                                                              "a": {
+                                                                "a": {
+                                                                  "a": {
+                                                                    "a": {
+                                                                      "x": 1
+                                                                    }
+                                                                  }
+                                                                }
+                                                              }
+                                                            }
+                                                          }
+                                                        }
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "a": {
+        "a": {
+          "a": {
+            "a": {
+              "a": {
+                "a": {
+                  "a": {
+                    "a": {
+                      "a": {
+                        "a": {
+                          "a": {
+                            "a": {
+                              "a": {
+                                "a": {
+                                  "a": {
+                                    "a": {
+                                      "a": {
+                                        "a": {
+                                          "a": {
+                                            "a": {
+                                              "a": {
+                                                "a": {
+                                                  "a": {
+                                                    "a": {
+                                                      "a": {
+                                                        "a": {
+                                                          "a": {
+                                                            "a": {
+                                                              "a": {
+                                                                "a": {
+                                                                  "a": {
+                                                                    "x": 1
+                                                                  }
+                                                                }
+                                                              }
+                                                            }
+                                                          }
+                                                        }
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "skipped": false
+  },
+  {
+    "args": {},
+    "skipped": false
+  },
+  {
+    "args": {
+      "confirm": "no"
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "confirmation": " ON "
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "CONFIRMED": "Y"
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "force": 1
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "force": 2
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "force": "1"
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "DryRun": 0
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "preview": null
+    },
+    "skipped": false
+  },
+  {
+    "args": {
+      "check_only": "true"
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "validateOnly": true
+    },
+    "skipped": false
+  },
+  {
+    "args": {
+      "calls": [
+        {
+          "arguments": {
+            "force": true
+          }
+        }
+      ]
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "list": [
+        [
+          {
+            "confirm": true
+          }
+        ]
+      ]
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "name": "get_x",
+      "arguments": {
+        "confirm": "true﻿"
+      }
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "confirm": "yes"
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "confirm": [
+        "yes"
+      ]
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "con-firm": true
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "forced": true
+    },
+    "skipped": false
+  },
+  {
+    "args": {
+      "force": "t"
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "Confirm": " T "
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "calls": [
+        {
+          "arguments": {
+            "confirmed": "t"
+          }
+        }
+      ]
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "force": "f"
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "force": "tt"
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "confirm": "false"
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "force": {}
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "confirmed": [
+        1
+      ]
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "force": 0
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "force": null
+    },
+    "skipped": false
+  },
+  {
+    "args": {
+      "confirmation": false
+    },
+    "skipped": false
+  },
+  {
+    "args": {
+      "calls": "[{\"name\": \"get_status\", \"arguments\": {\"force\": true}}]"
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "calls": "[{\"name\": \"get_status\", \"arguments\": {\"confirm\": true}}]"
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "calls": "[{\"name\": \"get_status\", \"arguments\": {\"dry_run\": false}}]"
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "batch": "[{\"arguments\": {\"x\": 1}, \"name\": \"get_status\"}, {\"arguments\": {\"Confirmed\": \"yes\"}, \"name\": \"get_status\"}]"
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "name": "get_status",
+      "arguments": "{\"force\": 1}"
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "request": "{\"calls\": \"[{\\\"name\\\": \\\"get_status\\\", \\\"arguments\\\": {\\\"dry-run\\\": \\\"false\\\"}}]\"}"
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "calls": "  \n[{\"name\": \"get_status\", \"arguments\": {\"preview\": 0}}]"
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "calls": "[{\"name\": \"get_status\", \"arguments\": {\"force\": false, \"dry_run\": true, \"confirm\": null}}]"
+    },
+    "skipped": false
+  },
+  {
+    "args": {
+      "note": "force: true"
+    },
+    "skipped": false
+  },
+  {
+    "args": {
+      "calls": "[{\"name\": \"get_status\", \"arguments\": {\"force\": true}"
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "calls": "[{\"name\":\"delete_vlan\",\"arguments\":{\"x\":1e400}}]"
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "calls": "[{\"name\":\"delete_vlan\",\"arguments\":{\"x\":\"\\ud800\"}}]"
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "request": "{\"calls\":[{\"name\":\"delete_vlan\"}], \"x\":1e400}"
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "options": "{\"force\": true, \"n\": 1e400}"
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "payload": "{\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"force\": true}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}"
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "site": {
+        "filter": "[1e400]"
+      }
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "note": "[WARN] fan"
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "payload": "[1, 2]",
+      "site": "{\"id\": 3}"
+    },
+    "skipped": false
+  },
+  {
+    "args": {
+      "payload": "{\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"force\": false}}}}}}}}}}}}}}}}}}}}"
+    },
+    "skipped": false
+  },
+  {
+    "args": {
+      "limit": "[1.7976931348623158e308]"
+    },
+    "skipped": false
+  },
+  {
+    "args": {
+      "limit": "[1.79769313486231584e308]"
+    },
+    "skipped": true
+  }
+]

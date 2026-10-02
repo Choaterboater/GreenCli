@@ -1,0 +1,1331 @@
+[
+  {
+    "name": "aos8_get_migration_run",
+    "label": "exec",
+    "readNamed": false
+  },
+  {
+    "name": "aos8_get_migration_run",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "exec",
+    "readNamed": false
+  },
+  {
+    "name": "aos8_plan_migration_rollback",
+    "label": "external-action",
+    "readNamed": true
+  },
+  {
+    "name": "aos8_plan_migration_rollback",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "read",
+    "readNamed": true
+  },
+  {
+    "name": "aos8_preview_migration_run",
+    "label": "exec",
+    "readNamed": false
+  },
+  {
+    "name": "aos8_preview_migration_run",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "exec",
+    "readNamed": false
+  },
+  {
+    "name": "aos8_show_command",
+    "label": "exec",
+    "readNamed": false
+  },
+  {
+    "name": "aos8_show_command",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "exec",
+    "readNamed": false
+  },
+  {
+    "name": "aos8_verify_migration_run",
+    "label": "exec",
+    "readNamed": false
+  },
+  {
+    "name": "aos8_verify_migration_run",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "exec",
+    "readNamed": false
+  },
+  {
+    "name": "ap_ping",
+    "label": "external-action",
+    "readNamed": false
+  },
+  {
+    "name": "ap_ping",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "read",
+    "readNamed": false
+  },
+  {
+    "name": "ap_reboot_status",
+    "label": "destructive",
+    "readNamed": false
+  },
+  {
+    "name": "ap_reboot_status",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "destructive",
+    "readNamed": false
+  },
+  {
+    "name": "apply_template",
+    "label": "write",
+    "readNamed": false
+  },
+  {
+    "name": "apply_template",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "write",
+    "readNamed": false
+  },
+  {
+    "name": "bounce_interface",
+    "label": "destructive",
+    "readNamed": false
+  },
+  {
+    "name": "bounce_interface",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "destructive",
+    "readNamed": false
+  },
+  {
+    "name": "bounce_port",
+    "label": "destructive",
+    "readNamed": false
+  },
+  {
+    "name": "bounce_port",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "destructive",
+    "readNamed": false
+  },
+  {
+    "name": "clearpass-disconnect-session",
+    "label": "destructive",
+    "readNamed": false
+  },
+  {
+    "name": "clearpass-disconnect-session",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "destructive",
+    "readNamed": false
+  },
+  {
+    "name": "create_site",
+    "label": "write",
+    "readNamed": false
+  },
+  {
+    "name": "create_site",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "write",
+    "readNamed": false
+  },
+  {
+    "name": "cx_run_cli",
+    "label": "exec",
+    "readNamed": false
+  },
+  {
+    "name": "cx_run_cli",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "exec",
+    "readNamed": false
+  },
+  {
+    "name": "cx_show",
+    "label": "external-action",
+    "readNamed": true
+  },
+  {
+    "name": "cx_show",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "read",
+    "readNamed": true
+  },
+  {
+    "name": "cycle_port",
+    "label": "external-action",
+    "readNamed": false
+  },
+  {
+    "name": "cycle_port",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "read",
+    "readNamed": false
+  },
+  {
+    "name": "deauth_client",
+    "label": "destructive",
+    "readNamed": false
+  },
+  {
+    "name": "deauth_client",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "destructive",
+    "readNamed": false
+  },
+  {
+    "name": "delete_device",
+    "label": "destructive",
+    "readNamed": false
+  },
+  {
+    "name": "delete_device",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "destructive",
+    "readNamed": false
+  },
+  {
+    "name": "Delete_x",
+    "label": "destructive",
+    "readNamed": false
+  },
+  {
+    "name": "Delete_x",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "destructive",
+    "readNamed": false
+  },
+  {
+    "name": "device.reload_now",
+    "label": "destructive",
+    "readNamed": false
+  },
+  {
+    "name": "device.reload_now",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "destructive",
+    "readNamed": false
+  },
+  {
+    "name": "device_push_state",
+    "label": "external-action",
+    "readNamed": false
+  },
+  {
+    "name": "device_push_state",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "read",
+    "readNamed": false
+  },
+  {
+    "name": "disconnect_client",
+    "label": "destructive",
+    "readNamed": false
+  },
+  {
+    "name": "disconnect_client",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "destructive",
+    "readNamed": false
+  },
+  {
+    "name": "do_config_rollback",
+    "label": "destructive",
+    "readNamed": false
+  },
+  {
+    "name": "do_config_rollback",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "destructive",
+    "readNamed": false
+  },
+  {
+    "name": "edgeconnect_enable_zone_firewall_status",
+    "label": "write",
+    "readNamed": false
+  },
+  {
+    "name": "edgeconnect_enable_zone_firewall_status",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "write",
+    "readNamed": false
+  },
+  {
+    "name": "edgeconnect_set_zone_firewall_status",
+    "label": "write",
+    "readNamed": false
+  },
+  {
+    "name": "edgeconnect_set_zone_firewall_status",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "write",
+    "readNamed": false
+  },
+  {
+    "name": "enable_status",
+    "label": "write",
+    "readNamed": false
+  },
+  {
+    "name": "enable_status",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "write",
+    "readNamed": false
+  },
+  {
+    "name": "execute_command",
+    "label": "exec",
+    "readNamed": false
+  },
+  {
+    "name": "execute_command",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "exec",
+    "readNamed": false
+  },
+  {
+    "name": "execute_junos_command",
+    "label": "exec",
+    "readNamed": false
+  },
+  {
+    "name": "execute_junos_command",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "exec",
+    "readNamed": false
+  },
+  {
+    "name": "gateway_halt",
+    "label": "destructive",
+    "readNamed": false
+  },
+  {
+    "name": "gateway_halt",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "destructive",
+    "readNamed": false
+  },
+  {
+    "name": "getHTTPStatus",
+    "label": "external-action",
+    "readNamed": true
+  },
+  {
+    "name": "getHTTPStatus",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "read",
+    "readNamed": true
+  },
+  {
+    "name": "get_and_delete_site",
+    "label": "destructive",
+    "readNamed": false
+  },
+  {
+    "name": "get_and_delete_site",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "destructive",
+    "readNamed": false
+  },
+  {
+    "name": "get_bounce_ports",
+    "label": "destructive",
+    "readNamed": false
+  },
+  {
+    "name": "get_bounce_ports",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "destructive",
+    "readNamed": false
+  },
+  {
+    "name": "get_config_rollback_status",
+    "label": "external-action",
+    "readNamed": true
+  },
+  {
+    "name": "get_config_rollback_status",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "read",
+    "readNamed": true
+  },
+  {
+    "name": "get_config_rollback_status_now",
+    "label": "destructive",
+    "readNamed": false
+  },
+  {
+    "name": "get_config_rollback_status_now",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "destructive",
+    "readNamed": false
+  },
+  {
+    "name": "get_device",
+    "label": "external-action",
+    "readNamed": true
+  },
+  {
+    "name": "get_device",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "read",
+    "readNamed": true
+  },
+  {
+    "name": "get_glp_block_storage_hosts",
+    "label": "external-action",
+    "readNamed": true
+  },
+  {
+    "name": "get_glp_block_storage_hosts",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "read",
+    "readNamed": true
+  },
+  {
+    "name": "get_glp_block_storage_volume",
+    "label": "external-action",
+    "readNamed": true
+  },
+  {
+    "name": "get_glp_block_storage_volume",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "read",
+    "readNamed": true
+  },
+  {
+    "name": "get_glp_block_storage_volumes",
+    "label": "external-action",
+    "readNamed": true
+  },
+  {
+    "name": "get_glp_block_storage_volumes",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "read",
+    "readNamed": true
+  },
+  {
+    "name": "get_glp_service_manager_provision",
+    "label": "external-action",
+    "readNamed": true
+  },
+  {
+    "name": "get_glp_service_manager_provision",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "read",
+    "readNamed": true
+  },
+  {
+    "name": "get_glp_service_provision",
+    "label": "external-action",
+    "readNamed": true
+  },
+  {
+    "name": "get_glp_service_provision",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "read",
+    "readNamed": true
+  },
+  {
+    "name": "get_router_list",
+    "label": "external-action",
+    "readNamed": true
+  },
+  {
+    "name": "get_router_list",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "read",
+    "readNamed": true
+  },
+  {
+    "name": "get_site",
+    "label": "external-action",
+    "readNamed": true
+  },
+  {
+    "name": "get_site",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "read",
+    "readNamed": true
+  },
+  {
+    "name": "glp_write_status",
+    "label": "write",
+    "readNamed": false
+  },
+  {
+    "name": "glp_write_status",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "write",
+    "readNamed": false
+  },
+  {
+    "name": "invoke_read_tool",
+    "label": "external-action",
+    "readNamed": false
+  },
+  {
+    "name": "invoke_read_tool",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "read",
+    "readNamed": false
+  },
+  {
+    "name": "invoke_tool",
+    "label": "destructive",
+    "readNamed": false
+  },
+  {
+    "name": "invoke_tool",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "destructive",
+    "readNamed": false
+  },
+  {
+    "name": "invoke_tools_batch",
+    "label": "destructive",
+    "readNamed": false
+  },
+  {
+    "name": "invoke_tools_batch",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "destructive",
+    "readNamed": false
+  },
+  {
+    "name": "list_sites",
+    "label": "external-action",
+    "readNamed": true
+  },
+  {
+    "name": "list_sites",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "read",
+    "readNamed": true
+  },
+  {
+    "name": "list_wipe_candidates",
+    "label": "destructive",
+    "readNamed": false
+  },
+  {
+    "name": "list_wipe_candidates",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "destructive",
+    "readNamed": false
+  },
+  {
+    "name": "load_and_commit_config",
+    "label": "write",
+    "readNamed": false
+  },
+  {
+    "name": "load_and_commit_config",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "write",
+    "readNamed": false
+  },
+  {
+    "name": "load_skill",
+    "label": "external-action",
+    "readNamed": false
+  },
+  {
+    "name": "load_skill",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "read",
+    "readNamed": false
+  },
+  {
+    "name": "mcp_write_config",
+    "label": "write",
+    "readNamed": false
+  },
+  {
+    "name": "mcp_write_config",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "write",
+    "readNamed": false
+  },
+  {
+    "name": "poe_bounce",
+    "label": "destructive",
+    "readNamed": false
+  },
+  {
+    "name": "poe_bounce",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "destructive",
+    "readNamed": false
+  },
+  {
+    "name": "port-run",
+    "label": "exec",
+    "readNamed": false
+  },
+  {
+    "name": "port-run",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "exec",
+    "readNamed": false
+  },
+  {
+    "name": "port_bounce",
+    "label": "destructive",
+    "readNamed": false
+  },
+  {
+    "name": "port_bounce",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "destructive",
+    "readNamed": false
+  },
+  {
+    "name": "port_commit_history",
+    "label": "external-action",
+    "readNamed": false
+  },
+  {
+    "name": "port_commit_history",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "read",
+    "readNamed": false
+  },
+  {
+    "name": "push_device_state",
+    "label": "write",
+    "readNamed": false
+  },
+  {
+    "name": "push_device_state",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "write",
+    "readNamed": false
+  },
+  {
+    "name": "read_config",
+    "label": "external-action",
+    "readNamed": true
+  },
+  {
+    "name": "read_config",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "read",
+    "readNamed": true
+  },
+  {
+    "name": "rebootDevice",
+    "label": "destructive",
+    "readNamed": false
+  },
+  {
+    "name": "rebootDevice",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "destructive",
+    "readNamed": false
+  },
+  {
+    "name": "reboot_ap",
+    "label": "destructive",
+    "readNamed": false
+  },
+  {
+    "name": "reboot_ap",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "destructive",
+    "readNamed": false
+  },
+  {
+    "name": "reboot_x",
+    "label": "destructive",
+    "readNamed": false
+  },
+  {
+    "name": "reboot_x",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "destructive",
+    "readNamed": false
+  },
+  {
+    "name": "reload_switch",
+    "label": "destructive",
+    "readNamed": false
+  },
+  {
+    "name": "reload_switch",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "destructive",
+    "readNamed": false
+  },
+  {
+    "name": "render_and_apply_j2_template",
+    "label": "write",
+    "readNamed": false
+  },
+  {
+    "name": "render_and_apply_j2_template",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "write",
+    "readNamed": false
+  },
+  {
+    "name": "restart_ap",
+    "label": "destructive",
+    "readNamed": false
+  },
+  {
+    "name": "restart_ap",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "destructive",
+    "readNamed": false
+  },
+  {
+    "name": "rollback_config",
+    "label": "destructive",
+    "readNamed": false
+  },
+  {
+    "name": "rollback_config",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "destructive",
+    "readNamed": false
+  },
+  {
+    "name": "search_clients",
+    "label": "external-action",
+    "readNamed": true
+  },
+  {
+    "name": "search_clients",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "read",
+    "readNamed": true
+  },
+  {
+    "name": "send_config_set",
+    "label": "write",
+    "readNamed": false
+  },
+  {
+    "name": "send_config_set",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "write",
+    "readNamed": false
+  },
+  {
+    "name": "set_config",
+    "label": "write",
+    "readNamed": false
+  },
+  {
+    "name": "set_config",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "write",
+    "readNamed": false
+  },
+  {
+    "name": "set_ssid",
+    "label": "write",
+    "readNamed": false
+  },
+  {
+    "name": "set_ssid",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "write",
+    "readNamed": false
+  },
+  {
+    "name": "show_and_reload",
+    "label": "destructive",
+    "readNamed": false
+  },
+  {
+    "name": "show_and_reload",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "destructive",
+    "readNamed": false
+  },
+  {
+    "name": "show_status",
+    "label": "external-action",
+    "readNamed": true
+  },
+  {
+    "name": "show_status",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "read",
+    "readNamed": true
+  },
+  {
+    "name": "show_then_reboot",
+    "label": "destructive",
+    "readNamed": false
+  },
+  {
+    "name": "show_then_reboot",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "destructive",
+    "readNamed": false
+  },
+  {
+    "name": "show_then_run_script",
+    "label": "exec",
+    "readNamed": false
+  },
+  {
+    "name": "show_then_run_script",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "exec",
+    "readNamed": false
+  },
+  {
+    "name": "wipe_x",
+    "label": "destructive",
+    "readNamed": false
+  },
+  {
+    "name": "wipe_x",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "destructive",
+    "readNamed": false
+  },
+  {
+    "name": "zeroize_device",
+    "label": "destructive",
+    "readNamed": false
+  },
+  {
+    "name": "zeroize_device",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "destructive",
+    "readNamed": false
+  },
+  {
+    "name": "access_check",
+    "label": "external-action",
+    "readNamed": true
+  },
+  {
+    "name": "access_check",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "read",
+    "readNamed": true
+  },
+  {
+    "name": "ABCDef",
+    "label": "external-action",
+    "readNamed": false
+  },
+  {
+    "name": "ABCDef",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "read",
+    "readNamed": false
+  },
+  {
+    "name": "getHTTPSStatusCode",
+    "label": "external-action",
+    "readNamed": true
+  },
+  {
+    "name": "getHTTPSStatusCode",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "read",
+    "readNamed": true
+  },
+  {
+    "name": "listVLANs",
+    "label": "external-action",
+    "readNamed": true
+  },
+  {
+    "name": "listVLANs",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "read",
+    "readNamed": true
+  },
+  {
+    "name": "kelvin_Kill",
+    "label": "external-action",
+    "readNamed": false
+  },
+  {
+    "name": "kelvin_Kill",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "read",
+    "readNamed": false
+  },
+  {
+    "name": "get_device_v2",
+    "label": "external-action",
+    "readNamed": true
+  },
+  {
+    "name": "get_device_v2",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "read",
+    "readNamed": true
+  },
+  {
+    "name": "x",
+    "label": "external-action",
+    "readNamed": false
+  },
+  {
+    "name": "x",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "read",
+    "readNamed": false
+  },
+  {
+    "name": "invoke_read_tool_x",
+    "label": "external-action",
+    "readNamed": false
+  },
+  {
+    "name": "invoke_read_tool_x",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "read",
+    "readNamed": false
+  },
+  {
+    "name": "dispatch_get",
+    "label": "external-action",
+    "readNamed": false
+  },
+  {
+    "name": "dispatch_get",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "read",
+    "readNamed": false
+  },
+  {
+    "name": "run_tool_show",
+    "label": "exec",
+    "readNamed": false
+  },
+  {
+    "name": "run_tool_show",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "exec",
+    "readNamed": false
+  },
+  {
+    "name": "ap_ping",
+    "_meta": {
+      "casper/safety": "diagnostic"
+    },
+    "label": "diagnostic",
+    "readNamed": false
+  },
+  {
+    "name": "reboot_x",
+    "_meta": {
+      "casper/safety": "diagnostic"
+    },
+    "label": "destructive",
+    "readNamed": false
+  },
+  {
+    "name": "get_site",
+    "_meta": {
+      "casper/safety": "read"
+    },
+    "label": "external-action",
+    "readNamed": true
+  },
+  {
+    "name": "get_site",
+    "_meta": {
+      "casper/safety": "write"
+    },
+    "label": "write",
+    "readNamed": true
+  },
+  {
+    "name": "get_site",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "_meta": {
+      "casper/safety": "write"
+    },
+    "label": "write",
+    "readNamed": true
+  },
+  {
+    "name": "get_site",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "_meta": {
+      "casper/safety": "diagnostic"
+    },
+    "label": "diagnostic",
+    "readNamed": true
+  },
+  {
+    "name": "get_site",
+    "_meta": {
+      "casper/safety": "bogus"
+    },
+    "label": "external-action",
+    "readNamed": true
+  },
+  {
+    "name": "get_site",
+    "_meta": {
+      "casper/safety": 3
+    },
+    "label": "external-action",
+    "readNamed": true
+  },
+  {
+    "name": "get_site",
+    "annotations": {
+      "readOnlyHint": false
+    },
+    "label": "external-action",
+    "readNamed": true
+  },
+  {
+    "name": "get_site",
+    "annotations": {
+      "readOnlyHint": "true"
+    },
+    "label": "external-action",
+    "readNamed": true
+  },
+  {
+    "name": "get_site",
+    "annotations": {
+      "destructiveHint": true
+    },
+    "label": "destructive",
+    "readNamed": true
+  },
+  {
+    "name": "get_site",
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": true
+    },
+    "label": "destructive",
+    "readNamed": true
+  },
+  {
+    "name": "wipe_x",
+    "annotations": {
+      "destructiveHint": true
+    },
+    "_meta": {
+      "casper/safety": "diagnostic"
+    },
+    "label": "destructive",
+    "readNamed": false
+  },
+  {
+    "name": "list_sites",
+    "_meta": {
+      "casper/safety": "exec"
+    },
+    "label": "exec",
+    "readNamed": true
+  },
+  {
+    "name": "list_sites",
+    "_meta": {
+      "casper/safety": "external-action"
+    },
+    "label": "external-action",
+    "readNamed": true
+  },
+  {
+    "name": "get_and_apply_config",
+    "label": "external-action",
+    "readNamed": false
+  },
+  {
+    "name": "get_and_apply_config",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "read",
+    "readNamed": false
+  },
+  {
+    "name": "list_and_disable_ports",
+    "label": "external-action",
+    "readNamed": false
+  },
+  {
+    "name": "list_and_disable_ports",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "read",
+    "readNamed": false
+  },
+  {
+    "name": "verify_and_commit",
+    "label": "external-action",
+    "readNamed": false
+  },
+  {
+    "name": "verify_and_commit",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "read",
+    "readNamed": false
+  },
+  {
+    "name": "get_or_add_vlan",
+    "label": "external-action",
+    "readNamed": false
+  },
+  {
+    "name": "get_or_add_vlan",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "read",
+    "readNamed": false
+  },
+  {
+    "name": "show_and_push_config",
+    "label": "external-action",
+    "readNamed": false
+  },
+  {
+    "name": "show_and_push_config",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "read",
+    "readNamed": false
+  },
+  {
+    "name": "fetch_and_sync_inventory",
+    "label": "external-action",
+    "readNamed": false
+  },
+  {
+    "name": "fetch_and_sync_inventory",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "read",
+    "readNamed": false
+  },
+  {
+    "name": "check_then_enable_port",
+    "label": "external-action",
+    "readNamed": false
+  },
+  {
+    "name": "check_then_enable_port",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "read",
+    "readNamed": false
+  },
+  {
+    "name": "get_sync_status",
+    "label": "external-action",
+    "readNamed": true
+  },
+  {
+    "name": "call_read_tool",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "read",
+    "readNamed": false
+  },
+  {
+    "name": "callTool",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "read",
+    "readNamed": false
+  },
+  {
+    "name": "tool_call",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "label": "read",
+    "readNamed": false
+  }
+]

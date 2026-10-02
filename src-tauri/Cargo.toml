@@ -1,6 +1,6 @@
 [package]
 name = "green-cli"
-version = "1.8.0"
+version = "1.9.0"
 description = "Multi-vendor SSH/Telnet/Serial terminal for network engineers"
 authors = ["ChoateLabs"]
 license = "MIT"
@@ -14,11 +14,15 @@ tauri-build = { version = "1.5.1", features = [] }
 [dependencies]
 tauri = { version = "1.6.0", features = [ "clipboard-read-text", "clipboard-write-text", "window-set-focus", "window-close", "window-start-dragging", "dialog-save", "dialog-open"] }
 serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
+# float_roundtrip: parse floats exactly like JSON.parse, so the MCP checks in TS and Rust agree on
+# which JSON text is readable (labels.rs read_json_text vs mcpApproval.ts readJsonText).
+serde_json = { version = "1.0", features = ["float_roundtrip"] }
 tokio = { version = "1.35", features = ["full"] }
 tokio-serial = "5.4"
 async-trait = "0.1"
 futures = "0.3"
+# This computer's host name (a saved web MCP server named after it counts as local).
+gethostname = "1.1"
 # default crypto backend is aws-lc-rs (needs NASM on Windows). `ring` is the
 # portable backend that builds on the Windows MSVC toolchain and ubuntu-22.04 CI.
 russh = { version = "0.63.1", default-features = false, features = ["flate2", "ring", "rsa"] }

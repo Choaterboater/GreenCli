@@ -39,23 +39,32 @@ import {
   EyeOff,
   FileDiff,
   Square,
+  Lock,
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/tauri';
 import { listen } from '@tauri-apps/api/event';
 import { useSessionStore } from '../store/sessionStore';
 import { useSettingsStore } from '../store/settingsStore';
-import { askConfirm } from '../store/dialogStore';
-import { ChatMessage, Session, AiProvider, AI_PROVIDERS } from '../types';
+import { askConfirm, cancelDialogs } from '../store/dialogStore';
+import { ChatMessage, Session, AiProvider, AI_PROVIDERS, isCliProvider } from '../types';
+import { CASPER_PROMPT_PREFACE, buildCliPrompt, plainCliError } from '../utils/cliPrompt';
 import { sleep, stripAnsi, sendAndCapture } from '../utils/terminal';
 import {
   aiIsWriteCommand,
-  aiMcpLooksWrite,
+  auditorAllowsCommand,
   AI_DANGER_CMD,
+  AUDITOR_REFUSAL,
   CONTROL_CHARS,
+  isReadOnlyAgent,
   normalizeLineBreaks,
 } from '../utils/aiGating';
 import { pickAiSession } from '../utils/aiSession';
+import { activeStreamIds, cancelActiveAiStreams, nextStreamId, runStoppable } from '../utils/aiRuns';
 import { hiddenSecretGate } from '../utils/secrets/gate';
+import { visibleToReadOnlyAgent } from '../utils/mcpGate';
+import { runMcpTool } from '../utils/mcpRun';
+import { cancelActiveMcpCalls, defaultMcpDeps } from '../utils/mcpRunDeps';
+import type { McpToolInfo } from '../utils/mcpTypes';
 import {
   prepareToolResult,
   rawErr,
@@ -171,6 +180,7 @@ ${references && references.trim()
 - The send_terminal_command tool RETURNS the device's output to you — run a show command, read the result, then explain or act on it
 - Send commands one at a time and interpret each result before the next
 - For configuration changes, always confirm with the user before executing — ask "Shall I apply this?" This applies to EVERY tool that can write or change state, not just send_terminal_command — including MCP tools. Some MCP servers name their write/destructive tool explicitly (e.g. a router-pattern server exposing invoke_read_tool for reads and a separate invoke_tool for writes) — treat that naming as a hard signal, not a suggestion, and always confirm before using the write path.
+- GreenCLI checks every MCP call itself: it asks the user before calls that might change something, and refuses some. A result that starts with "Not run:" did not run. Tell the user; don't retry it another way.
 - Format configs in code blocks for easy copying to the Config Editor panel
 - You can execute show/diagnostic commands freely; be cautious with config changes
 - GreenCLI hides device secrets (passwords, hashes, keys, SNMP communities, private keys) before you see any tool output: each value shows as \`<secret hidden>\`, and a whole line as \`<line hidden: secret>\`. Never put either marker in a command, REST body or tool argument: GreenCLI refuses the call, because it would write the marker over the real secret. To change a line that holds a hidden secret, leave that line alone or ask the user to make the change. If a result says its output is not shown, the tool ran but GreenCLI could not check the output for secrets on this system`;
@@ -340,14 +350,11 @@ async function tryDeviceLogin(session: Session, loginCmd: string): Promise<boole
 
 // ─── MCP tool plumbing (provider-neutral) ───
 
-interface McpToolDef {
-  server: string;
-  name: string;
-  description: string;
-  inputSchema: Record<string, unknown>;
+/** One MCP tool as mcp_all_tools lists it, plus its provider-safe name. */
+type McpToolDef = McpToolInfo & {
   /** Unique, provider-safe tool name, assigned once (handles collisions). */
   safeName?: string;
-}
+};
 
 type McpResolve = Map<string, { server: string; tool: string }>;
 
@@ -378,12 +385,15 @@ async function executeTool(
   name: string,
   args: Record<string, unknown>,
   activeSession: Session | undefined,
-  mcpResolve?: McpResolve,
-  shouldCancel?: () => boolean
+  mcpResolve: McpResolve,
+  shouldCancel: () => boolean,
+  readOnlyAgent: boolean
 ): Promise<ToolOutcome> {
   const refusal = hiddenSecretGate(args);
   if (refusal) return { text: refusal, isError: true };
-  return prepareToolResult(await executeToolRaw(name, args, activeSession, mcpResolve, shouldCancel));
+  return prepareToolResult(
+    await executeToolRaw(name, args, activeSession, mcpResolve, shouldCancel, readOnlyAgent)
+  );
 }
 
 /** Runs one tool and returns its raw, uncapped output. Only executeTool may call this. */
@@ -391,8 +401,9 @@ async function executeToolRaw(
   name: string,
   args: Record<string, unknown>,
   activeSession: Session | undefined,
-  mcpResolve?: McpResolve,
-  shouldCancel?: () => boolean
+  mcpResolve: McpResolve,
+  shouldCancel: () => boolean,
+  readOnlyAgent: boolean
 ): Promise<RawToolOutcome> {
   // Re-resolve the live session: a multi-step run can outlast the user switching
   // tabs or the device disconnecting, and the value captured at send time would
@@ -402,25 +413,11 @@ async function executeToolRaw(
       useSessionStore.getState().sessions.find((s) => s.sessionId === activeSession!.sessionId) ??
       activeSession;
   }
-  // Route MCP tools to the connected server. executeTool caps the result like
-  // every builtin tool — a 145-tool cloud server can return megabytes of JSON.
-  const mcp = mcpResolve?.get(name);
-  if (mcp) {
-    if (aiMcpLooksWrite(mcp.tool)) {
-      const ok = await askConfirm({
-        title: `Run MCP tool ${mcp.tool}?`,
-        message: JSON.stringify(args).slice(0, 500),
-        confirmLabel: 'Run tool',
-        danger: true,
-      });
-      if (!ok) return rawErr('User declined to run this MCP tool.');
-    }
-    try {
-      return rawJson(await invoke<string>('mcp_call', { server: mcp.server, tool: mcp.tool, args }));
-    } catch (e) {
-      return rawErr(`MCP tool ${mcp.server}/${mcp.tool} failed: ${e}`);
-    }
-  }
+  // Route MCP tools to the connected server, through the approval gate
+  // (utils/mcpRun.ts). executeTool caps the result like every builtin tool —
+  // a 145-tool cloud server can return megabytes of JSON.
+  const mcp = mcpResolve.get(name);
+  if (mcp) return runMcpTool(mcp.server, mcp.tool, args, { readOnlyAgent, shouldCancel }, defaultMcpDeps());
   // Aruba AOS-CX on-box REST (no Central). Auto-logs-in with the SSH creds.
   if (name === 'aruba_cx_rest') {
     const host = activeSession?.config.host;
@@ -429,11 +426,14 @@ async function executeToolRaw(
     const path = (args.path as string) || '';
     const body = (args.body as string) || undefined;
     if (method.toUpperCase() !== 'GET') {
+      // The Read-only Auditor never changes a device: refuse before any dialog.
+      if (readOnlyAgent) return rawErr(AUDITOR_REFUSAL);
       const ok = await askConfirm({
         title: `Run ${method.toUpperCase()} ${path} on ${host}?`,
         message: body || 'This request may change switch state.',
         confirmLabel: 'Run request',
         danger: method.toUpperCase() === 'DELETE',
+        group: 'ai',
       });
       if (!ok) return rawErr('User declined this write request.');
     }
@@ -479,11 +479,14 @@ async function executeToolRaw(
     const path = (args.path as string) || '';
     const body = (args.body as string) || undefined;
     if (method.toUpperCase() !== 'GET') {
+      // The Read-only Auditor never changes a device: refuse before any dialog.
+      if (readOnlyAgent) return rawErr(AUDITOR_REFUSAL);
       const ok = await askConfirm({
         title: `Run ${method.toUpperCase()} ${path} on ${host}?`,
         message: body || 'This request may change switch state.',
         confirmLabel: 'Run request',
         danger: method.toUpperCase() === 'DELETE',
+        group: 'ai',
       });
       if (!ok) return rawErr('User declined this write request.');
     }
@@ -526,6 +529,9 @@ async function executeToolRaw(
     }
     // Every line break as \n, so the confirm dialog shows each line the device runs.
     const command = normalizeLineBreaks(raw);
+    // The Read-only Auditor never changes a device: anything but a plain read (no file-writing
+    // pipes or redirects) is refused before any dialog.
+    if (readOnlyAgent && !auditorAllowsCommand(command)) return rawErr(AUDITOR_REFUSAL);
     if (!activeSession) {
       return rawErr('Error: No active terminal session. Please connect to a device first.');
     }
@@ -538,6 +544,7 @@ async function executeToolRaw(
         message: command,
         confirmLabel: 'Run command',
         danger: AI_DANGER_CMD.test(command),
+        group: 'ai',
       });
       if (!ok) return rawErr('User declined to run this command.');
     }
@@ -554,19 +561,7 @@ async function executeToolRaw(
 
 // ─── Streaming (token-by-token via Tauri events) ───
 
-let streamCounter = 0;
-const nextStreamId = () => `aistream-${++streamCounter}`;
-
-// Stream ids currently in flight, so Stop can actually abort the backend egress
-// (ai_cancel_stream), which then emits ai_done and lets each stream clean up its
-// listeners. Without this, Stop only stopped the UI from reading while Rust kept
-// generating (and being billed) and the event listeners leaked.
-const activeStreamIds = new Set<string>();
-function cancelActiveAiStreams() {
-  for (const id of activeStreamIds) {
-    invoke('ai_cancel_stream', { streamId: id }).catch(() => {});
-  }
-}
+// Stream and run ids, and Stop for them, live in utils/aiRuns.
 
 interface AnthropicStreamResult {
   text: string;
@@ -755,7 +750,8 @@ async function callAnthropicWithTools(
   mcpResolve: McpResolve,
   builtinTools: BuiltinTool[],
   shouldCancel: () => boolean,
-  onDelta: (text: string) => void
+  onDelta: (text: string) => void,
+  readOnlyAgent: boolean
 ): Promise<string> {
   const messages = [...conversationHistory];
 
@@ -795,7 +791,7 @@ async function callAnthropicWithTools(
     const toolResults: AnthropicToolResultBlock[] = [];
     for (const tu of round.toolUses) {
       if (shouldCancel()) throw new Error('cancelled');
-      const outcome = await executeTool(tu.name, tu.input, activeSession, mcpResolve, shouldCancel);
+      const outcome = await executeTool(tu.name, tu.input, activeSession, mcpResolve, shouldCancel, readOnlyAgent);
       onToolCall({ name: tu.name, args: tu.input, result: outcome.text, isError: outcome.isError, note: outcome.note });
       toolResults.push({
         type: 'tool_result',
@@ -841,7 +837,8 @@ async function callOpenAiCompatWithTools(
   mcpResolve: McpResolve,
   builtinTools: BuiltinTool[],
   shouldCancel: () => boolean,
-  onDelta: (text: string) => void
+  onDelta: (text: string) => void,
+  readOnlyAgent: boolean
 ): Promise<string> {
   const toOpenAi = (m: AnthropicMessage) => ({
     role: m.role,
@@ -915,7 +912,7 @@ async function callOpenAiCompatWithTools(
       } catch {
         /* ignore malformed args */
       }
-      const outcome = await executeTool(tc.name, args, activeSession, mcpResolve, shouldCancel);
+      const outcome = await executeTool(tc.name, args, activeSession, mcpResolve, shouldCancel, readOnlyAgent);
       onToolCall({ name: tc.name, args, result: outcome.text, isError: outcome.isError, note: outcome.note });
       messages.push({ role: 'tool', tool_call_id: tc.id, content: outcome.text });
     }
@@ -936,11 +933,25 @@ async function callOpenAiCompatWithTools(
 
 // ─── Local CLI passthrough with auto-command execution ───
 
+interface CliCallOptions {
+  /** Casper's working folder; empty = a fresh folder per question. */
+  workFolder?: string;
+  /** Text that comes before everything else in the prompt. */
+  preface?: string;
+  /** The attached agent's instructions (a CLI never sees the system prompt). */
+  instructions?: string;
+  /** The Casper provider: the backend refuses any program but Casper. */
+  asCasper?: boolean;
+  /** The session-log folder (Casper may not work in it). */
+  logFolder?: string;
+}
+
 async function callLocalCli(
   command: string,
   conversationHistory: AnthropicMessage[],
   _systemPrompt: string,
-  activeSession?: Session
+  activeSession?: Session,
+  opts: CliCallOptions = {}
 ): Promise<string> {
   // Only the last user message matters for a one-shot CLI call
   const lastUser = [...conversationHistory]
@@ -959,10 +970,25 @@ async function callLocalCli(
     ? `Connected to: ${activeSession.config.name} (${activeSession.config.host}, ${activeSession.config.deviceType})`
     : 'No device connected.';
 
-  // Keep it minimal for local CLIs — large terminal output floods their stdin
-  const prompt = `${device}\n${question}`;
+  // Keep it minimal for local CLIs — large terminal output floods their stdin.
+  // Secrets in the question are hidden: these CLIs keep conversations on disk.
+  const prompt = buildCliPrompt(device, question, { preface: opts.preface, instructions: opts.instructions });
 
-  return await invoke<string>('ai_cli', { command, prompt });
+  // Stop reaches the run through its id, like a streamed answer.
+  try {
+    return await runStoppable((runId) =>
+      invoke<string>('ai_cli', {
+        command,
+        prompt,
+        runId,
+        workFolder: opts.workFolder || null,
+        asCasper: !!opts.asCasper,
+        logFolder: opts.logFolder || null,
+      })
+    );
+  } catch (e) {
+    throw new Error(plainCliError(e));
+  }
 }
 
 // 'claude-sonnet-4-6' → 'sonnet 4.6', 'claude-haiku-4-5-20251001' → 'haiku 4.5'
@@ -1156,6 +1182,9 @@ export default function AiAssistant() {
     aiUseMcp: useSettingsStore((s) => s.aiUseMcp),
     aiModel: useSettingsStore((s) => s.aiModel),
     localCliCommand: useSettingsStore((s) => s.localCliCommand),
+    casperCommand: useSettingsStore((s) => s.casperCommand),
+    casperWorkFolder: useSettingsStore((s) => s.casperWorkFolder),
+    sessionLogDir: useSettingsStore((s) => s.sessionLogDir),
     ollamaUrl: useSettingsStore((s) => s.ollamaUrl),
     ollamaModel: useSettingsStore((s) => s.ollamaModel),
     openrouterModel: useSettingsStore((s) => s.openrouterModel),
@@ -1362,6 +1391,10 @@ export default function AiAssistant() {
         }
       }
     }
+    // The Read-only Auditor only sees tools the server marks read-only (and the
+    // Junos show tools); GreenCLI refuses its other calls in any case.
+    const readOnlyAgent = isReadOnlyAgent(activeAgent);
+    if (readOnlyAgent) mcpTools = mcpTools.filter(visibleToReadOnlyAgent);
     // Assign each MCP tool a UNIQUE provider-safe name (two servers can sanitize
     // to the same string, or names can collide after the 64-char clamp).
     const mcpResolve: McpResolve = new Map();
@@ -1436,7 +1469,8 @@ export default function AiAssistant() {
           mcpResolve,
           builtinTools,
           shouldCancel,
-          onDelta
+          onDelta,
+          readOnlyAgent
         );
       } else if (provider === 'local-cli') {
         // One-shot CLI — no token streaming. An agent may override the CLI command.
@@ -1444,7 +1478,23 @@ export default function AiAssistant() {
           activeAgent?.model || settings.localCliCommand || 'claude -p',
           apiMessages,
           systemPrompt,
-          activeSession
+          activeSession,
+          { instructions: activeAgent?.instructions, logFolder: settings.sessionLogDir }
+        );
+      } else if (provider === 'casper') {
+        // Casper answers in one go too. An agent may override the command.
+        text = await callLocalCli(
+          activeAgent?.model || settings.casperCommand || 'casper',
+          apiMessages,
+          systemPrompt,
+          activeSession,
+          {
+            workFolder: settings.casperWorkFolder || undefined,
+            preface: CASPER_PROMPT_PREFACE,
+            instructions: activeAgent?.instructions,
+            asCasper: true,
+            logFolder: settings.sessionLogDir,
+          }
         );
       } else {
         // OpenAI-compatible: openrouter | moonshot | ollama — each has its own model.
@@ -1467,7 +1517,8 @@ export default function AiAssistant() {
           mcpResolve,
           builtinTools,
           shouldCancel,
-          onDelta
+          onDelta,
+          readOnlyAgent
         );
       }
 
@@ -1523,6 +1574,9 @@ export default function AiAssistant() {
     pendingTextRef.current = null;
     setIsLoading(false);
     cancelActiveAiStreams();
+    // Settle any approval box the run left open (as No) and cancel MCP calls in flight.
+    cancelDialogs('ai');
+    cancelActiveMcpCalls();
     setMessages((prev) =>
       prev.length && prev[prev.length - 1].role === 'assistant' && !prev[prev.length - 1].content
         ? prev.slice(0, -1)
@@ -1545,6 +1599,8 @@ export default function AiAssistant() {
       }
       pendingTextRef.current = null;
       cancelActiveAiStreams();
+      cancelDialogs('ai');
+      cancelActiveMcpCalls();
     },
     []
   );
@@ -1562,7 +1618,7 @@ export default function AiAssistant() {
   // Effective provider/model for the header — an attached agent may override both.
   const provider = (activeAgent?.provider || settings.aiProvider || 'ollama') as AiProvider;
   const providerMeta = AI_PROVIDERS.find((p) => p.value === provider);
-  const isLocalProvider = provider === 'ollama' || provider === 'local-cli';
+  const isLocalProvider = provider === 'ollama' || isCliProvider(provider);
   const isReady = !providerMeta?.needsKey || hasKey;
   const providerLabel =
     activeAgent?.model ||
@@ -1570,11 +1626,13 @@ export default function AiAssistant() {
       ? settings.ollamaModel || 'llama3.2'
       : provider === 'local-cli'
         ? settings.localCliCommand || 'CLI'
-        : provider === 'anthropic'
-          ? (settings.aiModel ? prettyClaudeModel(settings.aiModel) : 'Claude')
-          : provider === 'openrouter'
-            ? settings.openrouterModel || providerMeta?.label || provider
-            : settings.moonshotModel || providerMeta?.label || provider);
+        : provider === 'casper'
+          ? settings.casperCommand || 'casper'
+          : provider === 'anthropic'
+            ? (settings.aiModel ? prettyClaudeModel(settings.aiModel) : 'Claude')
+            : provider === 'openrouter'
+              ? settings.openrouterModel || providerMeta?.label || provider
+              : settings.moonshotModel || providerMeta?.label || provider);
 
   const openAiSettings = () => {
     const s = useSessionStore.getState();
@@ -1624,14 +1682,20 @@ export default function AiAssistant() {
             }}
             className="flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full flex-shrink-0"
             style={{ color: activeAgent.color, background: `${activeAgent.color}1f` }}
-            title={`AI agent "${activeAgent.name}" is active for this session — click to manage`}
+            title={
+              !isReadOnlyAgent(activeAgent)
+                ? `AI agent "${activeAgent.name}" is active for this session — click to manage`
+                : isCliProvider(provider)
+                  ? `${activeAgent.name} (read-only): its instructions are sent with each question. GreenCLI can't enforce read-only for ${provider === 'casper' ? 'Casper' : 'Local CLI'}. Click to manage.`
+                  : `${activeAgent.name} (read-only): GreenCLI blocks anything that could change a device. MCP: only read-only tools and checks (checks ask first), plus Junos show commands. Click to manage.`
+            }
           >
-            <Bot size={10} />
+            {isReadOnlyAgent(activeAgent) ? <Lock size={10} aria-label="read-only" /> : <Bot size={10} />}
             {activeAgent.name}
           </button>
         )}
         <span className="flex-1" />
-        {mcpToolCount > 0 && (
+        {mcpToolCount > 0 && !isCliProvider(provider) && (
           <span
             className="flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full flex-shrink-0 whitespace-nowrap"
             style={{ color: 'var(--accent)', background: 'var(--accent-soft)' }}
@@ -1664,7 +1728,7 @@ export default function AiAssistant() {
         <div className="mx-3 mt-3 px-3 py-2 bg-[var(--accent-warning-soft)] border border-[var(--accent-warning-border)] rounded-lg flex items-start gap-2">
           <AlertCircle size={12} className="text-[var(--accent-warning)] flex-shrink-0 mt-0.5" />
           <div className="text-[10px] text-[var(--accent-warning)] leading-relaxed">
-            Add an API key for <strong>{providerMeta?.label}</strong> in <strong>Settings → AI &amp; MCP</strong>, or switch to a local provider (Ollama / Local CLI).
+            Add an API key for <strong>{providerMeta?.label}</strong> in <strong>Settings → AI &amp; MCP</strong>, or switch to a local provider (Ollama, Local CLI or Casper).
           </div>
         </div>
       )}
