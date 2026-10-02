@@ -385,7 +385,8 @@ export default function SettingsPanel() {
   }, [showSettings, setShowSettings]);
   const [showApiKey, setShowApiKey] = useState(false);
   const [keyInput, setKeyInput] = useState('');
-  const [keySaved, setKeySaved] = useState(false);
+  // null: unknown (the password store couldn't be asked), not "no key".
+  const [keySaved, setKeySaved] = useState<boolean | null>(false);
   const [profileName, setProfileName] = useState('');
   const [profileBase, setProfileBase] = useState<DeviceType>('generic');
   const [backupBusy, setBackupBusy] = useState<'export' | 'import' | null>(null);
@@ -401,7 +402,7 @@ export default function SettingsPanel() {
     if (providerMeta?.needsKey) {
       invoke<boolean>('ai_has_key', { provider: aiProvider })
         .then(setKeySaved)
-        .catch(() => setKeySaved(false));
+        .catch(() => setKeySaved(null));
     } else {
       setKeySaved(false);
     }
@@ -1293,7 +1294,13 @@ export default function SettingsPanel() {
                         value={keyInput}
                         onChange={(e) => setKeyInput(e.target.value)}
                         onBlur={saveKey}
-                        placeholder={keySaved ? '•••••••• (saved — type to replace)' : 'Enter API key'}
+                        placeholder={
+                          keySaved
+                            ? '•••••••• (saved — type to replace)'
+                            : keySaved === null
+                              ? "Can't check for a saved key"
+                              : 'Enter API key'
+                        }
                         className="w-full h-8 px-2 pr-8 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)] font-mono"
                       />
                       <button

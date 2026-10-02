@@ -81,6 +81,7 @@ import { loginChoiceFor } from '../utils/logins';
 import { backendVault } from '../utils/vaultAccess';
 import { useAiBridge, type AiEditTarget } from '../store/aiBridgeStore';
 import { isTauri } from '../utils/tauri';
+import { keyCheckError } from '../utils/secretStore';
 
 // ─── Anthropic API types (local) ───
 
@@ -1201,6 +1202,9 @@ export default function AiAssistant() {
     useSidePanelStore.getState().setStatus('ai', isLoading ? 'busy' : null);
   }, [isLoading]);
   const [hasKey, setHasKey] = useState(false);
+  // Set when the has-key check itself failed (password store can't be
+  // reached): whether a key is saved is unknown, so don't say "add a key".
+  const [keyError, setKeyError] = useState<string | null>(null);
   const [mcpToolCount, setMcpToolCount] = useState(0);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -1251,8 +1255,14 @@ export default function AiAssistant() {
     // key the next send will actually use.
     const provider = activeAgent?.provider || settings.aiProvider || 'ollama';
     invoke<boolean>('ai_has_key', { provider })
-      .then(setHasKey)
-      .catch(() => setHasKey(false));
+      .then((has) => {
+        setHasKey(has);
+        setKeyError(null);
+      })
+      .catch((e) => {
+        setHasKey(false);
+        setKeyError(keyCheckError(e));
+      });
   }, [settings.aiProvider, activeAgent?.provider, showSettings]);
 
   // Count tools from connected MCP servers (refresh when Settings closes, since
@@ -1325,9 +1335,16 @@ export default function AiAssistant() {
     // where a stale cache could wrongly block (a key just added in Settings).
     if (providerMeta?.needsKey) {
       let keyPresent = hasKey;
+      let checkError: string | null = null;
       if (!keyPresent) {
-        keyPresent = await invoke<boolean>('ai_has_key', { provider }).catch(() => false);
+        try {
+          keyPresent = await invoke<boolean>('ai_has_key', { provider });
+        } catch (e) {
+          keyPresent = false;
+          checkError = keyCheckError(e);
+        }
         setHasKey(keyPresent);
+        setKeyError(checkError);
       }
       if (!keyPresent) {
         setMessages((prev) => [
@@ -1335,7 +1352,9 @@ export default function AiAssistant() {
           {
             id: nextMsgId(),
             role: 'assistant',
-            content: `No API key configured for **${providerMeta.label}**. Open **Settings** (Ctrl+,) → AI Assistant and add your key, or switch provider.`,
+            content:
+              checkError ??
+              `No API key configured for **${providerMeta.label}**. Open **Settings** (Ctrl+,) → AI Assistant and add your key, or switch provider.`,
             timestamp: Date.now(),
             isError: true,
           },
@@ -1729,7 +1748,11 @@ export default function AiAssistant() {
         <div className="mx-3 mt-3 px-3 py-2 bg-[var(--accent-warning-soft)] border border-[var(--accent-warning-border)] rounded-lg flex items-start gap-2">
           <AlertCircle size={12} className="text-[var(--accent-warning)] flex-shrink-0 mt-0.5" />
           <div className="text-[10px] text-[var(--accent-warning)] leading-relaxed">
-            Add an API key for <strong>{providerMeta?.label}</strong> in <strong>Settings → AI &amp; MCP</strong>, or switch to a local provider (Ollama, Local CLI or Casper).
+            {keyError ?? (
+              <>
+                Add an API key for <strong>{providerMeta?.label}</strong> in <strong>Settings → AI &amp; MCP</strong>, or switch to a local provider (Ollama, Local CLI or Casper).
+              </>
+            )}
           </div>
         </div>
       )}

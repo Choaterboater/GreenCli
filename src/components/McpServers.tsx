@@ -24,7 +24,7 @@ import type { McpExportPins, McpServerDef, McpStatus } from '../utils/mcpTypes';
 import { plainHttpWarning } from '../utils/urlSafety';
 import McpServerSafety from './McpServerSafety';
 import SecretStoreNote from './SecretStoreNote';
-import { saveMcpLogin } from '../utils/secretStore';
+import { keyCheckError, saveMcpLogin } from '../utils/secretStore';
 
 type McpTransport = McpServerDef['transport'];
 
@@ -380,14 +380,25 @@ export default function McpServers() {
         notify.info('Nothing to export', 'Add a server first.');
         return;
       }
+      // A server's login must be known, or its file would leave out the login variable without a word.
       const withCredentials = new Set<string>();
+      let loginError: { name: string; text: string } | null = null;
       await Promise.all(
         defs
           .filter((d) => d.transport !== 'http')
           .map(async (d) => {
-            if (await invoke<boolean>('mcp_has_credentials', { name: d.name }).catch(() => false)) withCredentials.add(d.name);
+            try {
+              if (await invoke<boolean>('mcp_has_credentials', { name: d.name })) withCredentials.add(d.name);
+            } catch (e) {
+              loginError ??= { name: d.name, text: keyCheckError(e) };
+            }
           }),
       );
+      if (loginError) {
+        const { name, text } = loginError;
+        notify.error('Could not export', `Can't check the login for ${name}. ${text}`);
+        return;
+      }
       // The read-only settings GreenCLI adds while a server's writes are off go in the file too.
       const pinList = await invoke<Record<string, McpExportPins>>('mcp_export_pins').catch(() => ({}));
       const pins = new Map(Object.entries(pinList ?? {}));
