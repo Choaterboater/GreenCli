@@ -17,9 +17,15 @@
 //     mirrors the stdio reader task, but many servers don't implement it
 //     (it's optional per spec), so its absence is tolerated, not an error.
 
+use super::access::{self, AccessCheck, AccessState};
 use super::cancel::{self, CallRegistry, Cancelled};
 use super::env;
-use super::presets::{call_timeout_secs, match_by_tools, match_preset, preset_label, PresetId};
+use super::labels::SafetyLabel;
+use super::policy::{self, ServerPolicy};
+use super::presets::{
+    apply_pins, call_timeout_secs, match_preset, plan_pins, preset_label, PinPlan, PinView,
+    PresetId,
+};
 use crate::error::AppError;
 use futures::StreamExt;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -44,6 +50,26 @@ fn default_true() -> bool {
 /// of making the whole server list fail to parse.
 fn lenient_bool<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
     Ok(matches!(Value::deserialize(d)?, Value::Bool(true)))
+}
+
+/// Whether the AI may use a server's tools that change things. Off unless the
+/// user turned it on in Settings → MCP Servers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum McpWrites {
+    Off,
+    On,
+}
+
+/// "on" and "off" load as such; anything else (a hand edit, a future value)
+/// loads as None, which counts as off, instead of making the whole server
+/// list fail to parse.
+fn lenient_writes<'de, D: Deserializer<'de>>(d: D) -> Result<Option<McpWrites>, D::Error> {
+    Ok(match Value::deserialize(d)? {
+        Value::String(s) if s == "on" => Some(McpWrites::On),
+        Value::String(s) if s == "off" => Some(McpWrites::Off),
+        _ => None,
+    })
 }
 
 /// The MCP protocol version GreenCLI asks for.
@@ -134,6 +160,15 @@ pub struct McpServerDef {
     pub headers: HashMap<String, String>,
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// None: saved before 1.9, or an unreadable value. Counts as off; the UI
+    /// shows the upgrade note until it is set. Only `mcp_set_writes` changes
+    /// it; a save from the form keeps it or turns it off (see `upsert`).
+    #[serde(
+        default,
+        deserialize_with = "lenient_writes",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub writes: Option<McpWrites>,
     /// Junos only: plain `show` commands run without asking. A non-bool value
     /// loads as false. Only `mcp_set_show_opt_in` turns it on; a save from the
     /// form keeps the stored value (see `McpConfigStore::upsert`).
@@ -143,6 +178,12 @@ pub struct McpServerDef {
         skip_serializing_if = "std::ops::Not::not"
     )]
     pub show_opt_in: bool,
+}
+
+impl McpServerDef {
+    pub fn writes_on(&self) -> bool {
+        self.writes == Some(McpWrites::On)
+    }
 }
 
 /// Same program: the same transport, command, args, URL and folder. Env and
@@ -183,6 +224,19 @@ pub struct McpToolInfo {
     /// listing time.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub show_opt_in: bool,
+    /// The effective writes setting. Always Some after policy::decorate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub writes: Option<McpWrites>,
+    /// The login access from access_check. Always Some after policy::decorate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access: Option<AccessState>,
+    /// GreenCLI's own label: labels::tool_label raised by the preset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<SafetyLabel>,
+    /// Why GreenCLI refuses this tool right now. Plain text, no "Not run:".
+    /// mcp_all_tools never returns a blocked tool; mcp_tool_info does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocked: Option<String>,
 }
 
 /// One entry of tools/list -> McpToolInfo. None when `name` is missing, not a
@@ -212,6 +266,10 @@ pub(crate) fn tool_from_json(server: &str, t: &Value) -> Option<McpToolInfo> {
         meta: object("_meta"),
         preset: None,
         show_opt_in: false,
+        writes: None,
+        access: None,
+        label: None,
+        blocked: None,
     })
 }
 
@@ -240,23 +298,6 @@ pub(crate) fn dedupe_tools(server: &str, tools: Vec<McpToolInfo>) -> Vec<McpTool
         .into_iter()
         .filter(|t| counts.get(&t.name) == Some(&1))
         .collect()
-}
-
-/// Fills the listing-time fields of one tool: its preset (from the definition
-/// and the tool names, or from the tool names alone when there is no saved
-/// definition) and the Junos plain-show opt-in.
-pub fn decorate_a2(
-    def: Option<&McpServerDef>,
-    tool_names: &[&str],
-    mut tool: McpToolInfo,
-) -> McpToolInfo {
-    let found = match def {
-        Some(d) => match_preset(d, Some(tool_names)),
-        None => match_by_tools(tool_names),
-    };
-    tool.preset = found.map(|m| m.id);
-    tool.show_opt_in = def.is_some_and(|d| d.show_opt_in);
-    tool
 }
 
 // ─── On-disk config store ───
@@ -312,16 +353,23 @@ impl McpConfigStore {
     }
 
     /// Save a definition from the form. The form can't change the safety
-    /// settings: an existing server keeps its Junos opt-in only while it runs
-    /// the same program, and a new server starts with it off.
+    /// settings: an existing server keeps its writes setting and Junos opt-in
+    /// only while it runs the same program (otherwise writes go off and the
+    /// opt-in is cleared), and a new server starts with both off.
     pub fn upsert(&self, mut def: McpServerDef) -> Result<(), AppError> {
         let mut all = self.load_checked()?;
         if let Some(existing) = all.iter_mut().find(|d| d.name == def.name) {
             let same = same_program(existing, &def);
             def.show_opt_in = same && existing.show_opt_in;
+            def.writes = if same {
+                existing.writes
+            } else {
+                Some(McpWrites::Off)
+            };
             *existing = def;
         } else {
             def.show_opt_in = false;
+            def.writes = Some(McpWrites::Off);
             all.push(def);
         }
         self.save(&all)
@@ -481,6 +529,15 @@ pub struct McpClient {
     /// (e.g. centralmcp enabling a new capability mid-session) — without this the
     /// AI keeps using a stale tool list until the user manually reconnects.
     refresher: tokio::task::JoinHandle<()>,
+    /// The read-only pins applied at connect (set by the caller from
+    /// `ResolvedDef`). None while writes were on, or for no preset.
+    pub pins: PinPlan,
+    /// The writes setting this connection was started with. When the saved
+    /// setting differs, status() asks for a restart so the pins match it.
+    pub connected_writes_on: bool,
+    /// The server's access_check answer, run once per connection. None when
+    /// the server has no usable access_check tool. Never sent to the AI.
+    pub access: Arc<std::sync::Mutex<Option<AccessCheck>>>,
 }
 
 /// GUI apps inherit a minimal PATH; add the usual user/tool bin dirs so things
@@ -781,6 +838,21 @@ pub(crate) async fn send_then_wait<W: AsyncWrite + Unpin, T>(
     }
 }
 
+/// Run the server's own access_check once, when it offers a usable one
+/// (access::access_check_tool). Any error counts as "unknown".
+async fn check_access(caller: &McpCaller, tools: &[McpToolInfo]) -> Option<AccessCheck> {
+    let tool = access::access_check_tool(tools)?;
+    Some(
+        match caller.call_tool_raw(&tool.name, json!({}), 15, None).await {
+            Ok(result) => access::parse_access_check(&result),
+            Err(e) => {
+                log::warn!("MCP '{}': access_check failed: {}", caller.server, e);
+                AccessCheck::unknown()
+            }
+        },
+    )
+}
+
 /// Refetches the tool list on `notifications/tools/list_changed`, shared by
 /// both transports. Debounced so a burst of notifications (a server flipping
 /// several capabilities at once) triggers one refetch, not one per
@@ -1024,6 +1096,7 @@ impl McpClient {
             Ok(t) => t,
             Err(e) => return Err(with_stderr(e, &stderr_buf).await),
         };
+        let access = check_access(&caller, &tools).await;
         let tools = Arc::new(std::sync::Mutex::new(tools));
         let refresher = spawn_refresher(caller.clone(), tools.clone(), def.name.clone(), tools_changed_rx);
 
@@ -1034,6 +1107,9 @@ impl McpClient {
             server_info,
             reader,
             refresher,
+            pins: PinPlan::None,
+            connected_writes_on: false,
+            access: Arc::new(std::sync::Mutex::new(access)),
         })
     }
 
@@ -1104,6 +1180,7 @@ impl McpClient {
         caller.notify("notifications/initialized", json!({})).await?;
 
         let tools = fetch_all_tools(&caller, &def.name).await?;
+        let access = check_access(&caller, &tools).await;
         let tools = Arc::new(std::sync::Mutex::new(tools));
 
         // Optional standalone GET SSE stream for out-of-band server pushes
@@ -1190,6 +1267,9 @@ impl McpClient {
             server_info,
             reader,
             refresher,
+            pins: PinPlan::None,
+            connected_writes_on: false,
+            access: Arc::new(std::sync::Mutex::new(access)),
         })
     }
 
@@ -1198,22 +1278,14 @@ impl McpClient {
         self.caller.clone()
     }
 
-    /// One tool from the current list, cloned (no network call).
-    pub fn tool(&self, name: &str) -> Option<McpToolInfo> {
-        self.tools
-            .lock()
-            .ok()?
-            .iter()
-            .find(|t| t.name == name)
-            .cloned()
+    /// The current tool list, cloned (no network call).
+    fn tool_list(&self) -> Vec<McpToolInfo> {
+        self.tools.lock().map(|g| g.clone()).unwrap_or_default()
     }
 
-    /// The names in the current tool list (no network call).
-    pub fn tool_names(&self) -> Vec<String> {
-        self.tools
-            .lock()
-            .map(|g| g.iter().map(|t| t.name.clone()).collect())
-            .unwrap_or_default()
+    /// The access_check answer for this connection, cloned.
+    pub fn access_check(&self) -> Option<AccessCheck> {
+        self.access.lock().ok().and_then(|g| g.clone())
     }
 
     /// True once the server is known gone (see the `dead` field doc on
@@ -1795,9 +1867,11 @@ impl McpManager {
     }
 
     /// Load a server def and materialise its managed credentials into a 0600
-    /// file, injecting the credentials env var. Cheap + non-blocking, so it runs
-    /// under the (brief) manager lock; the spawn/handshake happens unlocked.
-    pub fn resolve_connect_def(&self, name: &str) -> Result<McpServerDef, AppError> {
+    /// file, injecting the credentials env var. With writes off, a recognised
+    /// server also gets its preset's read-only pins. Cheap + non-blocking, so
+    /// it runs under the (brief) manager lock; the spawn/handshake happens
+    /// unlocked.
+    pub fn resolve_connect_def(&self, name: &str) -> Result<ResolvedDef, AppError> {
         let mut def = self
             .store
             .load()
@@ -1831,7 +1905,19 @@ impl McpManager {
                 def.env.insert(var, path.to_string_lossy().to_string());
             }
         }
-        Ok(def)
+        let writes_on = def.writes_on();
+        let mut pins = PinPlan::None;
+        if !writes_on {
+            if let Some(found) = match_preset(&def, None) {
+                pins = plan_pins(&def, found.id);
+                apply_pins(&mut def, &pins);
+            }
+        }
+        Ok(ResolvedDef {
+            def,
+            pins,
+            writes_on,
+        })
     }
 
     /// Install a freshly-connected client, returning any displaced old one
@@ -1852,8 +1938,9 @@ impl McpManager {
         self.clients.drain().map(|(_, c)| c).collect()
     }
 
-    /// Every tool of every live server, with the listing-time fields filled.
-    /// `server` is always the clients-map key: a refresh after a rename
+    /// Every tool the AI may use, across every live server. Each is decorated
+    /// by the policy (label, writes, access, preset); blocked tools are left
+    /// out. `server` is always the clients-map key: a refresh after a rename
     /// rebuilds the tools with the old name (spawn_refresher keeps the name it
     /// was started with), so the key is the only reliable name.
     pub fn all_tools(&self) -> Vec<McpToolInfo> {
@@ -1865,35 +1952,27 @@ impl McpManager {
         self.clients
             .iter()
             .filter(|(_, c)| !c.is_dead())
-            .flat_map(|(key, c)| {
-                let tools = c.tools.lock().map(|g| g.clone()).unwrap_or_default();
-                let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
-                let def = by_name.get(key.as_str()).copied();
-                tools
-                    .iter()
-                    .map(|t| {
-                        let mut t = decorate_a2(def, &names, t.clone());
-                        t.server = key.clone();
-                        t
-                    })
-                    .collect::<Vec<McpToolInfo>>()
-            })
+            .flat_map(|(key, c)| decorated_tools(key, by_name.get(key.as_str()).copied(), c))
+            .filter(|t| t.blocked.is_none())
             .collect()
     }
 
-    /// One tool of a live server, decorated like `all_tools`. No network call.
-    /// None when the server isn't connected, its client is dead, or the tool
-    /// isn't in its current list.
+    /// One tool of a live server, decorated like `all_tools` but returned even
+    /// when blocked (with `blocked` set). No network call. None when the
+    /// server isn't connected, its client is dead, or the tool isn't in its
+    /// current list.
     pub fn tool_info(&self, server: &str, tool: &str) -> Option<McpToolInfo> {
         let client = self.clients.get(server).filter(|c| !c.is_dead())?;
-        let found = client.tool(tool)?;
-        let names = client.tool_names();
-        let names: Vec<&str> = names.iter().map(String::as_str).collect();
         let defs = self.store.load();
         let def = defs.iter().find(|d| d.name == server);
-        let mut found = decorate_a2(def, &names, found);
-        found.server = server.to_string();
-        Some(found)
+        decorated_tools(server, def, client)
+            .into_iter()
+            .find(|t| t.name == tool)
+    }
+
+    /// How many of a server's tools the AI can use now.
+    pub fn visible_tool_count(&self, server: &str) -> usize {
+        self.all_tools().iter().filter(|t| t.server == server).count()
     }
 
     pub fn status(&self) -> Vec<Value> {
@@ -1904,19 +1983,47 @@ impl McpManager {
                 // A client whose process has exited is NOT connected, even if it
                 // is still sitting in the map awaiting a reconnect.
                 let live = self.clients.get(&d.name).filter(|c| !c.is_dead());
-                let names = live.map(|c| c.tool_names());
-                let name_refs: Option<Vec<&str>> =
-                    names.as_ref().map(|n| n.iter().map(String::as_str).collect());
+                let tools = live.map(|c| decorated_tools(&d.name, Some(d), c));
+                let names: Option<Vec<&str>> = tools
+                    .as_ref()
+                    .map(|t| t.iter().map(|t| t.name.as_str()).collect());
                 // Matches on the definition even while disconnected; once
                 // connected the tool list is checked too.
-                let found = match_preset(d, name_refs.as_deref());
+                let found = match_preset(d, names.as_deref());
+                let check = live.and_then(McpClient::access_check);
+                let access = check.as_ref().map_or(AccessState::Unknown, |c| c.state);
+                let hidden = tools
+                    .as_ref()
+                    .map_or(0, |t| t.iter().filter(|t| t.blocked.is_some()).count());
+                let visible = tools.as_ref().map_or(0, |t| t.len()) - hidden;
+                let pins = match live {
+                    Some(c) => {
+                        PinView::of(&c.pins, access::gates_confirmed_off(check.as_ref()))
+                    }
+                    None if !d.writes_on() => match match_preset(d, None) {
+                        Some(m) => PinView::of(&plan_pins(d, m.id), false),
+                        None => PinView::None,
+                    },
+                    None => PinView::None,
+                };
+                let writes = if d.writes_on() {
+                    McpWrites::On
+                } else {
+                    McpWrites::Off
+                };
                 let mut item = json!({
                     "name": d.name,
                     "enabled": d.enabled,
                     "connected": live.is_some(),
-                    "toolCount": names.as_ref().map(|n| n.len()).unwrap_or(0),
+                    "toolCount": visible,
+                    "hiddenToolCount": hidden,
                     "preset": found.map(|m| json!({ "id": m.id, "label": preset_label(m.id) })),
                     "presetMismatch": found.is_some_and(|m| m.mismatch),
+                    "writes": writes,
+                    "writesSet": d.writes.is_some(),
+                    "pins": pins,
+                    "access": access,
+                    "restartNeeded": live.is_some_and(|c| c.connected_writes_on != d.writes_on()),
                 });
                 if let Some(m) = found {
                     item["presetBy"] = json!(m.by);
@@ -1926,25 +2033,55 @@ impl McpManager {
             .collect()
     }
 
-    /// The caller handle and call timeout for a connected server, so the
+    /// The caller handle and call timeout for a call GreenCLI allows, so the
     /// command can drop the manager lock before awaiting the tool round-trip.
+    /// A refused call gets "Not run: " and the reason (policy::call_refusal).
     ///
     /// Dead clients are deliberately NOT filtered here: the caller's own dead
     /// check in `request()` yields the precise "server has exited — reconnect"
     /// error, which beats the generic "not connected" the command would emit.
-    pub fn call_target(&self, server: &str) -> Result<(McpCaller, u64), String> {
+    pub fn call_gate(
+        &self,
+        server: &str,
+        tool: &str,
+        args: &Value,
+        read_only_agent: bool,
+    ) -> Result<(McpCaller, u64), String> {
         let client = self
             .clients
             .get(server)
             .ok_or_else(|| format!("MCP server '{}' is not connected", server))?;
-        let names = client.tool_names();
-        let names: Vec<&str> = names.iter().map(String::as_str).collect();
         let defs = self.store.load();
-        let found = match defs.iter().find(|d| d.name == server) {
-            Some(d) => match_preset(d, Some(&names)),
-            None => match_by_tools(&names),
-        };
-        Ok((client.caller(), call_timeout_secs(found.map(|m| m.id))))
+        let def = defs.iter().find(|d| d.name == server);
+        let tools = client.tool_list();
+        let p = client_policy(def, &tools, client);
+        let found = tools.iter().find(|t| t.name == tool);
+        if let Some(reason) = policy::call_refusal(&p, found, tool, args, read_only_agent, server) {
+            return Err(format!("Not run: {}", reason));
+        }
+        Ok((client.caller(), call_timeout_secs(p.preset.map(|m| m.id))))
+    }
+
+    /// Turn writes on or off for a saved server. Takes effect at once for
+    /// hiding and refusing (the policy reads the saved setting); the pins
+    /// change on the next connect, which the settings page does right away.
+    /// On is refused while the live login is read-only.
+    pub fn set_writes(&self, name: &str, writes: McpWrites) -> Result<(), String> {
+        let read_only = self
+            .clients
+            .get(name)
+            .and_then(McpClient::access_check)
+            .is_some_and(|c| c.state == AccessState::ReadOnly);
+        if writes == McpWrites::On && read_only {
+            return Err(format!(
+                "Not run: {} login is read-only. Writes can't be turned on here.",
+                name
+            ));
+        }
+        self.store
+            .update(name, |d| d.writes = Some(writes))
+            .map(|_| ())
+            .map_err(|e| e.to_string())
     }
 
     /// Turn the Junos plain-show opt-in on or off for a saved server.
@@ -1953,10 +2090,70 @@ impl McpManager {
     }
 }
 
-/// The `mcp_call` command without Tauri: look the server up under a brief
-/// lock, then run the call unlocked, stoppable through `calls` when the AI
-/// panel gave it an id. A Stop gives one of the two MCP_STOPPED_* texts,
-/// unprefixed, so the panel can tell the model exactly what happened.
+/// A saved definition, ready to connect: credentials injected and, with
+/// writes off, the preset's read-only pins applied.
+pub struct ResolvedDef {
+    pub def: McpServerDef,
+    /// The pins applied (PinPlan::None when writes are on or there is no preset).
+    pub pins: PinPlan,
+    /// The writes setting the connection starts with.
+    pub writes_on: bool,
+}
+
+/// The policy for one live client: its saved definition (None fails closed),
+/// its tool names and its access_check answer.
+fn client_policy(
+    def: Option<&McpServerDef>,
+    tools: &[McpToolInfo],
+    client: &McpClient,
+) -> ServerPolicy {
+    let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+    policy::server_policy(def, &names, client.access_check().as_ref())
+}
+
+/// A client's tools, each decorated by the policy, with `server` set to `key`.
+fn decorated_tools(key: &str, def: Option<&McpServerDef>, client: &McpClient) -> Vec<McpToolInfo> {
+    let tools = client.tool_list();
+    let p = client_policy(def, &tools, client);
+    tools
+        .into_iter()
+        .map(|mut t| {
+            t.server = key.to_string();
+            policy::decorate(&p, t)
+        })
+        .collect()
+}
+
+/// The `mcp_connect` command without Tauri: resolve the definition under a
+/// brief lock, connect unlocked, then swap the client in. Connecting the new
+/// client first means a failed reconnect leaves the old one up. Returns how
+/// many tools the AI can use.
+pub async fn connect_server(manager: &Mutex<McpManager>, name: &str) -> Result<usize, String> {
+    let resolved = {
+        let mgr = manager.lock().await;
+        mgr.resolve_connect_def(name).map_err(|e| e.to_string())?
+    };
+    let mut client = McpClient::connect(&resolved.def)
+        .await
+        .map_err(|e| e.to_string())?;
+    client.pins = resolved.pins;
+    client.connected_writes_on = resolved.writes_on;
+    let (old, count) = {
+        let mut mgr = manager.lock().await;
+        let old = mgr.install_client(name.to_string(), client);
+        (old, mgr.visible_tool_count(name))
+    };
+    if let Some(old) = old {
+        old.shutdown().await;
+    }
+    Ok(count)
+}
+
+/// The `mcp_call` command without Tauri: check the call under a brief lock
+/// (McpManager::call_gate), then run it unlocked, stoppable through `calls`
+/// when the AI panel gave it an id. A Stop gives one of the two MCP_STOPPED_*
+/// texts and a refusal "Not run: ...", both unprefixed, so the panel can tell
+/// the model exactly what happened.
 pub async fn run_call(
     manager: &Mutex<McpManager>,
     calls: &CallRegistry,
@@ -1964,10 +2161,11 @@ pub async fn run_call(
     tool: &str,
     args: Value,
     call_id: Option<&str>,
+    read_only_agent: bool,
 ) -> Result<String, String> {
     let (caller, timeout_secs) = {
         let mgr = manager.lock().await;
-        mgr.call_target(server)?
+        mgr.call_gate(server, tool, &args, read_only_agent)?
     };
     let (rx, owned) = match call_id.map(|id| calls.register(id)) {
         None => (None, false),
@@ -2012,12 +2210,28 @@ mod tests {
             credentials_env_var: None,
             headers: HashMap::new(),
             enabled: true,
+            writes: None,
             show_opt_in: false,
         }
     }
 
     fn tool(server: &str, name: &str) -> McpToolInfo {
         tool_from_json(server, &json!({ "name": name })).unwrap()
+    }
+
+    fn read_tool(server: &str, name: &str) -> McpToolInfo {
+        tool_from_json(
+            server,
+            &json!({ "name": name, "annotations": { "readOnlyHint": true } }),
+        )
+        .unwrap()
+    }
+
+    fn access(state: &str) -> AccessCheck {
+        access::parse_access_check(&json!({ "structuredContent": {
+            "contract": access::ACCESS_CONTRACT,
+            "products": [{ "product": "central", "access": state }]
+        } }))
     }
 
     /// A client with a fixed tool list and no server behind it.
@@ -2045,6 +2259,9 @@ mod tests {
             server_info: Value::Null,
             reader: tokio::spawn(async {}),
             refresher: tokio::spawn(async {}),
+            pins: PinPlan::None,
+            connected_writes_on: false,
+            access: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -2327,20 +2544,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_client_without_a_definition_gets_a_tools_only_preset() {
+    async fn a_client_without_a_definition_fails_closed() {
         let mut mgr = McpManager::new(temp_dir());
         let tools = vec![
-            tool("ghost", "find_tool"),
-            tool("ghost", "invoke_read_tool"),
+            read_tool("ghost", "find_tool"),
+            read_tool("ghost", "invoke_read_tool"),
             tool("ghost", "invoke_tool"),
         ];
         mgr.install_client("ghost".into(), fake_client("ghost", tools));
-        let t = mgr.tool_info("ghost", "invoke_tool").unwrap();
+        // The preset still comes from the tools, but every tool is blocked.
+        let t = mgr.tool_info("ghost", "find_tool").unwrap();
         assert_eq!(t.preset, Some(PresetId::HpeNetworkingMcp));
         assert!(!t.show_opt_in);
-        let all = mgr.all_tools();
-        assert_eq!(all.len(), 3);
-        assert!(all.iter().all(|t| !t.show_opt_in && t.server == "ghost"));
+        assert_eq!(t.writes, Some(McpWrites::Off));
+        assert_eq!(t.blocked, Some(access::no_definition_reason("ghost")));
+        assert!(mgr.all_tools().is_empty());
+        let err = mgr.call_gate("ghost", "find_tool", &json!({}), false).err().unwrap();
+        assert_eq!(
+            err,
+            "Not run: ghost has no saved settings. Reconnect it in Settings → MCP Servers."
+        );
         // Not saved, so not listed in status.
         assert!(mgr.status().is_empty());
     }
@@ -2376,10 +2599,10 @@ mod tests {
         let t = mgr.tool_info("srx", "get_router_list").unwrap();
         assert_eq!(t.preset, Some(PresetId::JunosMcpServer));
         assert!(t.show_opt_in);
-        let (_, timeout) = mgr.call_target("srx").unwrap();
+        let (_, timeout) = mgr.call_gate("srx", "get_router_list", &json!({}), false).unwrap();
         assert_eq!(timeout, 400);
         assert_eq!(
-            mgr.call_target("other").err().unwrap(),
+            mgr.call_gate("other", "x", &json!({}), false).err().unwrap(),
             "MCP server 'other' is not connected"
         );
         // A plain server has no preset.
@@ -2396,11 +2619,13 @@ mod tests {
         let mut mgr = McpManager::new(temp_dir());
         mgr.save_config(def("a", "python3", &["jmcp.py"])).unwrap();
         mgr.set_show_opt_in("a", true).unwrap();
+        mgr.set_writes("a", McpWrites::On).unwrap();
         mgr.rename_server("a", "b").unwrap();
         let all = mgr.list_configs();
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].name, "b");
         assert!(all[0].show_opt_in);
+        assert_eq!(all[0].writes, Some(McpWrites::On));
     }
 
     #[tokio::test]
@@ -2411,9 +2636,216 @@ mod tests {
         let manager = Mutex::new(mgr);
         let calls = CallRegistry::new();
         calls.cancel("mcp-1");
-        let r = run_call(&manager, &calls, "s", "get_x", json!({}), Some("mcp-1")).await;
+        let r = run_call(&manager, &calls, "s", "get_x", json!({}), Some("mcp-1"), false).await;
         assert_eq!(r.unwrap_err(), MCP_STOPPED_NOT_SENT);
-        let r = run_call(&manager, &calls, "nope", "get_x", json!({}), None).await;
+        let r = run_call(&manager, &calls, "nope", "get_x", json!({}), None, false).await;
         assert_eq!(r.unwrap_err(), "MCP server 'nope' is not connected");
+    }
+
+    // ─── writes off ───
+
+    #[test]
+    fn legacy_and_odd_writes_values_load_as_unset() {
+        let dir = temp_dir();
+        std::fs::write(
+            dir.join("mcp_servers.json"),
+            r#"[{"name":"old","command":"uvx","args":[]},
+                {"name":"odd","command":"uvx","args":[],"writes":"ask"},
+                {"name":"num","command":"uvx","args":[],"writes":1},
+                {"name":"on","command":"uvx","args":[],"writes":"on"},
+                {"name":"off","command":"uvx","args":[],"writes":"off"}]"#,
+        )
+        .unwrap();
+        let store = McpConfigStore::new(dir);
+        let all = store.load_checked().unwrap();
+        assert_eq!(all.len(), 5);
+        assert_eq!(all[0].writes, None);
+        assert!(!all[0].writes_on());
+        assert_eq!(all[1].writes, None);
+        assert_eq!(all[2].writes, None);
+        assert_eq!(all[3].writes, Some(McpWrites::On));
+        assert!(all[3].writes_on());
+        assert_eq!(all[4].writes, Some(McpWrites::Off));
+        let v = serde_json::to_value(&all[0]).unwrap();
+        assert!(v.get("writes").is_none());
+        assert_eq!(serde_json::to_value(&all[3]).unwrap()["writes"], "on");
+    }
+
+    #[test]
+    fn upsert_sets_writes_off_for_a_new_server() {
+        let store = McpConfigStore::new(temp_dir());
+        let mut d = def("new", "uvx", &["x"]);
+        d.writes = Some(McpWrites::On);
+        store.upsert(d).unwrap();
+        assert_eq!(store.load()[0].writes, Some(McpWrites::Off));
+    }
+
+    #[test]
+    fn upsert_keeps_writes_for_the_same_program_only() {
+        let store = McpConfigStore::new(temp_dir());
+        store.upsert(def("c", "uvx", &["centralmcp"])).unwrap();
+        let updated = store.update("c", |d| d.writes = Some(McpWrites::On)).unwrap();
+        assert_eq!(updated.writes, Some(McpWrites::On));
+        // Env-only change (a rotated token): writes stay on.
+        let mut same = def("c", "uvx", &["centralmcp"]);
+        same.env.insert("TOKEN".into(), "new".into());
+        same.writes = Some(McpWrites::Off); // the form can't change it either way
+        store.upsert(same).unwrap();
+        assert_eq!(store.load()[0].writes, Some(McpWrites::On));
+        // A legacy (unset) entry keeps unset on a same-program save.
+        let legacy = McpConfigStore::new(temp_dir());
+        legacy.upsert(def("l", "uvx", &["x"])).unwrap();
+        legacy.update("l", |d| d.writes = None).unwrap();
+        legacy.upsert(def("l", "uvx", &["x"])).unwrap();
+        assert_eq!(legacy.load()[0].writes, None);
+        type Change = Box<dyn Fn(&mut McpServerDef)>;
+        let changes: Vec<Change> = vec![
+            Box::new(|d| d.command = "uv".into()),
+            Box::new(|d| d.args.push("--debug".into())),
+            Box::new(|d| d.cwd = Some("/other".into())),
+            Box::new(|d| d.url = Some("http://127.0.0.1:8010/mcp".into())),
+        ];
+        for change in changes {
+            let store = McpConfigStore::new(temp_dir());
+            store.upsert(def("c", "uvx", &["centralmcp"])).unwrap();
+            store.update("c", |d| d.writes = Some(McpWrites::On)).unwrap();
+            let mut changed = def("c", "uvx", &["centralmcp"]);
+            change(&mut changed);
+            changed.writes = Some(McpWrites::On);
+            store.upsert(changed).unwrap();
+            assert_eq!(store.load()[0].writes, Some(McpWrites::Off));
+        }
+    }
+
+    #[tokio::test]
+    async fn set_writes_refuses_on_for_a_read_only_login() {
+        let mut mgr = McpManager::new(temp_dir());
+        mgr.save_config(def("c", "uvx", &["x"])).unwrap();
+        let client = fake_client("c", vec![read_tool("c", "get_x")]);
+        *client.access.lock().unwrap() = Some(access("read-only"));
+        mgr.install_client("c".into(), client);
+        let err = mgr.set_writes("c", McpWrites::On).unwrap_err();
+        assert_eq!(err, "Not run: c login is read-only. Writes can't be turned on here.");
+        assert_eq!(mgr.list_configs()[0].writes, Some(McpWrites::Off));
+        mgr.set_writes("c", McpWrites::Off).unwrap();
+        assert!(mgr.set_writes("missing", McpWrites::Off).is_err());
+    }
+
+    #[tokio::test]
+    async fn writes_off_hides_and_refuses_at_once() {
+        let mut mgr = McpManager::new(temp_dir());
+        mgr.save_config(def("s", "uvx", &["x"])).unwrap();
+        let tools = vec![read_tool("s", "get_device"), tool("s", "set_ssid"), tool("s", "execute_command")];
+        mgr.install_client("s".into(), fake_client("s", tools));
+        let names: Vec<String> = mgr.all_tools().into_iter().map(|t| t.name).collect();
+        assert_eq!(names.len(), 2);
+        assert!(!names.contains(&"set_ssid".to_string()));
+        let blocked = mgr.tool_info("s", "set_ssid").unwrap();
+        assert_eq!(blocked.blocked, Some(access::writes_off_reason("s")));
+        assert_eq!(blocked.label, Some(SafetyLabel::Write));
+        let err = mgr.call_gate("s", "set_ssid", &json!({}), false).err().unwrap();
+        assert_eq!(
+            err,
+            "Not run: s writes are off. Only the user can turn them on, in Settings → MCP Servers."
+        );
+        assert!(mgr.call_gate("s", "get_device", &json!({}), false).is_ok());
+        let err = mgr.call_gate("s", "get_device", &json!({}), true);
+        assert!(err.is_ok(), "a read-only tool runs for the Auditor");
+        let err = mgr.call_gate("s", "execute_command", &json!({}), true).err().unwrap();
+        assert_eq!(err, format!("Not run: {}", policy::AUDITOR_REFUSAL));
+        // Turning writes on shows it at once, before any reconnect.
+        mgr.set_writes("s", McpWrites::On).unwrap();
+        assert_eq!(mgr.all_tools().len(), 3);
+        assert!(mgr.call_gate("s", "set_ssid", &json!({}), false).is_ok());
+        let st = mgr.status();
+        assert_eq!(st[0]["restartNeeded"], true);
+        assert_eq!(st[0]["writes"], "on");
+        assert_eq!(mgr.visible_tool_count("s"), 3);
+
+        let manager = Mutex::new(mgr);
+        let calls = CallRegistry::new();
+        manager.lock().await.set_writes("s", McpWrites::Off).unwrap();
+        let r = run_call(&manager, &calls, "s", "set_ssid", json!({}), Some("id-1"), false).await;
+        assert!(r.unwrap_err().starts_with("Not run: s writes are off."));
+        // A refused call never registered its id, so Stop can't leak an entry.
+        assert!(!calls.cancel("id-1"));
+    }
+
+    #[tokio::test]
+    async fn status_reports_the_writes_fields() {
+        let dir = temp_dir();
+        std::fs::write(
+            dir.join("mcp_servers.json"),
+            r#"[{"name":"legacy","command":"uv","args":["run","centralmcp"]},
+                {"name":"plain","command":"uvx","args":["x"],"writes":"on"}]"#,
+        )
+        .unwrap();
+        let mut mgr = McpManager::new(dir);
+        let st = mgr.status();
+        let legacy = &st[0];
+        assert_eq!(legacy["writesSet"], false);
+        assert_eq!(legacy["writes"], "off");
+        assert_eq!(legacy["access"], "unknown");
+        assert_eq!(legacy["restartNeeded"], false);
+        assert_eq!(legacy["hiddenToolCount"], 0);
+        assert_eq!(legacy["presetBy"], "definition");
+        assert_eq!(legacy["presetMismatch"], false);
+        // Disconnected with writes off: the pins it would send.
+        assert_eq!(
+            legacy["pins"],
+            json!({ "kind": "pinned", "shown": ["CENTRALMCP_READONLY=1"], "confirmed": false })
+        );
+        let plain = &st[1];
+        assert_eq!(plain["writesSet"], true);
+        assert_eq!(plain["writes"], "on");
+        assert_eq!(plain["pins"], json!({ "kind": "none" }));
+        assert!(plain["preset"].is_null());
+
+        // Connected: what was applied, the login, and the hidden count.
+        let resolved = mgr.resolve_connect_def("legacy").unwrap();
+        assert!(!resolved.writes_on);
+        assert_eq!(resolved.def.env.get("CENTRALMCP_READONLY").map(String::as_str), Some("1"));
+        let mut client = fake_client(
+            "legacy",
+            vec![read_tool("legacy", "get_x"), tool("legacy", "delete_x")],
+        );
+        client.pins = resolved.pins;
+        client.connected_writes_on = resolved.writes_on;
+        *client.access.lock().unwrap() = Some(access("read-write"));
+        mgr.install_client("legacy".into(), client);
+        let st = mgr.status();
+        assert_eq!(st[0]["toolCount"], 1);
+        assert_eq!(st[0]["hiddenToolCount"], 1);
+        assert_eq!(st[0]["access"], "read-write");
+        assert_eq!(st[0]["restartNeeded"], false);
+        assert_eq!(st[0]["pins"]["kind"], "pinned");
+        // Writes on while the pinned connection runs: restart needed.
+        mgr.set_writes("legacy", McpWrites::On).unwrap();
+        assert_eq!(mgr.status()[0]["restartNeeded"], true);
+        assert_eq!(mgr.status()[0]["hiddenToolCount"], 0);
+        // A writes-on connect sends no pins.
+        let resolved = mgr.resolve_connect_def("legacy").unwrap();
+        assert!(resolved.writes_on);
+        assert_eq!(resolved.pins, PinPlan::None);
+        assert!(!resolved.def.env.contains_key("CENTRALMCP_READONLY"));
+    }
+
+    #[tokio::test]
+    async fn resolve_pins_override_the_users_own_value() {
+        let mut mgr = McpManager::new(temp_dir());
+        let mut d = def("c", "uv", &["run", "centralmcp"]);
+        d.env.insert("centralmcp_readonly".into(), "0".into());
+        mgr.save_config(d).unwrap();
+        let resolved = mgr.resolve_connect_def("c").unwrap();
+        let keys: Vec<&String> = resolved
+            .def
+            .env
+            .keys()
+            .filter(|k| k.eq_ignore_ascii_case("CENTRALMCP_READONLY"))
+            .collect();
+        assert_eq!(keys, vec!["CENTRALMCP_READONLY"]);
+        assert_eq!(resolved.def.env["CENTRALMCP_READONLY"], "1");
+        mgr.install_client("c".into(), fake_client("c", vec![]));
+        assert!(mgr.clients.contains_key("c"));
     }
 }

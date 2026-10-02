@@ -1,0 +1,154 @@
+[
+  {
+    "command": "show interfaces terse | match ge- | no-more",
+    "plain": true
+  },
+  {
+    "command": "show version",
+    "plain": true
+  },
+  {
+    "command": "show  version",
+    "plain": true
+  },
+  {
+    "command": "show\tversion",
+    "plain": true
+  },
+  {
+    "command": " show version ",
+    "plain": true
+  },
+  {
+    "command": "show | save /tmp/x",
+    "plain": false
+  },
+  {
+    "command": "sh int",
+    "plain": false
+  },
+  {
+    "command": "show version; request system reboot",
+    "plain": false
+  },
+  {
+    "command": "show\nconfigure",
+    "plain": false
+  },
+  {
+    "command": "showx",
+    "plain": false
+  },
+  {
+    "command": "show﻿version",
+    "plain": false
+  },
+  {
+    "command": "show\u000bversion",
+    "plain": false
+  },
+  {
+    "command": "show",
+    "plain": false
+  },
+  {
+    "command": "show Version",
+    "plain": false
+  },
+  {
+    "command": "show version |",
+    "plain": false
+  },
+  {
+    "command": "show version | count | last 5",
+    "plain": true
+  },
+  {
+    "command": "show version | display xml",
+    "plain": true
+  },
+  {
+    "command": "show version | except foo",
+    "plain": true
+  },
+  {
+    "command": "show version | find bar | trim 5",
+    "plain": true
+  },
+  {
+    "command": "configure",
+    "plain": false
+  },
+  {
+    "command": "request system reboot",
+    "plain": false
+  },
+  {
+    "command": "show route > /tmp/x",
+    "plain": false
+  },
+  {
+    "command": "show $HOME",
+    "plain": false
+  },
+  {
+    "command": "show `id`",
+    "plain": false
+  },
+  {
+    "command": "show a & b",
+    "plain": false
+  },
+  {
+    "command": "show a \\ b",
+    "plain": false
+  },
+  {
+    "command": "show version | save x",
+    "plain": false
+  },
+  {
+    "command": "show résumé",
+    "plain": false
+  },
+  {
+    "command": "show version",
+    "plain": false
+  },
+  {
+    "command": "show version\r",
+    "plain": false
+  },
+  {
+    "command": "Show version",
+    "plain": false
+  },
+  {
+    "command": "show 1",
+    "plain": false
+  },
+  {
+    "command": "show -x",
+    "plain": false
+  },
+  {
+    "command": "",
+    "plain": false
+  },
+  {
+    "command": "|",
+    "plain": false
+  },
+  {
+    "command": "show x || count",
+    "plain": false
+  },
+  {
+    "command": "show aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "plain": true
+  },
+  {
+    "command": "show aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "plain": false
+  }
+]
