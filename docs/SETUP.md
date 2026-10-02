@@ -681,15 +681,16 @@ live compliance:
   - **Problems**: risky lines ("reboots the switch"), blanks still to fill in (`${vlan_id}`,
     `<replace-me>`, a hidden-secret marker), terminal junk from a captured log, and a Junos edit
     with no commit are underlined, marked in the scrollbar, and counted in the toolbar. Click
-    the count (or press **Ctrl+Shift+M**) for the **Problems panel** under the editor: every
-    problem with its line, filterable by kind; a click selects it. **F8** / **Shift+F8** steps
-    through them. A line the switch rejected on Send shows in red with the switch's own words.
-    Comment lines are never flagged. The Send dialog lists them too ("1 error, 2 warnings").
-  - **Go to Symbol** (**Ctrl+Shift+O**, or **Outline**): type to jump to an interface, LAG, VLAN,
-    router or Junos section by name.
-  - **Quick fixes** (**Ctrl+.** or the light bulb on a problem): strip terminal junk, comment out a
-    risky or rejected line, add `commit confirmed 5` to a Junos tab, or swap a plain-text password
-    for a blank.
+    the count (or press **Ctrl+Shift+M**, **Cmd+Shift+M** on a Mac) for the **Problems panel**
+    under the editor: every problem with its line, filterable by kind; a click selects it.
+    **F8** / **Shift+F8** steps through them. A line the switch rejected on Send shows in red
+    with the switch's own words. Comment lines are never flagged. The Send dialog lists them too
+    ("1 error, 2 warnings").
+  - **Go to Symbol** (**Ctrl+Shift+O**, **Cmd+Shift+O** on a Mac, or **Outline**): type to jump
+    to an interface, LAG, VLAN, router or Junos section by name.
+  - **Quick fixes** (**Ctrl+.**, **Cmd+.** on a Mac, or the light bulb on a problem): strip
+    terminal junk, comment out a risky or rejected line, add `commit confirmed 5` to a Junos tab,
+    or swap a plain-text password for a blank.
   - **Hover cards**: hover an Aruba CX or Junos line to see what it does in plain words and how
     the other vendor writes it (VLANs, access/trunk ports, LAGs, routes, NTP, SNMP, RADIUS, commit
     confirmed …).
@@ -705,9 +706,9 @@ live compliance:
   - **After a Send**, a bar beside each line shows how far it got: green went out with no
     error, red was rejected, amber is a question or a line sent after the error, grey was never
     sent. **Clear marks** removes them.
-  - **Aruba and Junos smarts**: **Ctrl+/** comments a line (`!` for Aruba, `#` for Junos);
-    a double-click picks `1/1/5` or `ge-0/0/0.100` whole; the block you're in stays on top as
-    you scroll.
+  - **Aruba and Junos smarts**: **Ctrl+/** (**Cmd+/** on a Mac) comments a line (`!` for Aruba,
+    `#` for Junos); a double-click picks `1/1/5` or `ge-0/0/0.100` whole; the block you're in
+    stays on top as you scroll.
   - **Snippets**: pick one from *Snippets*, or type its name at the start of a line
     (`cx-access`, `junos-trunk`, …). **Tab** moves to the next blank.
   - **Diff**: compare with a running-config you pulled (kept per device) or with a file. The
