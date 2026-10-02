@@ -507,6 +507,10 @@ pub struct McpCaller {
     /// is really down, so `dead` is set; any successful send resets it, so a
     /// lone transient blip never forces a manual reconnect. Zero for stdio.
     http_connect_failures: Arc<AtomicU32>,
+    /// Http only: a session re-initialize started and hasn't finished (a Stop
+    /// or a timeout cut it short, or it failed). The next request finishes it
+    /// first, instead of going out with no session id forever.
+    reinit_pending: Arc<AtomicBool>,
 }
 
 pub struct McpClient {
@@ -1067,6 +1071,7 @@ impl McpClient {
             tools_changed_tx: tools_changed_tx.clone(),
             dead,
             http_connect_failures: Arc::new(AtomicU32::new(0)),
+            reinit_pending: Arc::new(AtomicBool::new(false)),
         };
 
         // Attach the server's stderr tail to a handshake error — that's where
@@ -1157,6 +1162,7 @@ impl McpClient {
             tools_changed_tx: tools_changed_tx.clone(),
             dead: dead.clone(),
             http_connect_failures: Arc::new(AtomicU32::new(0)),
+            reinit_pending: Arc::new(AtomicBool::new(false)),
         };
 
         // Handshake — same JSON-RPC calls as stdio; McpCaller dispatches the
@@ -1438,6 +1444,9 @@ impl McpCaller {
                     // fresh session and replay this request once.
                     let mut reinit_attempted = false;
                     loop {
+                        if method != "initialize" && self.reinit_pending.load(Ordering::Relaxed) {
+                            self.reinitialize().await?;
+                        }
                         let sid = session_id.lock().await.clone();
                         let mut rb = http
                             .post(url.as_ref())
@@ -1512,12 +1521,7 @@ impl McpCaller {
                                 && !reinit_attempted
                             {
                                 reinit_attempted = true;
-                                *session_id.lock().await = None;
-                                // Boxed: request -> request_cancellable -> this
-                                // future would otherwise be an infinitely-sized
-                                // (recursive) async type.
-                                Box::pin(self.request("initialize", initialize_params())).await?;
-                                self.notify("notifications/initialized", json!({})).await?;
+                                self.reinitialize().await?;
                                 continue;
                             }
                             let body = resp.text().await.unwrap_or_default();
@@ -1559,8 +1563,9 @@ impl McpCaller {
                         };
                     }
                 };
-                // Dropping a reqwest future part-way is safe. If a Stop drops a
-                // transparent re-initialize, the next request's 404 path redoes it.
+                // Dropping a reqwest future part-way is safe. If a Stop or the
+                // timeout drops a re-initialize, reinit_pending stays set and the
+                // next request finishes it before it is sent.
                 let timed = tokio::time::timeout(Duration::from_secs(timeout_secs), fut);
                 tokio::select! {
                     biased;
@@ -1578,6 +1583,23 @@ impl McpCaller {
                 }
             }
         }
+    }
+
+    /// Start a fresh HTTP session: forget the old id, initialize, then send
+    /// notifications/initialized. `reinit_pending` stays set until both went
+    /// through, so a cut-short re-initialize is finished by the next request.
+    async fn reinitialize(&self) -> Result<(), AppError> {
+        let ClientIo::Http { session_id, .. } = &self.io else {
+            return Ok(());
+        };
+        self.reinit_pending.store(true, Ordering::Relaxed);
+        *session_id.lock().await = None;
+        // Boxed: request -> request_cancellable -> this future would otherwise
+        // be an infinitely-sized (recursive) async type.
+        Box::pin(self.request("initialize", initialize_params())).await?;
+        self.notify("notifications/initialized", json!({})).await?;
+        self.reinit_pending.store(false, Ordering::Relaxed);
+        Ok(())
     }
 
     async fn notify(&self, method: &str, params: Value) -> Result<(), AppError> {
@@ -2328,6 +2350,7 @@ mod tests {
             tools_changed_tx,
             dead: Arc::new(AtomicBool::new(false)),
             http_connect_failures: Arc::new(AtomicU32::new(0)),
+            reinit_pending: Arc::new(AtomicBool::new(false)),
         };
         McpClient {
             child: None,
@@ -2340,6 +2363,114 @@ mod tests {
             connected_writes_on: false,
             access: Arc::new(std::sync::Mutex::new(None)),
         }
+    }
+
+    /// A tiny MCP-over-HTTP server: answers every POST with a JSON result (and
+    /// a fresh Mcp-Session-Id on initialize), 202 for notifications, and
+    /// records "method sid" for each request.
+    async fn tiny_http_server() -> (String, Arc<std::sync::Mutex<Vec<String>>>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/mcp", listener.local_addr().unwrap());
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = seen.clone();
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                let log = log.clone();
+                tokio::spawn(async move {
+                    let mut buf: Vec<u8> = Vec::new();
+                    loop {
+                        let head_end = loop {
+                            if let Some(i) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                                break i + 4;
+                            }
+                            let mut chunk = [0u8; 4096];
+                            match sock.read(&mut chunk).await {
+                                Ok(0) | Err(_) => return,
+                                Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                            }
+                        };
+                        let head = String::from_utf8_lossy(&buf[..head_end]).to_lowercase();
+                        let len: usize = head
+                            .lines()
+                            .find_map(|l| l.strip_prefix("content-length:"))
+                            .and_then(|v| v.trim().parse().ok())
+                            .unwrap_or(0);
+                        let sid = head
+                            .lines()
+                            .find_map(|l| l.strip_prefix("mcp-session-id:"))
+                            .map(|v| v.trim().to_string())
+                            .unwrap_or_else(|| "-".into());
+                        while buf.len() < head_end + len {
+                            let mut chunk = [0u8; 4096];
+                            match sock.read(&mut chunk).await {
+                                Ok(0) | Err(_) => return,
+                                Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                            }
+                        }
+                        let body: Value =
+                            serde_json::from_slice(&buf[head_end..head_end + len]).unwrap_or(Value::Null);
+                        buf.drain(..head_end + len);
+                        let method = body["method"].as_str().unwrap_or("").to_string();
+                        log.lock().unwrap().push(format!("{method} {sid}"));
+                        let reply = if body.get("id").is_none() {
+                            "HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\n\r\n".to_string()
+                        } else {
+                            let result = if method == "initialize" {
+                                json!({ "protocolVersion": MCP_PROTOCOL_VERSION, "capabilities": {} })
+                            } else {
+                                json!({ "tools": [] })
+                            };
+                            let text = json!({ "jsonrpc": "2.0", "id": body["id"], "result": result }).to_string();
+                            let extra = if method == "initialize" { "Mcp-Session-Id: s2\r\n" } else { "" };
+                            format!(
+                                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n{extra}Content-Length: {}\r\n\r\n{text}",
+                                text.len()
+                            )
+                        };
+                        if sock.write_all(reply.as_bytes()).await.is_err() {
+                            return;
+                        }
+                    }
+                });
+            }
+        });
+        (url, seen)
+    }
+
+    #[tokio::test]
+    async fn a_cut_short_reinitialize_is_finished_by_the_next_request() {
+        let (url, seen) = tiny_http_server().await;
+        let (tools_changed_tx, _rx) = mpsc::unbounded_channel();
+        let caller = McpCaller {
+            server: Arc::from("s"),
+            io: ClientIo::Http {
+                http: reqwest::Client::new(),
+                url: Arc::from(url.as_str()),
+                session_id: Arc::new(Mutex::new(None)),
+                protocol_version: Arc::new(Mutex::new(None)),
+                headers: Arc::new(HashMap::new()),
+            },
+            pending: Arc::new(Mutex::new(HashMap::new())),
+            next_id: Arc::new(Mutex::new(0)),
+            tools_changed_tx,
+            dead: Arc::new(AtomicBool::new(false)),
+            http_connect_failures: Arc::new(AtomicU32::new(0)),
+            // A Stop dropped the re-initialize after the old id was cleared.
+            reinit_pending: Arc::new(AtomicBool::new(true)),
+        };
+        caller.request("tools/list", json!({})).await.unwrap();
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![
+                "initialize -".to_string(),
+                "notifications/initialized s2".to_string(),
+                "tools/list s2".to_string(),
+            ]
+        );
+        assert!(!caller.reinit_pending.load(Ordering::Relaxed));
+        caller.request("tools/list", json!({})).await.unwrap();
+        assert_eq!(seen.lock().unwrap().len(), 4);
     }
 
     // ─── tools/list parsing ───
