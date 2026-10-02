@@ -25,9 +25,15 @@
 // skips them, so it never puts an old 1.9 value back over a 2.0 change.
 //
 // Windows Credential Manager holds at most 2560 bytes per item, so a longer
-// value is split: the item itself holds the header `GCS1 N\n` and the parts
-// are in `part1:<account>` … `partN:<account>`. The parts are written first and
-// the header last; parts a shorter value no longer needs are deleted after.
+// value is split: the item itself holds the header `GCS1 N S LEN\n` and the
+// parts are in `part1S:<account>` … `partNS:<account>`, where the slot S is
+// `a` or `b` and LEN is the length of the whole value. A save writes its parts
+// to the slot the saved value doesn't use, then the header, so the header
+// write alone switches to the new value: a save that stops partway leaves the
+// old value whole, and the new parts it wrote are deleted. Once the header is
+// written, the old slot's parts go, along with any a save that stopped
+// earlier left behind. Early 2.0 builds wrote `GCS1 N\n` with parts in
+// `part1:<account>` … `partN:<account>`; that still reads.
 
 use crate::private_fs;
 use serde::Serialize;
@@ -60,6 +66,8 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 const CHUNK_MAGIC: &str = "GCS1 ";
 /// A part must hold more than the header does.
 const MIN_PART: usize = 64;
+/// The most parts a header can name (six digits).
+const MAX_PARTS: usize = 999_999;
 
 /// The error for any failed call to the OS store (the cause goes to the log).
 pub const UNAVAILABLE: &str =
@@ -230,72 +238,177 @@ impl SecretBackend for FileBackend {
 
 // ─── Long values in parts (OS store only) ───
 
-fn part_account(account: &str, i: usize) -> String {
-    format!("part{}:{}", i, account)
+/// Where the parts of a long value are kept (see the top of this file).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Slot {
+    A,
+    B,
+    /// `part<i>:<account>`, from early 2.0 builds: read and cleared, never written.
+    Legacy,
 }
 
-/// The part count when `head` is a `GCS1 N\n` header.
-fn part_count(head: &[u8]) -> Option<usize> {
-    let s = std::str::from_utf8(head).ok()?;
-    let digits = s.strip_prefix(CHUNK_MAGIC)?.strip_suffix('\n')?;
-    if digits.is_empty() || digits.len() > 6 || !digits.bytes().all(|b| b.is_ascii_digit()) {
-        return None;
+const SLOTS: [Slot; 3] = [Slot::A, Slot::B, Slot::Legacy];
+
+impl Slot {
+    fn tag(self) -> &'static str {
+        match self {
+            Slot::A => "a",
+            Slot::B => "b",
+            Slot::Legacy => "",
+        }
     }
-    digits.parse().ok().filter(|n| *n >= 1)
+
+    /// The slot the next save of a value kept in this one writes to.
+    fn next(self) -> Slot {
+        match self {
+            Slot::A => Slot::B,
+            Slot::B | Slot::Legacy => Slot::A,
+        }
+    }
+}
+
+fn part_account(account: &str, slot: Slot, i: usize) -> String {
+    format!("part{}{}:{}", i, slot.tag(), account)
+}
+
+/// A parsed header: the value is in `n` parts in `slot`, `len` bytes in all
+/// (no length in the legacy header).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Head {
+    n: usize,
+    slot: Slot,
+    len: Option<usize>,
+}
+
+fn header(n: usize, slot: Slot, len: usize) -> String {
+    format!("{}{} {} {}\n", CHUNK_MAGIC, n, slot.tag(), len)
+}
+
+/// The header when `head` is one: `GCS1 N S LEN\n`, or the legacy `GCS1 N\n`.
+fn parse_head(head: &[u8]) -> Option<Head> {
+    let s = std::str::from_utf8(head).ok()?;
+    let rest = s.strip_prefix(CHUNK_MAGIC)?.strip_suffix('\n')?;
+    let number = |t: &str, max_digits: usize| -> Option<usize> {
+        if t.is_empty() || t.len() > max_digits || !t.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        t.parse().ok()
+    };
+    let fields: Vec<&str> = rest.split(' ').collect();
+    let (n, slot, len) = match fields.as_slice() {
+        [n] => (number(n, 6)?, Slot::Legacy, None),
+        [n, slot, len] => {
+            let slot = match *slot {
+                "a" => Slot::A,
+                "b" => Slot::B,
+                _ => return None,
+            };
+            (number(n, 6)?, slot, Some(number(len, 15)?))
+        }
+        _ => return None,
+    };
+    (n >= 1).then_some(Head { n, slot, len })
 }
 
 fn read_parts(b: &dyn SecretBackend, account: &str) -> Result<Option<Zeroizing<Vec<u8>>>, String> {
     let Some(head) = b.get(account)? else {
         return Ok(None);
     };
-    let Some(n) = part_count(&head) else {
+    let Some(h) = parse_head(&head) else {
         return Ok(Some(head));
     };
     let mut out = Zeroizing::new(Vec::new());
-    for i in 1..=n {
-        match b.get(&part_account(account, i))? {
+    for i in 1..=h.n {
+        match b.get(&part_account(account, h.slot, i))? {
             Some(part) => out.extend_from_slice(&part),
-            None => return Err(format!("part {} of {} is missing", i, n)),
+            None => return Err(format!("part {} of {} is missing", i, h.n)),
         }
+    }
+    // Two copies of the app saving at once can mix their parts.
+    if let Some(len) = h.len.filter(|len| *len != out.len()) {
+        return Err(format!("the parts hold {} bytes, not {}", out.len(), len));
     }
     Ok(Some(out))
 }
 
-fn old_part_count(b: &dyn SecretBackend, account: &str) -> Result<usize, String> {
-    Ok(b.get(account)?.and_then(|h| part_count(&h)).unwrap_or(0))
+fn read_head(b: &dyn SecretBackend, account: &str) -> Result<Option<Head>, String> {
+    Ok(b.get(account)?.and_then(|h| parse_head(&h)))
+}
+
+/// Delete parts `first..` of `account` in `slot`: `first..=known` are known
+/// to be there, and any after them are found by reading until one is
+/// missing. Last first, so a delete that fails leaves no gap, and a later
+/// sweep still finds the rest. Best effort: failures go to the log.
+fn clear_parts(b: &dyn SecretBackend, account: &str, slot: Slot, first: usize, known: usize) {
+    let mut last = known.max(first - 1);
+    while last < MAX_PARTS {
+        match b.get(&part_account(account, slot, last + 1)) {
+            Ok(Some(_)) => last += 1,
+            Ok(None) => break,
+            Err(e) => {
+                log::warn!("Couldn't look for old parts of {}: {}", account, e);
+                break;
+            }
+        }
+    }
+    for i in (first..=last).rev() {
+        if let Err(e) = b.delete(&part_account(account, slot, i)) {
+            log::warn!("Couldn't delete an old part of {}: {}", account, e);
+            return;
+        }
+    }
 }
 
 fn write_parts(b: &dyn SecretBackend, account: &str, value: &[u8]) -> Result<(), String> {
-    let old = old_part_count(b, account)?;
+    let old = read_head(b, account)?;
     let max = b.max_blob().max(MIN_PART);
     // A value that starts like a header is always split, so a head is never
     // mistaken for one.
     let new = if value.len() > max || value.starts_with(CHUNK_MAGIC.as_bytes()) {
+        // The slot the saved value doesn't use: until the header is written,
+        // the old value and its parts stay as they were.
+        let slot = old.map_or(Slot::A, |h| h.slot.next());
         let parts: Vec<&[u8]> = value.chunks(max).collect();
-        for (i, part) in parts.iter().enumerate() {
-            b.set(&part_account(account, i + 1), part)?;
+        let mut written = 0;
+        let mut result = Ok(());
+        for part in &parts {
+            result = b.set(&part_account(account, slot, written + 1), part);
+            if result.is_err() {
+                break;
+            }
+            written += 1;
         }
-        b.set(account, format!("{}{}\n", CHUNK_MAGIC, parts.len()).as_bytes())?;
-        parts.len()
+        if result.is_ok() {
+            result = b.set(account, header(parts.len(), slot, value.len()).as_bytes());
+        }
+        if let Err(e) = result {
+            clear_parts(b, account, slot, 1, written);
+            return Err(e);
+        }
+        Some((slot, parts.len()))
     } else {
         b.set(account, value)?;
-        0
+        None
     };
-    for i in new + 1..=old {
-        if let Err(e) = b.delete(&part_account(account, i)) {
-            log::warn!("Couldn't delete an old part of {}: {}", account, e);
+    // The old value's parts, and any a save that stopped earlier left.
+    for slot in SLOTS {
+        match (new, old) {
+            (Some((s, n)), _) if s == slot => clear_parts(b, account, slot, n + 1, n),
+            (_, Some(h)) if h.slot == slot => clear_parts(b, account, slot, 1, h.n),
+            _ => clear_parts(b, account, slot, 1, 0),
         }
     }
     Ok(())
 }
 
 fn delete_parts(b: &dyn SecretBackend, account: &str) -> Result<(), String> {
-    let old = old_part_count(b, account)?;
+    let old = read_head(b, account)?;
     b.delete(account)?;
-    for i in 1..=old {
-        if let Err(e) = b.delete(&part_account(account, i)) {
-            log::warn!("Couldn't delete a part of {}: {}", account, e);
-        }
+    // Every slot, so parts left by a save that stopped go too, even when the
+    // header is plain or gone.
+    for slot in SLOTS {
+        let known = old.filter(|h| h.slot == slot).map_or(0, |h| h.n);
+        clear_parts(b, account, slot, 1, known);
     }
     Ok(())
 }
@@ -1210,19 +1323,21 @@ mod tests {
         let store = SecretStore::os_for_tests(mem.clone());
         let long: String = (0..10_240).map(|i| (b'a' + (i % 26) as u8) as char).collect();
         store.set("mcp-creds:big", &long).unwrap();
-        assert_eq!(mem.raw("mcp-creds:big").unwrap(), b"GCS1 4\n");
-        assert_eq!(mem.raw("part4:mcp-creds:big").unwrap().len(), 10_240 - 3 * 2560);
+        assert_eq!(mem.raw("mcp-creds:big").unwrap(), b"GCS1 4 a 10240\n");
+        assert_eq!(mem.raw("part4a:mcp-creds:big").unwrap().len(), 10_240 - 3 * 2560);
 
         // A fresh store (no cache) reads the parts back.
         let fresh = SecretStore::os_for_tests(mem.clone());
         assert_eq!(fresh.get("mcp-creds:big").unwrap().unwrap().as_str(), long);
 
-        // Shrinking removes the parts it no longer needs.
+        // The next save goes to the other slot, and the old slot's parts go.
         let medium = &long[..3_000];
         fresh.set("mcp-creds:big", medium).unwrap();
-        assert_eq!(mem.raw("mcp-creds:big").unwrap(), b"GCS1 2\n");
-        assert!(mem.raw("part3:mcp-creds:big").is_none());
-        assert!(mem.raw("part4:mcp-creds:big").is_none());
+        assert_eq!(mem.raw("mcp-creds:big").unwrap(), b"GCS1 2 b 3000\n");
+        assert_eq!(
+            mem.accounts(),
+            vec!["mcp-creds:big", "part1b:mcp-creds:big", "part2b:mcp-creds:big"]
+        );
         fresh.set("mcp-creds:big", "short").unwrap();
         assert_eq!(mem.accounts(), vec!["mcp-creds:big".to_string()]);
         let again = SecretStore::os_for_tests(mem.clone());
@@ -1254,9 +1369,173 @@ mod tests {
         assert!(store.get("ai-key:orphan").unwrap().is_none());
 
         store.set("ai-key:long", &"x".repeat(250)).unwrap();
-        mem.data.lock().unwrap().remove("part2:ai-key:long");
+        mem.data.lock().unwrap().remove("part2a:ai-key:long");
         let fresh = SecretStore::os_for_tests(mem.clone());
         assert_eq!(fresh.get("ai-key:long").unwrap_err(), UNAVAILABLE);
+    }
+
+    /// `n` bytes that differ for each `seed`.
+    fn long_value(n: usize, seed: u8) -> String {
+        (0..n).map(|i| (b'a' + ((i + seed as usize) % 26) as u8) as char).collect()
+    }
+
+    fn put(mem: &MemBackend, account: &str, value: &[u8]) {
+        mem.data.lock().unwrap().insert(account.into(), value.to_vec());
+    }
+
+    #[test]
+    fn a_save_that_stops_partway_keeps_the_old_value_whole() {
+        let mem = MemBackend::new();
+        mem.max_blob.store(2560, Ordering::Relaxed);
+        let store = SecretStore::os_for_tests(mem.clone());
+        let old = long_value(6_000, 0);
+        let new = long_value(6_000, 7);
+        store.set("mcp-creds:x", &old).unwrap();
+        let saved = vec![
+            "mcp-creds:x".to_string(),
+            "part1a:mcp-creds:x".into(),
+            "part2a:mcp-creds:x".into(),
+            "part3a:mcp-creds:x".into(),
+        ];
+        assert_eq!(mem.accounts(), saved);
+
+        // A part of the new value, then the header, fails to save.
+        for failing in ["part2b:mcp-creds:x", "mcp-creds:x"] {
+            *mem.fail_account.lock().unwrap() = Some(failing.into());
+            assert_eq!(store.set("mcp-creds:x", &new).unwrap_err(), UNAVAILABLE);
+            let fresh = SecretStore::os_for_tests(mem.clone());
+            assert_eq!(fresh.get("mcp-creds:x").unwrap().unwrap().as_str(), old, "{}", failing);
+            assert_eq!(store.get("mcp-creds:x").unwrap().unwrap().as_str(), old);
+            // No part of the new value is left behind.
+            assert_eq!(mem.accounts(), saved, "{}", failing);
+        }
+
+        // Saving again works and switches to the other slot.
+        *mem.fail_account.lock().unwrap() = None;
+        store.set("mcp-creds:x", &new).unwrap();
+        assert_eq!(
+            mem.accounts(),
+            vec!["mcp-creds:x", "part1b:mcp-creds:x", "part2b:mcp-creds:x", "part3b:mcp-creds:x"]
+        );
+        let fresh = SecretStore::os_for_tests(mem.clone());
+        assert_eq!(fresh.get("mcp-creds:x").unwrap().unwrap().as_str(), new);
+    }
+
+    #[test]
+    fn a_plain_value_stays_when_a_long_save_fails_at_the_header() {
+        let mem = MemBackend::new();
+        mem.max_blob.store(2560, Ordering::Relaxed);
+        let store = SecretStore::os_for_tests(mem.clone());
+        store.set("mcp-creds:edge", "short login").unwrap();
+        *mem.fail_account.lock().unwrap() = Some("mcp-creds:edge".into());
+        assert!(store.set("mcp-creds:edge", &long_value(6_000, 3)).is_err());
+        // No part holding the new login is left over.
+        assert_eq!(mem.accounts(), vec!["mcp-creds:edge".to_string()]);
+        assert_eq!(mem.raw("mcp-creds:edge").unwrap(), b"short login");
+    }
+
+    #[test]
+    fn delete_and_save_clear_parts_left_in_any_slot() {
+        let leftovers = [
+            "part1a:mcp-creds:x",
+            "part2a:mcp-creds:x",
+            "part1b:mcp-creds:x",
+            "part1:mcp-creds:x",
+            "part2:mcp-creds:x",
+        ];
+        // Removing the login, with a plain header or none at all.
+        for head in [Some(&b"plain login"[..]), None] {
+            let mem = MemBackend::new();
+            for a in leftovers {
+                put(&mem, a, b"left over");
+            }
+            if let Some(head) = head {
+                put(&mem, "mcp-creds:x", head);
+            }
+            let store = SecretStore::os_for_tests(mem.clone());
+            store.delete("mcp-creds:x").unwrap();
+            assert!(mem.accounts().is_empty(), "{:?}", mem.accounts());
+        }
+
+        // A save that works sweeps them too, in the slot it uses as well.
+        let mem = MemBackend::new();
+        mem.max_blob.store(2560, Ordering::Relaxed);
+        for a in leftovers.iter().chain(&["part4a:mcp-creds:x", "part3a:mcp-creds:x"]) {
+            put(&mem, a, b"left over");
+        }
+        let store = SecretStore::os_for_tests(mem.clone());
+        store.set("mcp-creds:x", "plain").unwrap();
+        assert_eq!(mem.accounts(), vec!["mcp-creds:x".to_string()]);
+        for a in leftovers {
+            put(&mem, a, b"left over");
+        }
+        put(&mem, "part3a:mcp-creds:x", b"left over");
+        let value = long_value(3_000, 1);
+        store.set("mcp-creds:x", &value).unwrap();
+        assert_eq!(
+            mem.accounts(),
+            vec!["mcp-creds:x", "part1a:mcp-creds:x", "part2a:mcp-creds:x"]
+        );
+        let fresh = SecretStore::os_for_tests(mem.clone());
+        assert_eq!(fresh.get("mcp-creds:x").unwrap().unwrap().as_str(), value);
+    }
+
+    #[test]
+    fn a_copy_that_fails_partway_leaves_nothing_under_the_new_name() {
+        let mem = MemBackend::new();
+        mem.max_blob.store(2560, Ordering::Relaxed);
+        let store = SecretStore::os_for_tests(mem.clone());
+        let value = long_value(6_000, 5);
+        store.set("mcp-creds:from", &value).unwrap();
+        let before = mem.accounts();
+        *mem.fail_account.lock().unwrap() = Some("part2a:mcp-creds:to".into());
+        assert!(store.copy("mcp-creds:from", "mcp-creds:to").is_err());
+        assert_eq!(mem.accounts(), before);
+        assert_eq!(store.get("mcp-creds:from").unwrap().unwrap().as_str(), value);
+    }
+
+    #[test]
+    fn a_value_saved_by_an_early_20_build_still_reads_and_moves_to_a_slot() {
+        let mem = MemBackend::new();
+        mem.max_blob.store(100, Ordering::Relaxed);
+        let value = long_value(250, 2);
+        put(&mem, "ai-key:long", b"GCS1 3\n");
+        put(&mem, "part1:ai-key:long", &value.as_bytes()[..100]);
+        put(&mem, "part2:ai-key:long", &value.as_bytes()[100..200]);
+        put(&mem, "part3:ai-key:long", &value.as_bytes()[200..]);
+        let store = SecretStore::os_for_tests(mem.clone());
+        assert_eq!(store.get("ai-key:long").unwrap().unwrap().as_str(), value);
+
+        let next = long_value(150, 9);
+        store.set("ai-key:long", &next).unwrap();
+        assert_eq!(
+            mem.accounts(),
+            vec!["ai-key:long", "part1a:ai-key:long", "part2a:ai-key:long"]
+        );
+        let fresh = SecretStore::os_for_tests(mem.clone());
+        assert_eq!(fresh.get("ai-key:long").unwrap().unwrap().as_str(), next);
+    }
+
+    #[test]
+    fn parts_that_dont_add_up_to_the_saved_length_are_an_error() {
+        let mem = MemBackend::new();
+        mem.max_blob.store(100, Ordering::Relaxed);
+        let store = SecretStore::os_for_tests(mem.clone());
+        store.set("ai-key:long", &long_value(250, 4)).unwrap();
+        // Another copy of the app wrote a shorter part 3 into the same slot.
+        put(&mem, "part3a:ai-key:long", b"short");
+        let fresh = SecretStore::os_for_tests(mem.clone());
+        assert_eq!(fresh.get("ai-key:long").unwrap_err(), UNAVAILABLE);
+    }
+
+    #[test]
+    fn headers_parse_strictly() {
+        let h = |s: &str| parse_head(s.as_bytes());
+        assert_eq!(h("GCS1 3\n"), Some(Head { n: 3, slot: Slot::Legacy, len: None }));
+        assert_eq!(h("GCS1 2 b 300\n"), Some(Head { n: 2, slot: Slot::B, len: Some(300) }));
+        for bad in ["GCS1 0\n", "GCS1 3", "GCS1 3 c 9\n", "GCS1 3 a\n", "GCS1 x a 9\n", "GCS1 3 a 9 \n", "GCS1 1234567\n"] {
+            assert_eq!(h(bad), None, "{:?}", bad);
+        }
     }
 
     #[test]

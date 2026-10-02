@@ -221,7 +221,8 @@ GreenCLI 2.0 keeps AI keys and MCP logins in the system password store, not in f
 - Each one is saved under the service name `com.choatelabs.greencli`, with the account
   `ai-key:<provider>` or `mcp-creds:<server>`. On a Mac you can see them in Keychain Access.
   Credential Manager holds at most 2560 bytes per item, so a longer login is split into parts
-  (`part1:…`, `part2:…`).
+  (`part1a:…`, `part2a:…`; the next save uses `part1b:…`, `part2b:…`, so a save that stops partway
+  leaves the old login whole).
 - The AI key field and the MCP server form say where keys are kept ("Saved in macOS Keychain.").
 - **The move from 1.9**: at first start, 2.0 moves the keys in `ai_keys.json` and
   `mcp_creds.json` into the store. Each one is saved, read back and compared, and only when all of

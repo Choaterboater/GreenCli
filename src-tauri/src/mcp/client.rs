@@ -3531,7 +3531,7 @@ while (<STDIN>) {
             .collect::<String>()[..10_240]
             .to_string();
         mgr.creds().set("central", &yaml).unwrap();
-        assert!(mem.raw("part4:mcp-creds:central").is_some());
+        assert!(mem.raw("part4a:mcp-creds:central").is_some());
 
         // A fresh handle reads it back whole (export asks has()).
         let fresh = McpCreds::new(Arc::new(SecretStore::os_for_tests(mem.clone())));
