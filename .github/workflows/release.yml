@@ -3,6 +3,18 @@ name: Release
 # Builds signed-able installers for macOS (.dmg/.app) and Windows (.msi/.exe NSIS)
 # and uploads them to a draft GitHub Release. Triggered by pushing a v* tag, or
 # manually via the Actions tab.
+#
+# Update files are signed automatically. Nobody keeps a signing key and there
+# are no signing secrets:
+# - Each build job makes its own one-time key pair with the Tauri CLI that
+#   `npm ci` installed (locked in package-lock.json), signs its update files
+#   with it, and adds the public half to the same draft release as
+#   update-key-<os>-<arch>.pub. The private half is a file under $RUNNER_TEMP
+#   that only tauri-action reads, and it is deleted right after the build.
+# - The app reads the version from the latest release's latest.json, then
+#   takes the manifest and the key from that same release (tag v<version>)
+#   and checks each download against that key (src-tauri/src/updater.rs).
+# - The update-files job checks the whole draft before the owner publishes it.
 on:
   push:
     tags:
@@ -41,13 +53,19 @@ jobs:
       matrix:
         include:
           # Apple Silicon + Intel macOS
+          # `updater` is the <os>-<arch> name Tauri uses in latest.json; the
+          # build's public key is published as update-key-<updater>.pub.
+          # (updater.rs tests check these names against the app's.)
           - platform: macos-latest
             target: aarch64-apple-darwin
+            updater: darwin-aarch64
           - platform: macos-latest
             target: x86_64-apple-darwin
+            updater: darwin-x86_64
           # Windows x64
           - platform: windows-latest
             target: x86_64-pc-windows-msvc
+            updater: windows-x86_64
 
     runs-on: ${{ matrix.platform }}
 
@@ -73,6 +91,29 @@ jobs:
 
       - name: Install frontend dependencies
         run: npm ci
+
+      # A one-time update signing key for this build only, made by the Tauri
+      # CLI that `npm ci` just installed from package-lock.json (--no-install:
+      # never a package fetched at run time). The private key is a file under
+      # $RUNNER_TEMP, outside the checkout: tauri-action gets only its path,
+      # nothing prints it or puts it in env, outputs or artifacts, and it is
+      # deleted right after the build. It has no password: it never leaves
+      # this job, and the Tauri CLI makes and reads it with an empty one in CI.
+      - name: Make a one-time update signing key
+        id: keygen
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Forward slashes: the paths also go into tauri-action's args on Windows.
+          dir="${RUNNER_TEMP//\\//}/greencli-update-key"
+          rm -rf "$dir" && mkdir -p "$dir" && chmod 700 "$dir"
+          npx --no-install tauri signer generate --ci -w "$dir/updkey" > /dev/null
+          # Update files for this build only (tauri.conf.json keeps them off),
+          # with this build's public key: Tauri signs only when a public key
+          # is set, and checks the private key against it.
+          printf '{"bundle":{"createUpdaterArtifacts":true},"plugins":{"updater":{"pubkey":"%s"}}}\n' \
+            "$(cat "$dir/updkey.pub")" > "$dir/updater.conf.json"
+          echo "dir=$dir" >> "$GITHUB_OUTPUT"
 
       # NOTARIZATION TEMPORARILY DISABLED (2026-06-06): the APPLE_ID /
       # APPLE_PASSWORD secrets fail Apple auth with HTTP 401 (APPLE_PASSWORD is
@@ -111,6 +152,7 @@ jobs:
       #     echo "Notarization credentials validated successfully."
 
       - name: Build + bundle (tauri-action)
+        id: tauri
         uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -130,6 +172,10 @@ jobs:
           # Windows code signing:
           # WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
           # WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          # This build's one-time update key: a file path, never the key
+          # itself, and no password (see "Make a one-time update signing key").
+          TAURI_SIGNING_PRIVATE_KEY: ${{ steps.keygen.outputs.dir }}/updkey
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         with:
           # The Tauri app lives at the repo root (this `project/` folder).
           # Publishing is on for tag and release/** pushes, and for manual
@@ -152,9 +198,51 @@ jobs:
           # The owner publishes the draft by hand.
           releaseDraft: true
           prerelease: false
-          # No update files yet (createUpdaterArtifacts is off in tauri.conf.json).
-          uploadUpdaterJson: false
-          args: --target ${{ matrix.target }}
+          # Update files: tauri-action writes latest.json into the release,
+          # or adds this build's platforms to the one already there. The
+          # Windows default entry is the NSIS installer.
+          uploadUpdaterJson: true
+          updaterJsonPreferNsis: true
+          args: --target ${{ matrix.target }} --config ${{ steps.keygen.outputs.dir }}/updater.conf.json
+
+      # The private key is only needed by the build: delete it now, even when
+      # a step failed. The public half stays for the next two steps.
+      - name: Delete the update signing key
+        if: always()
+        shell: bash
+        run: rm -f "${RUNNER_TEMP//\\//}/greencli-update-key/updkey"
+
+      # Every update file must match this build's key before the key is published.
+      - name: Check the update signatures
+        shell: bash
+        run: >-
+          node scripts/update-signature.mjs verify-dir
+          "src-tauri/target/${{ matrix.target }}/release/bundle"
+          "${{ steps.keygen.outputs.dir }}/updkey.pub"
+
+      # The public half goes into the release as update-key-<os>-<arch>.pub.
+      - name: Publish the update key
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.publish }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ steps.tauri.outputs.releaseId }}
+          KEY_NAME: update-key-${{ matrix.updater }}.pub
+          KEY_FILE: ${{ steps.keygen.outputs.dir }}/updkey.pub
+        run: |
+          set -euo pipefail
+          test -n "$RELEASE_ID"
+          # A re-run makes a new key: replace the old file.
+          for id in $(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets" --paginate \
+              --jq ".[] | select(.name == \"$KEY_NAME\") | .id"); do
+            gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$id"
+          done
+          curl -fsS -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Content-Type: application/octet-stream" \
+            --data-binary "@$KEY_FILE" \
+            "https://uploads.github.com/repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets?name=$KEY_NAME" > /dev/null
+          echo "Published $KEY_NAME"
 
       # Build only: keep the installers as workflow artifacts instead.
       - name: Keep installers (build only)
@@ -164,3 +252,50 @@ jobs:
           name: greencli-${{ matrix.target }}
           path: src-tauri/target/${{ matrix.target }}/release/bundle/**
           if-no-files-found: error
+
+  # After all three builds: latest.json in the draft must be for this tag
+  # (v<version>) and list every platform, every entry must point at a file of
+  # this release, and every signature must match its file, the key published
+  # for its platform in this release, and the version. This catches a build
+  # mistake before anyone can update to it. Publish the draft only when this
+  # is green. (If a build job is re-run, it makes a new key: make sure this
+  # job runs again too and is green.)
+  update-files:
+    needs: build
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.publish }}
+    runs-on: ubuntu-latest
+    # Read-only work, but draft releases are only visible with write access.
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check latest.json and the update signatures
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # The release tag: the pushed tag, or v<app version> (tauri-action's v__VERSION__).
+          if [ "$REF_TYPE" = tag ]; then tag="$REF_NAME"; else tag="v$(jq -r .version src-tauri/tauri.conf.json)"; fi
+          id=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=50" \
+            --jq "[.[] | select(.tag_name == \"$tag\")][0].id // empty")
+          if [ -z "$id" ]; then echo "::error::No release for $tag"; exit 1; fi
+          gh api "repos/$GITHUB_REPOSITORY/releases/$id/assets?per_page=100" > "$RUNNER_TEMP/assets.json"
+          dir="$RUNNER_TEMP/release"
+          mkdir -p "$dir"
+          get() {
+            local aid
+            aid=$(jq -r --arg n "$1" '[.[] | select(.name == $n)][0].id // empty' "$RUNNER_TEMP/assets.json")
+            if [ -z "$aid" ]; then echo "::error::The $tag release has no $1"; exit 1; fi
+            gh api -H "Accept: application/octet-stream" "repos/$GITHUB_REPOSITORY/releases/assets/$aid" > "$dir/$1"
+          }
+          get latest.json
+          for p in darwin-aarch64 darwin-x86_64 windows-x86_64; do get "update-key-$p.pub"; done
+          node scripts/update-signature.mjs release-files "$dir/latest.json" \
+            "$RUNNER_TEMP/assets.json" "$GITHUB_REPOSITORY" "$tag" > "$RUNNER_TEMP/files.txt"
+          while read -r f; do get "$f"; done < "$RUNNER_TEMP/files.txt"
+          node scripts/update-signature.mjs check-release "$dir" \
+            "$RUNNER_TEMP/assets.json" "$GITHUB_REPOSITORY" "$tag" \
+            darwin-aarch64 darwin-x86_64 windows-x86_64 windows-x86_64-msi windows-x86_64-nsis

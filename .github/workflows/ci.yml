@@ -94,8 +94,8 @@ jobs:
 
   rust-windows:
     # The Linux job never compiles the Windows side of #[cfg(unix)] code
-    # (file permissions, private_fs), which release.yml ships. Check only:
-    # it catches a Windows build break before a tag does.
+    # (file permissions, private_fs), which release.yml ships. A check (plus
+    # the updater tests): it catches a Windows build break before a tag does.
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -122,4 +122,11 @@ jobs:
 
       - name: Cargo check
         run: cargo check --workspace --all-targets
+        working-directory: src-tauri
+
+      # Only the updater tests: they check the app's platform name against
+      # the updater plugin's own on a system GreenCLI ships updates for (the
+      # Linux job can't). Just these, to keep the job short.
+      - name: Updater tests
+        run: cargo test -p green-cli --bin green-cli "updater::"
         working-directory: src-tauri
