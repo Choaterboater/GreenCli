@@ -22,9 +22,13 @@
 // is left alone, and Settings names it.
 //
 // A move that stops partway is tried again at the next start. The marker
-// keeps the files being moved (`moving`) and the accounts already done
-// (`done`): those moved, and those the user saved or removed since. A retry
-// skips them, so it never puts an old 1.9 value back over a 2.0 change.
+// keeps the files being moved (`moving`), the accounts the move already
+// copied (`moved`) and the accounts the user saved or removed since
+// (`done`). A retry skips the user's changes, so it never puts an old 1.9
+// value back over a 2.0 change. It skips a copied account only while the
+// store still holds the file's value: one changed in 1.9 since (going back
+// to 1.9 between the two starts) is copied again, and one removed there is
+// removed. A file that is gone ends its move, and the marker forgets it.
 //
 // Windows Credential Manager holds at most 2560 bytes per item, so a longer
 // value is split: the item itself holds the header `GCS1 N S LEN\n` and the
@@ -39,7 +43,7 @@
 
 use crate::private_fs;
 use serde::Serialize;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -59,9 +63,12 @@ pub const AI_KEYS_FILE: &str = "ai_keys.json";
 pub const MCP_CREDS_FILE: &str = "mcp_creds.json";
 /// Written the first time the OS store works; from then on it is always used.
 const MARKER_FILE: &str = "secret_store.json";
-/// Marker fields: the 1.9 files a move has started on, and the accounts
-/// already done for them.
+/// Marker fields: the 1.9 files a move has started on, the accounts the move
+/// copied from them, and the accounts the user saved or removed while a move
+/// was pending. Early 2.0 builds kept copied accounts in `done` too; a retry
+/// skips those, as those builds did.
 const MOVING: &str = "moving";
+const MOVED: &str = "moved";
 const DONE: &str = "done";
 const PROBE_ACCOUNT: &str = "greencli-probe";
 const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
@@ -622,7 +629,10 @@ impl SecretStore {
         if !matches!(self.mode, Mode::Os(_)) || !self.move_pending.load(Ordering::Relaxed) {
             return;
         }
-        if let Err(e) = self.update_marker(|m| add_to_list(m, DONE, account)) {
+        if let Err(e) = self.update_marker(|m| {
+            remove_from_list(m, MOVED, |a| a == account);
+            add_to_list(m, DONE, account);
+        }) {
             log::warn!("Couldn't note {} in {}: {}", account, MARKER_FILE, e);
         }
     }
@@ -762,21 +772,37 @@ impl SecretStore {
     /// Move an old 1.9 file (`{name: value}`) into the OS store under
     /// `<prefix><name>`. Only with the OS store. The file is deleted only when
     /// every entry saved and read back byte for byte; a file that can't be
-    /// read, or holds anything but strings, is left alone. A retry skips the
-    /// accounts the marker has as done (see the top of this file).
+    /// read, or holds anything but strings, is left alone. A retry skips what
+    /// the marker says is already done (see the top of this file).
     pub fn move_file(&self, path: &Path, prefix: &str) -> MoveOutcome {
         let Mode::Os(b) = &self.mode else {
             return MoveOutcome::Nothing;
         };
+        let file = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
         let bytes = match fs::read(path) {
             Ok(bytes) => Zeroizing::new(bytes),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return MoveOutcome::Nothing,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                // Gone (deleted by hand, or a move whose last step failed):
+                // nothing is pending, and a 1.9 file written later is a first try.
+                let _ops = self.lock_ops();
+                let marker = self.marker.as_deref().map(read_marker).unwrap_or_default();
+                if list_of(&marker, MOVING).contains(&file) {
+                    if let Err(e) = self.update_marker(|m| forget_move(m, &file, prefix)) {
+                        log::warn!("Couldn't write {}: {}", MARKER_FILE, e);
+                    }
+                }
+                return MoveOutcome::Nothing;
+            }
             Err(e) => {
                 log::warn!("Couldn't read {}: {}; left in place", path.display(), e);
                 return self.move_failed();
             }
         };
-        let map: HashMap<String, String> = match serde_json::from_slice(&bytes) {
+        // In name order, so a move that stops partway stops at the same place.
+        let map: BTreeMap<String, String> = match serde_json::from_slice(&bytes) {
             Ok(m) => m,
             Err(_) => {
                 log::warn!("{} can't be read as keys; left in place", path.display());
@@ -787,34 +813,45 @@ impl SecretStore {
                 return MoveOutcome::Corrupt;
             }
         };
-        let map: HashMap<String, Zeroizing<String>> =
+        let map: BTreeMap<String, Zeroizing<String>> =
             map.into_iter().map(|(k, v)| (k, Zeroizing::new(v))).collect();
-        let file = path
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default();
         let _ops = self.lock_ops();
         let marker = self.marker.as_deref().map(read_marker).unwrap_or_default();
-        let done: HashSet<String> = if list_of(&marker, MOVING).contains(&file) {
-            list_of(&marker, DONE).into_iter().collect()
+        let (moved, done): (HashSet<String>, HashSet<String>) = if list_of(&marker, MOVING).contains(&file) {
+            let mine = |key| list_of(&marker, key).into_iter().filter(|a| a.starts_with(prefix)).collect();
+            (mine(MOVED), mine(DONE))
         } else {
             // A first try: note it before anything is written.
             if let Err(e) = self.update_marker(|m| {
-                remove_from_list(m, DONE, |a| a.starts_with(prefix));
+                forget_move(m, &file, prefix);
                 add_to_list(m, MOVING, &file);
             }) {
                 log::warn!("Couldn't write {}: {}; {} left in place", MARKER_FILE, e, path.display());
                 return self.move_failed();
             }
-            HashSet::new()
+            Default::default()
         };
         for (name, value) in &map {
             if value.is_empty() {
                 continue;
             }
             let account = format!("{}{}", prefix, name);
+            // Changed in 2.0 while the move was pending: the user's value wins.
             if done.contains(&account) {
                 continue;
+            }
+            // Copied by an earlier try: skip it while the store still holds
+            // the file's value. Any other value was typed in 1.9 since (a
+            // change in 2.0 would be in `done`), so it is copied again.
+            if moved.contains(&account) {
+                match read_parts(b.as_ref(), &account) {
+                    Ok(Some(saved)) if saved.as_slice() == value.as_bytes() => continue,
+                    Ok(_) => {}
+                    Err(e) => {
+                        log::warn!("Reading {} failed: {}; {} left in place", account, e, path.display());
+                        return self.move_failed();
+                    }
+                }
             }
             self.cache().remove(&account);
             let checked = match write_parts(b.as_ref(), &account, value.as_bytes()) {
@@ -841,8 +878,23 @@ impl SecretStore {
                 }
                 return self.move_failed();
             }
-            if let Err(e) = self.update_marker(|m| add_to_list(m, DONE, &account)) {
+            if let Err(e) = self.update_marker(|m| add_to_list(m, MOVED, &account)) {
                 log::warn!("Couldn't write {}: {}; {} left in place", MARKER_FILE, e, path.display());
+                return self.move_failed();
+            }
+        }
+        // Copied by an earlier try but removed in 1.9 since: remove it here too.
+        for account in &moved {
+            let in_file = account
+                .strip_prefix(prefix)
+                .and_then(|name| map.get(name))
+                .is_some_and(|v| !v.is_empty());
+            if in_file || done.contains(account) {
+                continue;
+            }
+            self.cache().remove(account);
+            if let Err(e) = delete_parts(b.as_ref(), account) {
+                log::warn!("Removing {} failed: {}; {} left in place", account, e, path.display());
                 return self.move_failed();
             }
         }
@@ -855,10 +907,7 @@ impl SecretStore {
             return self.move_failed();
         }
         let _ = fs::remove_file(private_fs::key_file_tmp(path));
-        if let Err(e) = self.update_marker(|m| {
-            remove_from_list(m, MOVING, |f| f == file);
-            remove_from_list(m, DONE, |a| a.starts_with(prefix));
-        }) {
+        if let Err(e) = self.update_marker(|m| forget_move(m, &file, prefix)) {
             log::warn!("Couldn't write {}: {}", MARKER_FILE, e);
         }
         MoveOutcome::Moved(map.values().filter(|v| !v.is_empty()).count())
@@ -879,6 +928,13 @@ fn read_marker(path: &Path) -> serde_json::Map<String, serde_json::Value> {
             m
         }
     }
+}
+
+/// Forget a move: the file, and every account noted for its prefix.
+fn forget_move(m: &mut serde_json::Map<String, serde_json::Value>, file: &str, prefix: &str) {
+    remove_from_list(m, MOVING, |f| f == file);
+    remove_from_list(m, MOVED, |a| a.starts_with(prefix));
+    remove_from_list(m, DONE, |a| a.starts_with(prefix));
 }
 
 fn list_of(m: &serde_json::Map<String, serde_json::Value>, key: &str) -> Vec<String> {
@@ -1240,7 +1296,7 @@ mod tests {
         assert!(!status.move_pending);
         // The marker forgets the move once it is done.
         let marker = read_marker(&dir.join(MARKER_FILE));
-        assert!(marker.get(MOVING).is_none() && marker.get(DONE).is_none());
+        assert!(marker.get(MOVING).is_none() && marker.get(MOVED).is_none() && marker.get(DONE).is_none());
         assert_eq!(marker["store"], "os");
     }
 
@@ -1334,7 +1390,90 @@ mod tests {
         assert_eq!(mem.raw("ai-key:openrouter").unwrap(), b"R1");
         assert!(!next.status().move_pending);
         let marker = read_marker(&dir.join(MARKER_FILE));
-        assert!(marker.get(MOVING).is_none() && marker.get(DONE).is_none());
+        assert!(marker.get(MOVING).is_none() && marker.get(MOVED).is_none() && marker.get(DONE).is_none());
+    }
+
+    /// A first 2.0 start where every key in `body` up to `ai-key:openai`
+    /// moves and openai fails, so the file stays and the move is pending.
+    fn partial_move(dir: &Path, mem: &Arc<MemBackend>, body: &str) -> SecretStore {
+        let path = dir.join(AI_KEYS_FILE);
+        fs::write(&path, body).unwrap();
+        *mem.fail_account.lock().unwrap() = Some("ai-key:openai".into());
+        let first = os_store(dir, mem);
+        assert_eq!(first.move_file(&path, AI_KEY_PREFIX), MoveOutcome::Failed);
+        *mem.fail_account.lock().unwrap() = None;
+        assert!(path.exists());
+        assert!(first.status().move_pending);
+        first
+    }
+
+    #[test]
+    fn a_retry_copies_keys_changed_or_removed_in_19_since_the_first_try() {
+        let dir = temp_dir();
+        let mem = MemBackend::new();
+        drop(partial_move(&dir, &mem, r#"{"anthropic":"A_OLD","moonshot":"M1","openai":"O1"}"#));
+        assert_eq!(mem.raw("ai-key:anthropic").unwrap(), b"A_OLD");
+        assert_eq!(mem.raw("ai-key:moonshot").unwrap(), b"M1");
+        assert!(mem.raw("ai-key:openai").is_none());
+
+        // Back in 1.9, the user changes anthropic and removes moonshot.
+        let path = dir.join(AI_KEYS_FILE);
+        fs::write(&path, r#"{"anthropic":"A_NEW","openai":"O1"}"#).unwrap();
+
+        // Next 2.0 start: the file is newer than what the first try copied.
+        let next = os_store(&dir, &mem);
+        assert_eq!(next.move_file(&path, AI_KEY_PREFIX), MoveOutcome::Moved(2));
+        assert!(!path.exists());
+        assert_eq!(mem.raw("ai-key:anthropic").unwrap(), b"A_NEW");
+        assert!(mem.raw("ai-key:moonshot").is_none());
+        assert_eq!(mem.raw("ai-key:openai").unwrap(), b"O1");
+        let marker = read_marker(&dir.join(MARKER_FILE));
+        assert!(marker.get(MOVING).is_none() && marker.get(MOVED).is_none() && marker.get(DONE).is_none());
+    }
+
+    #[test]
+    fn a_file_gone_while_a_move_is_pending_ends_the_move() {
+        let dir = temp_dir();
+        let mem = MemBackend::new();
+        let first = partial_move(&dir, &mem, r#"{"anthropic":"A1","moonshot":"M1","openai":"O1"}"#);
+        // The user removes moonshot in 2.0, then deletes the old file by hand.
+        first.delete("ai-key:moonshot").unwrap();
+        drop(first);
+        let path = dir.join(AI_KEYS_FILE);
+        fs::remove_file(&path).unwrap();
+
+        let next = os_store(&dir, &mem);
+        assert_eq!(next.move_file(&path, AI_KEY_PREFIX), MoveOutcome::Nothing);
+        let marker = read_marker(&dir.join(MARKER_FILE));
+        assert!(marker.get(MOVING).is_none() && marker.get(MOVED).is_none() && marker.get(DONE).is_none());
+        drop(next);
+
+        // A 1.9 file written later is a first try: every value in it moves.
+        fs::write(&path, r#"{"anthropic":"A9","moonshot":"M9","openai":"O9"}"#).unwrap();
+        let later = os_store(&dir, &mem);
+        assert_eq!(later.move_file(&path, AI_KEY_PREFIX), MoveOutcome::Moved(3));
+        assert_eq!(mem.raw("ai-key:anthropic").unwrap(), b"A9");
+        assert_eq!(mem.raw("ai-key:moonshot").unwrap(), b"M9");
+        assert_eq!(mem.raw("ai-key:openai").unwrap(), b"O9");
+    }
+
+    #[test]
+    fn a_marker_from_an_early_20_build_still_skips_its_done_accounts() {
+        let dir = temp_dir();
+        let mem = MemBackend::new();
+        drop(os_store(&dir, &mem));
+        let path = dir.join(AI_KEYS_FILE);
+        fs::write(&path, r#"{"anthropic":"A1","openai":"O1"}"#).unwrap();
+        fs::write(
+            dir.join(MARKER_FILE),
+            r#"{"store":"os","moving":["ai_keys.json"],"done":["ai-key:anthropic"]}"#,
+        )
+        .unwrap();
+        put(&mem, "ai-key:anthropic", b"A2 typed in 2.0");
+        let store = os_store(&dir, &mem);
+        assert_eq!(store.move_file(&path, AI_KEY_PREFIX), MoveOutcome::Moved(2));
+        assert_eq!(mem.raw("ai-key:anthropic").unwrap(), b"A2 typed in 2.0");
+        assert_eq!(mem.raw("ai-key:openai").unwrap(), b"O1");
     }
 
     #[test]

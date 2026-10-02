@@ -234,8 +234,9 @@ GreenCLI 2.0 keeps AI keys and MCP logins in the system password store, not in f
 - **Left-over files**: if an old file can't be read, it stays where it is and Settings shows its
   path ("An old key file couldn't be read and may still hold keys: …"). Delete it after you enter
   your keys again. If some keys didn't move, Settings says "Some keys from 1.9 were not moved yet.
-  GreenCLI will try again next start." Keys you change or remove in the meantime stay as you set
-  them.
+  GreenCLI will try again next start." Keys you change or remove in 2.0 in the meantime stay as
+  you set them. If you go back to 1.9 in the meantime, keys you change or remove there are
+  changed or removed in 2.0 too at its next start.
 - **No password store** (some Linux setups, for example with no keyring running): keys stay in
   `ai_keys.json` and `mcp_creds.json` (owner-only, the 1.9 format), and Settings says "Saved in a
   private file on this computer. No system password store was found." Each start tries the store
