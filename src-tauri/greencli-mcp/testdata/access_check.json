@@ -1,0 +1,10 @@
+{
+  "contract": "casper/access-check v1",
+  "products": [
+    {
+      "product": "greencli",
+      "access": "read-only",
+      "identity": "greencli-mcp {version}"
+    }
+  ]
+}

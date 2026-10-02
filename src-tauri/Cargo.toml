@@ -7,6 +7,8 @@ license = "MIT"
 repository = "https://github.com/Choaterboater/GreenCli"
 edition = "2021"
 rust-version = "1.90"
+# Two binaries (the app and the greencli-mcp shim in src/bin): `cargo run` starts the app.
+default-run = "green-cli"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -47,6 +49,8 @@ portable-pty = "0.8"
 # chrono = "0.4"  # unused
 # directories-next = "2.0"  # unused
 reqwest = { version = "0.12", features = ["json", "cookies", "stream"] }
+# The read-only MCP server (src/bin/greencli-mcp.rs) and its hidden-copy filter version.
+greencli-mcp = { path = "greencli-mcp" }
 
 [features]
 default = ["custom-protocol"]
@@ -64,3 +68,5 @@ rsa-keys = []
 
 # [2.0 greencli-mcp] [workspace] table goes below.
 #
+[workspace]
+members = ["greencli-mcp"]

@@ -1926,6 +1926,7 @@ dependencies = [
  "env_logger",
  "futures",
  "gethostname",
+ "greencli-mcp",
  "log",
  "portable-pty",
  "rand 0.10.2",
@@ -1943,6 +1944,15 @@ dependencies = [
  "tokio",
  "tokio-serial",
  "zeroize",
+]
+
+[[package]]
+name = "greencli-mcp"
+version = "1.9.0"
+dependencies = [
+ "dirs",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -1,0 +1,72 @@
+{
+  "version": "1.0",
+  "folders": [
+    {
+      "id": "default",
+      "name": "Core",
+      "expanded": true,
+      "loginProfileId": "login-SECRET-folder-login",
+      "items": [
+        {
+          "id": "s1",
+          "name": "sw-core-01",
+          "protocol": "ssh",
+          "host": "10.0.0.1",
+          "port": 22,
+          "username": "SECRET-USER-admin",
+          "authType": "password",
+          "deviceType": "aruba-cx",
+          "deviceProfileId": "aruba-cx",
+          "folderId": "default",
+          "tags": ["core", "dc1"],
+          "notes": "SECRET-NOTE enable password is hunter2",
+          "serialPort": null,
+          "baudRate": null,
+          "startupCommands": "enable\nSECRET-STARTUP-enable-pass",
+          "keyPath": "/Users/me/.ssh/SECRET-KEYPATH",
+          "jumpHost": "SECRET-JUMP-host.example",
+          "jumpPort": 2222,
+          "jumpUsername": "SECRET-JUMP-USER",
+          "loginProfileId": "SECRET-LOGIN-PROFILE",
+          "jumpLoginProfileId": "SECRET-JUMP-LOGIN",
+          "password": "SECRET-PASSWORD-field"
+        },
+        {
+          "id": "s2",
+          "name": "",
+          "protocol": "telnet",
+          "host": "10.0.0.2",
+          "port": 23,
+          "username": null,
+          "authType": null,
+          "deviceType": "generic",
+          "folderId": "default",
+          "tags": [],
+          "notes": null,
+          "serialPort": null,
+          "baudRate": null
+        }
+      ]
+    }
+  ],
+  "sessions": [
+    {
+      "id": "local-1",
+      "name": "my shell",
+      "protocol": "local",
+      "host": null,
+      "port": null,
+      "username": null,
+      "authType": null,
+      "deviceType": "generic",
+      "folderId": null,
+      "tags": [],
+      "notes": null,
+      "serialPort": null,
+      "baudRate": null,
+      "command": "SECRET-LOCAL-COMMAND",
+      "args": ["--token", "SECRET-LOCAL-ARG"],
+      "cwd": "/Users/me/SECRET-CWD"
+    }
+  ]
+}

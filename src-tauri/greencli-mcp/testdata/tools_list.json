@@ -1,0 +1,49 @@
+[
+  {
+    "_meta": {
+      "casper/safety": "read"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Access check"
+    },
+    "description": "Says what this server may do: GreenCLI data, read-only. It never changes a device or GreenCLI.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "required": [],
+      "type": "object"
+    },
+    "name": "access_check",
+    "title": "Access check"
+  },
+  {
+    "_meta": {
+      "casper/safety": "read"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "List devices"
+    },
+    "description": "Lists the devices saved in GreenCLI: name, folder, protocol, host, port, device type, tags, and archiveKey (the device name to use with the config tools). No passwords, user names, notes or startup commands.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "cursor": {
+          "description": "nextCursor from the last page, to get the next one.",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "name": "list_devices",
+    "title": "List devices"
+  }
+]
