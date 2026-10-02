@@ -186,17 +186,24 @@ impl McpServerDef {
     }
 }
 
-/// Same program: the same transport, command, args, URL and folder. Env and
-/// headers are left out, so a rotated token keeps the server's settings.
+/// Same program: the same transport, and the same command, args and folder
+/// (stdio) or URL (http). Only the chosen transport's fields count: the form
+/// saves only those, so a field left over from the other transport in an
+/// older save must not turn writes off. Env and headers are left out, so a
+/// rotated token keeps the server's settings.
 fn same_program(a: &McpServerDef, b: &McpServerDef) -> bool {
     fn trimmed(v: &Option<String>) -> &str {
         v.as_deref().map(str::trim).unwrap_or("")
     }
     a.transport == b.transport
-        && a.command.trim() == b.command.trim()
-        && a.args == b.args
-        && trimmed(&a.url) == trimmed(&b.url)
-        && trimmed(&a.cwd) == trimmed(&b.cwd)
+        && match a.transport {
+            McpTransport::Stdio => {
+                a.command.trim() == b.command.trim()
+                    && a.args == b.args
+                    && trimmed(&a.cwd) == trimmed(&b.cwd)
+            }
+            McpTransport::Http => trimmed(&a.url) == trimmed(&b.url),
+        }
 }
 
 /// A discovered tool exposed by a connected MCP server.
@@ -2640,7 +2647,6 @@ mod tests {
             Box::new(|d| d.command = "python3.12".into()),
             Box::new(|d| d.args.push("--debug".into())),
             Box::new(|d| d.cwd = Some("/other".into())),
-            Box::new(|d| d.url = Some("http://127.0.0.1:8010/mcp".into())),
             Box::new(|d| d.transport = McpTransport::Http),
         ];
         for change in changes {
@@ -2653,6 +2659,46 @@ mod tests {
             store.upsert(changed).unwrap();
             assert!(!store.load()[0].show_opt_in);
         }
+    }
+
+    #[test]
+    fn a_leftover_field_of_the_other_transport_keeps_writes_on() {
+        let store = McpConfigStore::new(temp_dir());
+        // A stdio server saved earlier with a URL the form left behind.
+        let mut old = def("junos", "python3", &["jmcp.py"]);
+        old.url = Some("http://127.0.0.1:8010/mcp".into());
+        store.upsert(old).unwrap();
+        store
+            .update("junos", |d| {
+                d.writes = Some(McpWrites::On);
+                d.show_opt_in = true;
+            })
+            .unwrap();
+        // The form now saves only the stdio fields: an env edit keeps writes on.
+        let mut edit = def("junos", "python3", &["jmcp.py"]);
+        edit.env.insert("TOKEN".into(), "new".into());
+        store.upsert(edit).unwrap();
+        let saved = &store.load()[0];
+        assert!(saved.writes_on());
+        assert!(saved.show_opt_in);
+        // The same for an http server with a leftover command.
+        let store = McpConfigStore::new(temp_dir());
+        let mut web = def("web", "uvx", &["old-server"]);
+        web.transport = McpTransport::Http;
+        web.url = Some("https://mcp.example.com/mcp".into());
+        store.upsert(web.clone()).unwrap();
+        store
+            .update("web", |d| d.writes = Some(McpWrites::On))
+            .unwrap();
+        web.command = String::new();
+        web.args.clear();
+        web.headers.insert("Authorization".into(), "Bearer new".into());
+        store.upsert(web.clone()).unwrap();
+        assert!(store.load()[0].writes_on());
+        // A new URL still turns writes off.
+        web.url = Some("https://other.example.com/mcp".into());
+        store.upsert(web).unwrap();
+        assert!(!store.load()[0].writes_on());
     }
 
     #[test]
@@ -2962,7 +3008,10 @@ mod tests {
             Box::new(|d| d.command = "uv".into()),
             Box::new(|d| d.args.push("--debug".into())),
             Box::new(|d| d.cwd = Some("/other".into())),
-            Box::new(|d| d.url = Some("http://127.0.0.1:8010/mcp".into())),
+            Box::new(|d| {
+                d.transport = McpTransport::Http;
+                d.url = Some("http://127.0.0.1:8010/mcp".into());
+            }),
         ];
         for change in changes {
             let store = McpConfigStore::new(temp_dir());
