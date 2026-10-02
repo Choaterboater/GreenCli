@@ -111,6 +111,14 @@ a diff can't show a changed secret. Default: the newest snapshot against the one
             CURSOR,
         ],
     },
+    ToolSpec {
+        name: "list_intents",
+        title: "List intents",
+        description: "Lists GreenCLI's network intents (checks like \"NTP is set on every switch\") \
+with their kind, severity, last result (status and time) and each device's status. \
+Not the commands, match rules or output details.",
+        params: &[CURSOR],
+    },
 ];
 
 /// The tools/list entries.
@@ -225,6 +233,7 @@ pub fn call(data_dir: &Path, name: &str, args: &Map<String, Value>) -> Result<Va
     check_args(tool, args)?;
     match tool.name {
         "access_check" => Ok(access_check()),
+        "list_intents" => crate::intents::list_intents(data_dir, text_arg(args, "cursor")),
         "list_devices" => crate::devices::list_devices(data_dir, text_arg(args, "cursor")),
         "list_config_history" => archive::list_config_history(
             data_dir,

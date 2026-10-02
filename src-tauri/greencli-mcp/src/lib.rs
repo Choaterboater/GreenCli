@@ -17,6 +17,7 @@ use std::path::{Path, PathBuf};
 mod archive;
 mod devices;
 mod files;
+mod intents;
 mod page;
 mod protocol;
 mod tools;

@@ -155,5 +155,31 @@
     },
     "name": "get_config_diff",
     "title": "Get config diff"
+  },
+  {
+    "_meta": {
+      "casper/safety": "read"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "List intents"
+    },
+    "description": "Lists GreenCLI's network intents (checks like \"NTP is set on every switch\") with their kind, severity, last result (status and time) and each device's status. Not the commands, match rules or output details.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "cursor": {
+          "description": "nextCursor from the last page, to get the next one.",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "name": "list_intents",
+    "title": "List intents"
   }
 ]
