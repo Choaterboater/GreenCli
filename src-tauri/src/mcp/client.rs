@@ -458,23 +458,92 @@ impl McpCreds {
 
 /// The folder for login files, inside the app data folder.
 const CREDS_DIR: &str = "mcp_creds";
+/// Each running copy of GreenCLI keeps its login files in its own
+/// `mcp_creds/run-<id>/` folder, next to `run-<id>.lock`, which it holds
+/// locked while it runs. The startup sweep deletes only folders whose lock
+/// is free, so a second copy of the app never deletes the files of servers
+/// the first copy still runs.
+const RUN_PREFIX: &str = "run-";
+const LOCK_SUFFIX: &str = ".lock";
+/// Held while a run folder is made or the sweep runs, so the two never meet
+/// halfway.
+const SWEEP_LOCK: &str = ".sweep.lock";
+
+/// This process's run folder per app data folder, with its held lock.
+static RUN_DIRS: std::sync::Mutex<Vec<(PathBuf, PathBuf, fs::File)>> = std::sync::Mutex::new(Vec::new());
+
+fn open_lock(path: &std::path::Path, create_new: bool) -> std::io::Result<fs::File> {
+    let mut o = fs::OpenOptions::new();
+    o.read(true).write(true);
+    if create_new {
+        o.create_new(true);
+    } else {
+        o.create(true).truncate(false);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        o.mode(0o600);
+    }
+    o.open(path)
+}
+
+/// A lock path must be a plain file: a link there is refused, never followed.
+fn open_plain_lock(path: &std::path::Path) -> std::io::Result<fs::File> {
+    if let Ok(m) = fs::symlink_metadata(path) {
+        if !m.is_file() {
+            return Err(std::io::Error::other("not a plain file"));
+        }
+    }
+    open_lock(path, false)
+}
+
+/// The sweep lock of `base` (`mcp_creds`), held until the file is dropped.
+fn hold_sweep_lock(base: &std::path::Path) -> std::io::Result<fs::File> {
+    let f = open_plain_lock(&base.join(SWEEP_LOCK))?;
+    f.lock()?;
+    Ok(f)
+}
+
+/// This process's own login folder in `app_dir`, made (with its lock) the
+/// first time it is needed.
+fn run_dir(app_dir: &std::path::Path) -> Result<PathBuf, AppError> {
+    let mut runs = RUN_DIRS.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(i) = runs.iter().position(|(a, _, _)| a == app_dir) {
+        if fs::symlink_metadata(&runs[i].1).map(|m| m.is_dir()).unwrap_or(false) {
+            return Ok(runs[i].1.clone());
+        }
+        // Deleted under us: make a new one.
+        runs.remove(i);
+    }
+    let base = app_dir.join(CREDS_DIR);
+    crate::private_fs::private_dir(&base)?;
+    let _sweep = hold_sweep_lock(&base)?;
+    let id = format!("{}{:016x}", RUN_PREFIX, rand::random::<u64>());
+    let lock = open_lock(&base.join(format!("{}{}", id, LOCK_SUFFIX)), true)?;
+    lock.try_lock()
+        .map_err(|e| AppError::ApiError(format!("Couldn't lock the MCP login folder: {}", e)))?;
+    let dir = base.join(&id);
+    crate::private_fs::private_dir(&dir)?;
+    runs.push((app_dir.to_path_buf(), dir.clone(), lock));
+    Ok(dir)
+}
 
 /// The login file of one running stdio server. It exists only while that
 /// server runs: it is deleted when the server is shut down, when it exits by
 /// itself (the stdio reader sees EOF), when the connect fails, and by the
-/// startup sweep. Each connect writes a new file, so a reconnect never
-/// deletes the file the new server is using.
+/// startup sweep once this copy of the app is gone. Each connect writes a
+/// new file, so a reconnect never deletes the file the new server is using.
 pub struct CredsFile {
     path: PathBuf,
     removed: AtomicBool,
 }
 
 impl CredsFile {
-    /// Write `content` to a new owner-only file for server `name` in
-    /// `<app_dir>/mcp_creds/` (the folder is made owner-only too).
+    /// Write `content` to a new owner-only file for server `name` in this
+    /// process's `<app_dir>/mcp_creds/run-<id>/` (the folders are owner-only too).
     fn write(app_dir: &std::path::Path, name: &str, content: &[u8]) -> Result<Self, AppError> {
-        let dir = app_dir.join(CREDS_DIR);
-        crate::private_fs::private_dir(&dir)?;
+        let dir = run_dir(app_dir)?;
         let path = dir.join(format!("{}-{:016x}", sanitize_filename(name), rand::random::<u64>()));
         let file = Self {
             path,
@@ -505,23 +574,73 @@ impl Drop for CredsFile {
 }
 
 /// Startup sweep, before any server connects: login files left by a crash
-/// or a forced quit are deleted. Plain files only; links are never followed.
+/// or a forced quit are deleted. A run folder whose lock another running
+/// copy of GreenCLI holds is left alone. Links are deleted, never followed.
 pub fn sweep_creds_dir(app_dir: &std::path::Path) {
-    let dir = app_dir.join(CREDS_DIR);
-    let Ok(meta) = fs::symlink_metadata(&dir) else {
-        return;
-    };
-    if !meta.is_dir() {
+    let base = app_dir.join(CREDS_DIR);
+    if !fs::symlink_metadata(&base).map(|m| m.is_dir()).unwrap_or(false) {
         return;
     }
-    let Ok(entries) = fs::read_dir(&dir) else {
+    let _sweep = match hold_sweep_lock(&base) {
+        Ok(f) => f,
+        Err(e) => {
+            log::warn!("Couldn't lock the MCP login folder, so it wasn't cleaned: {}", e);
+            return;
+        }
+    };
+    let Ok(entries) = fs::read_dir(&base) else {
         return;
     };
     for entry in entries.flatten() {
-        if entry.file_type().map(|t| t.is_file() || t.is_symlink()).unwrap_or(false) {
+        let name = entry.file_name().to_string_lossy().to_string();
+        let Ok(kind) = entry.file_type() else {
+            continue;
+        };
+        if name == SWEEP_LOCK {
+            continue;
+        }
+        let run_lock = name
+            .strip_suffix(LOCK_SUFFIX)
+            .filter(|id| id.starts_with(RUN_PREFIX));
+        if let (Some(id), true) = (run_lock, kind.is_file()) {
+            let free = match open_plain_lock(&entry.path()) {
+                Ok(f) => f.try_lock().is_ok(),
+                Err(_) => false,
+            };
+            if free {
+                remove_run_dir(&base.join(id));
+                let _ = fs::remove_file(entry.path());
+            }
+        } else if kind.is_dir() && name.starts_with(RUN_PREFIX) {
+            // Its lock file is made first, so a folder without one is left over.
+            if fs::symlink_metadata(base.join(format!("{}{}", name, LOCK_SUFFIX))).is_err() {
+                remove_run_dir(&entry.path());
+            }
+        } else if kind.is_file() || kind.is_symlink() {
+            // A 1.9 or 2.0-beta login file straight in mcp_creds.
             let _ = fs::remove_file(entry.path());
         }
     }
+}
+
+/// Delete a run folder: plain files and links in it, then the folder. A link
+/// in place of the folder is deleted itself.
+fn remove_run_dir(dir: &std::path::Path) {
+    let Ok(meta) = fs::symlink_metadata(dir) else {
+        return;
+    };
+    if !meta.is_dir() {
+        let _ = fs::remove_file(dir);
+        return;
+    }
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            if entry.file_type().map(|t| t.is_file() || t.is_symlink()).unwrap_or(false) {
+                let _ = fs::remove_file(entry.path());
+            }
+        }
+    }
+    let _ = fs::remove_dir(dir);
 }
 
 // ─── Running client ───
@@ -3441,11 +3560,17 @@ pub(crate) mod tests {
 
     // ─── The login file exists only while its server runs (K3) ───
 
-    #[cfg(unix)]
+    /// Every login file in `dir`'s `mcp_creds`, in any run folder.
     fn files_in(dir: &std::path::Path) -> Vec<PathBuf> {
-        std::fs::read_dir(dir.join(CREDS_DIR))
-            .map(|r| r.flatten().map(|e| e.path()).collect())
-            .unwrap_or_default()
+        let mut out = Vec::new();
+        for e in std::fs::read_dir(dir.join(CREDS_DIR)).into_iter().flatten().flatten() {
+            if e.file_type().unwrap().is_dir() {
+                out.extend(std::fs::read_dir(e.path()).unwrap().flatten().map(|f| f.path()));
+            } else if !e.file_name().to_string_lossy().ends_with(LOCK_SUFFIX) {
+                out.push(e.path());
+            }
+        }
+        out
     }
 
     #[cfg(unix)]
@@ -3460,6 +3585,7 @@ pub(crate) mod tests {
         let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode(&path), 0o600);
         assert_eq!(mode(&dir.join(CREDS_DIR)), 0o700);
+        assert_eq!(mode(path.parent().unwrap()), 0o700);
         client.shutdown().await;
         assert!(!path.exists());
         assert!(files_in(&dir).is_empty());
@@ -3528,7 +3654,7 @@ pub(crate) mod tests {
         let none = || None;
         assert!(connect_server(&manager, "central", &none).await.is_err());
         assert!(dir.join(CREDS_DIR).exists(), "the file was written first");
-        assert!(std::fs::read_dir(dir.join(CREDS_DIR)).unwrap().next().is_none());
+        assert!(files_in(&dir).is_empty());
     }
 
     #[test]
@@ -3538,14 +3664,48 @@ pub(crate) mod tests {
         std::fs::create_dir_all(&creds).unwrap();
         std::fs::write(creds.join("central_0123456789abcdef"), b"old 1.9 file").unwrap();
         std::fs::write(creds.join("central_0123-ffffffffffffffff"), b"left by a crash").unwrap();
+        // A run folder of a copy of the app that is gone: its lock is free.
+        let dead = creds.join("run-00000000000000aa");
+        std::fs::create_dir_all(&dead).unwrap();
+        std::fs::write(dead.join("central-1"), b"left by a crash").unwrap();
+        std::fs::write(creds.join("run-00000000000000aa.lock"), b"").unwrap();
+        // A run folder with no lock file at all.
+        let orphan = creds.join("run-00000000000000bb");
+        std::fs::create_dir_all(&orphan).unwrap();
+        std::fs::write(orphan.join("central-2"), b"left over").unwrap();
         let keep = temp_dir().join("outside.txt");
         std::fs::write(&keep, b"not ours").unwrap();
         #[cfg(unix)]
-        std::os::unix::fs::symlink(&keep, creds.join("link")).unwrap();
+        {
+            std::os::unix::fs::symlink(&keep, creds.join("link")).unwrap();
+            std::os::unix::fs::symlink(&keep, dead.join("link")).unwrap();
+        }
         sweep_creds_dir(&dir);
-        assert!(std::fs::read_dir(&creds).unwrap().next().is_none());
+        let left: Vec<String> = std::fs::read_dir(&creds)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(left, vec![SWEEP_LOCK.to_string()]);
         assert_eq!(std::fs::read(&keep).unwrap(), b"not ours");
         // No folder: nothing to do.
         sweep_creds_dir(&temp_dir());
+    }
+
+    #[test]
+    fn the_sweep_leaves_the_login_files_of_a_running_copy() {
+        let dir = temp_dir();
+        // This process is the running copy: it holds its run folder's lock.
+        let live = CredsFile::write(&dir, "central", b"client_secret: s3cr3t").unwrap();
+        std::fs::write(dir.join(CREDS_DIR).join("old-1.9-file"), b"x").unwrap();
+        sweep_creds_dir(&dir);
+        assert_eq!(std::fs::read(live.path()).unwrap(), b"client_secret: s3cr3t");
+        assert_eq!(files_in(&dir), vec![live.path().to_path_buf()]);
+        // A second login file goes in the same run folder.
+        let other = CredsFile::write(&dir, "other", b"token: x").unwrap();
+        assert_eq!(other.path().parent(), live.path().parent());
+        drop(other);
+        drop(live);
+        assert!(files_in(&dir).is_empty());
     }
 }

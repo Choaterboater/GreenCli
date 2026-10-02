@@ -161,10 +161,11 @@ pub fn tighten_app_dir(app_dir: &Path) {
         if is_real_dir(&archive) {
             tighten_tree(&archive, 3);
         }
-        // MCP login files (deleted by the startup sweep right after).
+        // MCP login files and run folders (the startup sweep right after
+        // deletes those no running copy of the app holds).
         let creds = app_dir.join("mcp_creds");
         if is_real_dir(&creds) {
-            tighten_tree(&creds, 0);
+            tighten_tree(&creds, 1);
         }
     }
     #[cfg(not(unix))]
@@ -277,6 +278,13 @@ mod tests {
         let keys = dir.join("ai_keys.json");
         fs::write(&keys, b"{not json").unwrap();
         fs::set_permissions(&keys, fs::Permissions::from_mode(0o644)).unwrap();
+        // A login file in a run folder.
+        let run = dir.join("mcp_creds").join("run-0123456789abcdef");
+        fs::create_dir_all(&run).unwrap();
+        fs::set_permissions(&run, fs::Permissions::from_mode(0o755)).unwrap();
+        let login = run.join("central-1");
+        fs::write(&login, b"x").unwrap();
+        fs::set_permissions(&login, fs::Permissions::from_mode(0o644)).unwrap();
 
         tighten_app_dir(&dir);
 
@@ -286,6 +294,8 @@ mod tests {
         assert_eq!(mode(&device), 0o700);
         assert_eq!(mode(&snap), 0o600);
         assert_eq!(mode(&keys), 0o600);
+        assert_eq!(mode(&run), 0o700);
+        assert_eq!(mode(&login), 0o600);
     }
 
     #[test]
