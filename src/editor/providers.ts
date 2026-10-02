@@ -1,11 +1,14 @@
-// Monaco hookups for the device languages: hover cards and quick fixes
-// (Ctrl+. or the light bulb, from the problems' markers). Registered once per
+// Monaco hookups for the device languages: hover cards, quick fixes (Ctrl+.
+// or the light bulb, from the problems' markers) and the symbols Go to Symbol
+// (Ctrl+Shift+O) lists. Registered once per
 // Monaco instance from setupMonaco (beforeMount), like the snippets: the
 // editor's onMount runs again after every Diff toggle.
 
 import type * as Monaco from 'monaco-editor';
 import { CARD_LANGUAGES, cardForLine, cardMarkdown } from './commandCards';
 import { quickFixesFor } from './quickFixes';
+import { configSymbols, type ConfigSymbolKind } from './configSymbols';
+import { NETWORK_LANGUAGE_IDS } from './networkLanguages';
 
 const registered = new WeakSet<object>();
 
@@ -24,6 +27,29 @@ export function registerEditorProviders(monaco: typeof Monaco): void {
           range: new monaco.Range(position.lineNumber, start, position.lineNumber, line.trimEnd().length + 1),
           contents: [{ value: cardMarkdown(card, language) }],
         };
+      },
+    });
+  }
+
+  const kinds: Record<ConfigSymbolKind, Monaco.languages.SymbolKind> = {
+    interface: monaco.languages.SymbolKind.Interface,
+    lag: monaco.languages.SymbolKind.Struct,
+    vlan: monaco.languages.SymbolKind.Enum,
+    routing: monaco.languages.SymbolKind.Namespace,
+    section: monaco.languages.SymbolKind.Module,
+  };
+  for (const language of NETWORK_LANGUAGE_IDS) {
+    monaco.languages.registerDocumentSymbolProvider(language, {
+      displayName: 'GreenCLI config',
+      provideDocumentSymbols(model) {
+        return configSymbols(model.getValue(), language).map((symbol) => ({
+          name: symbol.name,
+          detail: '',
+          kind: kinds[symbol.kind],
+          tags: [],
+          range: new monaco.Range(symbol.line, 1, symbol.endLine, model.getLineMaxColumn(symbol.endLine)),
+          selectionRange: new monaco.Range(symbol.line, 1, symbol.line, model.getLineMaxColumn(symbol.line)),
+        }));
       },
     });
   }

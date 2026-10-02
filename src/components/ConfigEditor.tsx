@@ -489,11 +489,6 @@ const PULL_MENU: Record<string, PullMenuItem[]> = {
   generic: [{ label: 'Running config', command: null }],
 };
 
-interface OutlineItem {
-  line: number;
-  label: string;
-}
-
 /** Why a send stopped early — shown over the buffer it came from. */
 interface SendReport {
   bufferId: string;
@@ -502,28 +497,6 @@ interface SendReport {
   line: string;
   detail: string;
   deviceText: string;
-}
-
-function buildOutline(text: string): OutlineItem[] {
-  const patterns = [
-    /^\s*(interface\s+\S+)/i,
-    /^\s*(vlan\s+\S+)/i,
-    /^\s*(router\s+\S+(?:\s+\S+)?)/i,
-    /^\s*(wlan\s+\S+(?:\s+\S+)?)/i,
-    /^\s*(aaa\s+\S+)/i,
-    /^\s*(set\s+(?:system|interfaces|vlans|protocols|routing-options|class-of-service)\b.*)/i,
-  ];
-  const items: OutlineItem[] = [];
-  text.split('\n').forEach((line, index) => {
-    for (const pattern of patterns) {
-      const match = line.match(pattern);
-      if (match?.[1]) {
-        items.push({ line: index + 1, label: match[1].trim() });
-        break;
-      }
-    }
-  });
-  return items.slice(0, 100);
 }
 
 /** The bar colors (the same as the .send-mark-* classes in index.css). */
@@ -635,7 +608,6 @@ export default function ConfigEditor() {
 
   const [showTemplates, setShowTemplates] = useState(false);
   const [showSnippets, setShowSnippets] = useState(false);
-  const [showOutline, setShowOutline] = useState(false);
   const [showLangPicker, setShowLangPicker] = useState(false);
   const [showPullMenu, setShowPullMenu] = useState(false);
   const [showProblems, setShowProblems] = useState(false);
@@ -741,12 +713,11 @@ export default function ConfigEditor() {
   );
 
   const activeSession = sessions.find((s) => s.sessionId === activeSessionId);
-  // Recompute the outline/problems against a DEFERRED copy of the content so the
-  // full-buffer reparse (buildOutline/buildProblems scan every line) runs at low
+  // Recompute the problems against a DEFERRED copy of the content so the
+  // full-buffer reparse (buildProblems scans every line) runs at low
   // priority instead of on the keystroke path. Monaco's value={content} below still
   // updates synchronously, so typing stays responsive on multi-thousand-line configs.
   const deferredContent = useDeferredValue(content);
-  const outlineItems = useMemo(() => buildOutline(deferredContent), [deferredContent]);
   const lineCount = useMemo(() => deferredContent.split('\n').length, [deferredContent]);
   const baseProblems = useMemo(() => buildProblems(deferredContent, language), [deferredContent, language]);
   // The line the switch rejected on the last Send joins the list (red), quoting the switch.
@@ -976,14 +947,6 @@ export default function ConfigEditor() {
     editor.focus();
   }, []);
 
-  const jumpToOutlineItem = useCallback((item: OutlineItem) => {
-    const editor = editorRef.current;
-    if (!editor) return;
-    editor.revealLineInCenter(item.line);
-    editor.setPosition({ lineNumber: item.line, column: 1 });
-    editor.focus();
-    setShowOutline(false);
-  }, []);
 
   // Pull a command's output from the active device into a NEW editor tab
   // (terminal read-back, paging disabled/restored around the capture).
@@ -1579,7 +1542,7 @@ export default function ConfigEditor() {
         {/* Language picker */}
         <div className="relative">
           <button
-            onClick={() => { setShowLangPicker(!showLangPicker); setLangSearch(''); setShowTemplates(false); setShowSnippets(false); setShowOutline(false); setShowPullMenu(false); }}
+            onClick={() => { setShowLangPicker(!showLangPicker); setLangSearch(''); setShowTemplates(false); setShowSnippets(false); setShowPullMenu(false); }}
             className="flex items-center gap-1.5 px-2 py-1 text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] rounded transition-colors"
             title="Change language mode"
           >
@@ -1628,7 +1591,7 @@ export default function ConfigEditor() {
         {/* Templates (Aruba + Junos) */}
         <div className="relative">
           <button
-            onClick={() => { setShowTemplates(!showTemplates); setShowLangPicker(false); setShowSnippets(false); setShowOutline(false); setShowPullMenu(false); }}
+            onClick={() => { setShowTemplates(!showTemplates); setShowLangPicker(false); setShowSnippets(false); setShowPullMenu(false); }}
             className="flex items-center gap-1.5 px-2 py-1 text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] rounded transition-colors"
           >
             <BookOpen size={12} />
@@ -1656,7 +1619,7 @@ export default function ConfigEditor() {
         {/* Snippets */}
         <div className="relative">
           <button
-            onClick={() => { setShowSnippets(!showSnippets); setShowTemplates(false); setShowLangPicker(false); setShowOutline(false); setShowPullMenu(false); }}
+            onClick={() => { setShowSnippets(!showSnippets); setShowTemplates(false); setShowLangPicker(false); setShowPullMenu(false); }}
             className="flex items-center gap-1.5 px-2 py-1 text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] rounded transition-colors"
             title="Insert common network config snippets"
           >
@@ -1687,39 +1650,22 @@ export default function ConfigEditor() {
           )}
         </div>
 
-        {/* Outline */}
-        <div className="relative">
-          <button
-            onClick={() => { setShowOutline(!showOutline); setShowTemplates(false); setShowLangPicker(false); setShowSnippets(false); setShowPullMenu(false); }}
-            className="flex items-center gap-1.5 px-2 py-1 text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] rounded transition-colors"
-            title="Jump to interfaces, VLANs, routing sections, or Junos set blocks"
-          >
-            <ListTree size={12} />
-            Outline
-            <ChevronDown size={10} />
-          </button>
-          {showOutline && (
-            <>
-              <div className="fixed inset-0 z-20" onClick={() => setShowOutline(false)} />
-              <div className="absolute top-full left-0 mt-1 z-30 w-72 max-h-64 overflow-y-auto bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg shadow-xl py-1">
-                {outlineItems.length === 0 ? (
-                  <p className="px-3 py-2 text-xs text-[var(--text-muted)]">No config sections found.</p>
-                ) : (
-                  outlineItems.map((item) => (
-                    <button
-                      key={`${item.line}-${item.label}`}
-                      onClick={() => jumpToOutlineItem(item)}
-                      className="grid grid-cols-[2.75rem_1fr] w-full px-3 py-1.5 text-xs text-left hover:bg-[var(--bg-tertiary)]"
-                    >
-                      <span className="text-[var(--text-muted)]">L{item.line}</span>
-                      <span className="truncate text-[var(--text-primary)]">{item.label}</span>
-                    </button>
-                  ))
-                )}
-              </div>
-            </>
-          )}
-        </div>
+        {/* Outline: Monaco's Go to Symbol box (Ctrl+Shift+O) — type to jump to an
+            interface, VLAN or section. Code files use Monaco's own symbols. */}
+        <button
+          onClick={() => {
+            const editor = editorRef.current;
+            if (!editor || diffMode) return;
+            editor.focus();
+            void editor.getAction('editor.action.quickOutline')?.run();
+          }}
+          disabled={diffMode}
+          className="flex items-center gap-1.5 px-2 py-1 text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] disabled:opacity-40 rounded transition-colors"
+          title="Go to Symbol: type to jump to an interface, VLAN or section (Ctrl+Shift+O)"
+        >
+          <ListTree size={12} />
+          Outline
+        </button>
 
         <div className="w-px h-4 bg-[var(--border)] mx-0.5" />
 
@@ -1736,7 +1682,7 @@ export default function ConfigEditor() {
             Pull
           </button>
           <button
-            onClick={() => { setShowPullMenu(!showPullMenu); setShowTemplates(false); setShowLangPicker(false); setShowSnippets(false); setShowOutline(false); }}
+            onClick={() => { setShowPullMenu(!showPullMenu); setShowTemplates(false); setShowLangPicker(false); setShowSnippets(false); }}
             disabled={!activeSession?.connected || pulling}
             className="flex items-center px-0.5 rounded-r transition-colors disabled:opacity-40 text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]"
             title="Pull other command output"

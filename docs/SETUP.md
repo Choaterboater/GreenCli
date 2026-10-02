@@ -301,6 +301,8 @@ live compliance:
     problem with its line, filterable by kind; a click selects it. **F8** / **Shift+F8** steps
     through them. A line the switch rejected on Send shows in red with the switch's own words.
     Comment lines are never flagged. The Send dialog lists them too ("1 error, 2 warnings").
+  - **Go to Symbol** (**Ctrl+Shift+O**, or **Outline**): type to jump to an interface, LAG, VLAN,
+    router or Junos section by name.
   - **Quick fixes** (**Ctrl+.** or the light bulb on a problem): strip terminal junk, comment out a
     risky or rejected line, add `commit confirmed 5` to a Junos tab, or swap a plain-text password
     for a blank.
@@ -350,6 +352,7 @@ live compliance:
 | `Ctrl+Shift+E` | Toggle Config Editor |
 | `Ctrl+Shift+M` | Config Editor: show or hide the Problems panel |
 | `Ctrl+.` | Config Editor: quick fixes for the problem under the cursor |
+| `Ctrl+Shift+O` | Config Editor: Go to Symbol (interfaces, VLANs, sections) |
 | `Ctrl+=` / `Ctrl+-` | Zoom terminal font in / out |
 | `Ctrl+0` | Reset terminal font size |
 

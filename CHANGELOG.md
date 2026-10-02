@@ -43,6 +43,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Quick fixes (Ctrl+. or the light bulb)** on Config Editor problems: strip terminal junk from the
   tab, comment out a risky or rejected line (`!` on Aruba, `#` on Junos) so it isn't sent, add
   `commit confirmed 5` to a Junos tab, or swap a plain-text password for a blank (`${password}`).
+- **Go to Symbol (Ctrl+Shift+O, or the Outline button)**: type to jump to any interface, LAG, VLAN,
+  router or Junos section by name, like VS Code. Junos works in set or brace style; code files use
+  the editor's own symbols. It replaces the old Outline list.
 
 ### Fixed
 - Confirm dialogs kept their text on one line: the Send preview, the problem list and the SFTP
