@@ -99,7 +99,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Known limits
 - Casper's own file tools can read files outside its folder. AI keys and MCP logins in the
   password store are out of its reach as files, but session logs, archived configs and the login
-  file of a running MCP server can still be read. Settings says so.
+  file of a running MCP server can still be read. With no system password store (or an old 1.9
+  file left over), `ai_keys.json` and `mcp_creds.json` are plain files it can read too. Settings
+  says so.
 - The update signature catches a broken, cut-short or swapped download, and a file from anywhere
   else. It does not protect against someone who can publish releases on the GitHub account: they
   could publish their own files and key. This is the same trust as downloading GreenCLI from the Releases page. Keep

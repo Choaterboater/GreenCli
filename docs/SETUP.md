@@ -349,9 +349,10 @@ Settings → **AI & MCP → AI Assistant** → provider **Casper (no key)**.
 - Like Local CLI, Casper answers from your question only: it can't use GreenCLI's device tools,
   your SSH sessions or MCP servers. Secrets in your question are hidden first.
 - **Know this:** Casper's own file tools can read files outside its folder, including GreenCLI's
-  session logs, archived configs and the login file of a running MCP server. AI keys and MCP
-  logins in the system password store are not files. Only ask Casper about text you trust (a
-  prompt hidden in a pasted log could ask it to read those files).
+  session logs, archived configs and the login file of a running MCP server, plus `ai_keys.json`
+  and `mcp_creds.json` when no system password store is found (or an old 1.9 file is left;
+  Settings names it). AI keys and MCP logins in the system password store are not files. Only ask
+  Casper about text you trust (a prompt hidden in a pasted log could ask it to read those files).
 
 ### Read-only Auditor (enforced)
 

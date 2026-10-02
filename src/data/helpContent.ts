@@ -184,7 +184,7 @@ export const HELP_TOPICS: HelpTopic[] = [
       { kind: 'note', text: 'Responses stream token-by-token; **Stop** actually aborts the provider request, not just the UI. Local CLI and Casper answer all at once, and **Stop** ends the CLI.' },
       {
         kind: 'note',
-        text: '**Casper**: each question gets a fresh folder (or one you pick with **Choose…**; **Check Casper** tests it). GreenCLI never turns Casper’s sandbox off, and won’t start Casper while a port forward or a local MCP server is open. Casper can’t use device tools or MCP servers. Its own file tools can read files outside its folder, including GreenCLI’s session logs and archived configs, so only ask it about text you trust.',
+        text: '**Casper**: each question gets a fresh folder (or one you pick with **Choose…**; **Check Casper** tests it). GreenCLI never turns Casper’s sandbox off, and won’t start Casper while a port forward or a local MCP server is open. Casper can’t use device tools or MCP servers. Its own file tools can read files outside its folder, including GreenCLI’s session logs and archived configs, and `ai_keys.json` and `mcp_creds.json` when no system password store is found, so only ask it about text you trust.',
       },
       {
         kind: 'note',
