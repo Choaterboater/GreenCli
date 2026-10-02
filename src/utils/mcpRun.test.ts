@@ -237,4 +237,26 @@ describe('runMcpTool', () => {
     expect(f.infoCalls).toBe(0);
     expect(f.calls).toHaveLength(0);
   });
+
+  it('refuses a blocked tool with no box and no call', async () => {
+    const blocked = 'srv writes are off. Only the user can turn them on, in Settings → MCP Servers.';
+    const f = fake({ infos: [tool('set_ssid', { blocked })] });
+    expect(text(await runMcpTool('srv', 'set_ssid', {}, ctx(), f.deps))).toBe(`Not run: ${blocked}`);
+    expect(f.asks).toHaveLength(0);
+    expect(f.calls).toHaveLength(0);
+  });
+
+  it('refuses when writes go off while the box is open', async () => {
+    const blocked = 'srv writes are off. Only the user can turn them on, in Settings → MCP Servers.';
+    const f = fake({ infos: [tool('execute_command'), tool('execute_command', { blocked })], answer: 'once' });
+    expect(text(await runMcpTool('srv', 'execute_command', {}, ctx(), f.deps))).toBe(`Not run: ${blocked}`);
+    expect(f.asks).toHaveLength(1);
+    expect(f.calls).toHaveLength(0);
+  });
+
+  it('passes the Read-only Auditor flag to the backend', async () => {
+    const f = fake({ infos: [tool('get_device', { annotations: { readOnlyHint: true } })] });
+    await runMcpTool('srv', 'get_device', {}, { readOnlyAgent: true, shouldCancel: () => false }, f.deps);
+    expect(f.calls).toEqual([{ tool: 'get_device', callId: 'id-1', readOnly: true }]);
+  });
 });

@@ -1,3 +1,5 @@
+import type { AiAgent } from '../types';
+
 // ─── Write-confirmation gate for AI-issued device actions ───
 //
 // The AI tool loop is reachable by prompt injection: device output (LLDP
@@ -39,4 +41,25 @@ export function aiIsWriteCommand(cmd: string): boolean {
     if (AI_READ_ONLY_CMD.test(c)) return false;
     return true; // unknown verb (set/no/interface/vlan/…): confirm to be safe
   });
+}
+
+// ─── Read-only Auditor ───
+
+/** The refusal the model reads when the Read-only Auditor blocks a tool call. */
+export const AUDITOR_REFUSAL =
+  'Not run: the Read-only Auditor agent is attached, so only tools that read can run. Give the user the exact commands to run instead.';
+
+/**
+ * Whether the agent attached to the session is read-only: GreenCLI then refuses every AI tool
+ * call that could change something, before any dialog. Agents saved before 1.9 have no
+ * `readOnly` field, so the built-in Auditor is also known by its id and by its name (an edited
+ * copy, or one re-created by hand). Matching more can only add restrictions.
+ */
+export function isReadOnlyAgent(agent: Pick<AiAgent, 'id' | 'name' | 'readOnly'> | undefined): boolean {
+  if (!agent) return false;
+  return (
+    agent.readOnly === true ||
+    agent.id === 'agent-auditor' ||
+    (agent.name ?? '').trim().toLowerCase() === 'read-only auditor'
+  );
 }

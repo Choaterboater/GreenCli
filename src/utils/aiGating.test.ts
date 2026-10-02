@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { aiIsWriteCommand, CONTROL_CHARS, normalizeLineBreaks } from './aiGating';
+import { AUDITOR_REFUSAL, aiIsWriteCommand, CONTROL_CHARS, isReadOnlyAgent, normalizeLineBreaks } from './aiGating';
+import { BUILTIN_AGENTS } from '../types';
 
 describe('aiIsWriteCommand', () => {
   it('flags obvious writes', () => {
@@ -64,5 +65,33 @@ describe('CONTROL_CHARS', () => {
 describe('normalizeLineBreaks', () => {
   it('turns every line break into \\n so the dialog shows each line', () => {
     expect(normalizeLineBreaks('a\rb\r\nc\nd')).toBe('a\nb\nc\nd');
+  });
+});
+
+describe('isReadOnlyAgent', () => {
+  const auditor = BUILTIN_AGENTS[0];
+  it('covers the built-in Read-only Auditor', () => {
+    expect(auditor.id).toBe('agent-auditor');
+    expect(auditor.readOnly).toBe(true);
+    expect(isReadOnlyAgent(auditor)).toBe(true);
+  });
+  it('covers an Auditor saved before the flag, or renamed', () => {
+    expect(isReadOnlyAgent({ id: 'agent-auditor', name: 'Read-only Auditor' })).toBe(true);
+    expect(isReadOnlyAgent({ id: 'agent-auditor', name: 'My audits' })).toBe(true);
+  });
+  it('covers one re-created by name', () => {
+    expect(isReadOnlyAgent({ id: 'agent-123', name: '  read-only AUDITOR ' })).toBe(true);
+  });
+  it('honours the readOnly flag', () => {
+    expect(isReadOnlyAgent({ id: 'agent-9', name: 'Night shift', readOnly: true })).toBe(true);
+  });
+  it('leaves other agents and no agent alone', () => {
+    expect(isReadOnlyAgent(BUILTIN_AGENTS[1])).toBe(false);
+    expect(isReadOnlyAgent({ id: 'agent-9', name: 'Junos Expert', readOnly: false })).toBe(false);
+    expect(isReadOnlyAgent(undefined)).toBe(false);
+  });
+  it('tells the model what to do instead', () => {
+    expect(AUDITOR_REFUSAL.startsWith('Not run: ')).toBe(true);
+    expect(AUDITOR_REFUSAL).toContain('Give the user the exact commands to run instead.');
   });
 });

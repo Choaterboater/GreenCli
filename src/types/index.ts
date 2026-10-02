@@ -134,6 +134,9 @@ export interface AiAgent {
   model?: string;
   /** Accent colour for the sidebar chip. */
   color: string;
+  /** Read-only: GreenCLI refuses every AI tool call that could change a device, and the AI
+   *  only sees MCP tools the server marks as read-only (see isReadOnlyAgent in utils/aiGating.ts). */
+  readOnly?: boolean;
 }
 
 /** App theme choice; 'system' follows the OS light/dark appearance live. */
@@ -320,6 +323,7 @@ export const BUILTIN_AGENTS: AiAgent[] = [
       'If a change is needed, output the exact commands for the user to review but DO NOT execute them. ' +
       'Prioritise security and best-practice findings, reported as Critical / Warning / Info.',
     color: '#F59E0B',
+    readOnly: true,
   },
   {
     id: 'agent-junos',

@@ -50,11 +50,14 @@ import { sleep, stripAnsi, sendAndCapture } from '../utils/terminal';
 import {
   aiIsWriteCommand,
   AI_DANGER_CMD,
+  AUDITOR_REFUSAL,
   CONTROL_CHARS,
+  isReadOnlyAgent,
   normalizeLineBreaks,
 } from '../utils/aiGating';
 import { pickAiSession } from '../utils/aiSession';
 import { hiddenSecretGate } from '../utils/secrets/gate';
+import { visibleToReadOnlyAgent } from '../utils/mcpGate';
 import { runMcpTool } from '../utils/mcpRun';
 import { cancelActiveMcpCalls, defaultMcpDeps } from '../utils/mcpRunDeps';
 import type { McpToolInfo } from '../utils/mcpTypes';
@@ -419,6 +422,8 @@ async function executeToolRaw(
     const path = (args.path as string) || '';
     const body = (args.body as string) || undefined;
     if (method.toUpperCase() !== 'GET') {
+      // The Read-only Auditor never changes a device: refuse before any dialog.
+      if (readOnlyAgent) return rawErr(AUDITOR_REFUSAL);
       const ok = await askConfirm({
         title: `Run ${method.toUpperCase()} ${path} on ${host}?`,
         message: body || 'This request may change switch state.',
@@ -470,6 +475,8 @@ async function executeToolRaw(
     const path = (args.path as string) || '';
     const body = (args.body as string) || undefined;
     if (method.toUpperCase() !== 'GET') {
+      // The Read-only Auditor never changes a device: refuse before any dialog.
+      if (readOnlyAgent) return rawErr(AUDITOR_REFUSAL);
       const ok = await askConfirm({
         title: `Run ${method.toUpperCase()} ${path} on ${host}?`,
         message: body || 'This request may change switch state.',
@@ -518,6 +525,8 @@ async function executeToolRaw(
     }
     // Every line break as \n, so the confirm dialog shows each line the device runs.
     const command = normalizeLineBreaks(raw);
+    // The Read-only Auditor never changes a device: refuse before any dialog.
+    if (readOnlyAgent && aiIsWriteCommand(command)) return rawErr(AUDITOR_REFUSAL);
     if (!activeSession) {
       return rawErr('Error: No active terminal session. Please connect to a device first.');
     }
@@ -1357,6 +1366,10 @@ export default function AiAssistant() {
         }
       }
     }
+    // The Read-only Auditor only sees tools the server marks read-only (and the
+    // Junos show tools); GreenCLI refuses its other calls in any case.
+    const readOnlyAgent = isReadOnlyAgent(activeAgent);
+    if (readOnlyAgent) mcpTools = mcpTools.filter(visibleToReadOnlyAgent);
     // Assign each MCP tool a UNIQUE provider-safe name (two servers can sanitize
     // to the same string, or names can collide after the 64-char clamp).
     const mcpResolve: McpResolve = new Map();
@@ -1432,8 +1445,7 @@ export default function AiAssistant() {
           builtinTools,
           shouldCancel,
           onDelta,
-          // A3 wires the Read-only Auditor here.
-          false
+          readOnlyAgent
         );
       } else if (provider === 'local-cli') {
         // One-shot CLI — no token streaming. An agent may override the CLI command.
@@ -1465,8 +1477,7 @@ export default function AiAssistant() {
           builtinTools,
           shouldCancel,
           onDelta,
-          // A3 wires the Read-only Auditor here.
-          false
+          readOnlyAgent
         );
       }
 
@@ -1628,7 +1639,11 @@ export default function AiAssistant() {
             }}
             className="flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full flex-shrink-0"
             style={{ color: activeAgent.color, background: `${activeAgent.color}1f` }}
-            title={`AI agent "${activeAgent.name}" is active for this session — click to manage`}
+            title={
+              isReadOnlyAgent(activeAgent)
+                ? `AI agent "${activeAgent.name}" is active for this session. It can't change devices, and it only uses MCP tools the server marks as read-only. Click to manage.`
+                : `AI agent "${activeAgent.name}" is active for this session — click to manage`
+            }
           >
             <Bot size={10} />
             {activeAgent.name}

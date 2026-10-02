@@ -4,11 +4,16 @@ import {
   callLabel,
   decideMcpCall,
   effectiveLabel,
+  JUNOS_WRITES_OFF_TEXT,
   readNamed,
+  readOnlyLoginText,
   toolFingerprint,
   TOO_DEEP,
+  visibleToReadOnlyAgent,
+  writesOffText,
   type McpGateDecision,
 } from './mcpGate';
+import { AUDITOR_REFUSAL } from './aiGating';
 import { buildPlan } from './mcpApproval';
 import type { McpToolInfo } from './mcpTypes';
 
@@ -198,5 +203,75 @@ describe('readNamed', () => {
     expect(readNamed('get_and_delete_site')).toBe(false);
     expect(readNamed('invoke_read_tool_x')).toBe(false);
     expect(readNamed('set_status')).toBe(false);
+  });
+});
+
+describe('writes off, read-only login and the Read-only Auditor', () => {
+  const off = (name: string, extra: Partial<McpToolInfo> = {}) => tool(name, { writes: 'off', ...extra });
+  const refused = (text: string) => ({ kind: 'refuse', text });
+  const auditor = (t: McpToolInfo, args: Record<string, unknown> = {}) =>
+    decideMcpCall({ tool: t, args, allowedForSession: false, readOnlyAgent: true });
+
+  it('lets the Rust label only make a tool stricter', () => {
+    const d = asked(decide(tool('get_device', { annotations: READ_ONLY, label: 'destructive' })));
+    expect(d.choices).toEqual(['no', 'once']);
+    expect(d.danger).toBe(true);
+  });
+
+  it('refuses a write behind a read router before any box', () => {
+    const t = off('invoke_read_tool', { annotations: READ_ONLY });
+    expect(decide(t, { name: 'update_site' })).toEqual(refused(writesOffText('srv')));
+    expect(decide(t, { tool_id: 'x' })).toEqual(refused(writesOffText('srv')));
+    expect(decide(t, { name: 'cycle_port' })).toEqual(refused(writesOffText('srv')));
+    // A routed read still asks, as every router call does.
+    expect(asked(decide(t, { name: 'get_device' })).choices).toEqual(['no', 'once']);
+  });
+
+  it('refuses writes and destructive tools, but asks about commands', () => {
+    expect(decide(off('set_ssid'))).toEqual(refused(writesOffText('srv')));
+    expect(decide(off('delete_site'))).toEqual(refused(writesOffText('srv')));
+    const d = asked(decide(off('execute_command')));
+    expect(d.label).toBe('exec');
+    expect(d.choices).toEqual(['no', 'once']);
+    expect(decide(tool('set_ssid', { writes: 'on' })).kind).toBe('ask');
+  });
+
+  it('allows only plain show commands on Junos', () => {
+    const junosOff = (name: string) => off(name, { preset: 'junos-mcp-server' });
+    expect(decide(junosOff('execute_junos_command'), { command: 'configure' })).toEqual(refused(JUNOS_WRITES_OFF_TEXT));
+    expect(JUNOS_WRITES_OFF_TEXT).toBe(
+      'Not run: Junos writes are off; only show commands run. Only the user can turn writes on, in Settings → MCP Servers.'
+    );
+    expect(decide(junosOff('load_and_commit_config'))).toEqual(refused(JUNOS_WRITES_OFF_TEXT));
+    expect(decide(junosOff('execute_junos_command'), { command: 'show version' }).kind).toBe('ask');
+  });
+
+  it('refuses a change on a read-only login', () => {
+    const t = tool('invoke_read_tool', { annotations: READ_ONLY, access: 'read-only', writes: 'on' });
+    expect(decide(t, { name: 'update_site' })).toEqual(refused(readOnlyLoginText('srv')));
+    expect(decide(tool('get_device', { annotations: READ_ONLY, access: 'read-only' })).kind).toBe('run');
+  });
+
+  it('the Read-only Auditor runs reads and refuses everything else', () => {
+    expect(auditor(tool('set_ssid'))).toEqual(refused(AUDITOR_REFUSAL));
+    expect(auditor(tool('get_device'))).toEqual(refused(AUDITOR_REFUSAL));
+    expect(auditor(tool('get_device', { annotations: READ_ONLY }))).toEqual({ kind: 'run', label: 'read', why: 'read' });
+    expect(auditor(tool('get_device', { annotations: READ_ONLY }), { confirm: true })).toEqual(refused(AUDITOR_REFUSAL));
+    // A Junos plain show is not refused (it still asks without the opt-in).
+    expect(auditor(junos('execute_junos_command'), { command: 'show version' }).kind).toBe('ask');
+    expect(auditor(junos('execute_junos_command', true), { command: 'show version' }).kind).toBe('run');
+    expect(auditor(junos('execute_junos_command'), { command: 'configure' })).toEqual(refused(AUDITOR_REFUSAL));
+    expect(auditor(junos('execute_junos_pfe_command'), { command: 'show version' })).toEqual(refused(AUDITOR_REFUSAL));
+  });
+
+  it('shows the Auditor only tools the server marks read-only, and Junos show tools', () => {
+    expect(visibleToReadOnlyAgent(tool('get_device', { annotations: READ_ONLY }))).toBe(true);
+    expect(visibleToReadOnlyAgent(tool('ap_ping', { _meta: { 'casper/safety': 'diagnostic' } }))).toBe(true);
+    expect(visibleToReadOnlyAgent(tool('get_device'))).toBe(false);
+    expect(visibleToReadOnlyAgent(tool('get_device', { annotations: READ_ONLY, label: 'write' }))).toBe(false);
+    expect(visibleToReadOnlyAgent(junos('execute_junos_command'))).toBe(true);
+    expect(visibleToReadOnlyAgent(junos('execute_junos_command_batch'))).toBe(true);
+    expect(visibleToReadOnlyAgent(junos('execute_junos_pfe_command'))).toBe(false);
+    expect(visibleToReadOnlyAgent(tool('execute_junos_command'))).toBe(false);
   });
 });

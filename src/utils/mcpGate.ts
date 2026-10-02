@@ -3,6 +3,9 @@
 // and approval checks (mcpApproval.ts), and GreenCLI's preset rules.
 //
 // What it promises:
+// - With a server's writes off, or on a read-only login, a call that would
+//   change something is refused before any dialog (the Rust backend refuses
+//   it again). The Read-only Auditor refuses everything that is not a read.
 // - A call that might write, run commands or delete always asks, and so does
 //   any router call (invoke_tool and friends) and any call where the AI set
 //   confirm=true or turned off a preview switch.
@@ -31,7 +34,8 @@ import {
   toolWords,
   type CapabilitySafety,
 } from './mcpLabels';
-import { JUNOS_PRESET, junosShow, presetNotes, presetTighten } from './mcpPresets';
+import { AUDITOR_REFUSAL } from './aiGating';
+import { JUNOS_PRESET, JUNOS_WRITES_OFF, junosShow, presetNotes, presetTighten } from './mcpPresets';
 import { showName } from './mcpShow';
 import type { McpToolInfo } from './mcpTypes';
 
@@ -45,6 +49,12 @@ export const TOO_DEEP = 'Not run: the arguments are nested too deeply to check (
 export const writesOffText = (server: string) =>
   `Not run: ${server} writes are off. Only the user can turn them on, in Settings → MCP Servers.`;
 export const readOnlyLoginText = (server: string) => `Not run: ${server} login is read-only.`;
+export const JUNOS_WRITES_OFF_TEXT = `Not run: ${JUNOS_WRITES_OFF} Only the user can turn writes on, in Settings → MCP Servers.`;
+
+/** Junos tools that commit a change. */
+const JUNOS_COMMIT_TOOLS = new Set(['load_and_commit_config', 'render_and_apply_j2_template']);
+/** Junos tools the Read-only Auditor may use, for plain show commands only. */
+const JUNOS_SHOW_TOOLS = new Set(['execute_junos_command', 'execute_junos_command_batch']);
 
 export function rank(label: CapabilitySafety): number {
   return SAFETY_RANK[label];
@@ -124,7 +134,7 @@ export interface McpGateInput {
   args: Record<string, unknown>;
   /** The caller checks the stored fingerprint (mcpApprovalStore). */
   allowedForSession: boolean;
-  /** Honoured from A3 (the Read-only Auditor); A2 passes it through. */
+  /** The Read-only Auditor is attached: only reads (and Junos plain shows) may run. */
   readOnlyAgent: boolean;
 }
 
@@ -148,8 +158,28 @@ export function decideMcpCall(input: McpGateInput): McpGateDecision {
   if (argsDepth(args) > MAX_DEPTH) return { kind: 'refuse', text: TOO_DEEP };
   const skipped = aiConfirm(args).length + previewSwitchedOff(args).length > 0;
   const js = tool.preset === JUNOS_PRESET ? junosShow(tool.name, args) : 'n/a';
-  // A3: steps 6-8 (read-only login, writes off, Read-only Auditor) go here.
   const router = isRouterName(tool.name);
+
+  // 6. A read-only login (the server's own access_check said so).
+  if (tool.access === 'read-only' && rank(label) > rank('diagnostic')) {
+    return { kind: 'refuse', text: readOnlyLoginText(tool.server) };
+  }
+  // 7. Writes off: refused before the box, like Casper's refuseByPolicy on the plan label.
+  if (tool.writes === 'off') {
+    if (tool.preset === JUNOS_PRESET && (JUNOS_COMMIT_TOOLS.has(tool.name) || js === 'not-show')) {
+      return { kind: 'refuse', text: JUNOS_WRITES_OFF_TEXT };
+    }
+    if (label === 'write' || label === 'destructive') return { kind: 'refuse', text: writesOffText(tool.server) };
+    // A router must not reach a hidden tool by a name GreenCLI can't judge.
+    if (router && (plan.routerUnclear || plan.routed.some((call) => !readNamed(call.name)))) {
+      return { kind: 'refuse', text: writesOffText(tool.server) };
+    }
+  }
+  // 8. The Read-only Auditor: reads only, plus Junos plain shows (which still ask without the opt-in).
+  const junosShowOk = js === 'all-show' && tool.name !== 'execute_junos_pfe_command';
+  if (input.readOnlyAgent && (skipped || (rank(label) > rank('diagnostic') && !junosShowOk))) {
+    return { kind: 'refuse', text: AUDITOR_REFUSAL };
+  }
 
   if (
     js === 'all-show' &&
@@ -181,6 +211,13 @@ export function decideMcpCall(input: McpGateInput): McpGateDecision {
     choices: sessionOk ? ['no', 'once', 'session'] : ['no', 'once'],
     danger: rank(label) >= rank('write'),
   };
+}
+
+/** The Read-only Auditor only sees tools that read (by the server's own marks), and the Junos
+ *  command tools, which it may use for plain show commands. */
+export function visibleToReadOnlyAgent(tool: McpToolInfo): boolean {
+  if (rank(effectiveLabel(tool)) <= rank('diagnostic')) return true;
+  return tool.preset === JUNOS_PRESET && JUNOS_SHOW_TOOLS.has(tool.name);
 }
 
 /** "a", "a and b", "a, b and c" */
