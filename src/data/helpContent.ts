@@ -297,6 +297,7 @@ export const HELP_TOPICS: HelpTopic[] = [
         items: [
           '**Config Editor problems**: risky lines, blanks to fill in, terminal junk and a Junos edit with no commit are underlined and counted in the toolbar. Click the count (or **Ctrl+Shift+M**) for the Problems panel; **F8** jumps to the next one. A line the switch rejected shows in red.',
           '**Hover cards**: hover an Aruba CX or Junos line to see what it does and how the other vendor writes it.',
+          '**Secrets in code files**: a password, token or key written into a YAML, JSON, Python, shell or .env file gets a warning.',
           '**Copy with secrets hidden**: the eye button next to Copy copies the tab with passwords, keys and SNMP communities hidden, safe for a ticket or chat.',
           '**Editor status line**: where Send goes, the device\'s CLI, **CONFIG MODE**, and when you pulled its config. It warns in red when the tab is for another vendor than the device.',
           '**After a Send**: bars beside the lines show what reached the switch (green), what it rejected (red) and what was never sent (grey).',

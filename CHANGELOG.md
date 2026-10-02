@@ -36,6 +36,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Hover cards for Aruba CX and Junos**: hover a line in the Config Editor (VLAN, access or trunk
   port, LAG, VLAN interface, static route, NTP, SNMP, RADIUS, commit confirmed …) to see what it
   does in plain words and how the other vendor writes it.
+- **Passwords written into code and data files are flagged**: in YAML, JSON, Python, shell, `.env`,
+  JavaScript/TypeScript, PowerShell and Terraform tabs, a password, token, API key, RADIUS/TACACS
+  key or SNMP community written as a value gets a warning. Variables, vault lookups (`{{ … }}`,
+  `!vault`, `${ENV}`, `os.environ`), placeholders and UI labels are left alone.
 
 ### Fixed
 - Confirm dialogs kept their text on one line: the Send preview, the problem list and the SFTP

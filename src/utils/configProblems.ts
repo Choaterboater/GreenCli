@@ -1,6 +1,6 @@
 // What the config editor underlines: risky lines, placeholders that still need
-// values, terminal junk from a captured log, a password in plain text, and
-// the Junos "no commit" tip.
+// values, terminal junk from a captured log, a password in plain text, the
+// Junos "no commit" tip, and a password or token written into a code file.
 // Pure (no Monaco import) so it is unit-tested; the editor turns each problem
 // into a marker (squiggle, scrollbar mark, F8 stop) and a row in the list.
 //
@@ -46,6 +46,57 @@ const JUNOS_EDIT = /^(?:set|delete|replace|deactivate|activate)\b/i;
 const SECRET_WORD = /pass|key|secret|psk|community/i;
 const PLAINTEXT_VALUE = /\b(?:plaintext|plain-text)\s+("[^"\n]*"|'[^'\n]*'|\S+)/gi;
 const JUNOS_COMMIT = /^commit\b/i;
+
+// ─── Secrets written into code and data files ───
+
+/** Code and data files that get the "secret written here" check. */
+export const CODE_LANGUAGES = new Set(['yaml', 'json', 'python', 'shell', 'ini', 'javascript', 'typescript', 'powershell', 'hcl']);
+// Languages where only a quoted string is a literal value; bare words are code (a variable or a call).
+const QUOTED_ONLY = new Set(['python', 'javascript', 'typescript', 'powershell', 'hcl', 'json']);
+
+// A secret-named key, then = or :, then the value. The key may be quoted
+// ("api_key": "…"), prefixed (export DB_PASSWORD=…) or dotted (db.password).
+const CODE_SECRET =
+  /(?:^|[\s{,(])(?:export\s+|\$)?(["']?)([\w.-]*?(?:password|passwd|pwd|secret|token|api[_-]?key|apikey|access[_-]?key|private[_-]?key|(?:radius|tacacs|shared|wpa|auth|enc(?:ryption)?)[_-]?key|psk|community)(?:[_.-][\w.-]*)?)\1\s*(?::=|:|=)\s*(.*)$/i;
+// Names that hold something about a secret, not the secret.
+const NOT_A_SECRET_NAME = /(?:[_.-]|^)(?:file|path|env|var|name|prompt|length|len|policy|url|uri|type|field|label|hint|regex|required|min|max|count|id)$/i;
+// Values that point at the secret instead of holding it.
+const NOT_A_SECRET_VALUE =
+  /^(?:\$\{|\$[A-Za-z_(]|\{\{|%\(|<[^>]*>$|!vault|vault:|os\.|getenv|process\.env|env\(|lookup\(|secrets?\.|none$|null$|nil$|true$|false$|\*+$|x{3,}$)/i;
+const UI_TEXT_LANGUAGES = new Set(['json', 'javascript', 'typescript']);
+const CODE_COMMENT = /^\s*(?:#|\/\/|;|--|\/\*|\*)/;
+
+/** The value in "…", '…' or bare up to a trailing comment, with its start column (0-based). */
+function codeValue(rest: string, restStart: number, language: string): { value: string; start: number } | undefined {
+  const quote = rest[0];
+  if (quote === '"' || quote === "'") {
+    const end = rest.indexOf(quote, 1);
+    if (end < 0) return undefined;
+    return { value: rest.slice(1, end), start: restStart + 1 };
+  }
+  if (QUOTED_ONLY.has(language)) return undefined;
+  const bare = rest.replace(/\s+#.*$/, '').replace(/[;,]\s*$/, '').trimEnd();
+  return bare ? { value: bare, start: restStart } : undefined;
+}
+
+function codeSecretProblem(raw: string, lineNumber: number, language: string): ConfigProblem | undefined {
+  if (CODE_COMMENT.test(raw)) return undefined;
+  const match = CODE_SECRET.exec(raw);
+  if (!match || NOT_A_SECRET_NAME.test(match[2])) return undefined;
+  const rest = match[3];
+  const found = codeValue(rest.trim(), raw.length - rest.length + (rest.length - rest.trimStart().length), language);
+  if (!found || found.value.length < 3 || NOT_A_SECRET_VALUE.test(found.value.trim())) return undefined;
+  // In JSON and JS/TS a value with spaces is a UI label ("Enter your password"), not a secret.
+  if (UI_TEXT_LANGUAGES.has(language) && /\s/.test(found.value)) return undefined;
+  return {
+    lineNumber,
+    startColumn: found.start + 1,
+    endColumn: found.start + found.value.length + 1,
+    severity: 'warning',
+    message: 'A password, key or token is written in this file. Keep it in a vault or an environment variable instead.',
+    code: 'code-secret',
+  };
+}
 
 function indentEnd(raw: string): number {
   return raw.length - raw.trimStart().length + 1;
@@ -142,6 +193,13 @@ export function buildProblems(text: string, language: string): ConfigProblem[] {
         });
       }
     }
+  }
+
+  if (CODE_LANGUAGES.has(language)) {
+    rawLines.forEach((raw, index) => {
+      const problem = codeSecretProblem(raw, index + 1, language);
+      if (problem) add(problem);
+    });
   }
 
   return problems.sort((a, b) => a.lineNumber - b.lineNumber || a.startColumn - b.startColumn);

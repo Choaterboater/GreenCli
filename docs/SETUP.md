@@ -304,6 +304,8 @@ live compliance:
   - **Hover cards**: hover an Aruba CX or Junos line to see what it does in plain words and how
     the other vendor writes it (VLANs, access/trunk ports, LAGs, routes, NTP, SNMP, RADIUS, commit
     confirmed …).
+  - **Code and data files** (YAML, JSON, Python, shell, `.env`, JS/TS, PowerShell, Terraform): a
+    password, token or key written as a value gets a warning; variables and vault lookups don't.
   - **Copy with secrets hidden** (eye button next to Copy): copies the tab with passwords, keys
     and SNMP communities swapped for `<secret hidden>`, for a ticket or chat. A password written
     in plain text gets a blue tip pointing at it.
