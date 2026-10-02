@@ -13,6 +13,7 @@ import { profileForSession } from './deviceProfiles';
 import { pagedCommand, withPagingDisabled } from './paging';
 import { hideSecretsInText } from './secrets/forCopy';
 import { sendAndCapture } from './terminal';
+import { isTauri } from './tauri';
 
 /**
  * Version of the secret filter (src/utils/secrets) that made a hidden copy.
@@ -230,6 +231,16 @@ export function refreshStaleHiddenCopies(): Promise<void> {
     );
   })().catch((e) => console.warn('[config-archive] hidden copy refresh failed', e));
   return refreshRun;
+}
+
+/**
+ * App start: run the refresh above once, so greencli-mcp gets current hidden
+ * copies even when Config archive is never opened and nothing is captured.
+ * Does nothing outside the app.
+ */
+export function refreshHiddenCopiesAtStart(): void {
+  if (!isTauri) return;
+  void refreshStaleHiddenCopies();
 }
 
 /** Tests only: let refreshStaleHiddenCopies run again. */

@@ -15,6 +15,7 @@ import { listen } from '@tauri-apps/api/event';
 import { notify } from './store/toastStore';
 import { useRecentStore, timeAgo, RecentConnection } from './store/recentStore';
 import { armIntentScheduler } from './utils/intentScheduler';
+import { refreshHiddenCopiesAtStart } from './utils/configArchive';
 import {
   buildConnectPayload,
   type ConnectOutcome,
@@ -976,6 +977,13 @@ function App() {
   useEffect(() => {
     return armIntentScheduler(intentScheduling, intentScheduleMinutes);
   }, [intentScheduling, intentScheduleMinutes]);
+
+  // greencli-mcp serves configs only from current hidden copies. After a secret
+  // filter change, make them again once at start. App is the main window only
+  // (pop-outs render PopOutTerminal); outside the app this does nothing.
+  useEffect(() => {
+    refreshHiddenCopiesAtStart();
+  }, []);
 
   // iTerm2-style file drop: while the SFTP browser is closed, dropping a file
   // on the window inserts its shell-quoted path into the active terminal at the

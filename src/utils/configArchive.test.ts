@@ -16,12 +16,19 @@ vi.mock('./paging', () => ({
 vi.mock('./deviceProfiles', () => ({ profileForSession: () => ({ deviceType: 'aruba-cx' }) }));
 vi.mock('../store/settingsStore', () => ({ useSettingsStore: { getState: () => ({ customDeviceProfiles: [] }) } }));
 vi.mock('../store/toastStore', () => ({ notify: { warning: vi.fn(), info: vi.fn(), success: vi.fn(), error: vi.fn() } }));
+const app = vi.hoisted(() => ({ isTauri: true }));
+vi.mock('./tauri', () => ({
+  get isTauri() {
+    return app.isTauri;
+  },
+}));
 
 import type { Session } from '../types';
 import {
   captureRunningConfig,
   HIDDEN_COPY_FILTER,
   makeHiddenCopies,
+  refreshHiddenCopiesAtStart,
   refreshStaleHiddenCopies,
   resetHiddenRefreshForTests,
 } from './configArchive';
@@ -34,6 +41,7 @@ beforeEach(() => {
   invoke.mockReset();
   hideSecretsInText.mockReset();
   resetHiddenRefreshForTests();
+  app.isTauri = true;
 });
 
 describe('captureRunningConfig hidden copy', () => {
@@ -151,6 +159,28 @@ describe('refreshStaleHiddenCopies', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     await expect(refreshStaleHiddenCopies()).resolves.toBeUndefined();
     expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+});
+
+describe('refreshHiddenCopiesAtStart', () => {
+  it('checks the hidden copies once at start, and later calls share that run', async () => {
+    invoke.mockResolvedValue({ missing: 0, stale: 0, current: 3, todo: [] });
+    refreshHiddenCopiesAtStart();
+    await flush();
+    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(invoke).toHaveBeenCalledWith('config_archive_missing_hidden');
+    await refreshStaleHiddenCopies();
+    expect(invoke).toHaveBeenCalledTimes(1);
+  });
+
+  it('does nothing outside the app', async () => {
+    app.isTauri = false;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    refreshHiddenCopiesAtStart();
+    await flush();
+    expect(invoke).not.toHaveBeenCalled();
+    expect(warn).not.toHaveBeenCalled();
     warn.mockRestore();
   });
 });
