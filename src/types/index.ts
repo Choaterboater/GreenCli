@@ -920,11 +920,23 @@ export interface ChatMessage {
   toolCalls?: McpToolCall[];
 }
 
-export interface McpServerConfig {
+/** MCP server transport as the Rust McpTransport serializes it (client.rs McpTransport). */
+export type McpTransport = 'stdio' | 'http';
+
+/** A saved MCP server, as `mcp_list_servers` returns it (Rust McpServerDef, camelCase).
+ *  Option<String> fields arrive as null. Rust always sends headers as an object; it is optional
+ *  here only because the add/edit form builds it as undefined when empty. */
+export interface McpServerDef {
   name: string;
+  transport: McpTransport;
   command: string;
   args: string[];
-  env?: Record<string, string>;
+  env: Record<string, string>;
+  cwd?: string | null;
+  url?: string | null;
+  credentialsEnvVar?: string | null;
+  headers?: Record<string, string>;
+  enabled: boolean;
 }
 
 export interface McpTool {
