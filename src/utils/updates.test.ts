@@ -161,6 +161,7 @@ describe('restartToUpdate', () => {
     askConfirm.mockReset();
     useToastStore.getState().clear();
     useSidePanelStore.getState().setStatus('editor', null);
+    useSidePanelStore.getState().setStatus('ai', null);
     useSessionStore.setState({ sessions: [] });
   });
 
@@ -185,7 +186,17 @@ describe('restartToUpdate', () => {
     expect(opts.title).toBe('Restart now?');
     expect(opts.message).toContain('2 open sessions will close.');
     expect(opts.message).not.toContain(UPDATE_TEXT.dirtyEditor);
+    expect(opts.message).not.toContain(UPDATE_TEXT.aiBusy);
     expect(opts.confirmLabel).toBe('Restart to update');
+  });
+
+  it('says an AI answer still running will stop', async () => {
+    useSidePanelStore.getState().setStatus('ai', 'busy');
+    askConfirm.mockResolvedValue(false);
+    answer({ update_status: ON });
+    await expect(restartToUpdate('2.0.1')).resolves.toBe(false);
+    expect(askConfirm.mock.calls[0][0].message).toContain('The AI assistant is still answering. It will stop.');
+    expect(calls()).toEqual(['update_status']);
   });
 
   it('warns about unsaved editor edits, and does nothing on No', async () => {
@@ -233,13 +244,17 @@ describe('restartToUpdate', () => {
     });
   });
 
-  it('refuses while a Change Job or bulk run is going', async () => {
-    const release = holdExit('A Change Job is running.');
-    await expect(restartToUpdate('2.0.1')).resolves.toBe(false);
-    release();
+  it('refuses while a Change Job, bulk run or config send is going', async () => {
+    for (const what of ['A Change Job is running.', 'A bulk run is running.', 'A config send is running.']) {
+      useToastStore.getState().clear();
+      const release = holdExit(what);
+      await expect(restartToUpdate('2.0.1')).resolves.toBe(false);
+      release();
+      expect(toasts()[0].title).toBe('Not now');
+      expect(toasts()[0].message).toContain(what);
+    }
     expect(askConfirm).not.toHaveBeenCalled();
     expect(invoke).not.toHaveBeenCalled();
-    expect(toasts()[0].message).toContain('A Change Job is running.');
   });
 
   it('shows the error when installing fails', async () => {

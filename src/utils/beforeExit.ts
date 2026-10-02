@@ -1,8 +1,8 @@
 // Work that must finish before GreenCLI closes itself (Restart to update).
 // A window close or reload has `beforeunload`; an update restart doesn't wait
 // for it, so anything that saves late (the debounced vault save) registers
-// here too. Long jobs that must not be cut off (a Change Job, a bulk run)
-// hold the exit while they run.
+// here too. Long jobs that must not be cut off (a Change Job, a bulk run, a
+// Config Editor send) hold the exit while they run.
 
 type ExitHandler = () => void | Promise<unknown>;
 

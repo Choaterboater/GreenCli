@@ -38,6 +38,7 @@ import { useEditorInbox } from '../store/editorInboxStore';
 import { sleep, stripAnsi as stripAnsiUtil, hasAnsi, sendAndCapture } from '../utils/terminal';
 import { useSidePanelStore } from '../store/sidePanelStore';
 import { askConfirm, askPrompt } from '../store/dialogStore';
+import { holdExit } from '../utils/beforeExit';
 import { generateId } from '../utils';
 import { profileForSession } from '../utils/deviceProfiles';
 import { setupMonaco } from '../editor/setup';
@@ -631,6 +632,10 @@ export default function ConfigEditor() {
   const [pulling, setPulling] = useState(false);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
   const sendingRef = useRef(false);
+  // Restart to update waits until the send ends: cut off part-way, it would
+  // leave a partial config on the device. `sending` is set from the Send
+  // confirm until the last line.
+  useEffect(() => (sending ? holdExit('A config send is running.') : undefined), [sending]);
   // Set by the Cancel button; the send loop checks it between lines.
   const cancelSendRef = useRef(false);
 

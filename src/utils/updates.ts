@@ -38,6 +38,7 @@ export const UPDATE_TEXT = {
   moveFirst: 'Move GreenCLI to Applications first.',
   windows: 'Close Claude Code and Casper before updating.',
   dirtyEditor: 'The config editor has unsaved edits. They will be lost.',
+  aiBusy: 'The AI assistant is still answering. It will stop.',
 } as const;
 
 /** Windows, checked when asked (not when the module loads) so tests can stub it. */
@@ -145,8 +146,9 @@ export async function dailyUpdateCheck(now = Date.now()): Promise<void> {
 
 /**
  * Install the downloaded update and restart, after the user confirms. Not
- * while a Change Job or bulk run is going. Resolves false when nothing was
- * installed (refused, cancelled or failed).
+ * while a Change Job, bulk run or Config Editor send is going (they hold the
+ * exit). Resolves false when nothing was installed (refused, cancelled or
+ * failed).
  */
 export async function restartToUpdate(version: string): Promise<boolean> {
   const busy = () => {
@@ -166,7 +168,8 @@ export async function restartToUpdate(version: string): Promise<boolean> {
   }
 
   const open = useSessionStore.getState().sessions.length;
-  const dirty = useSidePanelStore.getState().status.editor === 'dirty';
+  const panel = useSidePanelStore.getState().status;
+  const dirty = panel.editor === 'dirty';
   const lines = [
     `GreenCLI ${version} installs, then opens again.`,
     open > 0 ? `${open} open session${open === 1 ? '' : 's'} will close.` : '',
@@ -174,6 +177,8 @@ export async function restartToUpdate(version: string): Promise<boolean> {
     // installer, which only checks for GreenCLI.exe itself.
     onWindows() ? UPDATE_TEXT.windows : '',
     dirty ? UPDATE_TEXT.dirtyEditor : '',
+    // An answer cut off is only lost, so it is a warning, not a hold.
+    panel.ai === 'busy' ? UPDATE_TEXT.aiBusy : '',
   ].filter(Boolean);
   const ok = await askConfirm({
     title: 'Restart now?',
