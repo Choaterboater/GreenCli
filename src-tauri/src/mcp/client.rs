@@ -2302,7 +2302,7 @@ pub async fn run_call(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn temp_dir() -> PathBuf {
@@ -2378,6 +2378,39 @@ mod tests {
             connected_writes_on: false,
             access: Arc::new(std::sync::Mutex::new(None)),
         }
+    }
+
+    /// A stdio client with a real child process behind it (a shell that
+    /// reads stdin into /dev/null until it closes) and no handshake: for
+    /// tests of what happens to the child (shutdown, exit). See
+    /// fake_child_pid.
+    #[cfg(unix)]
+    pub(crate) fn fake_stdio_client(server: &str) -> McpClient {
+        let mut child = Command::new("sh")
+            .args(["-c", "cat >/dev/null"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .expect("spawn sh");
+        let stdin = child.stdin.take().expect("piped stdin");
+        let mut client = fake_client(server, Vec::new());
+        client.caller.io = ClientIo::Stdio {
+            stdin: Arc::new(Mutex::new(stdin)),
+        };
+        client.child = Some(child);
+        client
+    }
+
+    /// The child process id of a fake_stdio_client.
+    #[cfg(unix)]
+    pub(crate) fn fake_child_pid(client: &McpClient) -> u32 {
+        client
+            .child
+            .as_ref()
+            .and_then(|c| c.id())
+            .expect("a running child")
     }
 
     /// A tiny MCP-over-HTTP server: answers every POST with a JSON result (and

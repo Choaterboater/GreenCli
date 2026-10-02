@@ -55,3 +55,12 @@ custom-protocol = ["tauri/custom-protocol"]
 # russh 0.63 ships RSA via the `rsa` feature (on by default); this flag only
 # un-gates our generator, it no longer pulls openssl.
 rsa-keys = []
+
+# [2.0 keys] keyring tables go below.
+#
+
+# [2.0 updater] updater dependency table goes below.
+#
+
+# [2.0 greencli-mcp] [workspace] table goes below.
+#

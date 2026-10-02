@@ -433,6 +433,11 @@ pub fn stop_all_cli_runs() {
     }
 }
 
+/// Tests that start real CLI runs, and tests that call stop_all_cli_runs
+/// (which stops every registered run), take this so they never overlap.
+#[cfg(all(test, unix))]
+pub(crate) static CLI_RUNS_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -520,6 +525,7 @@ mod tests {
 
         #[tokio::test]
         async fn run_passes_stdin_cwd_and_env() {
+            let _serial = super::super::CLI_RUNS_TEST_LOCK.lock().await;
             let dir = temp_dir();
             let run = run_cli_process(
                 &sh("read line; echo \"got:$line\"; pwd; echo \"env:$GREENCLI_TEST\"; echo oops >&2; exit 3"),
@@ -548,6 +554,7 @@ mod tests {
 
         #[tokio::test]
         async fn precancelled_never_spawns() {
+            let _serial = super::super::CLI_RUNS_TEST_LOCK.lock().await;
             let dir = temp_dir();
             let pidfile = dir.join("pid");
             let cancel = Arc::new(AtomicBool::new(true));
@@ -566,6 +573,7 @@ mod tests {
 
         #[tokio::test]
         async fn cancel_kills_process_group() {
+            let _serial = super::super::CLI_RUNS_TEST_LOCK.lock().await;
             let dir = temp_dir();
             let pidfile = dir.join("pid");
             let cancel = Arc::new(AtomicBool::new(false));
@@ -608,6 +616,7 @@ mod tests {
 
         #[tokio::test]
         async fn normal_exit_stops_what_it_left_running() {
+            let _serial = super::super::CLI_RUNS_TEST_LOCK.lock().await;
             let dir = temp_dir();
             let pidfile = dir.join("pid");
             // The helper keeps stdout open, as a left-behind server would.
@@ -643,6 +652,7 @@ mod tests {
 
         #[tokio::test]
         async fn stdin_not_read_still_stops() {
+            let _serial = super::super::CLI_RUNS_TEST_LOCK.lock().await;
             let started = Instant::now();
             let run = run_cli_process(
                 &["/bin/sleep".to_string(), "60".to_string()],
@@ -657,6 +667,7 @@ mod tests {
 
         #[tokio::test]
         async fn timeout_stops() {
+            let _serial = super::super::CLI_RUNS_TEST_LOCK.lock().await;
             let started = Instant::now();
             let run = run_cli_process(
                 &sh("trap '' TERM; sleep 30"),

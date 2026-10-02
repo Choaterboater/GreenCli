@@ -24,6 +24,8 @@ pub use cli::{
     casper_check, cli_passthrough, is_casper_command, local_mcp_servers, CasperCheck, CliContext,
 };
 pub use cli_run::stop_all_cli_runs;
+#[cfg(all(test, unix))]
+pub(crate) use cli_run::CLI_RUNS_TEST_LOCK;
 
 use crate::error::AppError;
 use serde::Deserialize;

@@ -3,6 +3,7 @@
 
 mod ai;
 mod api;
+mod app_location;
 mod central;
 mod config_archive;
 mod error;
@@ -2728,6 +2729,26 @@ async fn ai_cancel_stream(stream_id: String, state: State<'_, AppState>) -> Resu
 
 // ─── Main ───
 
+/// Stop everything GreenCLI started: a Local CLI or Casper answer still
+/// running (and what it started), and every MCP server child. Tauri leaves
+/// via std::process::exit after the event loop, so kill_on_drop destructors
+/// never run: without this, children outlive the app (not every MCP server
+/// exits on stdin EOF). Safe to run twice: the second run finds nothing.
+pub(crate) async fn shutdown_children_inner(mcp: &AsyncMutex<McpManager>) {
+    ai::stop_all_cli_runs();
+    // Take the clients out first, then shut them down without the lock.
+    let clients = { mcp.lock().await.take_all_clients() };
+    for c in clients {
+        c.shutdown().await;
+    }
+}
+
+/// shutdown_children_inner for the running app (quit, or before an update).
+pub(crate) async fn shutdown_children(app: &AppHandle) {
+    let state: State<AppState> = app.state();
+    shutdown_children_inner(&state.mcp_manager).await;
+}
+
 /// macOS requires a native menu for the standard editing key equivalents:
 /// without an Edit menu wired to the responder chain, WKWebView never receives
 /// Cmd+C/Cmd+V/Cmd+X/Cmd+A — copy/paste is dead in the terminal AND every text
@@ -2803,6 +2824,15 @@ fn main() {
 
     builder
         .setup(|app| {
+            if let Ok(exe) = std::env::current_exe() {
+                let place = app_location::install_place(&exe);
+                if place != app_location::InstallPlace::Normal {
+                    log::warn!(
+                        "GreenCLI is running from {place:?} ({}); move it to Applications",
+                        exe.display()
+                    );
+                }
+            }
             // `<data dir>/com.choatelabs.greencli`, the same folder as 1.x.
             let app_dir = app.path().app_data_dir()?;
             // Saved sessions, intents, MCP servers and archived configs can hold
@@ -2810,6 +2840,7 @@ fn main() {
             // version wrote world-readable.
             let _ = private_fs::private_dir(&app_dir);
             private_fs::tighten_app_dir(&app_dir);
+            // [2.0 keys] Open the system password store and move old key files here.
             let state = AppState::new(app_dir)?;
             app.manage(state);
 
@@ -2820,6 +2851,8 @@ fn main() {
             if let Some(main_window) = app.get_webview_window("main") {
                 show_window_fallback(main_window);
             }
+
+            // [2.0 updater] Register the updater here, only when a public key is set.
 
             // Auto-connect enabled MCP servers in the background so the AI's
             // tools survive an app restart without reconnecting each one by hand.
@@ -2870,6 +2903,7 @@ fn main() {
             vault_delete,
             vault_is_unlocked,
             vault_is_initialized,
+            // [2.0 updater] new commands below
             list_serial_ports,
             get_terminal_output,
             pop_out_session,
@@ -2912,6 +2946,7 @@ fn main() {
             sftp_rename_cmd,
             ai_set_key,
             ai_has_key,
+            // [2.0 keys] new commands below
             ai_chat,
             ai_cancel_stream,
             ai_cli,
@@ -2953,26 +2988,53 @@ fn main() {
             config_archive_get,
             config_archive_devices,
             config_archive_set_golden,
+            // [2.0 greencli-mcp] new commands below
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")
         .run(|app_handle, event| {
             if let tauri::RunEvent::Exit = event {
-                // A Local CLI or Casper answer still running: stop it and what
-                // it started (kill_on_drop never runs either, see below).
-                ai::stop_all_cli_runs();
-                // Tauri leaves via std::process::exit after the event loop, so
-                // kill_on_drop destructors never run — reap MCP server children
-                // explicitly or they outlive the app (not every server exits on
-                // stdin EOF).
-                let state: State<AppState> = app_handle.state();
-                let mgr = state.mcp_manager.clone();
-                tauri::async_runtime::block_on(async move {
-                    let clients = { mgr.lock().await.take_all_clients() };
-                    for c in clients {
-                        c.shutdown().await;
-                    }
-                });
+                tauri::async_runtime::block_on(shutdown_children(app_handle));
             }
         });
+}
+
+#[cfg(all(test, unix))]
+mod shutdown_tests {
+    use super::*;
+    use mcp::client::tests::{fake_child_pid, fake_stdio_client};
+
+    /// `kill -0`: is there still a process (running or an unreaped zombie)?
+    fn process_exists(pid: u32) -> bool {
+        std::process::Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+
+    #[tokio::test]
+    async fn shutdown_reaps_mcp_children_and_runs_twice() {
+        // stop_all_cli_runs stops every registered CLI run: keep the CLI run
+        // tests out while this runs.
+        let _serial = ai::CLI_RUNS_TEST_LOCK.lock().await;
+        let dir = std::env::temp_dir().join(format!("greencli-shutdown-{}", rand::random::<u64>()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mcp = AsyncMutex::new(McpManager::new(dir.clone()));
+        let client = fake_stdio_client("fake");
+        let pid = fake_child_pid(&client);
+        assert!(process_exists(pid));
+        assert!(mcp.lock().await.install_client("fake".into(), client).is_none());
+
+        shutdown_children_inner(&mcp).await;
+        // Killed and waited for: not even a zombie is left.
+        assert!(!process_exists(pid), "child {pid} still exists");
+        assert!(mcp.lock().await.take_all_clients().is_empty());
+
+        // The second run finds nothing to do.
+        shutdown_children_inner(&mcp).await;
+        assert!(mcp.lock().await.take_all_clients().is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }
