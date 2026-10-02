@@ -112,6 +112,13 @@ export function onlyReferences(value: string): boolean {
   return hasReference(value) && value.replace(REFERENCE, '').trim() === '';
 }
 
+/** True when the value is only plain ${NAME}s (and spaces): it holds no text of its own. A
+ *  ${NAME:-default} with a default doesn't count, since the default is literal text that stays in
+ *  the file. (${NAME-default} is no reference at all, so its text counts as literal too.) */
+export function onlyPlainReferences(value: string): boolean {
+  return onlyReferences(value) && [...value.matchAll(REFERENCE)].every((m) => !m[2]);
+}
+
 function ref(name: string): string {
   return '${' + name + '}';
 }
@@ -236,11 +243,12 @@ function userPassKept(value: string, place: UserPassPlace): boolean {
   return place.envName !== undefined && PATH_LIST_NAMES.has(place.envName.toUpperCase());
 }
 
-/** A user:password-shaped value (USER_PASS) that is not kept by userPassKept. Only ${NAME}s, or
- *  only ${NAME}s after the colon (admin:${DB_PASS}), hold no password to hide. */
+/** A user:password-shaped value (USER_PASS) that is not kept by userPassKept. Only plain ${NAME}s,
+ *  or only plain ${NAME}s after the colon (admin:${DB_PASS}), hold no password to hide. A default
+ *  is literal text: admin:${DB_PASS:-Summer2024} is hidden like admin:Summer2024. */
 function looksLikeUserPass(value: string, place: UserPassPlace): boolean {
-  if (!USER_PASS.test(value) || onlyReferences(value)) return false;
-  if (onlyReferences(value.slice(value.indexOf(':') + 1))) return false;
+  if (!USER_PASS.test(value) || onlyPlainReferences(value)) return false;
+  if (onlyPlainReferences(value.slice(value.indexOf(':') + 1))) return false;
   return !userPassKept(value, place);
 }
 

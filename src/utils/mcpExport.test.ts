@@ -1094,6 +1094,41 @@ describe('buildMcpExport: network logins', () => {
 });
 
 describe('buildMcpExport: the user:password rule, both ways', () => {
+  it('reads a ${NAME:-default} default as literal text: only a plain ${NAME} holds nothing', () => {
+    const r = build([
+      def({
+        name: 's',
+        command: 'uvx',
+        args: ['tool', 'admin:${P:-Summer2024}', 'admin:${P}', 'root:${Q-Spring2025}'],
+        env: {
+          DB: 'admin:${DB_PASS:-Summer2024}',
+          BOTH: '${U}:${P:-Hunter22}',
+          WHOLE: '${CRED:-admin:Winter2023}',
+          DASH: 'admin:${DB_PASS-Autumn2022}',
+          HALF: 'admin:${DB_PASS}',
+          REFS: '${DB_USER}:${DB_PASS}',
+          EMPTY: 'admin:${DB_PASS:-}',
+        },
+      }),
+    ]);
+    const s = stdioOf(r.file.mcpServers.s);
+    for (const key of ['DB', 'BOTH', 'WHOLE', 'DASH']) {
+      expect([key, s.env?.[key]]).toEqual([key, expect.stringMatching(/^\$\{[A-Z0-9_]+\}$/)]);
+    }
+    expect(s.env?.HALF).toBe('admin:${DB_PASS}');
+    expect(s.env?.REFS).toBe('${DB_USER}:${DB_PASS}');
+    expect(s.env?.EMPTY).toBe('admin:${DB_PASS:-}');
+    expect(s.args?.[0]).toBe('tool');
+    expect(s.args?.[1]).toMatch(/^\$\{[A-Z0-9_]+\}$/);
+    expect(s.args?.[2]).toBe('admin:${P}');
+    expect(s.args?.[3]).toMatch(/^\$\{[A-Z0-9_]+\}$/);
+    for (const secret of ['Summer2024', 'Hunter22', 'Winter2023', 'Autumn2022', 'Spring2025']) {
+      expect([secret, r.text.includes(secret)]).toEqual([secret, false]);
+    }
+    expect(r.notes.find((n) => n.startsWith('s: env DB '))).toContain('It may not be a secret');
+    expect(r.notes.join('\n')).toContain('argument 2 looked like user:password');
+  });
+
   it('keeps package specifiers, volumes after -v/--volume/--mount, git remotes and ports', () => {
     // The official sqlite MCP server config, and deno's npm: and jsr: specifiers.
     const sqlite = ['run', '--rm', '-i', '-v', 'mcp-test:/mcp', 'mcp/sqlite', '--db-path', '/mcp/test.db'];
