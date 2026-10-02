@@ -19,7 +19,12 @@ describe('settings sections', () => {
     expect(ids('webhook')).toEqual(['intent-schedule']);
     expect(ids('mist')).toContain('mist');
     expect(ids('zzz nothing')).toEqual([]);
-    expect(ids('casper')).toEqual(['ai']);
+    // Casper's own settings, and the MCP export for Casper.
+    expect(ids('casper')).toEqual(['ai', 'mcp']);
+    expect(ids('allow writes')).toEqual(['mcp']);
+    expect(ids('read-only')).toEqual(['mcp']);
+    expect(ids('run plain show commands')).toEqual(['mcp']);
+    expect(ids('export')).toContain('mcp');
     expect(ids('working folder')).toEqual(['ai']);
     expect(ids('check casper')).toEqual(['ai']);
   });
