@@ -95,7 +95,10 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     id: 'config-archive',
     group: 'automation',
     title: 'Config archive',
-    keywords: ['capture running-config on connect', 'snapshot', 'history', 'golden', 'backup config'],
+    keywords: [
+      'capture running-config on connect', 'snapshot', 'history', 'golden', 'backup config',
+      'make hidden copies', 'hidden copy', 'greencli-mcp',
+    ],
   },
   {
     id: 'intent-schedule',
@@ -117,6 +120,8 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
       'provider', 'api key', 'model', 'anthropic', 'claude', 'openrouter', 'ollama', 'moonshot', 'kimi',
       'local cli', 'casper', 'working folder', 'check casper', 'assistant tools', 'device cli commands',
       'rest apis', 'best-practice references', 'standards', 'jvd',
+      // Where the key is kept (SecretStoreNote).
+      'keychain', 'credential manager', 'password store', 'keyring',
     ],
   },
   {
@@ -144,6 +149,15 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
       '.mcp.json',
       'casper',
       'claude code',
+      // GreenCLI's own read-only server.
+      'greencli-mcp',
+      'claude mcp add',
+      'hidden copy',
+      // Where logins are kept (SecretStoreNote).
+      'keychain',
+      'credential manager',
+      'password store',
+      'keyring',
     ],
   },
   {

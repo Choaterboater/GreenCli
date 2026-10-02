@@ -29,6 +29,14 @@ describe('settings sections', () => {
     expect(ids('check casper')).toEqual(['ai']);
     expect(ids('check for updates')).toEqual(['updates']);
     expect(ids('new version')).toEqual(['updates']);
+    // greencli-mcp, and where AI keys and MCP logins are kept.
+    expect(ids('greencli-mcp')).toEqual(['config-archive', 'mcp']);
+    expect(ids('claude mcp add')).toEqual(['mcp']);
+    expect(ids('hidden copy')).toEqual(['config-archive', 'mcp']);
+    expect(ids('make hidden copies')).toEqual(['config-archive']);
+    for (const q of ['keychain', 'credential manager', 'password store', 'keyring']) {
+      expect(ids(q)).toEqual(['ai', 'mcp']);
+    }
   });
 
   it('matches group names too, and returns everything for an empty search', () => {
