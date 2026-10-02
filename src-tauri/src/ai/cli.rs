@@ -542,14 +542,27 @@ fn prepare_work_place(ctx: &CliContext) -> Result<WorkPlace, String> {
     })
 }
 
-/// A config file's text; None when it doesn't exist. Any other read error is
-/// the Unsure message (fail closed).
+/// A config file's text; None when it doesn't exist. Any other read error
+/// fails closed, and says why (a permission, a file that isn't UTF-8 text, a
+/// folder in its place) instead of asking for plainer YAML.
 fn read_config(file: &Path) -> Result<Option<String>, String> {
     match std::fs::read_to_string(file) {
         Ok(text) => Ok(Some(text)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(_) => Err(casper::sandbox_message(SandboxScan::Unsure, file).unwrap_or_default()),
+        Err(e) => Err(read_config_message(file, &e)),
     }
+}
+
+fn read_config_message(file: &Path, e: &std::io::Error) -> String {
+    let why = if e.kind() == std::io::ErrorKind::InvalidData {
+        "it isn't UTF-8 text".to_string()
+    } else {
+        e.to_string()
+    };
+    format!(
+        "GreenCLI couldn't read {} ({why}), so it can't check Casper's sandbox setting. Fix the file, then try again.",
+        file.display()
+    )
 }
 
 fn scan_file(text: Option<&str>, file: &Path) -> Result<(), String> {
@@ -1089,5 +1102,20 @@ mod tests {
         let e = check_picked("relative/folder", &c).unwrap_err();
         assert!(e.contains("full path"), "{e}");
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn read_config_says_why_it_failed() {
+        let dir =
+            std::env::temp_dir().join(format!("greencli-read-config-{}", rand::random::<u64>()));
+        std::fs::create_dir_all(dir.join("folder.yaml")).unwrap();
+        std::fs::write(dir.join("latin1.yaml"), [0x73u8, 0x61, 0xe9]).unwrap();
+        assert_eq!(read_config(&dir.join("missing.yaml")).unwrap(), None);
+        let folder = read_config(&dir.join("folder.yaml")).unwrap_err();
+        assert!(folder.starts_with("GreenCLI couldn't read"), "{folder}");
+        assert!(!folder.contains("plainer"), "{folder}");
+        let latin = read_config(&dir.join("latin1.yaml")).unwrap_err();
+        assert!(latin.contains("it isn't UTF-8 text"), "{latin}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
