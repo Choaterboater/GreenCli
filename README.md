@@ -191,6 +191,31 @@ The syntax highlighter supports **232 commands**, **288 subcommands**, and **144
 | Aruba Wireless AP | 56 commands, 88 subcommands, 44 keywords |
 | Aruba Mobility Controller | 76 commands, 80 subcommands, 41 keywords |
 
+## greencli-mcp: GreenCLI data for Casper or Claude Code
+
+GreenCLI ships a small read-only MCP server, `greencli-mcp`, next to the app
+(`GreenCLI.app/Contents/MacOS/greencli-mcp` on macOS, `greencli-mcp.exe` in the
+install folder on Windows). Settings → MCP Servers shows its full path. To add it
+to Claude Code:
+
+```bash
+claude mcp add greencli -- "/Applications/GreenCLI.app/Contents/MacOS/greencli-mcp"
+```
+
+"Export for Casper / Claude…" puts it in the `.mcp.json` file too.
+
+It has six read tools: `access_check`, `list_devices`, `list_config_history`,
+`get_config`, `get_config_diff` and `list_intents`.
+
+- It only reads GreenCLI's data folder. It never writes a file, opens a network
+  connection or starts a program (a source-scan test checks this).
+- The device list has no passwords, user names, notes or startup commands.
+- Configs and diffs come only from copies made with secrets hidden, saved when a
+  config is captured. A snapshot without a current hidden copy is refused, never
+  served raw. In Config archive, **Make hidden copies** makes them for older
+  snapshots.
+- A diff can't show a changed secret: both sides show it hidden.
+
 ## Security Features
 
 - **AES-256-GCM encryption** for stored credentials

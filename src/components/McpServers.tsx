@@ -29,9 +29,25 @@ type McpTransport = McpServerDef['transport'];
 /** Forget every "Yes, until GreenCLI closes" answer for a server: it was
  *  reconnected, changed or removed, so its tools must ask again. */
 const clearAllowances = (name: string) => useMcpApprovalStore.getState().clearServer(name);
-import type { ExportSummary } from '../utils/mcpExport';
+import type { ExportSummary, GreencliExport } from '../utils/mcpExport';
 import { isTauri, tauriSave } from '../utils/fileSystem';
 import { secretFilterSupported } from '../utils/secrets/support';
+import { copyText } from '../utils/clipboard';
+
+/** greencli_mcp_info: GreenCLI's own read-only MCP server, next to the app. */
+interface GreencliMcpInfo {
+  path: string;
+  exists: boolean;
+  place: 'normal' | 'translocated' | 'diskImage';
+}
+
+/** How the export should treat greencli-mcp. */
+function greencliForExport(info: GreencliMcpInfo | null): GreencliExport | undefined {
+  if (!info) return undefined;
+  if (!info.exists) return { leftOut: 'missing' };
+  if (info.place !== 'normal') return { leftOut: 'not-installed' };
+  return { command: info.path };
+}
 
 const blankForm = {
   name: '',
@@ -119,6 +135,32 @@ export default function McpServers() {
   const [configPasteText, setConfigPasteText] = useState('');
   const [exporting, setExporting] = useState(false);
   const [exportDone, setExportDone] = useState<ExportSummary | null>(null);
+  const [greencli, setGreencli] = useState<GreencliMcpInfo | null>(null);
+  const [needHidden, setNeedHidden] = useState(0);
+
+  // GreenCLI's own read-only server: where it is, and how many config
+  // snapshots it can't serve yet (no hidden copy, or an old one).
+  useEffect(() => {
+    if (!isTauri) return;
+    let cancelled = false;
+    void (async () => {
+      const info = await invoke<GreencliMcpInfo | null>('greencli_mcp_info').catch(() => null);
+      const hidden = await invoke<{ missing: number; stale: number } | null>('config_archive_missing_hidden').catch(
+        () => null,
+      );
+      if (cancelled) return;
+      setGreencli(info && typeof info.path === 'string' ? info : null);
+      setNeedHidden(hidden ? (hidden.missing ?? 0) + (hidden.stale ?? 0) : 0);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const copy = async (text: string) => {
+    if (await copyText(text)) notify.success('Copied');
+    else notify.error('Could not copy');
+  };
 
   const refresh = useCallback(async () => {
     try {
@@ -368,10 +410,6 @@ export default function McpServers() {
     setExporting(true);
     try {
       const defs = (await invoke<McpServerDef[]>('mcp_list_servers')) || [];
-      if (!defs.length) {
-        notify.info('Nothing to export', 'Add a server first.');
-        return;
-      }
       const withCredentials = new Set<string>();
       await Promise.all(
         defs
@@ -384,9 +422,15 @@ export default function McpServers() {
       const pinList = await invoke<Record<string, McpExportPins>>('mcp_export_pins').catch(() => ({}));
       const pins = new Map(Object.entries(pinList ?? {}));
       const { buildMcpExport, exportSummary, refusedExportPath, EXPORT_FILE_NAME } = await import('../utils/mcpExport');
-      const result = buildMcpExport(defs, { withCredentials, pins });
+      // GreenCLI's own read-only server goes in too, even with no saved servers.
+      const info = await invoke<GreencliMcpInfo | null>('greencli_mcp_info').catch(() => null);
+      const greencliEntry = greencliForExport(info && typeof info.path === 'string' ? info : null);
+      const result = buildMcpExport(defs, { withCredentials, pins, greencli: greencliEntry });
       if (result.count === 0) {
-        notify.warning('Nothing to export', result.notes.join(' ') || 'None of these servers can be exported.');
+        notify.warning(
+          'Nothing to export',
+          result.notes.join(' ') || (defs.length ? 'None of these servers can be exported.' : 'Add a server first.'),
+        );
         return;
       }
       const path = await tauriSave(EXPORT_FILE_NAME, 'Export MCP servers');
@@ -416,12 +460,8 @@ export default function McpServers() {
         <div className="flex items-center gap-2">
           <button
             onClick={exportServers}
-            disabled={servers.length === 0 || exporting}
-            title={
-              servers.length === 0
-                ? 'Add a server first'
-                : 'Save these servers as a .mcp.json file for Casper or Claude Code. Secrets become ${NAME} variables.'
-            }
+            disabled={exporting}
+            title="Save these servers, and GreenCLI's own read-only server, as a .mcp.json file for Casper or Claude Code. Secrets become ${NAME} variables."
             className="flex items-center gap-1.5 px-2.5 py-1 text-[11px] rounded-md bg-[var(--bg-tertiary)] hover:bg-[var(--border-strong)] text-[var(--text-primary)] transition-colors disabled:opacity-50"
           >
             {exporting ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
@@ -453,6 +493,51 @@ export default function McpServers() {
         <code className="text-[var(--accent)]">centralmcp</code> Aruba Central/GLP server. The AI can use these tools with
         every provider except Local CLI and Casper.
       </p>
+
+      {/* GreenCLI's own read-only MCP server (greencli-mcp) */}
+      {greencli && (
+        <div className="mb-3 p-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--bg-inset)] text-[11px] text-[var(--text-secondary)] space-y-1.5 leading-relaxed">
+          {greencli.exists ? (
+            <>
+              <div className="flex items-start gap-2">
+                <p className="flex-1 min-w-0">
+                  Read-only GreenCLI data for Casper or Claude Code:{' '}
+                  <code className="text-[var(--text-primary)] break-all">{greencli.path}</code>
+                </p>
+                <button
+                  onClick={() => void copy(greencli.path)}
+                  title="Copy the path"
+                  className="flex-shrink-0 flex items-center gap-1 px-1.5 py-0.5 text-[10px] rounded bg-[var(--bg-tertiary)] hover:bg-[var(--border-strong)] text-[var(--text-secondary)]"
+                >
+                  <Copy size={10} /> Copy
+                </button>
+              </div>
+              <div className="flex items-start gap-2">
+                <code className="flex-1 min-w-0 break-all text-[var(--accent)]">
+                  {`claude mcp add greencli -- "${greencli.path}"`}
+                </code>
+                <button
+                  onClick={() => void copy(`claude mcp add greencli -- "${greencli.path}"`)}
+                  title="Copy the command"
+                  className="flex-shrink-0 flex items-center gap-1 px-1.5 py-0.5 text-[10px] rounded bg-[var(--bg-tertiary)] hover:bg-[var(--border-strong)] text-[var(--text-secondary)]"
+                >
+                  <Copy size={10} /> Copy
+                </button>
+              </div>
+              {greencli.place !== 'normal' && (
+                <p className="text-[var(--accent-warning)]">Move GreenCLI to Applications first.</p>
+              )}
+              {needHidden > 0 && (
+                <p>
+                  {needHidden} {needHidden === 1 ? 'snapshot needs' : 'snapshots need'} a new hidden copy.
+                </p>
+              )}
+            </>
+          ) : (
+            <p>greencli-mcp, GreenCLI's read-only server, isn't next to GreenCLI in this build.</p>
+          )}
+        </div>
+      )}
 
       {/* Export result: names and places only, never a secret value */}
       {exportDone && (

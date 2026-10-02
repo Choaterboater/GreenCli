@@ -9,6 +9,7 @@ mod config_archive;
 mod error;
 mod export_file;
 mod folder;
+mod greencli_mcp_info;
 mod intent;
 mod local;
 mod mcp;
@@ -3022,6 +3023,7 @@ fn main() {
             // [2.0 greencli-mcp] new commands below
             config_archive_missing_hidden,
             config_archive_set_hidden,
+            greencli_mcp_info::greencli_mcp_info,
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")
