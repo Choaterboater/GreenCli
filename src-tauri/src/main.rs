@@ -6,6 +6,7 @@ mod api;
 mod central;
 mod config_archive;
 mod error;
+mod folder;
 mod intent;
 mod local;
 mod mcp;
@@ -1355,6 +1356,15 @@ async fn write_file_text(path: String, contents: String) -> Result<(), String> {
     .map_err(|e| e.to_string())?
 }
 
+/// Folder view in the Config Editor: list a folder the user picked,
+/// read-only (heavy folders skipped, symlinks never followed; see folder.rs).
+#[tauri::command]
+async fn list_folder(path: String) -> Result<folder::FolderListing, String> {
+    tauri::async_runtime::spawn_blocking(move || folder::list_folder(std::path::Path::new(&path)))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
 /// Pop a session out into its own OS window. The new window loads the same
 /// React app; the frontend sees the `popout-<sessionId>` window label and
 /// renders a terminal-only view for that session. Terminal data is emitted via
@@ -2684,6 +2694,7 @@ fn main() {
             reveal_log_folder,
             read_file_text,
             write_file_text,
+            list_folder,
             generate_keypair,
             api_login,
             api_get_interfaces,

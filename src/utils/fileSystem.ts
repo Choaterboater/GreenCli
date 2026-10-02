@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/tauri';
 import { open as openDialog, save as saveDialog } from '@tauri-apps/api/dialog';
+import type { FolderListing } from './folderTree';
 
 export const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
 
@@ -10,6 +11,17 @@ export async function tauriOpen(): Promise<string | null> {
     multiple: false,
   });
   return typeof result === 'string' ? result : null;
+}
+
+/** Pick a folder (Folder view in the Config Editor). */
+export async function tauriOpenFolder(): Promise<string | null> {
+  const result = await openDialog({ title: 'Open Folder', directory: true, multiple: false });
+  return typeof result === 'string' ? result : null;
+}
+
+/** List a folder, read-only (the backend skips .git, node_modules … and symlinks). */
+export async function tauriListFolder(path: string): Promise<FolderListing> {
+  return invoke<FolderListing>('list_folder', { path });
 }
 
 export async function tauriSave(defaultName: string): Promise<string | null> {
