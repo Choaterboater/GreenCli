@@ -35,6 +35,7 @@ export const UPDATE_TEXT = {
   checkFailed: "Couldn't check for updates. Check your internet connection.",
   off: 'Updates are off in this build. Get new versions from the GitHub Releases page.',
   offDev: 'Updates are off in development builds.',
+  offPlatform: 'There is no release build for this system, so updates are off. Build new versions from source.',
   moveFirst: 'Move GreenCLI to Applications first.',
   notReady: 'Check for updates first.',
   windows: 'Close Claude Code and Casper before updating.',
@@ -53,7 +54,11 @@ const DAILY_KEY = 'greencli-update-daily';
 /** Why updates are off, in words; null when they are on. */
 export function offText(status: UpdateStatus | null): string | null {
   if (status?.enabled) return null;
-  return status?.reason === 'dev' ? UPDATE_TEXT.offDev : UPDATE_TEXT.off;
+  if (status?.reason === 'dev') return UPDATE_TEXT.offDev;
+  // Only the release targets get builds on the Releases page (macOS and
+  // Windows x64), so a 'platform' build was built from source.
+  if (status?.reason === 'platform') return UPDATE_TEXT.offPlatform;
+  return UPDATE_TEXT.off;
 }
 
 /** The app's update status; null outside the app. */

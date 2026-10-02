@@ -70,7 +70,7 @@ describe('update helpers', () => {
   it('says why updates are off', () => {
     expect(offText(ON)).toBeNull();
     expect(offText({ ...ON, enabled: false, reason: 'dev' })).toBe(UPDATE_TEXT.offDev);
-    expect(offText({ ...ON, enabled: false, reason: 'platform' })).toBe(UPDATE_TEXT.off);
+    expect(offText({ ...ON, enabled: false, reason: 'platform' })).toBe(UPDATE_TEXT.offPlatform);
     expect(offText({ ...ON, enabled: false, reason: 'setup' })).toBe(UPDATE_TEXT.off);
     expect(offText(null)).toBe(UPDATE_TEXT.off);
   });

@@ -72,11 +72,19 @@ describe('UpdateSettings', () => {
   });
 
   it('turns the button off when updates are off', async () => {
-    answer({ ...ON, enabled: false, reason: 'platform' });
+    answer({ ...ON, enabled: false, reason: 'setup' });
     render(<UpdateSettings />);
     expect(await screen.findByText(UPDATE_TEXT.off)).toBeTruthy();
     expect((screen.getByText('Check for updates').closest('button') as HTMLButtonElement).disabled).toBe(true);
     expect(screen.queryByLabelText('Check once a day')).toBeNull();
+  });
+
+  it('does not send a system with no release build to the Releases page', async () => {
+    answer({ ...ON, enabled: false, reason: 'platform' });
+    render(<UpdateSettings />);
+    expect(await screen.findByText(UPDATE_TEXT.offPlatform)).toBeTruthy();
+    expect(screen.queryByText(UPDATE_TEXT.off)).toBeNull();
+    expect((screen.getByText('Check for updates').closest('button') as HTMLButtonElement).disabled).toBe(true);
   });
 
   it('says development builds have no updates', async () => {
