@@ -12,9 +12,13 @@
 //   proxy_tool) and by its shape, not only by invoke/dispatch/call_tool/
 //   run_tool. The shape is a tool-name key (name, tool, tool_name, toolName,
 //   tool_id, method, function) next to an arguments key (arguments, args,
-//   params, parameters, input), in its input schema or in the call, at the
-//   top level or in a batch list (calls, requests, items, steps, or any list
-//   of such objects).
+//   params, parameters, input), in its input schema (through $ref, anyOf,
+//   oneOf and allOf too) or in the call, at the top level, in an object one
+//   level down, or in a batch list (calls, requests, items, steps, or any
+//   list of such objects). Under calls, requests, items or steps an entry
+//   that only names a tool counts too.
+// - Two arguments keys in one call ({args: {}, params: {...}}) make it
+//   unclear: the server may read either.
 // - Every key that may hold the routed tool's name counts, in any spelling.
 //   Two different names make the call unclear, and so does a batch entry
 //   GreenCLI can't read or a routed tool that is a router itself.
@@ -401,17 +405,109 @@ fn router_shaped(value: &Value) -> bool {
     value.as_object().is_some_and(|o| router_keys(o.keys()))
 }
 
-fn schema_properties(schema: &Value) -> Option<&Map<String, Value>> {
-    schema.get("properties").and_then(Value::as_object)
+/// A batch entry that names a tool (a tool-name key), with or without an
+/// arguments key. Same as TS namesATool.
+fn names_a_tool(value: &Value) -> bool {
+    value.as_object().is_some_and(|o| {
+        o.keys()
+            .any(|k| INNER_NAME_WORDS.contains(&key_word(k).as_str()))
+    })
 }
 
-/// A schema property that is a list of router-shaped objects (calls: [{name, arguments}]).
-fn schema_batch_key(schema: &Value, key: &str) -> bool {
-    schema_properties(schema)
-        .and_then(|props| props.get(key))
-        .and_then(|prop| prop.get("items"))
-        .and_then(schema_properties)
-        .is_some_and(|items| router_keys(items.keys()))
+/// How deep schema_nodes follows $ref, anyOf, oneOf and allOf.
+const SCHEMA_DEPTH: usize = 32;
+
+/// A local $ref ("#/$defs/Call", "#/definitions/Call", any "#/a/b" path
+/// through objects). Same as TS resolveRef.
+fn resolve_ref<'a>(root: &'a Value, reference: &str) -> Option<&'a Value> {
+    if reference == "#" {
+        return Some(root);
+    }
+    let path = reference.strip_prefix("#/")?;
+    let mut node = root;
+    for part in path.split('/') {
+        let key = part.replace("~1", "/").replace("~0", "~");
+        node = node.as_object()?.get(&key)?;
+    }
+    Some(node)
+}
+
+/// The schema and every schema it stands for: its $ref target and its
+/// anyOf, oneOf and allOf branches, followed again. pydantic and FastMCP
+/// write nested models as $ref into $defs, and an Optional field as
+/// anyOf: [{...}, {type: "null"}]. Each schema object is read once. Same as
+/// TS schemaNodes.
+fn schema_nodes<'a>(schema: &'a Value, root: &'a Value) -> Vec<&'a Map<String, Value>> {
+    fn visit<'a>(
+        schema: &'a Value,
+        root: &'a Value,
+        seen: &mut Vec<*const Value>,
+        depth: usize,
+        out: &mut Vec<&'a Map<String, Value>>,
+    ) {
+        let Some(node) = schema.as_object() else {
+            return;
+        };
+        let ptr: *const Value = schema;
+        if depth > SCHEMA_DEPTH || seen.contains(&ptr) {
+            return;
+        }
+        seen.push(ptr);
+        out.push(node);
+        if let Some(target) = node
+            .get("$ref")
+            .and_then(Value::as_str)
+            .and_then(|r| resolve_ref(root, r))
+        {
+            visit(target, root, seen, depth + 1, out);
+        }
+        for key in ["anyOf", "oneOf", "allOf"] {
+            if let Some(branches) = node.get(key).and_then(Value::as_array) {
+                for branch in branches {
+                    visit(branch, root, seen, depth + 1, out);
+                }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    visit(schema, root, &mut Vec::new(), 0, &mut out);
+    out
+}
+
+/// Every property schema the schema gives a key, by key, through $ref and
+/// anyOf/oneOf/allOf. Same as TS schemaProperties.
+fn schema_properties<'a>(schema: &'a Value, root: &'a Value) -> Vec<(&'a String, &'a Value)> {
+    schema_nodes(schema, root)
+        .into_iter()
+        .filter_map(|node| node.get("properties").and_then(Value::as_object))
+        .flat_map(|props| props.iter())
+        .collect()
+}
+
+/// A schema for an object shaped like a router call.
+fn schema_router_shaped(schema: &Value, root: &Value) -> bool {
+    router_keys(schema_properties(schema, root).into_iter().map(|(k, _)| k))
+}
+
+/// The schema properties that are a router-shaped object (request: {method,
+/// params}) or a list of them (calls: [{name, arguments}]), also through
+/// $ref and anyOf/oneOf/allOf. Same as TS schemaRouterKeys.
+fn schema_router_keys(schema: &Value) -> Vec<&String> {
+    let mut keys: Vec<&String> = Vec::new();
+    for (key, property) in schema_properties(schema, schema) {
+        if keys.contains(&key) {
+            continue;
+        }
+        if schema_router_shaped(property, schema)
+            || schema_nodes(property, schema).into_iter().any(|node| {
+                node.get("items")
+                    .is_some_and(|items| schema_router_shaped(items, schema))
+            })
+        {
+            keys.push(key);
+        }
+    }
+    keys
 }
 
 /// The lists in a router call that hold a batch of calls: calls, requests,
@@ -421,34 +517,58 @@ fn batch_lists<'a>(args: &'a Value, schema: &Value) -> Vec<&'a Vec<Value>> {
     let Some(obj) = args.as_object() else {
         return Vec::new();
     };
+    let schema_keys = schema_router_keys(schema);
     obj.iter()
         .filter_map(|(key, value)| {
             let list = value.as_array()?;
             (BATCH_KEY_WORDS.contains(&key_word(key).as_str())
-                || schema_batch_key(schema, key)
+                || schema_keys.contains(&key)
                 || list.iter().any(router_shaped))
             .then_some(list)
         })
         .collect()
 }
 
-/// A router by its name, or by its shape in the input schema or the call's
-/// arguments, at the top level or inside a list (a batch). Same as TS isRouter.
+/// Objects in a router call that hold one call (request: {method, params}):
+/// router-shaped, or router-shaped by the schema. Same as TS nestedCalls.
+fn nested_calls<'a>(args: &'a Value, schema: &Value) -> Vec<&'a Value> {
+    let Some(obj) = args.as_object() else {
+        return Vec::new();
+    };
+    let schema_keys = schema_router_keys(schema);
+    obj.iter()
+        .filter(|(key, value)| {
+            value.is_object() && (router_shaped(value) || schema_keys.contains(key))
+        })
+        .map(|(_, value)| value)
+        .collect()
+}
+
+/// A router by its name, or by its shape: in the input schema (also through
+/// $ref, anyOf, oneOf and allOf) or in the call's arguments, at the top
+/// level, in an object one level down ({request: {method, params}}), or
+/// inside a list (a batch). A list under calls, requests, items or steps
+/// counts as a batch when an entry names a tool, even with no arguments key.
+/// Same as TS isRouter.
 pub fn is_router(tool: &str, schema: &Value, args: &Value) -> bool {
     if is_router_name(tool) {
         return true;
     }
-    let in_schema = schema_properties(schema).is_some_and(|props| {
-        router_keys(props.keys()) || props.keys().any(|key| schema_batch_key(schema, key))
-    });
-    in_schema
-        || args.as_object().is_some_and(|a| {
-            router_keys(a.keys())
-                || a.values().any(|v| {
-                    v.as_array()
-                        .is_some_and(|list| list.iter().any(router_shaped))
-                })
-        })
+    if schema_router_shaped(schema, schema) || !schema_router_keys(schema).is_empty() {
+        return true;
+    }
+    args.as_object().is_some_and(|a| {
+        router_keys(a.keys())
+            || a.iter().any(|(key, value)| {
+                router_shaped(value)
+                    || value.as_array().is_some_and(|list| {
+                        let batch_word = BATCH_KEY_WORDS.contains(&key_word(key).as_str());
+                        list.iter().any(|entry| {
+                            router_shaped(entry) || (batch_word && names_a_tool(entry))
+                        })
+                    })
+            })
+    })
 }
 
 /// The different non-empty tool names in every key that may hold one.
@@ -474,29 +594,45 @@ fn names_clash(value: &Value) -> bool {
         .is_some_and(|obj| inner_names(obj).len() > 1)
 }
 
+/// The values of the keys that may hold the routed tool's arguments and are
+/// set (not null).
+fn args_values(obj: &Map<String, Value>) -> Vec<&Value> {
+    obj.iter()
+        .filter(|(k, v)| ARGS_KEY_WORDS.contains(&key_word(k).as_str()) && !v.is_null())
+        .map(|(_, v)| v)
+        .collect()
+}
+
 /// The call a router argument object names; none when it names no tool or
-/// two different ones.
+/// two different ones, or sets two arguments keys ({args: {}, params:
+/// {...}}): the server may read either one. Same as TS innerCall.
 fn inner_call(value: &Value) -> Option<(String, Value)> {
     let obj = value.as_object()?;
     let name = match inner_names(obj).as_slice() {
         [only] => *only,
         _ => return None,
     };
-    let args = obj
-        .iter()
-        .find(|(k, v)| ARGS_KEY_WORDS.contains(&key_word(k).as_str()) && v.is_object())
-        .map(|(_, v)| v.clone())
-        .unwrap_or_else(|| Value::Object(Map::new()));
+    let args = match args_values(obj).as_slice() {
+        [] => Value::Object(Map::new()),
+        [only] if only.is_object() => (*only).clone(),
+        [_] => Value::Object(Map::new()),
+        _ => return None,
+    };
     Some((name.to_string(), args))
 }
 
-/// The real tools a router call runs: {name, arguments}, and every entry of
-/// a batch list.
+/// The real tools a router call runs: {name, arguments}, a router-shaped
+/// object one level down, and every entry of a batch list.
 pub fn routed_calls(tool: &str, schema: &Value, args: &Value) -> Vec<(String, Value)> {
     if !is_router(tool, schema, args) {
         return Vec::new();
     }
     let mut calls: Vec<(String, Value)> = inner_call(args).into_iter().collect();
+    calls.extend(
+        nested_calls(args, schema)
+            .into_iter()
+            .filter_map(inner_call),
+    );
     for list in batch_lists(args, schema) {
         calls.extend(list.iter().filter_map(inner_call));
     }
@@ -511,8 +647,15 @@ pub fn router_unclear(tool: &str, schema: &Value, args: &Value) -> bool {
         return false;
     }
     let routed = routed_calls(tool, schema, args);
+    let names_a_call = args
+        .as_object()
+        .is_some_and(|obj| !inner_names(obj).is_empty());
     routed.is_empty()
         || names_clash(args)
+        || (names_a_call && inner_call(args).is_none())
+        || nested_calls(args, schema)
+            .into_iter()
+            .any(|value| inner_call(value).is_none())
         || batch_lists(args, schema)
             .iter()
             .any(|list| list.iter().any(|entry| inner_call(entry).is_none()))
@@ -915,6 +1058,58 @@ mod tests {
             .len(),
             1
         );
+    }
+
+    #[test]
+    fn pydantic_nested_and_decoy_routers() {
+        let none = Value::Null;
+        // FastMCP/pydantic write the call model as $ref into $defs.
+        let pydantic = json!({
+            "type": "object",
+            "properties": { "calls": { "type": "array", "items": { "$ref": "#/$defs/Call" } } },
+            "$defs": { "Call": { "properties": { "name": {}, "arguments": {} } } }
+        });
+        let args = json!({ "calls": [{ "name": "delete_x" }] });
+        assert!(is_router("helper", &pydantic, &args));
+        assert_eq!(
+            call_label(SafetyLabel::Read, "helper", &pydantic, &args),
+            SafetyLabel::Destructive
+        );
+        // No schema: a batch word with an entry that names a tool is enough.
+        assert_eq!(
+            call_label(SafetyLabel::Read, "helper", &none, &args),
+            SafetyLabel::Destructive
+        );
+        let any_of = json!({ "anyOf": [{ "properties": { "tool": {}, "args": {} } }] });
+        assert_eq!(
+            call_label(
+                SafetyLabel::Read,
+                "helper",
+                &any_of,
+                &json!({ "tool": "delete_x" })
+            ),
+            SafetyLabel::Destructive
+        );
+        let nested = json!({ "request": { "method": "delete_x", "params": {} } });
+        assert_eq!(
+            call_label(SafetyLabel::Read, "helper", &none, &nested),
+            SafetyLabel::Destructive
+        );
+        // Two arguments keys: the server may read either one.
+        let decoy = json!({ "name": "lookup", "args": {}, "params": { "name": "delete_x", "arguments": {} } });
+        assert!(router_unclear("helper", &none, &decoy));
+        assert_eq!(
+            call_label(SafetyLabel::Read, "helper", &none, &decoy),
+            SafetyLabel::Destructive
+        );
+        // A $ref loop ends.
+        let looped = json!({
+            "$ref": "#/$defs/Node",
+            "$defs": { "Node": { "properties": { "child": { "$ref": "#/$defs/Node" } } } }
+        });
+        assert!(!is_router("get_tree", &looped, &json!({ "child": {} })));
+        assert_eq!(resolve_ref(&looped, "#/$defs/Missing"), None);
+        assert_eq!(resolve_ref(&looped, "other.json#/x"), None);
     }
 
     #[test]

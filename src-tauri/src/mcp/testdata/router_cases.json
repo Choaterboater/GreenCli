@@ -566,7 +566,8 @@
       }
     },
     "routed": [
-      "get_status"
+      "get_status",
+      "delete_x"
     ],
     "unclear": true
   },
@@ -579,13 +580,370 @@
         }
       ]
     },
-    "routed": [],
+    "routed": [
+      "a"
+    ],
     "unclear": false
   },
   {
     "tool": "get_device",
     "args": {
       "name": "core1"
+    },
+    "routed": [],
+    "unclear": false
+  },
+  {
+    "tool": "helper",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "calls": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Call"
+          }
+        }
+      },
+      "$defs": {
+        "Call": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "arguments": {
+              "type": "object"
+            }
+          }
+        }
+      }
+    },
+    "args": {
+      "ops": []
+    },
+    "routed": [],
+    "unclear": true
+  },
+  {
+    "tool": "helper",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "calls": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Call"
+          }
+        }
+      },
+      "$defs": {
+        "Call": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "arguments": {
+              "type": "object"
+            }
+          }
+        }
+      }
+    },
+    "args": {
+      "calls": [
+        {
+          "name": "delete_x"
+        }
+      ]
+    },
+    "routed": [
+      "delete_x"
+    ],
+    "unclear": false
+  },
+  {
+    "tool": "helper",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "ops": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/Call"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "definitions": {
+        "Call": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "arguments": {
+              "type": "object"
+            }
+          }
+        }
+      }
+    },
+    "args": {
+      "ops": [
+        {
+          "name": "delete_x"
+        }
+      ]
+    },
+    "routed": [
+      "delete_x"
+    ],
+    "unclear": false
+  },
+  {
+    "tool": "helper",
+    "schema": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "tool": {},
+            "args": {}
+          }
+        }
+      ]
+    },
+    "args": {
+      "tool": "delete_x"
+    },
+    "routed": [
+      "delete_x"
+    ],
+    "unclear": false
+  },
+  {
+    "tool": "helper",
+    "schema": {
+      "$ref": "#/$defs/Req",
+      "$defs": {
+        "Req": {
+          "allOf": [
+            {
+              "properties": {
+                "method": {}
+              }
+            },
+            {
+              "properties": {
+                "params": {}
+              }
+            }
+          ]
+        }
+      }
+    },
+    "args": {
+      "method": "delete_x"
+    },
+    "routed": [
+      "delete_x"
+    ],
+    "unclear": false
+  },
+  {
+    "tool": "helper",
+    "args": {
+      "request": {
+        "method": "delete_x",
+        "params": {}
+      }
+    },
+    "routed": [
+      "delete_x"
+    ],
+    "unclear": false
+  },
+  {
+    "tool": "helper",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "request": {
+          "$ref": "#/$defs/Call"
+        }
+      },
+      "$defs": {
+        "Call": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "arguments": {
+              "type": "object"
+            }
+          }
+        }
+      }
+    },
+    "args": {
+      "request": {
+        "name": "delete_x"
+      }
+    },
+    "routed": [
+      "delete_x"
+    ],
+    "unclear": false
+  },
+  {
+    "tool": "helper",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "request": {
+          "$ref": "#/$defs/Call"
+        }
+      },
+      "$defs": {
+        "Call": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "arguments": {
+              "type": "object"
+            }
+          }
+        }
+      }
+    },
+    "args": {
+      "request": {
+        "title": "x"
+      }
+    },
+    "routed": [],
+    "unclear": true
+  },
+  {
+    "tool": "helper",
+    "args": {
+      "calls": [
+        {
+          "name": "delete_x"
+        }
+      ]
+    },
+    "routed": [
+      "delete_x"
+    ],
+    "unclear": false
+  },
+  {
+    "tool": "helper",
+    "args": {
+      "steps": [
+        {
+          "tool": "get_a"
+        },
+        {
+          "tool": "get_b",
+          "note": "x"
+        }
+      ]
+    },
+    "routed": [
+      "get_a",
+      "get_b"
+    ],
+    "unclear": false
+  },
+  {
+    "tool": "helper",
+    "args": {
+      "args": {},
+      "name": "lookup",
+      "params": {
+        "arguments": {},
+        "name": "delete_x"
+      }
+    },
+    "routed": [
+      "delete_x"
+    ],
+    "unclear": true
+  },
+  {
+    "tool": "call_tool",
+    "args": {
+      "arguments": {
+        "y": 2
+      },
+      "args": {
+        "x": 1
+      },
+      "name": "get_a"
+    },
+    "routed": [],
+    "unclear": true
+  },
+  {
+    "tool": "call_tool",
+    "args": {
+      "args": null,
+      "arguments": {
+        "y": 2
+      },
+      "name": "get_a"
+    },
+    "routed": [
+      "get_a"
+    ],
+    "unclear": false
+  },
+  {
+    "tool": "get_tree",
+    "schema": {
+      "$ref": "#/$defs/Node",
+      "$defs": {
+        "Node": {
+          "type": "object",
+          "properties": {
+            "child": {
+              "$ref": "#/$defs/Node"
+            },
+            "title": {}
+          }
+        }
+      }
+    },
+    "args": {
+      "child": {}
+    },
+    "routed": [],
+    "unclear": false
+  },
+  {
+    "tool": "get_device",
+    "args": {
+      "filter": {
+        "site": "x"
+      },
+      "list": [
+        {
+          "name": "a"
+        }
+      ]
     },
     "routed": [],
     "unclear": false

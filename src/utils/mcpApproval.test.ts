@@ -46,7 +46,58 @@ describe('routedCalls', () => {
 
   it('is empty for a tool that is not a router', () => {
     expect(routedCalls('get_device', { name: 'delete_site' })).toEqual([]);
-    expect(routedCalls('get_device', { items: [{ name: 'a' }] })).toEqual([]);
+    expect(routedCalls('get_device', { list: [{ name: 'a' }], filter: { site: 'x' } })).toEqual([]);
+  });
+
+  it('finds a batch router written the pydantic way, with $ref into $defs', () => {
+    const pydantic = {
+      type: 'object' as const,
+      properties: { calls: { type: 'array', items: { $ref: '#/$defs/Call' } } },
+      $defs: { Call: { type: 'object', properties: { name: { type: 'string' }, arguments: { type: 'object' } } } },
+    };
+    // A read-only hint on the router (label 'read') never lowers what it runs.
+    const plan = buildPlan({ server: 's', tool: 'helper', label: 'read', schema: pydantic, arguments: { calls: [{ name: 'delete_x' }] } });
+    expect(plan.router).toBe(true);
+    expect(plan.routed.map((call) => call.name)).toEqual(['delete_x']);
+    expect(plan.routerUnclear).toBe(false);
+    expect(planLabel(plan)).toBe('destructive');
+    expect(needsApproval(plan)).toBe(true);
+  });
+
+  it('finds a router behind anyOf, or one level down in an object', () => {
+    const anyOf = { type: 'object' as const, anyOf: [{ properties: { tool: {}, args: {} } }] };
+    expect(routedCalls('helper', { tool: 'delete_x' }, anyOf)).toEqual([{ name: 'delete_x', arguments: {} }]);
+    expect(routedCalls('helper', { request: { method: 'delete_x', params: {} } })).toEqual([
+      { name: 'delete_x', arguments: {} },
+    ]);
+  });
+
+  it('counts a list under calls, requests, items or steps as a batch when an entry names a tool', () => {
+    const plan = buildPlan({ server: 's', tool: 'helper', label: 'read', schema, arguments: { calls: [{ name: 'delete_x' }] } });
+    expect(plan.routed.map((call) => call.name)).toEqual(['delete_x']);
+    expect(planLabel(plan)).toBe('destructive');
+  });
+
+  it('calls a router unclear when two arguments keys are set', () => {
+    const decoy = buildPlan({
+      server: 's',
+      tool: 'helper',
+      label: 'read',
+      schema,
+      arguments: { name: 'lookup', args: {}, params: { name: 'delete_x', arguments: {} } },
+    });
+    expect(decoy.routerUnclear).toBe(true);
+    expect(planLabel(decoy)).toBe('destructive');
+    expect(buildPlan({ server: 's', tool: 'call_tool', label: 'read', schema, arguments: { name: 'get_a', args: { x: 1 }, arguments: { y: 2 } } }).routerUnclear).toBe(true);
+  });
+
+  it('follows a $ref loop without hanging', () => {
+    const loop = {
+      type: 'object' as const,
+      $ref: '#/$defs/Node',
+      $defs: { Node: { type: 'object', properties: { child: { $ref: '#/$defs/Node' }, title: {} } } },
+    };
+    expect(isRouter('get_tree', loop, { child: {} })).toBe(false);
   });
 
   it('finds a router by its name words or its shape', () => {
