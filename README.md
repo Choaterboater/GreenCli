@@ -7,12 +7,11 @@ For macOS and Windows. Free and open source.
 [![Latest release](https://img.shields.io/github/v/release/Choaterboater/GreenCli?label=release&color=01a982)](https://github.com/Choaterboater/GreenCli/releases/latest)
 [![CI](https://github.com/Choaterboater/GreenCli/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Choaterboater/GreenCli/actions/workflows/ci.yml)
 
-**[Download](https://choaterboater.github.io/GreenCli/#download)** ·
-[Releases page](https://github.com/Choaterboater/GreenCli/releases/latest) ·
+**[Download](https://github.com/Choaterboater/GreenCli/releases/latest)** ·
 [Website](https://choaterboater.github.io/GreenCli/) ·
-[Guide](https://choaterboater.github.io/GreenCli/guide/)
+[Guide](docs/SETUP.md)
 
-[![GreenCLI main window: an AOS-CX session, with saved hosts in folders on the left](https://choaterboater.github.io/GreenCli/screenshots/01-main-window.png)](https://choaterboater.github.io/GreenCli/screenshots/01-main-window.png)
+[![GreenCLI main window: an AOS-CX session, with saved hosts in folders on the left](docs/screenshots/01-main-window.png)](docs/screenshots/01-main-window.png)
 
 ## What's new in 2.0
 
@@ -38,55 +37,55 @@ Click a photo for full size. All of them use made-up demo data: no real devices,
 <table>
   <tr>
     <td width="50%" valign="top">
-      <a href="https://choaterboater.github.io/GreenCli/screenshots/02-config-editor.png"><img src="https://choaterboater.github.io/GreenCli/screenshots/thumbs/02-config-editor.png" alt="Config Editor with squiggles and the Problems list"></a><br>
+      <a href="docs/screenshots/02-config-editor.png"><img src="docs/screenshots/02-config-editor.png" width="100%" alt="Config Editor with squiggles and the Problems list"></a><br>
       <b>Config Editor.</b> Risky lines get a squiggle, and the Problems list shows each one. The
       bottom line says where Send goes.
     </td>
     <td width="50%" valign="top">
-      <a href="https://choaterboater.github.io/GreenCli/screenshots/03-ai-review-diff.png"><img src="https://choaterboater.github.io/GreenCli/screenshots/thumbs/03-ai-review-diff.png" alt="An AI fix shown as a diff"></a><br>
+      <a href="docs/screenshots/03-ai-review-diff.png"><img src="docs/screenshots/03-ai-review-diff.png" width="100%" alt="An AI fix shown as a diff"></a><br>
       <b>AI fix as a diff.</b> Apply it or Discard it. Secrets the AI never saw get their real
       value back.
     </td>
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <a href="https://choaterboater.github.io/GreenCli/screenshots/05-ai-assistant.png"><img src="https://choaterboater.github.io/GreenCli/screenshots/thumbs/05-ai-assistant.png" alt="AI Assistant next to a terminal"></a><br>
+      <a href="docs/screenshots/05-ai-assistant.png"><img src="docs/screenshots/05-ai-assistant.png" width="100%" alt="AI Assistant next to a terminal"></a><br>
       <b>AI Assistant.</b> It ran a show command. The keys in the output reached it as
       <code>&lt;secret hidden&gt;</code>.
     </td>
     <td width="50%" valign="top">
-      <a href="https://choaterboater.github.io/GreenCli/screenshots/06-mcp-approval.png"><img src="https://choaterboater.github.io/GreenCli/screenshots/thumbs/06-mcp-approval.png" alt="The approval box for an MCP tool"></a><br>
+      <a href="docs/screenshots/06-mcp-approval.png"><img src="docs/screenshots/06-mcp-approval.png" width="100%" alt="The approval box for an MCP tool"></a><br>
       <b>Approval box.</b> An MCP tool that can change things asks you first, with its full
       arguments.
     </td>
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <a href="https://choaterboater.github.io/GreenCli/screenshots/09-change-jobs.png"><img src="https://choaterboater.github.io/GreenCli/screenshots/thumbs/09-change-jobs.png" alt="Change Jobs dry run"></a><br>
+      <a href="docs/screenshots/09-change-jobs.png"><img src="docs/screenshots/09-change-jobs.png" width="100%" alt="Change Jobs dry run"></a><br>
       <b>Change Jobs.</b> One VLAN change for four switches: a dry run first, then a rollback timer
       until you confirm.
     </td>
     <td width="50%" valign="top">
-      <a href="https://choaterboater.github.io/GreenCli/screenshots/11-network-intent.png"><img src="https://choaterboater.github.io/GreenCli/screenshots/thumbs/11-network-intent.png" alt="Network Intent checks"></a><br>
+      <a href="docs/screenshots/11-network-intent.png"><img src="docs/screenshots/11-network-intent.png" width="100%" alt="Network Intent checks"></a><br>
       <b>Network Intent.</b> Write down what should be true, then check every device. Here one
       rule fails on two switches.
     </td>
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <a href="https://choaterboater.github.io/GreenCli/screenshots/07-settings-mcp-servers.png"><img src="https://choaterboater.github.io/GreenCli/screenshots/thumbs/07-settings-mcp-servers.png" alt="Settings, MCP Servers"></a><br>
+      <a href="docs/screenshots/07-settings-mcp-servers.png"><img src="docs/screenshots/07-settings-mcp-servers.png" width="100%" alt="Settings, MCP Servers"></a><br>
       <b>MCP Servers.</b> Writes are off until you turn them on. greencli-mcp has Copy buttons, and
       Export makes a file for Casper or Claude Code.
     </td>
     <td width="50%" valign="top">
-      <a href="https://choaterboater.github.io/GreenCli/screenshots/10-settings-ai.png"><img src="https://choaterboater.github.io/GreenCli/screenshots/thumbs/10-settings-ai.png" alt="Settings, AI Assistant"></a><br>
+      <a href="docs/screenshots/10-settings-ai.png"><img src="docs/screenshots/10-settings-ai.png" width="100%" alt="Settings, AI Assistant"></a><br>
       <b>AI settings.</b> Pick the provider and model. The API key is saved in macOS Keychain.
     </td>
   </tr>
 </table>
 
-More photos are on the [website](https://choaterboater.github.io/GreenCli/#photos). They are
-taken again for every release.
+The [website](https://choaterboater.github.io/GreenCli/#photos) has more photos, taken again for
+every release.
 
 ## Features
 
@@ -133,8 +132,8 @@ taken again for every release.
 
 ## Install
 
-Get the latest version from the [website](https://choaterboater.github.io/GreenCli/#download) or the
-[Releases page](https://github.com/Choaterboater/GreenCli/releases/latest).
+Get the latest version from the [Releases page](https://github.com/Choaterboater/GreenCli/releases/latest)
+or the [website](https://choaterboater.github.io/GreenCli/#download).
 
 | Your computer | File |
 |---------------|------|
@@ -199,7 +198,7 @@ It has six read tools: `access_check`, `list_devices`, `list_config_history`, `g
   Config archive and click **Make hidden copies**.
 - A diff can't show a changed secret: both sides show it hidden.
 
-More in the guide: [greencli-mcp](https://choaterboater.github.io/GreenCli/guide/#greencli-mcp-greencli-data-for-casper-or-claude-code).
+More in the guide: [greencli-mcp](docs/SETUP.md#greencli-mcp-greencli-data-for-casper-or-claude-code).
 
 ## Build from source
 
@@ -227,7 +226,7 @@ npm run tauri-build    # make the app and installer for this computer
 The installers land in `src-tauri/target/release/bundle/`. Build on the system you want the app
 for. Release builds for macOS and Windows come from GitHub Actions
 (`.github/workflows/release.yml`); the guide's
-[Releasing](https://choaterboater.github.io/GreenCli/guide/#releasing) part has the steps.
+[Releasing](docs/SETUP.md#releasing) part has the steps.
 
 Checks (the same ones CI runs):
 
@@ -284,7 +283,7 @@ builds it and serves it at http://127.0.0.1:4173/. See [Screenshots](docs/SETUP.
 - Nothing is sent home: no tracking. GreenCLI talks only to the devices, services and AI providers
   you set up, and to GitHub for updates.
 
-More in the guide: [Security notes](https://choaterboater.github.io/GreenCli/guide/#12-security-notes).
+More in the guide: [Security notes](docs/SETUP.md#12-security-notes).
 
 ## License
 
