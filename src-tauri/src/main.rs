@@ -1787,15 +1787,10 @@ async fn mcp_set_credentials(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     // The store call runs without the MCP lock (it can be slow or ask the user).
+    // A running server keeps the login file it started with until it stops.
     let creds = McpCreds::new(state.secrets.clone());
     let content = zeroize::Zeroizing::new(content);
-    let owned = name.clone();
-    let cleared = content.is_empty();
-    secret_store::blocking(move || creds.set(&owned, &content)).await?;
-    if cleared {
-        state.mcp_manager.lock().await.forget_creds_file(&name);
-    }
-    Ok(())
+    secret_store::blocking(move || creds.set(&name, &content)).await
 }
 
 #[tauri::command]
@@ -2878,6 +2873,9 @@ fn main() {
             secrets.move_file(&app_dir.join(secret_store::AI_KEYS_FILE), secret_store::AI_KEY_PREFIX);
             // Before the MCP auto-connect below, so servers find their logins.
             secrets.move_file(&app_dir.join(secret_store::MCP_CREDS_FILE), secret_store::MCP_CREDS_PREFIX);
+            // Login files are only kept while their server runs: any left by a
+            // crash go before the auto-connect.
+            mcp::client::sweep_creds_dir(&app_dir);
             let state = AppState::new(app_dir, secrets)?;
             app.manage(state);
 
@@ -3040,7 +3038,9 @@ fn main() {
 #[cfg(all(test, unix))]
 mod shutdown_tests {
     use super::*;
-    use mcp::client::tests::{fake_child_pid, fake_stdio_client};
+    use mcp::client::tests::{
+        fake_child_pid, fake_stdio_client, fake_stdio_client_with_creds, test_creds_file,
+    };
 
     /// `kill -0`: is there still a process (running or an unreaped zombie)?
     fn process_exists(pid: u32) -> bool {
@@ -3074,6 +3074,23 @@ mod shutdown_tests {
         // The second run finds nothing to do.
         shutdown_children_inner(&mcp).await;
         assert!(mcp.lock().await.take_all_clients().is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn shutdown_deletes_the_login_files() {
+        let _serial = ai::CLI_RUNS_TEST_LOCK.lock().await;
+        let dir = std::env::temp_dir().join(format!("greencli-shutdown-{}", rand::random::<u64>()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let secrets = Arc::new(secret_store::SecretStore::files(&dir));
+        let mcp = AsyncMutex::new(McpManager::new(dir.clone(), McpCreds::new(secrets)));
+        let creds = test_creds_file(&dir, "central");
+        let path = creds.path().to_path_buf();
+        let client = fake_stdio_client_with_creds("central", creds);
+        assert!(mcp.lock().await.install_client("central".into(), client).is_none());
+        assert!(path.exists());
+        shutdown_children_inner(&mcp).await;
+        assert!(!path.exists());
         let _ = std::fs::remove_dir_all(dir);
     }
 }

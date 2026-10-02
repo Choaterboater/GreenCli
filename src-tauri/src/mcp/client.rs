@@ -40,7 +40,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStdin, Command};
+use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::{mpsc, oneshot, Mutex};
 use zeroize::Zeroizing;
 
@@ -456,6 +456,74 @@ impl McpCreds {
     }
 }
 
+/// The folder for login files, inside the app data folder.
+const CREDS_DIR: &str = "mcp_creds";
+
+/// The login file of one running stdio server. It exists only while that
+/// server runs: it is deleted when the server is shut down, when it exits by
+/// itself (the stdio reader sees EOF), when the connect fails, and by the
+/// startup sweep. Each connect writes a new file, so a reconnect never
+/// deletes the file the new server is using.
+pub struct CredsFile {
+    path: PathBuf,
+    removed: AtomicBool,
+}
+
+impl CredsFile {
+    /// Write `content` to a new owner-only file for server `name` in
+    /// `<app_dir>/mcp_creds/` (the folder is made owner-only too).
+    fn write(app_dir: &std::path::Path, name: &str, content: &[u8]) -> Result<Self, AppError> {
+        let dir = app_dir.join(CREDS_DIR);
+        crate::private_fs::private_dir(&dir)?;
+        let path = dir.join(format!("{}-{:016x}", sanitize_filename(name), rand::random::<u64>()));
+        let file = Self {
+            path,
+            removed: AtomicBool::new(false),
+        };
+        // On an error the guard is dropped, which deletes anything written.
+        crate::private_fs::write_key_file(&file.path, content)?;
+        Ok(file)
+    }
+
+    pub fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+
+    /// Delete the file (once; later calls do nothing).
+    pub fn remove(&self) {
+        if !self.removed.swap(true, Ordering::Relaxed) {
+            let _ = fs::remove_file(&self.path);
+            let _ = fs::remove_file(crate::private_fs::key_file_tmp(&self.path));
+        }
+    }
+}
+
+impl Drop for CredsFile {
+    fn drop(&mut self) {
+        self.remove();
+    }
+}
+
+/// Startup sweep, before any server connects: login files left by a crash
+/// or a forced quit are deleted. Plain files only; links are never followed.
+pub fn sweep_creds_dir(app_dir: &std::path::Path) {
+    let dir = app_dir.join(CREDS_DIR);
+    let Ok(meta) = fs::symlink_metadata(&dir) else {
+        return;
+    };
+    if !meta.is_dir() {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(&dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if entry.file_type().map(|t| t.is_file() || t.is_symlink()).unwrap_or(false) {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+}
+
 // ─── Running client ───
 
 type Pending = Arc<Mutex<HashMap<i64, oneshot::Sender<Result<Value, String>>>>>;
@@ -550,6 +618,9 @@ pub struct McpClient {
     /// The server's access_check answer, run once per connection. None when
     /// the server has no usable access_check tool. Never sent to the AI.
     pub access: Arc<std::sync::Mutex<Option<AccessCheck>>>,
+    /// Stdio only: the login file this server was started with. Deleted at
+    /// shutdown (and by the reader at EOF).
+    creds_file: Option<Arc<CredsFile>>,
 }
 
 /// GUI apps inherit a minimal PATH; add the usual user/tool bin dirs so things
@@ -894,15 +965,125 @@ fn spawn_refresher(
     })
 }
 
+// Reader task: dispatch responses to waiters; answer server-initiated
+// requests (ping keep-alives especially) instead of leaving them hanging.
+// A transient read error (e.g. a non-UTF8 banner byte) skips that line
+// rather than killing the whole connection; only EOF ends the loop.
+// At EOF the client is marked dead, waiters fail, and the server's login
+// file (if any) is deleted: it is only kept while the server runs.
+fn spawn_stdio_reader(
+    stdout: ChildStdout,
+    pending_r: Pending,
+    dead_r: Arc<AtomicBool>,
+    stdin_r: Arc<Mutex<ChildStdin>>,
+    tools_changed_tx: mpsc::UnboundedSender<()>,
+    creds_file: Option<Arc<CredsFile>>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut lines = BufReader::new(stdout).lines();
+        loop {
+            let line = match lines.next_line().await {
+                Ok(Some(l)) => l,
+                Ok(None) => break, // EOF — process closed stdout
+                // A non-UTF8 line is consumed, so skip it and keep reading. But a
+                // real I/O error (broken pipe / reset) does NOT advance the stream:
+                // returning the same error forever would busy-spin a core. Break.
+                Err(e) if e.kind() == std::io::ErrorKind::InvalidData => continue,
+                Err(_) => break,
+            };
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            let v: Value = match serde_json::from_str(line) {
+                Ok(v) => v,
+                Err(_) => continue, // skip any non-JSON banner/log lines
+            };
+            // A message carrying a `method` is a REQUEST/notification FROM the
+            // server (ping/sampling/roots/elicitation), not a response to us.
+            // Never match it against pending waiters — ids restart at 1 each
+            // reconnect so a server-request id can collide with one of ours.
+            // A server REQUEST (method + id) must be answered or a strict server
+            // can stall/tear down the session: reply to `ping`, politely refuse
+            // the rest. Notifications (no id) need no reply.
+            if let Some(method) = v.get("method").and_then(|m| m.as_str()) {
+                if method == "notifications/tools/list_changed" {
+                    let _ = tools_changed_tx.send(());
+                }
+                if let Some(req_id) = v.get("id") {
+                    let resp = if method == "ping" {
+                        json!({ "jsonrpc": "2.0", "id": req_id, "result": {} })
+                    } else {
+                        json!({
+                            "jsonrpc": "2.0",
+                            "id": req_id,
+                            "error": { "code": -32601, "message": format!("client does not support '{}'", method) }
+                        })
+                    };
+                    let line = format!("{}\n", resp);
+                    let mut w = stdin_r.lock().await;
+                    let _ = w.write_all(line.as_bytes()).await;
+                    let _ = w.flush().await;
+                }
+                continue;
+            }
+            // Accept integer / float / numeric-string ids (servers vary).
+            let id = v.get("id").and_then(|i| {
+                i.as_i64()
+                    .or_else(|| i.as_u64().map(|u| u as i64))
+                    .or_else(|| i.as_f64().map(|f| f as i64))
+                    .or_else(|| i.as_str().and_then(|s| s.parse::<i64>().ok()))
+            });
+            if let Some(id) = id {
+                if let Some(tx) = pending_r.lock().await.remove(&id) {
+                    // `error: null` with a valid `result` is a lenient
+                    // success, not an error — `get` yields Some(&Null) for a
+                    // present-but-null key, so filter null out here too.
+                    if let Some(err) = v.get("error").filter(|e| !e.is_null()) {
+                        let msg = err
+                            .get("message")
+                            .and_then(|m| m.as_str())
+                            .unwrap_or("MCP error")
+                            .to_string();
+                        let _ = tx.send(Err(msg));
+                    } else {
+                        let _ = tx.send(Ok(v.get("result").cloned().unwrap_or(Value::Null)));
+                    }
+                }
+            }
+        }
+        // Stream closed — mark the client dead FIRST (so new requests are
+        // refused with an actionable error and status()/all_tools() stop
+        // advertising it), then fail any outstanding requests.
+        dead_r.store(true, Ordering::Relaxed);
+        let mut p = pending_r.lock().await;
+        for (_, tx) in p.drain() {
+            let _ = tx.send(Err("MCP server process exited".into()));
+        }
+        drop(p);
+        if let Some(file) = creds_file {
+            file.remove();
+        }
+    })
+}
+
 impl McpClient {
-    pub async fn connect(def: &McpServerDef) -> Result<McpClient, AppError> {
+    /// Connect to a server. `creds_file` is the login file `def` points at
+    /// (stdio only); the client keeps it while the server runs.
+    pub async fn connect(
+        def: &McpServerDef,
+        creds_file: Option<Arc<CredsFile>>,
+    ) -> Result<McpClient, AppError> {
         match def.transport {
-            McpTransport::Stdio => Self::connect_stdio(def).await,
+            McpTransport::Stdio => Self::connect_stdio(def, creds_file).await,
             McpTransport::Http => Self::connect_http(def).await,
         }
     }
 
-    async fn connect_stdio(def: &McpServerDef) -> Result<McpClient, AppError> {
+    async fn connect_stdio(
+        def: &McpServerDef,
+        creds_file: Option<Arc<CredsFile>>,
+    ) -> Result<McpClient, AppError> {
         validate_stdio_command(&def.command)?;
         let mut cmd = Command::new(&def.command);
         cmd.args(&def.args);
@@ -968,12 +1149,8 @@ impl McpClient {
         }
 
         let pending: Pending = Arc::new(Mutex::new(HashMap::new()));
-        let pending_r = pending.clone();
         let dead = Arc::new(AtomicBool::new(false));
-        let dead_r = dead.clone();
-
         let stdin = Arc::new(Mutex::new(stdin));
-        let stdin_r = stdin.clone();
 
         // Signalled by the reader on `notifications/tools/list_changed`; the
         // refresher task (spawned below, after the initial tools/list) drains
@@ -981,95 +1158,15 @@ impl McpClient {
         // used by the Http variant, but present on both for a uniform struct)
         // — the reader's own clone is what actually closes the channel here.
         let (tools_changed_tx, tools_changed_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
-        let tools_changed_tx_reader = tools_changed_tx.clone();
 
-        // Reader task: dispatch responses to waiters; answer server-initiated
-        // requests (ping keep-alives especially) instead of leaving them hanging.
-        // A transient read error (e.g. a non-UTF8 banner byte) skips that line
-        // rather than killing the whole connection; only EOF ends the loop.
-        let reader = tokio::spawn(async move {
-            let tools_changed_tx = tools_changed_tx_reader;
-            let mut lines = BufReader::new(stdout).lines();
-            loop {
-                let line = match lines.next_line().await {
-                    Ok(Some(l)) => l,
-                    Ok(None) => break, // EOF — process closed stdout
-                    // A non-UTF8 line is consumed, so skip it and keep reading. But a
-                    // real I/O error (broken pipe / reset) does NOT advance the stream:
-                    // returning the same error forever would busy-spin a core. Break.
-                    Err(e) if e.kind() == std::io::ErrorKind::InvalidData => continue,
-                    Err(_) => break,
-                };
-                let line = line.trim();
-                if line.is_empty() {
-                    continue;
-                }
-                let v: Value = match serde_json::from_str(line) {
-                    Ok(v) => v,
-                    Err(_) => continue, // skip any non-JSON banner/log lines
-                };
-                // A message carrying a `method` is a REQUEST/notification FROM the
-                // server (ping/sampling/roots/elicitation), not a response to us.
-                // Never match it against pending waiters — ids restart at 1 each
-                // reconnect so a server-request id can collide with one of ours.
-                // A server REQUEST (method + id) must be answered or a strict server
-                // can stall/tear down the session: reply to `ping`, politely refuse
-                // the rest. Notifications (no id) need no reply.
-                if let Some(method) = v.get("method").and_then(|m| m.as_str()) {
-                    if method == "notifications/tools/list_changed" {
-                        let _ = tools_changed_tx.send(());
-                    }
-                    if let Some(req_id) = v.get("id") {
-                        let resp = if method == "ping" {
-                            json!({ "jsonrpc": "2.0", "id": req_id, "result": {} })
-                        } else {
-                            json!({
-                                "jsonrpc": "2.0",
-                                "id": req_id,
-                                "error": { "code": -32601, "message": format!("client does not support '{}'", method) }
-                            })
-                        };
-                        let line = format!("{}\n", resp);
-                        let mut w = stdin_r.lock().await;
-                        let _ = w.write_all(line.as_bytes()).await;
-                        let _ = w.flush().await;
-                    }
-                    continue;
-                }
-                // Accept integer / float / numeric-string ids (servers vary).
-                let id = v.get("id").and_then(|i| {
-                    i.as_i64()
-                        .or_else(|| i.as_u64().map(|u| u as i64))
-                        .or_else(|| i.as_f64().map(|f| f as i64))
-                        .or_else(|| i.as_str().and_then(|s| s.parse::<i64>().ok()))
-                });
-                if let Some(id) = id {
-                    if let Some(tx) = pending_r.lock().await.remove(&id) {
-                        // `error: null` with a valid `result` is a lenient
-                        // success, not an error — `get` yields Some(&Null) for a
-                        // present-but-null key, so filter null out here too.
-                        if let Some(err) = v.get("error").filter(|e| !e.is_null()) {
-                            let msg = err
-                                .get("message")
-                                .and_then(|m| m.as_str())
-                                .unwrap_or("MCP error")
-                                .to_string();
-                            let _ = tx.send(Err(msg));
-                        } else {
-                            let _ = tx.send(Ok(v.get("result").cloned().unwrap_or(Value::Null)));
-                        }
-                    }
-                }
-            }
-            // Stream closed — mark the client dead FIRST (so new requests are
-            // refused with an actionable error and status()/all_tools() stop
-            // advertising it), then fail any outstanding requests.
-            dead_r.store(true, Ordering::Relaxed);
-            let mut p = pending_r.lock().await;
-            for (_, tx) in p.drain() {
-                let _ = tx.send(Err("MCP server process exited".into()));
-            }
-        });
+        let reader = spawn_stdio_reader(
+            stdout,
+            pending.clone(),
+            dead.clone(),
+            stdin.clone(),
+            tools_changed_tx.clone(),
+            creds_file.clone(),
+        );
 
         let caller = McpCaller {
             server: Arc::from(def.name.as_str()),
@@ -1115,6 +1212,7 @@ impl McpClient {
 
         Ok(McpClient {
             child: Some(child),
+            creds_file,
             caller,
             tools,
             server_info,
@@ -1276,6 +1374,7 @@ impl McpClient {
 
         Ok(McpClient {
             child: None,
+            creds_file: None,
             caller,
             tools,
             server_info,
@@ -1324,6 +1423,10 @@ impl McpClient {
         if let Some(mut child) = self.child.take() {
             let _ = child.start_kill();
             let _ = child.wait().await;
+        }
+        // The server is gone: its login file goes too.
+        if let Some(file) = self.creds_file.take() {
+            file.remove();
         }
     }
 }
@@ -1770,57 +1873,6 @@ fn sanitize_filename(name: &str) -> String {
     format!("{}_{:016x}", base, h.finish())
 }
 
-/// Lock down a secrets file to owner-only: 0600 on Unix; an owner-only DACL
-/// (via icacls — std has no ACL API) on Windows.
-#[cfg(unix)]
-fn restrict_perms(path: &std::path::Path) {
-    use std::os::unix::fs::PermissionsExt;
-    let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
-}
-#[cfg(windows)]
-fn restrict_perms(path: &std::path::Path) {
-    // Strip inheritance and grant full control to the current user only, so
-    // credential files aren't readable by other local accounts.
-    if let Ok(user) = std::env::var("USERNAME") {
-        let _ = std::process::Command::new("icacls")
-            .arg(path)
-            .args(["/inheritance:r", "/grant:r", &format!("{}:F", user)])
-            .output();
-    }
-}
-#[cfg(not(any(unix, windows)))]
-fn restrict_perms(_path: &std::path::Path) {}
-
-/// Write a secret file owner-only WITHOUT a world-readable window: on Unix create
-/// the file with mode 0600 directly, rather than fs::write (umask 0644) then chmod
-/// — which leaves the cleartext readable to other local users in between.
-fn write_secret_file(path: &std::path::Path, content: &[u8]) -> Result<(), AppError> {
-    #[cfg(unix)]
-    {
-        use std::io::Write;
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut f = fs::OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .write(true)
-            .mode(0o600)
-            .open(path)
-            .map_err(AppError::from)?;
-        f.write_all(content).map_err(AppError::from)?;
-    }
-    #[cfg(not(unix))]
-    {
-        // Create + lock down the (empty) file FIRST, then write the secret into
-        // the already-restricted file — the content never sits on disk under the
-        // parent directory's (potentially broad) ACL.
-        fs::write(path, b"").map_err(AppError::from)?;
-        restrict_perms(path);
-        fs::write(path, content).map_err(AppError::from)?;
-    }
-    restrict_perms(path); // also fixes perms if the file pre-existed
-    Ok(())
-}
-
 impl McpManager {
     pub fn new(app_dir: PathBuf, creds: McpCreds) -> Self {
         Self {
@@ -1920,9 +1972,7 @@ impl McpManager {
             def.name = to.to_string();
         }
         self.store.save(&all)?;
-        // The materialised creds file is keyed by name too; drop the old one (a
-        // fresh one is written under the new name on next connect).
-        let _ = fs::remove_file(self.app_dir.join("mcp_creds").join(sanitize_filename(from)));
+        // A live client keeps its login file (deleted when it stops).
         if let Some(client) = self.clients.remove(from) {
             if let Ok(mut guard) = client.tools.lock() {
                 for t in guard.iter_mut() {
@@ -1934,26 +1984,17 @@ impl McpManager {
         Ok(())
     }
 
-    /// Delete the materialised cleartext creds file once the stored
-    /// credentials are cleared, so it doesn't linger until the server is removed.
-    pub fn forget_creds_file(&self, name: &str) {
-        let _ = fs::remove_file(self.app_dir.join("mcp_creds").join(sanitize_filename(name)));
-    }
-
     /// Remove a server's config. The caller deletes its stored credentials
     /// first (outside the lock), takes the client and shuts it down outside
     /// the lock.
     pub fn remove_config_only(&self, name: &str) -> Result<(), AppError> {
-        // Also delete the materialised cleartext creds file that resolve_connect_def
-        // wrote, so the secret doesn't linger on disk after the server is removed.
-        let creds_file = self.app_dir.join("mcp_creds").join(sanitize_filename(name));
-        let _ = fs::remove_file(&creds_file);
+        // Its login file goes with the client's shutdown.
         self.store.remove(name)
     }
 
-    /// Load a server def and materialise its credentials (`creds`, read from
-    /// the store before the lock) into a 0600 file, injecting the credentials
-    /// env var. With writes off, a recognised server also gets its preset's
+    /// Load a server def and write its credentials (`creds`, read from the
+    /// store before the lock) to a new 0600 login file (`CredsFile`, kept only
+    /// while the server runs), injecting the credentials env var. With writes off, a recognised server also gets its preset's
     /// read-only pins. Cheap + non-blocking, so it runs under the (brief)
     /// manager lock; the spawn/handshake happens unlocked.
     pub fn resolve_connect_def(
@@ -1969,23 +2010,12 @@ impl McpManager {
             .ok_or_else(|| AppError::ApiError(format!("No MCP server named '{}'", name)))?;
         // Meaningless for Http: there's no process the app spawns to inject an
         // env var into — the server was already started separately.
+        let mut creds_file = None;
         if def.transport == McpTransport::Stdio {
             if let Some(content) = creds.filter(|c| !c.is_empty()) {
-                let dir = self.app_dir.join("mcp_creds");
-                std::fs::create_dir_all(&dir).map_err(AppError::from)?;
-                // The files inside are 0600, but the directory itself should not
-                // be world-traversable either (it reveals which servers have
-                // stored credentials).
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    let _ = std::fs::set_permissions(
-                        &dir,
-                        std::fs::Permissions::from_mode(0o700),
-                    );
-                }
-                let path = dir.join(sanitize_filename(name));
-                write_secret_file(&path, content.as_bytes())?;
+                let file = CredsFile::write(&self.app_dir, name, content.as_bytes())?;
+                let path = file.path().to_path_buf();
+                creds_file = Some(Arc::new(file));
                 let var = def
                     .credentials_env_var
                     .clone()
@@ -2006,6 +2036,7 @@ impl McpManager {
             def,
             pins,
             writes_on,
+            creds_file,
         })
     }
 
@@ -2187,6 +2218,9 @@ pub struct ResolvedDef {
     pub pins: PinPlan,
     /// The writes setting the connection starts with.
     pub writes_on: bool,
+    /// The login file the definition points at (stdio with a saved login).
+    /// Dropping it deletes the file, so a failed connect leaves none behind.
+    pub creds_file: Option<Arc<CredsFile>>,
 }
 
 /// The policy for one live client: its saved definition (None fails closed),
@@ -2250,9 +2284,15 @@ pub async fn connect_server(
             return Err(why);
         }
     }
-    let mut client = McpClient::connect(&resolved.def)
+    let mut client = McpClient::connect(&resolved.def, resolved.creds_file.clone())
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| {
+            // Failed: the login file goes now, not when the reader sees EOF.
+            if let Some(file) = &resolved.creds_file {
+                file.remove();
+            }
+            e.to_string()
+        })?;
     client.pins = resolved.pins;
     client.connected_writes_on = resolved.writes_on;
     let installed = {
@@ -2437,6 +2477,7 @@ pub(crate) mod tests {
         };
         McpClient {
             child: None,
+            creds_file: None,
             caller,
             tools: Arc::new(std::sync::Mutex::new(tools)),
             server_info: Value::Null,
@@ -2469,6 +2510,37 @@ pub(crate) mod tests {
         };
         client.child = Some(child);
         client
+    }
+
+    /// A fake_stdio_client that runs with a login file, with the real stdio
+    /// reader on the child's stdout (so the child exiting is seen as EOF).
+    #[cfg(unix)]
+    pub(crate) fn fake_stdio_client_with_creds(server: &str, creds: Arc<CredsFile>) -> McpClient {
+        let mut client = fake_stdio_client(server);
+        let stdout = client
+            .child
+            .as_mut()
+            .and_then(|c| c.stdout.take())
+            .expect("piped stdout");
+        let ClientIo::Stdio { stdin } = client.caller.io.clone() else {
+            unreachable!("a stdio client");
+        };
+        client.reader = spawn_stdio_reader(
+            stdout,
+            client.caller.pending.clone(),
+            client.caller.dead.clone(),
+            stdin,
+            client.caller.tools_changed_tx.clone(),
+            Some(creds.clone()),
+        );
+        client.creds_file = Some(creds);
+        client
+    }
+
+    /// A login file for `name` in `app_dir`, as a connect writes it.
+    #[cfg(unix)]
+    pub(crate) fn test_creds_file(app_dir: &std::path::Path, name: &str) -> Arc<CredsFile> {
+        Arc::new(CredsFile::write(app_dir, name, b"client_secret: s3cr3t").unwrap())
     }
 
     /// The child process id of a fake_stdio_client.
@@ -3365,5 +3437,115 @@ pub(crate) mod tests {
         let none = || None;
         let err = connect_server(&manager, "central", &none).await.unwrap_err();
         assert_eq!(err, crate::secret_store::UNAVAILABLE);
+    }
+
+    // ─── The login file exists only while its server runs (K3) ───
+
+    #[cfg(unix)]
+    fn files_in(dir: &std::path::Path) -> Vec<PathBuf> {
+        std::fs::read_dir(dir.join(CREDS_DIR))
+            .map(|r| r.flatten().map(|e| e.path()).collect())
+            .unwrap_or_default()
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_login_file_is_private_and_goes_at_shutdown() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temp_dir();
+        let creds = test_creds_file(&dir, "central");
+        let path = creds.path().to_path_buf();
+        let client = fake_stdio_client_with_creds("central", creds);
+        assert_eq!(std::fs::read(&path).unwrap(), b"client_secret: s3cr3t");
+        let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&path), 0o600);
+        assert_eq!(mode(&dir.join(CREDS_DIR)), 0o700);
+        client.shutdown().await;
+        assert!(!path.exists());
+        assert!(files_in(&dir).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_login_file_goes_when_the_server_exits_by_itself() {
+        let dir = temp_dir();
+        let creds = test_creds_file(&dir, "central");
+        let path = creds.path().to_path_buf();
+        let client = fake_stdio_client_with_creds("central", creds);
+        let pid = fake_child_pid(&client);
+        assert!(path.exists());
+        std::process::Command::new("kill")
+            .arg(pid.to_string())
+            .status()
+            .unwrap();
+        for _ in 0..100 {
+            if !path.exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(!path.exists(), "the reader didn't delete the login file at EOF");
+        assert!(client.is_dead());
+        // The client still holds the guard: dropping it later is fine.
+        client.shutdown().await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn after_a_reconnect_the_new_servers_file_stays() {
+        let dir = temp_dir();
+        let mut mgr = manager(dir.clone());
+        let first = test_creds_file(&dir, "central");
+        let first_path = first.path().to_path_buf();
+        assert!(mgr
+            .install_client("central".into(), fake_stdio_client_with_creds("central", first))
+            .is_none());
+        let second = test_creds_file(&dir, "central");
+        let second_path = second.path().to_path_buf();
+        assert_ne!(first_path, second_path);
+        let old = mgr
+            .install_client("central".into(), fake_stdio_client_with_creds("central", second))
+            .expect("the old client");
+        old.shutdown().await;
+        assert!(!first_path.exists());
+        assert!(second_path.exists());
+        for c in mgr.take_all_clients() {
+            c.shutdown().await;
+        }
+        assert!(files_in(&dir).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_failed_connect_leaves_no_login_file() {
+        use crate::secret_store::mem::MemBackend;
+        let mem = MemBackend::new();
+        let dir = temp_dir();
+        let store = Arc::new(SecretStore::os_for_tests(mem.clone()));
+        let mgr = McpManager::new(dir.clone(), McpCreds::new(store));
+        mgr.save_config(def("central", "greencli-no-such-command", &[])).unwrap();
+        mgr.creds().set("central", "client_secret: s3cr3t").unwrap();
+        let manager = Mutex::new(mgr);
+        let none = || None;
+        assert!(connect_server(&manager, "central", &none).await.is_err());
+        assert!(dir.join(CREDS_DIR).exists(), "the file was written first");
+        assert!(std::fs::read_dir(dir.join(CREDS_DIR)).unwrap().next().is_none());
+    }
+
+    #[test]
+    fn the_startup_sweep_empties_the_login_folder() {
+        let dir = temp_dir();
+        let creds = dir.join(CREDS_DIR);
+        std::fs::create_dir_all(&creds).unwrap();
+        std::fs::write(creds.join("central_0123456789abcdef"), b"old 1.9 file").unwrap();
+        std::fs::write(creds.join("central_0123-ffffffffffffffff"), b"left by a crash").unwrap();
+        let keep = temp_dir().join("outside.txt");
+        std::fs::write(&keep, b"not ours").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&keep, creds.join("link")).unwrap();
+        sweep_creds_dir(&dir);
+        assert!(std::fs::read_dir(&creds).unwrap().next().is_none());
+        assert_eq!(std::fs::read(&keep).unwrap(), b"not ours");
+        // No folder: nothing to do.
+        sweep_creds_dir(&temp_dir());
     }
 }

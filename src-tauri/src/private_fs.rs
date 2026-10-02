@@ -146,6 +146,9 @@ pub fn tighten_app_dir(app_dir: &Path) {
             "intents.json.corrupt",
             "mcp_servers.json",
             "mcp_servers.json.tmp",
+            "ai_keys.json",
+            "mcp_creds.json",
+            "secret_store.json",
         ] {
             let p = app_dir.join(name);
             if is_real_file(&p) {
@@ -155,6 +158,11 @@ pub fn tighten_app_dir(app_dir: &Path) {
         let archive = app_dir.join("config_archive");
         if is_real_dir(&archive) {
             tighten_tree(&archive, 3);
+        }
+        // MCP login files (deleted by the startup sweep right after).
+        let creds = app_dir.join("mcp_creds");
+        if is_real_dir(&creds) {
+            tighten_tree(&creds, 0);
         }
     }
     #[cfg(not(unix))]
