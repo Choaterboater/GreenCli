@@ -33,6 +33,7 @@ import type { ExportSummary, GreencliExport } from '../utils/mcpExport';
 import { isTauri, tauriSave } from '../utils/fileSystem';
 import { secretFilterSupported } from '../utils/secrets/support';
 import { copyText } from '../utils/clipboard';
+import { refreshStaleHiddenCopies } from '../utils/configArchive';
 
 /** greencli_mcp_info: GreenCLI's own read-only MCP server, next to the app. */
 interface GreencliMcpInfo {
@@ -143,14 +144,23 @@ export default function McpServers() {
   useEffect(() => {
     if (!isTauri) return;
     let cancelled = false;
-    void (async () => {
-      const info = await invoke<GreencliMcpInfo | null>('greencli_mcp_info').catch(() => null);
+    const readNeedHidden = async () => {
       const hidden = await invoke<{ missing: number; stale: number } | null>('config_archive_missing_hidden').catch(
         () => null,
       );
+      return hidden ? (hidden.missing ?? 0) + (hidden.stale ?? 0) : 0;
+    };
+    void (async () => {
+      const info = await invoke<GreencliMcpInfo | null>('greencli_mcp_info').catch(() => null);
+      const need = await readNeedHidden();
       if (cancelled) return;
       setGreencli(info && typeof info.path === 'string' ? info : null);
-      setNeedHidden(hidden ? (hidden.missing ?? 0) + (hidden.stale ?? 0) : 0);
+      setNeedHidden(need);
+      // The background refresh may fix stale copies: count again when it ends.
+      await refreshStaleHiddenCopies();
+      if (cancelled) return;
+      const after = await readNeedHidden();
+      if (!cancelled) setNeedHidden(after);
     })();
     return () => {
       cancelled = true;

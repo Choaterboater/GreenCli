@@ -118,7 +118,7 @@ export async function captureRunningConfig(
     filter: HIDDEN_COPY_FILTER,
   });
   if (got.warning) console.warn(`[config-archive] ${got.warning}`);
-  refreshStaleHiddenCopies();
+  void refreshStaleHiddenCopies();
   return { content: output, truncated, ts: got.ts };
 }
 
@@ -211,17 +211,17 @@ export async function makeHiddenCopies(opts: { limit?: number } = {}): Promise<H
 /** Most snapshots the background refresh redoes in one run. */
 export const BACKGROUND_REFRESH_LIMIT = 500;
 
-let refreshStarted = false;
+let refreshRun: Promise<void> | null = null;
 
 /**
  * Once per app run, in the background: after the secret filter changed (some
  * hidden copies are stale), make the copies again. Capped and logged; the
- * "Make hidden copies" button in Config archive does the rest.
+ * "Make hidden copies" button in Config archive does the rest. Every call
+ * returns the same promise, which ends when the run is done (it never fails),
+ * so a caller can read the hidden copy count again after it.
  */
-export function refreshStaleHiddenCopies(): void {
-  if (refreshStarted) return;
-  refreshStarted = true;
-  void (async () => {
+export function refreshStaleHiddenCopies(): Promise<void> {
+  refreshRun ??= (async () => {
     const status = await archiveHiddenStatus();
     if (status.stale === 0) return;
     const result = await makeHiddenCopies({ limit: BACKGROUND_REFRESH_LIMIT });
@@ -229,9 +229,10 @@ export function refreshStaleHiddenCopies(): void {
       `[config-archive] hidden copies refreshed after a secret filter change: ${result.made} made, ${result.failed} failed, ${result.left} left`
     );
   })().catch((e) => console.warn('[config-archive] hidden copy refresh failed', e));
+  return refreshRun;
 }
 
 /** Tests only: let refreshStaleHiddenCopies run again. */
 export function resetHiddenRefreshForTests(): void {
-  refreshStarted = false;
+  refreshRun = null;
 }

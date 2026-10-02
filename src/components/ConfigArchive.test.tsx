@@ -59,6 +59,34 @@ describe('ConfigArchive hidden copies', () => {
     });
   });
 
+  it('counts again after the background refresh makes stale copies', async () => {
+    todo = [{ device: 'sw1', ts: 5 }];
+    vi.mocked(invoke).mockImplementation(async (cmd: string, raw?: unknown) => {
+      const args = raw as { device: string; ts: number } | undefined;
+      if (cmd === 'config_archive_devices') return ['sw1'];
+      if (cmd === 'config_archive_list') return [];
+      if (cmd === 'config_archive_missing_hidden') return { missing: 0, stale: todo.length, current: 0, todo };
+      if (cmd === 'config_archive_get') return 'raw';
+      if (cmd === 'config_archive_set_hidden') {
+        todo = todo.filter((t) => t.ts !== args?.ts);
+        return null;
+      }
+      return undefined;
+    });
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    render(<ConfigArchive onOpenSnapshot={vi.fn()} onClose={vi.fn()} />);
+    await waitFor(() => expect(info).toHaveBeenCalled());
+    await waitFor(() => expect(screen.queryByText(/need(s)? a new hidden copy/)).toBeNull());
+    expect(screen.queryByRole('button', { name: /Make hidden copies/ })).toBeNull();
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith('config_archive_set_hidden', {
+      device: 'sw1',
+      ts: 5,
+      hidden: 'hidden raw',
+      filter: 1,
+    });
+    info.mockRestore();
+  });
+
   it('shows nothing when every snapshot has a current copy', async () => {
     todo = [];
     render(<ConfigArchive onOpenSnapshot={vi.fn()} onClose={vi.fn()} />);

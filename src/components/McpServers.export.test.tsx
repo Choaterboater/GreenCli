@@ -5,10 +5,14 @@ import McpServers from './McpServers';
 import { tauriSave } from '../utils/fileSystem';
 import { notify } from '../store/toastStore';
 import type { McpServerDef } from '../utils/mcpTypes';
+import { resetHiddenRefreshForTests } from '../utils/configArchive';
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 vi.mock('../utils/fileSystem', () => ({ isTauri: true, tauriSave: vi.fn() }));
 vi.mock('../store/toastStore', () => ({ notify: { success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() } }));
+vi.mock('../utils/secrets/forCopy', () => ({
+  hideSecretsInText: vi.fn(async (text: string) => ({ ok: true, text: `hidden ${text}`, hidden: 0, words: [] })),
+}));
 
 const SERVERS: McpServerDef[] = [
   {
@@ -66,6 +70,7 @@ const exportButton = () => screen.getByRole('button', { name: /Export for Casper
 
 describe('McpServers export', () => {
   beforeEach(() => {
+    resetHiddenRefreshForTests();
     vi.mocked(invoke).mockReset();
     vi.mocked(tauriSave).mockReset();
     vi.mocked(notify.success).mockReset();
@@ -106,6 +111,34 @@ describe('McpServers export', () => {
     expect(screen.getByText(`claude mcp add greencli -- "${path}"`)).toBeTruthy();
     expect(screen.getByText('3 snapshots need a new hidden copy.')).toBeTruthy();
     expect(screen.queryByText('Move GreenCLI to Applications first.')).toBeNull();
+  });
+
+  it('counts hidden copies again after the background refresh', async () => {
+    const path = '/Applications/GreenCLI.app/Contents/MacOS/greencli-mcp';
+    let todo = [
+      { device: 'sw1', ts: 1 },
+      { device: 'sw1', ts: 2 },
+    ];
+    vi.mocked(invoke).mockImplementation(async (cmd: string, raw?: unknown) => {
+      const args = raw as { ts: number } | undefined;
+      if (cmd === 'mcp_list_servers') return [];
+      if (cmd === 'greencli_mcp_info') return { path, exists: true, place: 'normal' };
+      if (cmd === 'config_archive_missing_hidden') return { missing: 0, stale: todo.length, current: 0, todo };
+      if (cmd === 'config_archive_get') return 'raw';
+      if (cmd === 'config_archive_set_hidden') {
+        todo = todo.filter((t) => t.ts !== args?.ts);
+        return null;
+      }
+      if (cmd === 'mcp_status') return [];
+      return undefined;
+    });
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    render(<McpServers />);
+    expect(await screen.findByText(path)).toBeTruthy();
+    await waitFor(() => expect(info).toHaveBeenCalled());
+    await waitFor(() => expect(screen.queryByText(/need(s)? a new hidden copy/)).toBeNull());
+    expect(todo).toEqual([]);
+    info.mockRestore();
   });
 
   it('asks to move a translocated app, and leaves greencli out of the export', async () => {

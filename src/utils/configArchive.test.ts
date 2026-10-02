@@ -138,11 +138,19 @@ describe('refreshStaleHiddenCopies', () => {
     info.mockRestore();
   });
 
+  it('every call gets the same promise, which ends when the run is done', async () => {
+    invoke.mockResolvedValue({ missing: 0, stale: 0, current: 0, todo: [] });
+    const run = refreshStaleHiddenCopies();
+    expect(refreshStaleHiddenCopies()).toBe(run);
+    await expect(run).resolves.toBeUndefined();
+    expect(refreshStaleHiddenCopies()).toBe(run);
+  });
+
   it('never throws outside the app', async () => {
     invoke.mockRejectedValue(new Error('no IPC'));
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    refreshStaleHiddenCopies();
-    await vi.waitFor(() => expect(warn).toHaveBeenCalled());
+    await expect(refreshStaleHiddenCopies()).resolves.toBeUndefined();
+    expect(warn).toHaveBeenCalled();
     warn.mockRestore();
   });
 });

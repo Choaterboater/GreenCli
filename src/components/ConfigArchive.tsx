@@ -69,7 +69,8 @@ export default function ConfigArchive({ onOpenSnapshot, onClose }: ConfigArchive
 
   useEffect(() => {
     void loadHiddenStatus();
-    refreshStaleHiddenCopies();
+    // The background refresh may fix stale copies: count again when it ends.
+    void refreshStaleHiddenCopies().then(loadHiddenStatus);
   }, [loadHiddenStatus]);
 
   const onMakeHiddenCopies = async () => {
