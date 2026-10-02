@@ -20,16 +20,23 @@ import { isTauri } from './tauri';
  * greencli-mcp serves a snapshot's config only from its hidden copy
  * (`<ts>.hidden.json`), and only when the copy has this version. Keep it equal
  * to HIDDEN_COPY_FILTER in src-tauri/greencli-mcp/src/lib.rs (a Rust test
+ * checks) and to the length of HIDDEN_COPY_FILTER_SOURCES (a vitest test
  * checks). When the filter changes, bump both, so old copies are made again.
+ * Keep it a number literal: the Rust test reads this line.
  */
 export const HIDDEN_COPY_FILTER = 1;
 
 /**
  * sha256 of the filter's source files under src/utils/secrets (tests left
- * out; sorted by path, LF newlines). hiddenFilterVersion.test.ts fails when
- * the filter changes without a bump.
+ * out; sorted by path, LF newlines), one entry per filter version: entry N-1
+ * is the hash for version N, and the last one is the filter as it is now.
+ * hiddenFilterVersion.test.ts fails when the filter changes until its new hash
+ * is appended here, and then until HIDDEN_COPY_FILTER equals this list's
+ * length. Only ever append; never replace an entry.
  */
-export const HIDDEN_COPY_FILTER_SOURCE = '42f0b17bb9343b571edd878f15f0e713186fea8fce11f34f9dc75825822cc15f';
+export const HIDDEN_COPY_FILTER_SOURCES: readonly string[] = [
+  '42f0b17bb9343b571edd878f15f0e713186fea8fce11f34f9dc75825822cc15f',
+];
 
 /** One history row, mirroring `config_archive::ArchiveEntry` (camelCase). */
 export interface ArchiveEntry {

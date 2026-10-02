@@ -2,16 +2,19 @@
 // HIDDEN_COPY_FILTER. When the secret filter in src/utils/secrets changes (a
 // Casper sync), old copies must be made again, so the version must go up.
 // This test hashes the filter's source files (not its tests) and fails until
-// the version is bumped.
+// the new hash is recorded AND the version is bumped:
 //
-// After bumping HIDDEN_COPY_FILTER here and in greencli-mcp, put the hash this
-// test prints into HIDDEN_COPY_FILTER_SOURCE.
+//   1. Append the hash this test prints to HIDDEN_COPY_FILTER_SOURCES in
+//      configArchive.ts (never replace an entry).
+//   2. Set HIDDEN_COPY_FILTER in configArchive.ts to that list's length.
+//   3. Set HIDDEN_COPY_FILTER in src-tauri/greencli-mcp/src/lib.rs to the same
+//      number (tests/identity.rs fails until they match).
 
 import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative, resolve, sep } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { HIDDEN_COPY_FILTER_SOURCE } from './configArchive';
+import { HIDDEN_COPY_FILTER, HIDDEN_COPY_FILTER_SOURCES } from './configArchive';
 
 const SECRETS = resolve(process.cwd(), 'src/utils/secrets');
 
@@ -40,16 +43,38 @@ function secretFilterHash(): string {
   return hash.digest('hex');
 }
 
+/** The filter version 1 hidden copies were made with (GreenCLI 2.0). Copies
+ *  on users' disks carry that version, so its hash never changes. */
+const FILTER_1 = '42f0b17bb9343b571edd878f15f0e713186fea8fce11f34f9dc75825822cc15f';
+
 describe('hidden copy filter version', () => {
-  it('the secret filter has not changed since HIDDEN_COPY_FILTER was set', () => {
+  it('the secret filter has not changed since its hash was recorded', () => {
     const now = secretFilterHash();
-    if (now !== HIDDEN_COPY_FILTER_SOURCE) {
+    expect(now).toMatch(/^[0-9a-f]{64}$/);
+    if (HIDDEN_COPY_FILTER_SOURCES.at(-1) !== now) {
       throw new Error(
-        'The secret filter changed. Bump HIDDEN_COPY_FILTER here and in greencli-mcp, then update HIDDEN_COPY_FILTER_SOURCE. ' +
-          `New hash: ${now}`
+        `The secret filter changed. Append New hash: ${now} to HIDDEN_COPY_FILTER_SOURCES (never replace an entry), ` +
+          'set HIDDEN_COPY_FILTER to its length, and bump HIDDEN_COPY_FILTER in greencli-mcp/src/lib.rs.'
       );
     }
-    expect(now).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('has one recorded hash per filter version', () => {
+    if (HIDDEN_COPY_FILTER_SOURCES.length !== HIDDEN_COPY_FILTER) {
+      throw new Error(
+        `HIDDEN_COPY_FILTER is ${HIDDEN_COPY_FILTER} but HIDDEN_COPY_FILTER_SOURCES has ${HIDDEN_COPY_FILTER_SOURCES.length} hashes. ` +
+          'Set HIDDEN_COPY_FILTER to the list length, and bump HIDDEN_COPY_FILTER in greencli-mcp/src/lib.rs to match.'
+      );
+    }
+    expect(new Set(HIDDEN_COPY_FILTER_SOURCES).size).toBe(HIDDEN_COPY_FILTER_SOURCES.length);
+    for (const hash of HIDDEN_COPY_FILTER_SOURCES) expect(hash).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('keeps the recorded hashes: new ones are appended, never swapped in', () => {
+    expect(
+      HIDDEN_COPY_FILTER_SOURCES[0],
+      'HIDDEN_COPY_FILTER_SOURCES[0] is the filter 1 hash and must stay: append new hashes, never replace one'
+    ).toBe(FILTER_1);
   });
 
   it('leaves the filter tests out of the hash', () => {

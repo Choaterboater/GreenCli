@@ -24,9 +24,12 @@ mod tools;
 mod transport;
 
 /// The secret filter version of a hidden copy. GreenCLI writes it into each
-/// `<ts>.hidden.json`; this server refuses any other value. Bump it (and
-/// `HIDDEN_COPY_FILTER` in src/utils/configArchive.ts) whenever the secret
-/// filter in src/utils/secrets changes, so old copies are made again.
+/// `<ts>.hidden.json`; this server refuses any other value. Bump it whenever
+/// the secret filter in src/utils/secrets changes, so old copies are made
+/// again: src/utils/hiddenFilterVersion.test.ts fails until the filter's new
+/// hash is appended to `HIDDEN_COPY_FILTER_SOURCES` in
+/// src/utils/configArchive.ts and `HIDDEN_COPY_FILTER` there equals that
+/// list's length, and tests/identity.rs fails until this value equals it.
 pub const HIDDEN_COPY_FILTER: u32 = 1;
 
 /// The app's bundle identifier: the name of its data folder.
