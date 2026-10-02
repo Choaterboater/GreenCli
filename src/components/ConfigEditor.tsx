@@ -1004,7 +1004,8 @@ export default function ConfigEditor() {
   const [folder, setFolder] = useState<FolderListing | null>(null);
   const [showFolder, setShowFolder] = useState(false);
   const [folderLoading, setFolderLoading] = useState(false);
-  const loadFolder = useCallback(async (root: string) => {
+  /** Lists a folder and shows it. False when it can't be opened (the reason is shown unless quiet). */
+  const loadFolder = useCallback(async (root: string, quiet = false): Promise<boolean> => {
     setFolderLoading(true);
     try {
       setFolder(await tauriListFolder(root));
@@ -1014,8 +1015,10 @@ export default function ConfigEditor() {
       } catch {
         /* storage blocked: just not remembered */
       }
+      return true;
     } catch (e) {
-      showStatus(`Folder: ${e}`);
+      if (!quiet) showStatus(String(e));
+      return false;
     } finally {
       setFolderLoading(false);
     }
@@ -1024,6 +1027,21 @@ export default function ConfigEditor() {
     const root = await tauriOpenFolder().catch(() => null);
     if (root) await loadFolder(root);
   }, [loadFolder]);
+  /** Opens the remembered folder. When it is gone (moved, deleted, a drive that isn't there),
+   *  forgets it and asks for another one, so the folder view never gets stuck on it. */
+  const openRemembered = useCallback(
+    async (root: string) => {
+      if (await loadFolder(root, true)) return;
+      try {
+        localStorage.removeItem(FOLDER_KEY);
+      } catch {
+        /* storage blocked */
+      }
+      showStatus(`Can't open the folder ${root}. It may have moved. Pick another folder.`);
+      await pickFolder();
+    },
+    [loadFolder, pickFolder]
+  );
   const toggleFolder = () => {
     if (!isTauri) {
       showStatus('The folder view needs the desktop app');
@@ -1043,7 +1061,7 @@ export default function ConfigEditor() {
     } catch {
       /* storage blocked */
     }
-    void (remembered ? loadFolder(remembered) : pickFolder());
+    void (remembered ? openRemembered(remembered) : pickFolder());
   };
   // A click in the tree: go to the file's tab, or open it in a new one.
   const openFromFolder = useCallback(
