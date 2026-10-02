@@ -102,4 +102,20 @@ describe('the app sends its web links here', () => {
     }
     expect(seen).toBeGreaterThan(0);
   });
+
+  it('Monaco editors open web links through openWebLink (its default uses window.open)', () => {
+    // setup.test.ts checks what the opener does; here, that every editor gets it.
+    const setup = readFileSync(resolve(process.cwd(), 'src/editor/setup.ts'), 'utf8');
+    const setupMonaco = setup.slice(setup.indexOf('export const setupMonaco'));
+    expect(/registerLinkOpener\([^]*openWebLink\(/.test(setup), 'setup.ts: a link opener with openWebLink').toBe(true);
+    expect(setupMonaco.slice(0, setupMonaco.indexOf('\n};')), 'setupMonaco').toContain('registerWebLinkOpener(monaco)');
+    let editors = 0;
+    for (const [file, text] of sources) {
+      const count = (text.match(/<(?:Diff)?Editor\b/g) ?? []).length;
+      const setUp = (text.match(/beforeMount=\{setupMonaco\}/g) ?? []).length;
+      expect(setUp, `${file}: a Monaco editor without beforeMount={setupMonaco}`).toBe(count);
+      editors += count;
+    }
+    expect(editors).toBeGreaterThan(0);
+  });
 });
