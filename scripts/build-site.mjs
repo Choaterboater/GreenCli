@@ -726,7 +726,14 @@ if (serve) {
   };
   const port = Number(process.env.SITE_PORT) || 4173;
   createServer((req, res) => {
-    let path = decodeURIComponent((req.url || '/').split('?')[0]);
+    let path;
+    try {
+      path = decodeURIComponent((req.url || '/').split('?')[0]);
+    } catch {
+      res.statusCode = 400;
+      res.end('Bad URL');
+      return;
+    }
     // Answer at / and at the real site's path (/GreenCli/), so the 404 page's links work too.
     if (path.startsWith(basePath)) path = `/${path.slice(basePath.length)}`;
     let file = join(outDir, path);

@@ -61,7 +61,14 @@ if (!url) {
     '.json': 'application/json',
   };
   server = createServer((req, res) => {
-    const path = decodeURIComponent((req.url || '/').split('?')[0]);
+    let path;
+    try {
+      path = decodeURIComponent((req.url || '/').split('?')[0]);
+    } catch {
+      res.statusCode = 400;
+      res.end('Bad URL');
+      return;
+    }
     let file = join(dist, path === '/' ? 'index.html' : path);
     if (!file.startsWith(dist + sep) || !existsSync(file) || statSync(file).isDirectory()) {
       file = join(dist, 'index.html');
