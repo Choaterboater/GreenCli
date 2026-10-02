@@ -13,7 +13,8 @@
     "lint": "eslint src --ext ts,tsx",
     "test": "vitest run",
     "test:e2e": "playwright test",
-    "smoke": "npm run build && node scripts/prod-smoke.mjs"
+    "smoke": "npm run build && node scripts/prod-smoke.mjs",
+    "screenshots": "node scripts/capture-screenshots.mjs"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",

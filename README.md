@@ -6,7 +6,7 @@ One cockpit for **Aruba · Juniper · Mist**. A modern, cross-platform terminal,
 > running, and configuring every feature (SSH/vault, AI providers, MCP, Aruba Central,
 > on-prem REST, network intent, TLS, screenshots).
 
-![GreenCLI — home](docs/screenshots/01-home.png)
+![GreenCLI main window](docs/screenshots/01-main-window.png)
 
 ## Features
 
