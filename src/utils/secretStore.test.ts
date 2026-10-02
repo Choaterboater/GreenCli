@@ -5,6 +5,7 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 import { invoke } from '@tauri-apps/api/core';
 import { useToastStore } from '../store/toastStore';
 import {
+  AI_KEY_CHANGED_EVENT,
   keyCheckError,
   leftoverLine,
   loadSecretStoreStatus,
@@ -75,11 +76,43 @@ describe('loadSecretStoreStatus', () => {
 });
 
 describe('saving keys', () => {
+  /** Collects the providers announced as changed; stop() removes the listener. */
+  function watchKeyChanges() {
+    const seen: string[] = [];
+    const listener = (e: Event) => seen.push((e as CustomEvent<string>).detail);
+    window.addEventListener(AI_KEY_CHANGED_EVENT, listener);
+    return { seen, stop: () => window.removeEventListener(AI_KEY_CHANGED_EVENT, listener) };
+  }
+
   it('saves an AI key without a toast', async () => {
     vi.mocked(invoke).mockResolvedValue(undefined);
     await expect(saveAiKey('anthropic', 'sk-ant-x')).resolves.toBe(true);
     expect(invoke).toHaveBeenCalledWith('ai_set_key', { provider: 'anthropic', key: 'sk-ant-x' });
     expect(useToastStore.getState().toasts).toHaveLength(0);
+  });
+
+  it('announces a key saved or removed, once the save is done', async () => {
+    const { seen, stop } = watchKeyChanges();
+    let finish: () => void = () => {};
+    vi.mocked(invoke).mockImplementation(() => new Promise<void>((resolve) => (finish = resolve)));
+    const saving = saveAiKey('anthropic', 'sk-ant-x');
+    await Promise.resolve();
+    expect(seen).toEqual([]);
+    finish();
+    await expect(saving).resolves.toBe(true);
+    expect(seen).toEqual(['anthropic']);
+    vi.mocked(invoke).mockResolvedValue(undefined);
+    await saveAiKey('openai', '');
+    expect(seen).toEqual(['anthropic', 'openai']);
+    stop();
+  });
+
+  it('announces nothing when the save fails', async () => {
+    const { seen, stop } = watchKeyChanges();
+    vi.mocked(invoke).mockRejectedValue(UNAVAILABLE_LINE);
+    await expect(saveAiKey('anthropic', 'sk-ant-x')).resolves.toBe(false);
+    expect(seen).toEqual([]);
+    stop();
   });
 
   it('shows a toast when an AI key is not saved', async () => {

@@ -81,7 +81,7 @@ import { loginChoiceFor } from '../utils/logins';
 import { backendVault } from '../utils/vaultAccess';
 import { useAiBridge, type AiEditTarget } from '../store/aiBridgeStore';
 import { isTauri } from '../utils/tauri';
-import { keyCheckError } from '../utils/secretStore';
+import { AI_KEY_CHANGED_EVENT, keyCheckError } from '../utils/secretStore';
 
 // ─── Anthropic API types (local) ───
 
@@ -1247,23 +1247,39 @@ export default function AiAssistant() {
   }, [messages, isLoading]);
 
   // Track whether the selected provider has a key stored in the Rust key store.
-  // Re-check on provider change AND when the Settings modal closes (a key may
-  // have just been added there).
+  // Re-check on provider change, when the Settings modal closes, AND when a
+  // key save finishes: closing Settings with a typed key starts the save at
+  // the same moment as the close check, so that check can still see no key.
+  // Honour an agent's provider override so the header readiness reflects the
+  // key the next send will actually use.
   const showSettings = useSessionStore((s) => s.showSettings);
-  useEffect(() => {
-    // Honour an agent's provider override so the header readiness reflects the
-    // key the next send will actually use.
-    const provider = activeAgent?.provider || settings.aiProvider || 'ollama';
-    invoke<boolean>('ai_has_key', { provider })
+  const keyProvider = activeAgent?.provider || settings.aiProvider || 'ollama';
+  // Only the newest check's reply counts: an older one may answer last.
+  const keyCheckSeq = useRef(0);
+  const recheckKey = useCallback(() => {
+    const seq = ++keyCheckSeq.current;
+    invoke<boolean>('ai_has_key', { provider: keyProvider })
       .then((has) => {
+        if (seq !== keyCheckSeq.current) return;
         setHasKey(has);
         setKeyError(null);
       })
       .catch((e) => {
+        if (seq !== keyCheckSeq.current) return;
         setHasKey(false);
         setKeyError(keyCheckError(e));
       });
-  }, [settings.aiProvider, activeAgent?.provider, showSettings]);
+  }, [keyProvider]);
+  useEffect(() => {
+    recheckKey();
+  }, [recheckKey, showSettings]);
+  useEffect(() => {
+    const onKeyChanged = (e: Event) => {
+      if ((e as CustomEvent<string>).detail === keyProvider) recheckKey();
+    };
+    window.addEventListener(AI_KEY_CHANGED_EVENT, onKeyChanged);
+    return () => window.removeEventListener(AI_KEY_CHANGED_EVENT, onKeyChanged);
+  }, [keyProvider, recheckKey]);
 
   // Count tools from connected MCP servers (refresh when Settings closes, since
   // servers may have just been connected there).
@@ -1337,14 +1353,18 @@ export default function AiAssistant() {
       let keyPresent = hasKey;
       let checkError: string | null = null;
       if (!keyPresent) {
+        // Newer than any check still out, whose reply is then dropped.
+        const seq = ++keyCheckSeq.current;
         try {
           keyPresent = await invoke<boolean>('ai_has_key', { provider });
         } catch (e) {
           keyPresent = false;
           checkError = keyCheckError(e);
         }
-        setHasKey(keyPresent);
-        setKeyError(checkError);
+        if (seq === keyCheckSeq.current) {
+          setHasKey(keyPresent);
+          setKeyError(checkError);
+        }
       }
       if (!keyPresent) {
         setMessages((prev) => [

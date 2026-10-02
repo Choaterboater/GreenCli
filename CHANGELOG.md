@@ -74,6 +74,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - An AI key or MCP login that fails to save now shows a message. Before, it failed with no
   message. A failed login save keeps the server form open.
+- The AI panel stops asking for an API key once a key typed in Settings is saved. Before, closing
+  Settings with Escape right after typing the key left "Add an API key" up until the next message.
 
 ### Security
 - AI keys and MCP logins are no longer plain files in the data folder (on macOS and Windows, and
