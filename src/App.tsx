@@ -47,6 +47,7 @@ import {
   withShortcut,
 } from './utils/shortcuts';
 import { currentWindow, focusWindow, isTauri } from './utils/tauri';
+import { listenFileDrops } from './utils/fileDrop';
 import Toaster from './components/Toaster';
 import DialogHost from './components/DialogHost';
 
@@ -982,24 +983,26 @@ function App() {
   // The SFTP browser keeps drop priority for uploads whenever it is open.
   const [fileDropHint, setFileDropHint] = useState(false);
   useEffect(() => {
-    const unlisteners = [
-      listen<string[]>('tauri://file-drop', (e) => {
+    // Unlisten once the listener is in place, even when this effect is
+    // cleaned up first (StrictMode double-mount).
+    const unlisten = listenFileDrops({
+      onDrop: (paths) => {
         setFileDropHint(false);
         const st = useSessionStore.getState();
         if (st.showSftp) return; // SftpBrowser owns the drop while open
         const sid = st.activeSessionId;
-        if (!sid || !e.payload?.length) return;
-        const data = e.payload.map(shellQuote).join(' ') + ' ';
+        if (!sid || !paths.length) return;
+        const data = paths.map(shellQuote).join(' ') + ' ';
         invoke('send_data', { sessionId: sid, data }).catch(() => {});
-      }),
-      listen('tauri://file-drop-hover', () => {
+      },
+      onEnter: () => {
         const st = useSessionStore.getState();
         if (!st.showSftp && st.activeSessionId) setFileDropHint(true);
-      }),
-      listen('tauri://file-drop-cancelled', () => setFileDropHint(false)),
-    ];
+      },
+      onLeave: () => setFileDropHint(false),
+    });
     return () => {
-      unlisteners.forEach((p) => p.then((un) => un()));
+      unlisten.then((un) => un()).catch(() => {});
     };
   }, []);
 
