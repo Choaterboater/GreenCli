@@ -460,7 +460,12 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: greencli-${{ matrix.target }}
-          path: src-tauri/target/${{ matrix.target }}/release/bundle/**
+          # upload-artifact drops the execute bit (every file comes back 644),
+          # so a raw GreenCLI.app would not start. Keep the .dmg and the
+          # .app.tar.gz, which keep it inside them.
+          path: |
+            src-tauri/target/${{ matrix.target }}/release/bundle/**
+            !src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app/**
           if-no-files-found: error
 
   # After all three builds: latest.json in the draft must be for this tag

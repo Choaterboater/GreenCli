@@ -1664,6 +1664,100 @@ mod tests {
         assert!(dmg.run.contains("if [ \"$status\" != Accepted ]; then\n"));
     }
 
+    /// Matches a path against an upload-artifact pattern, one `/` part at a
+    /// time: `**` is any number of parts, `*` any text inside one part.
+    fn glob_matches(pattern: &[&str], path: &[&str]) -> bool {
+        fn part(p: &str, s: &str) -> bool {
+            match p.split_once('*') {
+                None => p == s,
+                Some((head, rest)) => {
+                    s.starts_with(head) && (head.len()..=s.len()).any(|i| part(rest, &s[i..]))
+                }
+            }
+        }
+        match pattern.split_first() {
+            None => path.is_empty(),
+            Some((&"**", rest)) => (0..=path.len()).any(|i| glob_matches(rest, &path[i..])),
+            Some((p, rest)) => {
+                !path.is_empty() && part(p, path[0]) && glob_matches(rest, &path[1..])
+            }
+        }
+    }
+
+    /// A build-only run keeps the installers, not the raw GreenCLI.app:
+    /// upload-artifact drops the execute bit (every file comes back 644), so
+    /// the programs in a raw .app would not start. The .dmg and the
+    /// .app.tar.gz keep the bit inside them.
+    #[test]
+    fn release_workflow_keeps_installers_not_the_raw_app() {
+        // The step's lines (comments left out), up to the next step or job.
+        let lines: Vec<&str> = RELEASE_YML
+            .lines()
+            .filter(|l| !l.trim_start().starts_with('#'))
+            .collect();
+        let at = lines
+            .iter()
+            .position(|l| *l == "      - name: Keep installers (build only)")
+            .unwrap();
+        let end = at
+            + 1
+            + lines[at + 1..]
+                .iter()
+                .position(|l| !l.trim().is_empty() && !l.starts_with("        "))
+                .unwrap_or(lines.len() - at - 1);
+        let body = &lines[at + 1..end];
+        assert!(body.contains(&"        uses: actions/upload-artifact@v4"));
+        let path_at = body
+            .iter()
+            .position(|l| *l == "          path: |")
+            .expect("path: | in Keep installers (build only)");
+        let patterns: Vec<String> = body[path_at + 1..]
+            .iter()
+            .take_while(|l| l.starts_with("            "))
+            .map(|l| {
+                l.trim()
+                    .replace("${{ matrix.target }}", "aarch64-apple-darwin")
+            })
+            .collect();
+        assert!(!patterns.is_empty());
+        let kept = |file: &str| {
+            let full = format!("src-tauri/target/aarch64-apple-darwin/{file}");
+            let path: Vec<&str> = full.split('/').collect();
+            let mut keep = false;
+            for p in &patterns {
+                let (exclude, p) = match p.strip_prefix('!') {
+                    Some(p) => (true, p),
+                    None => (false, p.as_str()),
+                };
+                let parts: Vec<&str> = p.split('/').collect();
+                if glob_matches(&parts, &path) {
+                    keep = !exclude;
+                }
+            }
+            keep
+        };
+        let b = "release/bundle";
+        for file in [
+            "dmg/GreenCLI_2.0.0_aarch64.dmg",
+            "macos/GreenCLI.app.tar.gz",
+            "macos/GreenCLI.app.tar.gz.sig",
+            "nsis/GreenCLI_2.0.0_x64-setup.exe",
+            "nsis/GreenCLI_2.0.0_x64-setup.exe.sig",
+            "msi/GreenCLI_2.0.0_x64_en-US.msi",
+        ] {
+            assert!(kept(&format!("{b}/{file}")), "{file} is left out");
+        }
+        for file in [
+            "macos/GreenCLI.app/Contents/MacOS/GreenCLI",
+            "macos/GreenCLI.app/Contents/MacOS/greencli-mcp",
+            "macos/GreenCLI.app/Contents/Info.plist",
+        ] {
+            assert!(!kept(&format!("{b}/{file}")), "{file} is kept");
+        }
+        // Nothing outside the bundle folder.
+        assert!(!kept("release/greencli-mcp"));
+    }
+
     /// greencli-mcp is a second program of this package (src/bin), so the
     /// Tauri bundler copies it into GreenCLI.app/Contents/MacOS and signs it
     /// with the hardened runtime before it signs the app. Apple's notary

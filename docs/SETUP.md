@@ -117,7 +117,9 @@ There is nothing to set up for update signing: no key to make, keep or paste, an
 
 - **Build only**: Actions → **Release** → **Run workflow**, and untick **publish**. Nothing goes to
   a release; the installers are kept as workflow artifacts named `greencli-<target>`, and
-  update-files doesn't run. Use this to test a build.
+  update-files doesn't run. Use this to test a build. On a Mac, open the `.dmg` in the artifact
+  and drag GreenCLI to Applications. (The artifact has no loose `GreenCLI.app`: workflow artifacts
+  lose the execute bit, so it would not start.)
 - A push to a `release/**` branch **always publishes** (to a draft named after the app's version),
   so push one only after the version bump.
 - **Re-running one build job** makes a new key and replaces that build's files and key in the
