@@ -26,6 +26,7 @@ import {
   Square,
   XCircle,
   Info,
+  EyeOff,
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/tauri';
 import { useSessionStore } from '../store/sessionStore';
@@ -49,6 +50,7 @@ import {
   type ConfigProblem,
 } from '../utils/configProblems';
 import { vendorMismatch } from '../utils/editorStatus';
+import { hideSecretsForCopy } from '../utils/secrets/forCopy';
 import { tabLabel } from '../utils/tabs';
 import { timeAgo } from '../store/recentStore';
 import { useTheme } from '../hooks/useTheme';
@@ -1173,7 +1175,10 @@ export default function ConfigEditor() {
     // From the live text, not the deferred copy the panel uses: a blank typed a
     // moment ago still counts. A code-language tab still gets the device checks,
     // since it is going to a device.
-    const sendProblems = buildProblems(content, NETWORK_LANGUAGES.has(language) ? language : 'generic');
+    // Setting a password in plain text is what a send is for, so that tip stays out of the dialog.
+    const sendProblems = buildProblems(content, NETWORK_LANGUAGES.has(language) ? language : 'generic').filter(
+      (p) => p.code !== 'plaintext-secret'
+    );
     const risky = sendProblems.some((p) => p.severity === 'error' || p.code === 'danger');
     const mismatch = vendorMismatch(
       language,
@@ -1283,6 +1288,17 @@ export default function ConfigEditor() {
 
   const copyToClipboard = () => {
     copyText(content).then((ok) => showStatus(ok ? 'Copied' : 'Copy failed'));
+  };
+
+  // The same secret filter the AI gets, for pasting a config into a ticket or
+  // chat. Nothing is copied if the filter can't run.
+  const copyWithSecretsHidden = async () => {
+    const result = await hideSecretsForCopy(content);
+    if (!result.ok) {
+      showStatus(result.message);
+      return;
+    }
+    showStatus((await copyText(result.text)) ? result.message : 'Copy failed');
   };
 
   const loadTemplate = async (name: string) => {
@@ -1471,6 +1487,14 @@ export default function ConfigEditor() {
             aria-label="Copy all"
           >
             <Copy size={13} />
+          </button>
+          <button
+            onClick={copyWithSecretsHidden}
+            className="p-1.5 rounded text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] transition-colors"
+            title="Copy with secrets hidden: passwords, keys and SNMP communities become <secret hidden>, safe to paste in a ticket or chat"
+            aria-label="Copy with secrets hidden"
+          >
+            <EyeOff size={13} />
           </button>
           <button
             onClick={async () => {

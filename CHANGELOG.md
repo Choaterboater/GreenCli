@@ -20,6 +20,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The Send dialog counts the problems** ("1 error, 2 warnings") and lists the first five with their
   lines, errors first, plus the vendor warning. It names the device like its terminal tab. A tab in
   a code language still gets the device checks, since it is going to a device.
+- **Copy with secrets hidden** (the eye button next to Copy in the Config Editor): copies the tab
+  with passwords, keys, SNMP communities and private keys swapped for `<secret hidden>`, using the
+  same filter as the AI. Safe to paste into a ticket, chat or email. If the filter can't run,
+  nothing is copied.
+- **Plain-text passwords get a tip** in the editor: `password plaintext …`, `key plaintext …`,
+  `auth-pass plaintext …` and the like are underlined in blue with a pointer to Copy with secrets
+  hidden. It stays out of the Send dialog, since setting a password is what a send is for.
 
 ### Fixed
 - Confirm dialogs kept their text on one line: the Send preview, the problem list and the SFTP
