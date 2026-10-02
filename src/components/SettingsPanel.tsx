@@ -45,6 +45,7 @@ import {
   type SettingsGroupId,
 } from '../utils/settingsSections';
 import LargeModal, { ModalRail, RailItem } from './LargeModal';
+import { plainHttpWarning } from '../utils/urlSafety';
 
 // Curated best-practices the AI should apply, distilled from Juniper Validated
 // Designs (JVDs). Appended to the references field on request.
@@ -1389,6 +1390,11 @@ export default function SettingsPanel() {
                         placeholder="http://localhost:11434"
                         className="w-full h-8 px-2 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)] font-mono"
                       />
+                      {plainHttpWarning(settings.ollamaUrl || '', 'ollama') && (
+                        <p className="text-[var(--accent-warning)] text-[10px] mt-1">
+                          {plainHttpWarning(settings.ollamaUrl || '', 'ollama')}
+                        </p>
+                      )}
                     </div>
                     <div>
                       <label className="block text-xs text-[var(--text-secondary)] mb-1.5">Model</label>

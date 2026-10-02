@@ -1,3 +1,5 @@
+import type { AiAgent } from '../types';
+
 // ─── Write-confirmation gate for AI-issued device actions ───
 //
 // The AI tool loop is reachable by prompt injection: device output (LLDP
@@ -13,6 +15,10 @@ export const AI_CONFIG_ENTER = /^\s*conf(ig(ure)?)?\b/i;
 export const AI_DESTRUCTIVE_CMD =
   /\b(write|erase|delete|clear|reload|reboot|boot|commit|rollback|copy|format|factory-reset|factory-default|zeroize|request\s+system|install|upgrade)\b/i;
 export const AI_DANGER_CMD = /\b(erase|delete|reload|reboot|format|factory|write|zeroize|rollback)\b/i;
+// A pipe stage or shell redirect that writes a file: Junos `| save`, `| append` and `| tee` (and
+// their short forms: Junos takes `| s` for save and `| a` for append), `| redirect`, and `>`.
+// `show log messages | save /var/log/messages` looks like a read but overwrites a file.
+export const AI_WRITE_PIPE = /\|\s*(s|sa|sav|save|a|ap|app|appe|appen|append|te|tee|redirect)(\s|$)|>/i;
 
 // Every line break a device treats as Enter. A bare `\r` counts: the command
 // goes out with `\r` appended (utils/terminal.ts), so "show version\rconf t"
@@ -35,23 +41,62 @@ export function aiIsWriteCommand(cmd: string): boolean {
   return cmd.split(LINE_BREAK).some((line) => {
     const c = line.trim();
     if (!c) return false;
-    if (AI_CONFIG_ENTER.test(c) || AI_DESTRUCTIVE_CMD.test(c)) return true;
+    if (AI_CONFIG_ENTER.test(c) || AI_DESTRUCTIVE_CMD.test(c) || AI_WRITE_PIPE.test(c)) return true;
     if (AI_READ_ONLY_CMD.test(c)) return false;
     return true; // unknown verb (set/no/interface/vlan/…): confirm to be safe
   });
 }
 
-/** MCP tool names are opaque, so confirm anything that looks like a write. */
-export function aiMcpLooksWrite(tool: string): boolean {
-  // Verbs are matched as snake_case/kebab SEGMENTS: a plain `\b` suffix never
-  // fires between word characters, so `delete_device` used to slip through.
-  const looksRead =
-    /(^|[_\s-])(get|list|read|show|describe|search|find|query|fetch|status|inspect)(?=$|[_\s-])/i.test(
-      tool
-    );
-  const looksWrite =
-    /(^|[_\s-])(write|create|update|delete|remove|set|put|post|patch|reboot|erase|apply|deploy|provision|add|modify|enable|disable|move|rename)(?=$|[_\s-])/i.test(
-      tool
-    );
-  return looksWrite && !looksRead;
+// ─── Read-only Auditor ───
+
+/**
+ * Pipe stages the Read-only Auditor may use. None of them can write a file. Junos: match, except,
+ * count, display, no-more, last, find, trim. Aruba and Cisco style: include, exclude, begin,
+ * section and their usual short forms (but not `s`, which Junos reads as save). Linux: grep,
+ * egrep, head, tail, wc.
+ */
+export const AUDITOR_PIPES: ReadonlySet<string> = new Set([
+  'match', 'except', 'count', 'display', 'no-more', 'last', 'find', 'trim',
+  'include', 'i', 'in', 'inc', 'incl', 'exclude', 'e', 'ex', 'exc', 'excl',
+  'begin', 'b', 'be', 'beg', 'section', 'sec',
+  'grep', 'egrep', 'head', 'tail', 'wc',
+]);
+// Shell characters that chain, redirect or substitute commands.
+const AUDITOR_SHELL = /[;&`<>]|\$\(/;
+
+/**
+ * The stricter check for the Read-only Auditor: every line must be a plain read. It starts with a
+ * read word (show, display, get, ping, ...), has no write word, no `;`, `&`, `<`, `>`, backtick
+ * or `$(`, and each `|` stage is in AUDITOR_PIPES. Anything else is refused, with no dialog.
+ */
+export function auditorAllowsCommand(cmd: string): boolean {
+  if (CONTROL_CHARS.test(cmd)) return false;
+  return cmd.split(LINE_BREAK).every((line) => {
+    const c = line.trim();
+    if (!c) return true;
+    if (aiIsWriteCommand(c) || !AI_READ_ONLY_CMD.test(c) || AUDITOR_SHELL.test(c)) return false;
+    return c
+      .split('|')
+      .slice(1)
+      .every((stage) => AUDITOR_PIPES.has((stage.trim().split(/\s+/)[0] ?? '').toLowerCase()));
+  });
+}
+
+/** The refusal the model reads when the Read-only Auditor blocks a tool call. */
+export const AUDITOR_REFUSAL =
+  'Not run: the Read-only Auditor agent is attached, so only tools that read can run. Give the user the exact commands to run instead.';
+
+/**
+ * Whether the agent attached to the session is read-only: GreenCLI then refuses every AI tool
+ * call that could change something, before any dialog. Agents saved before 1.9 have no
+ * `readOnly` field, so the built-in Auditor is also known by its id and by its name (an edited
+ * copy, or one re-created by hand). Matching more can only add restrictions.
+ */
+export function isReadOnlyAgent(agent: Pick<AiAgent, 'id' | 'name' | 'readOnly'> | undefined): boolean {
+  if (!agent) return false;
+  return (
+    agent.readOnly === true ||
+    agent.id === 'agent-auditor' ||
+    (agent.name ?? '').trim().toLowerCase() === 'read-only auditor'
+  );
 }

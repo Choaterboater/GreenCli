@@ -1,0 +1,475 @@
+[
+  {
+    "args": {
+      "Confirm": "yes"
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "arguments": {
+        "force": 1
+      }
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "dry_run": false
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "dry-run": "false"
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "dry_run": true
+    },
+    "skipped": false
+  },
+  {
+    "args": {
+      "confirm": false
+    },
+    "skipped": false
+  },
+  {
+    "args": {
+      "a": {
+        "a": {
+          "a": {
+            "a": {
+              "a": {
+                "a": {
+                  "a": {
+                    "a": {
+                      "a": {
+                        "a": {
+                          "a": {
+                            "a": {
+                              "a": {
+                                "a": {
+                                  "a": {
+                                    "a": {
+                                      "a": {
+                                        "a": {
+                                          "a": {
+                                            "a": {
+                                              "a": {
+                                                "a": {
+                                                  "a": {
+                                                    "a": {
+                                                      "a": {
+                                                        "a": {
+                                                          "a": {
+                                                            "a": {
+                                                              "a": {
+                                                                "a": {
+                                                                  "a": {
+                                                                    "a": {
+                                                                      "confirm": true
+                                                                    }
+                                                                  }
+                                                                }
+                                                              }
+                                                            }
+                                                          }
+                                                        }
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "a": {
+        "a": {
+          "a": {
+            "a": {
+              "a": {
+                "a": {
+                  "a": {
+                    "a": {
+                      "a": {
+                        "a": {
+                          "a": {
+                            "a": {
+                              "a": {
+                                "a": {
+                                  "a": {
+                                    "a": {
+                                      "a": {
+                                        "a": {
+                                          "a": {
+                                            "a": {
+                                              "a": {
+                                                "a": {
+                                                  "a": {
+                                                    "a": {
+                                                      "a": {
+                                                        "a": {
+                                                          "a": {
+                                                            "a": {
+                                                              "a": {
+                                                                "a": {
+                                                                  "a": {
+                                                                    "confirm": true
+                                                                  }
+                                                                }
+                                                              }
+                                                            }
+                                                          }
+                                                        }
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "a": {
+        "a": {
+          "a": {
+            "a": {
+              "a": {
+                "a": {
+                  "a": {
+                    "a": {
+                      "a": {
+                        "a": {
+                          "a": {
+                            "a": {
+                              "a": {
+                                "a": {
+                                  "a": {
+                                    "a": {
+                                      "a": {
+                                        "a": {
+                                          "a": {
+                                            "a": {
+                                              "a": {
+                                                "a": {
+                                                  "a": {
+                                                    "a": {
+                                                      "a": {
+                                                        "a": {
+                                                          "a": {
+                                                            "a": {
+                                                              "a": {
+                                                                "a": {
+                                                                  "a": {
+                                                                    "a": {
+                                                                      "x": 1
+                                                                    }
+                                                                  }
+                                                                }
+                                                              }
+                                                            }
+                                                          }
+                                                        }
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "a": {
+        "a": {
+          "a": {
+            "a": {
+              "a": {
+                "a": {
+                  "a": {
+                    "a": {
+                      "a": {
+                        "a": {
+                          "a": {
+                            "a": {
+                              "a": {
+                                "a": {
+                                  "a": {
+                                    "a": {
+                                      "a": {
+                                        "a": {
+                                          "a": {
+                                            "a": {
+                                              "a": {
+                                                "a": {
+                                                  "a": {
+                                                    "a": {
+                                                      "a": {
+                                                        "a": {
+                                                          "a": {
+                                                            "a": {
+                                                              "a": {
+                                                                "a": {
+                                                                  "a": {
+                                                                    "x": 1
+                                                                  }
+                                                                }
+                                                              }
+                                                            }
+                                                          }
+                                                        }
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "skipped": false
+  },
+  {
+    "args": {},
+    "skipped": false
+  },
+  {
+    "args": {
+      "confirm": "no"
+    },
+    "skipped": false
+  },
+  {
+    "args": {
+      "confirmation": " ON "
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "CONFIRMED": "Y"
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "force": 1
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "force": 2
+    },
+    "skipped": false
+  },
+  {
+    "args": {
+      "force": "1"
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "DryRun": 0
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "preview": null
+    },
+    "skipped": false
+  },
+  {
+    "args": {
+      "check_only": "true"
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "validateOnly": true
+    },
+    "skipped": false
+  },
+  {
+    "args": {
+      "calls": [
+        {
+          "arguments": {
+            "force": true
+          }
+        }
+      ]
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "list": [
+        [
+          {
+            "confirm": true
+          }
+        ]
+      ]
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "name": "get_x",
+      "arguments": {
+        "confirm": "true﻿"
+      }
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "confirm": "yes"
+    },
+    "skipped": false
+  },
+  {
+    "args": {
+      "confirm": [
+        "yes"
+      ]
+    },
+    "skipped": false
+  },
+  {
+    "args": {
+      "con-firm": true
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "forced": true
+    },
+    "skipped": false
+  },
+  {
+    "args": {
+      "force": "t"
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "Confirm": " T "
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "calls": [
+        {
+          "arguments": {
+            "confirmed": "t"
+          }
+        }
+      ]
+    },
+    "skipped": true
+  },
+  {
+    "args": {
+      "force": "f"
+    },
+    "skipped": false
+  },
+  {
+    "args": {
+      "force": "tt"
+    },
+    "skipped": false
+  }
+]

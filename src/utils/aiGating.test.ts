@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { aiIsWriteCommand, aiMcpLooksWrite, CONTROL_CHARS, normalizeLineBreaks } from './aiGating';
+import {
+  AUDITOR_REFUSAL,
+  aiIsWriteCommand,
+  auditorAllowsCommand,
+  CONTROL_CHARS,
+  isReadOnlyAgent,
+  normalizeLineBreaks,
+} from './aiGating';
+import { BUILTIN_AGENTS } from '../types';
 
 describe('aiIsWriteCommand', () => {
   it('flags obvious writes', () => {
@@ -54,6 +62,59 @@ describe('aiIsWriteCommand', () => {
   });
 });
 
+describe('file-writing pipes and redirects', () => {
+  it('asks before a read that writes a file', () => {
+    expect(aiIsWriteCommand('show configuration | save /var/tmp/c.txt')).toBe(true);
+    expect(aiIsWriteCommand('show log messages | save /var/log/messages')).toBe(true);
+    expect(aiIsWriteCommand('show log messages | s /var/log/messages')).toBe(true);
+    expect(aiIsWriteCommand('show configuration | append /var/tmp/c.txt')).toBe(true);
+    expect(aiIsWriteCommand('show configuration | tee /var/tmp/c.txt')).toBe(true);
+    expect(aiIsWriteCommand('show running-config | redirect flash:x')).toBe(true);
+    expect(aiIsWriteCommand('echo x > /etc/motd')).toBe(true);
+    expect(aiIsWriteCommand('cat a >> b')).toBe(true);
+  });
+
+  it('still passes safe pipes', () => {
+    expect(aiIsWriteCommand('show interfaces terse | match ge-')).toBe(false);
+    expect(aiIsWriteCommand('show configuration | display set | no-more')).toBe(false);
+    expect(aiIsWriteCommand('show running-config | include hostname')).toBe(false);
+    expect(aiIsWriteCommand('show version | trim 5')).toBe(false);
+  });
+});
+
+describe('auditorAllowsCommand', () => {
+  it('allows plain reads and safe pipes', () => {
+    expect(auditorAllowsCommand('show version')).toBe(true);
+    expect(auditorAllowsCommand('show configuration | display set | no-more')).toBe(true);
+    expect(auditorAllowsCommand('show interfaces terse | match ge- | count')).toBe(true);
+    expect(auditorAllowsCommand('show running-config | include hostname')).toBe(true);
+    expect(auditorAllowsCommand('sh run | inc vlan')).toBe(true);
+    expect(auditorAllowsCommand('cat /var/log/messages | grep error | tail -n 20')).toBe(true);
+    expect(auditorAllowsCommand('ping 10.0.0.1')).toBe(true);
+    expect(auditorAllowsCommand('show version\nshow vlan')).toBe(true);
+  });
+
+  it('refuses writes, file-writing pipes and shell tricks', () => {
+    expect(auditorAllowsCommand('configure')).toBe(false);
+    expect(auditorAllowsCommand('show configuration | save /var/tmp/c.txt')).toBe(false);
+    expect(auditorAllowsCommand('show log messages | save /var/log/messages')).toBe(false);
+    expect(auditorAllowsCommand('show log messages | s /var/log/messages')).toBe(false);
+    expect(auditorAllowsCommand('show configuration | compare rollback 1')).toBe(false);
+    expect(auditorAllowsCommand('show version | request message all message hi')).toBe(false);
+    expect(auditorAllowsCommand('cat a | sort -o b')).toBe(false);
+    expect(auditorAllowsCommand('show version || reboot')).toBe(false);
+    expect(auditorAllowsCommand('echo x > file')).toBe(false);
+    expect(auditorAllowsCommand('cat a; rm b')).toBe(false);
+    expect(auditorAllowsCommand('show version & reboot')).toBe(false);
+    expect(auditorAllowsCommand('echo `reboot`')).toBe(false);
+    expect(auditorAllowsCommand('echo $(reboot)')).toBe(false);
+    expect(auditorAllowsCommand('cat <(reboot)')).toBe(false);
+    expect(auditorAllowsCommand('set system host-name x')).toBe(false);
+    expect(auditorAllowsCommand('show version\nrequest system reboot')).toBe(false);
+    expect(auditorAllowsCommand('show version\x1a')).toBe(false);
+  });
+});
+
 describe('CONTROL_CHARS', () => {
   it('ignores line breaks and printable text', () => {
     expect(CONTROL_CHARS.test('show version\nshow vlan\r\n')).toBe(false);
@@ -67,21 +128,30 @@ describe('normalizeLineBreaks', () => {
   });
 });
 
-describe('aiMcpLooksWrite', () => {
-  it('flags write-looking tool names', () => {
-    expect(aiMcpLooksWrite('delete_device')).toBe(true);
-    expect(aiMcpLooksWrite('set_config')).toBe(true);
-    expect(aiMcpLooksWrite('reboot_ap')).toBe(true);
-    expect(aiMcpLooksWrite('create_site')).toBe(true);
-    expect(aiMcpLooksWrite('apply_template')).toBe(true);
-    expect(aiMcpLooksWrite('mcp_write_config')).toBe(true);
+describe('isReadOnlyAgent', () => {
+  const auditor = BUILTIN_AGENTS[0];
+  it('covers the built-in Read-only Auditor', () => {
+    expect(auditor.id).toBe('agent-auditor');
+    expect(auditor.readOnly).toBe(true);
+    expect(isReadOnlyAgent(auditor)).toBe(true);
   });
-
-  it('passes read-looking tool names', () => {
-    expect(aiMcpLooksWrite('get_device')).toBe(false);
-    expect(aiMcpLooksWrite('list_sites')).toBe(false);
-    expect(aiMcpLooksWrite('read_config')).toBe(false);
-    expect(aiMcpLooksWrite('show_status')).toBe(false);
-    expect(aiMcpLooksWrite('search_clients')).toBe(false);
+  it('covers an Auditor saved before the flag, or renamed', () => {
+    expect(isReadOnlyAgent({ id: 'agent-auditor', name: 'Read-only Auditor' })).toBe(true);
+    expect(isReadOnlyAgent({ id: 'agent-auditor', name: 'My audits' })).toBe(true);
+  });
+  it('covers one re-created by name', () => {
+    expect(isReadOnlyAgent({ id: 'agent-123', name: '  read-only AUDITOR ' })).toBe(true);
+  });
+  it('honours the readOnly flag', () => {
+    expect(isReadOnlyAgent({ id: 'agent-9', name: 'Night shift', readOnly: true })).toBe(true);
+  });
+  it('leaves other agents and no agent alone', () => {
+    expect(isReadOnlyAgent(BUILTIN_AGENTS[1])).toBe(false);
+    expect(isReadOnlyAgent({ id: 'agent-9', name: 'Junos Expert', readOnly: false })).toBe(false);
+    expect(isReadOnlyAgent(undefined)).toBe(false);
+  });
+  it('tells the model what to do instead', () => {
+    expect(AUDITOR_REFUSAL.startsWith('Not run: ')).toBe(true);
+    expect(AUDITOR_REFUSAL).toContain('Give the user the exact commands to run instead.');
   });
 });

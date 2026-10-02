@@ -25,7 +25,7 @@ use api::{Aos8Client, ArubaCxClient, AossClient, JunosClient, MistClient};
 use central::CentralClient;
 use error::AppError;
 use local::{LocalConfig, LocalConnection};
-use mcp::{McpClient, McpManager, McpServerDef};
+use mcp::{McpManager, McpServerDef, McpToolInfo, McpWrites};
 use serde::{Deserialize, Serialize};
 use serial::{client::SerialConfig, SerialConnection};
 use session::{SessionFolder, SessionManager, SessionStore, StoredSession};
@@ -83,7 +83,7 @@ struct AppState {
     /// out under a brief map lock and run the (up-to-30s) network round-trip
     /// WITHOUT holding it — holding the map lock across the await serialized
     /// every API command behind the slowest device (see mcp_call's
-    /// caller_for() pattern).
+    /// call_target() pattern).
     api_clients: Arc<AsyncMutex<HashMap<String, Arc<ArubaCxClient>>>>,
     aos8_clients: Arc<AsyncMutex<HashMap<String, Arc<Aos8Client>>>>,
     aoss_clients: Arc<AsyncMutex<HashMap<String, Arc<AossClient>>>>,
@@ -117,6 +117,9 @@ struct AppState {
     /// Cancellation flags for in-flight AI streams, keyed by stream id, so the
     /// frontend Stop button can actually abort the backend request/egress.
     ai_cancels: Arc<AsyncMutex<HashMap<String, Arc<std::sync::atomic::AtomicBool>>>>,
+    /// In-flight MCP tool calls the AI panel's Stop can cancel, keyed by the
+    /// call id the panel sends with `mcp_call`.
+    mcp_calls: Arc<mcp::cancel::CallRegistry>,
     app_dir: std::path::PathBuf,
 }
 
@@ -147,6 +150,7 @@ impl AppState {
             session_logs: Arc::new(AsyncMutex::new(HashMap::new())),
             forwards: Arc::new(AsyncMutex::new(HashMap::new())),
             ai_cancels: Arc::new(AsyncMutex::new(HashMap::new())),
+            mcp_calls: Arc::new(mcp::cancel::CallRegistry::new()),
             app_dir,
         })
     }
@@ -1612,29 +1616,13 @@ async fn mcp_delete_server(name: String, state: State<'_, AppState>) -> Result<(
     res.map_err(|e| e.to_string())
 }
 
-/// Spawn + handshake with a configured server; returns the discovered tool
-/// count. The (slow) spawn/handshake runs WITHOUT the manager lock held, so
-/// other MCP commands stay responsive while a server is connecting.
+/// Spawn + handshake with a configured server (with read-only pins while its
+/// writes are off); returns how many tools the AI can use. The (slow)
+/// spawn/handshake runs WITHOUT the manager lock held, so other MCP commands
+/// stay responsive while a server is connecting (see mcp::connect_server).
 #[tauri::command]
 async fn mcp_connect(name: String, state: State<'_, AppState>) -> Result<usize, String> {
-    // 1) brief lock: resolve def + materialise credentials.
-    let def = {
-        let mgr = state.mcp_manager.lock().await;
-        mgr.resolve_connect_def(&name).map_err(|e| e.to_string())?
-    };
-    // 2) unlocked: spawn + handshake (connect the NEW client before touching the
-    //    old one, so a failed reconnect leaves the existing connection intact).
-    let client = McpClient::connect(&def).await.map_err(|e| e.to_string())?;
-    let count = client.tools.lock().map(|g| g.len()).unwrap_or(0);
-    // 3) brief lock: swap in; shut down any displaced client outside the lock.
-    let old = {
-        let mut mgr = state.mcp_manager.lock().await;
-        mgr.install_client(name, client)
-    };
-    if let Some(old) = old {
-        old.shutdown().await;
-    }
-    Ok(count)
+    mcp::connect_server(&state.mcp_manager, &name).await
 }
 
 #[tauri::command]
@@ -1662,22 +1650,66 @@ async fn mcp_all_tools(state: State<'_, AppState>) -> Result<serde_json::Value, 
     serde_json::to_value(mgr.all_tools()).map_err(|e| e.to_string())
 }
 
+/// One tool of a connected server, as the AI panel checks it right before a
+/// call. No network call; None when the server or tool is gone.
+#[tauri::command]
+async fn mcp_tool_info(
+    server: String,
+    tool: String,
+    state: State<'_, AppState>,
+) -> Result<Option<McpToolInfo>, String> {
+    let mgr = state.mcp_manager.lock().await;
+    Ok(mgr.tool_info(&server, &tool))
+}
+
 /// Invoke a tool on a connected MCP server (used by the AI assistant).
+/// GreenCLI checks the call again here (writes off, read-only login, the
+/// Read-only Auditor when `read_only` is set); a refusal starts "Not run: ".
+/// `call_id` lets the panel's Stop cancel it (mcp_cancel_call).
 #[tauri::command]
 async fn mcp_call(
     server: String,
     tool: String,
     args: serde_json::Value,
+    call_id: Option<String>,
+    read_only: Option<bool>,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
-    // Clone the caller handle under a brief lock, then release it before the
-    // (up-to-60s) tool round-trip so MCP stays responsive / parallelisable.
-    let caller = {
-        let mgr = state.mcp_manager.lock().await;
-        mgr.caller_for(&server)
-    };
-    let caller = caller.ok_or_else(|| format!("MCP server '{}' is not connected", server))?;
-    caller.call_tool(&tool, args).await.map_err(|e| e.to_string())
+    // The caller handle is cloned under a brief lock, which is released before
+    // the tool round-trip so MCP stays responsive / parallelisable.
+    mcp::run_call(
+        &state.mcp_manager,
+        &state.mcp_calls,
+        &server,
+        &tool,
+        args,
+        call_id.as_deref(),
+        read_only.unwrap_or(false),
+    )
+    .await
+}
+
+/// Stop one MCP call (the AI panel's Stop). Always Ok: a call that already
+/// finished, or hasn't started yet, is handled by the registry.
+#[tauri::command]
+async fn mcp_cancel_call(call_id: String, state: State<'_, AppState>) -> Result<(), String> {
+    state.mcp_calls.cancel(&call_id);
+    Ok(())
+}
+
+/// Turn a server's writes on or off. The settings page reconnects it after,
+/// so its read-only pins match; hiding and refusing change at once.
+#[tauri::command]
+async fn mcp_set_writes(name: String, writes: McpWrites, state: State<'_, AppState>) -> Result<(), String> {
+    let mgr = state.mcp_manager.lock().await;
+    mgr.set_writes(&name, writes)
+}
+
+/// Junos servers: run plain `show` commands without asking.
+#[tauri::command]
+async fn mcp_set_show_opt_in(name: String, on: bool, state: State<'_, AppState>) -> Result<(), String> {
+    let mgr = state.mcp_manager.lock().await;
+    mgr.set_show_opt_in(&name, on).map_err(|e| e.to_string())
 }
 
 /// Store the credentials-file content for an MCP server (kept in the app data
@@ -2630,30 +2662,11 @@ fn main() {
                     mgr.list_configs()
                 };
                 for def in defs.into_iter().filter(|d| d.enabled) {
-                    let resolved = {
-                        let mgr = state.mcp_manager.lock().await;
-                        mgr.resolve_connect_def(&def.name)
-                    };
-                    let resolved = match resolved {
-                        Ok(r) => r,
-                        Err(e) => {
-                            log::warn!("MCP auto-connect '{}': {}", def.name, e);
-                            continue;
-                        }
-                    };
-                    // Spawn/handshake runs WITHOUT the manager lock (same pattern
-                    // as mcp_connect) so a slow server can't block MCP commands.
-                    match McpClient::connect(&resolved).await {
-                        Ok(client) => {
-                            let old = {
-                                let mut mgr = state.mcp_manager.lock().await;
-                                mgr.install_client(def.name.clone(), client)
-                            };
-                            if let Some(old) = old {
-                                old.shutdown().await;
-                            }
-                        }
-                        Err(e) => log::warn!("MCP auto-connect '{}' failed: {}", def.name, e),
+                    // Same path as mcp_connect (pins while writes are off); the
+                    // spawn/handshake runs WITHOUT the manager lock so a slow
+                    // server can't block MCP commands.
+                    if let Err(e) = mcp::connect_server(&state.mcp_manager, &def.name).await {
+                        log::warn!("MCP auto-connect '{}' failed: {}", def.name, e);
                     }
                 }
             });
@@ -2737,7 +2750,11 @@ fn main() {
             mcp_disconnect,
             mcp_status,
             mcp_all_tools,
+            mcp_tool_info,
             mcp_call,
+            mcp_cancel_call,
+            mcp_set_show_opt_in,
+            mcp_set_writes,
             mcp_set_credentials,
             mcp_has_credentials,
             list_known_hosts,

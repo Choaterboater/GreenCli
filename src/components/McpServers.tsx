@@ -18,28 +18,16 @@ import {
 } from 'lucide-react';
 import { notify } from '../store/toastStore';
 import { askConfirm } from '../store/dialogStore';
+import { useMcpApprovalStore } from '../store/mcpApprovalStore';
+import type { McpServerDef, McpStatus } from '../utils/mcpTypes';
+import { plainHttpWarning } from '../utils/urlSafety';
+import McpServerSafety from './McpServerSafety';
 
-type McpTransport = 'stdio' | 'http';
+type McpTransport = McpServerDef['transport'];
 
-interface McpServerDef {
-  name: string;
-  transport: McpTransport;
-  command: string;
-  args: string[];
-  env: Record<string, string>;
-  cwd?: string;
-  url?: string;
-  credentialsEnvVar?: string;
-  headers?: Record<string, string>;
-  enabled: boolean;
-}
-
-interface McpStatus {
-  name: string;
-  enabled: boolean;
-  connected: boolean;
-  toolCount: number;
-}
+/** Forget every "Yes, for this session" answer for a server: it was
+ *  reconnected, changed or removed, so its tools must ask again. */
+const clearAllowances = (name: string) => useMcpApprovalStore.getState().clearServer(name);
 
 const blankForm = {
   name: '',
@@ -152,13 +140,17 @@ export default function McpServers() {
     return () => clearInterval(t);
   }, [refresh]);
 
-  const connect = async (name: string) => {
+  /** Connects (or restarts) a server; true when it worked. Errors are shown here, never thrown. */
+  const connect = async (name: string): Promise<boolean> => {
     setBusy(name);
+    clearAllowances(name);
     try {
       const n = await invoke<number>('mcp_connect', { name });
       notify.success(`${name} connected`, `${n} tool${n === 1 ? '' : 's'} now available to the AI`);
+      return true;
     } catch (e) {
       notify.error(`${name} failed to connect`, String(e));
+      return false;
     } finally {
       setBusy(null);
       refresh();
@@ -166,6 +158,7 @@ export default function McpServers() {
   };
 
   const disconnect = async (name: string) => {
+    clearAllowances(name);
     await invoke('mcp_disconnect', { name }).catch(() => {});
     refresh();
   };
@@ -178,6 +171,7 @@ export default function McpServers() {
       danger: true,
     });
     if (!ok) return;
+    clearAllowances(name);
     try {
       await invoke('mcp_delete_server', { name });
       notify.info('MCP server removed', name);
@@ -305,6 +299,9 @@ export default function McpServers() {
       notify.warning('Name already in use', `An MCP server named "${def.name}" already exists.`);
       return;
     }
+    // Writes go off again when the program changes (Rust McpConfigStore::upsert);
+    // remember the setting before the save so the user can be told.
+    const writesWereOn = servers.find((s) => s.name === (editingName ?? def.name))?.writes === 'on';
     try {
       // A rename must migrate, not delete-and-recreate: the old save-new +
       // delete-old flow silently wiped the stored credentials (keyed by name)
@@ -320,7 +317,20 @@ export default function McpServers() {
       if (form.transport === 'stdio' && form.credsContent.trim()) {
         await invoke('mcp_set_credentials', { name: def.name, content: form.credsContent });
       }
+      clearAllowances(def.name);
+      if (editingName) clearAllowances(editingName);
       notify.success('MCP server saved', def.name);
+      if (writesWereOn) {
+        const saved = ((await invoke<McpServerDef[]>('mcp_list_servers').catch(() => [])) || []).find(
+          (s) => s.name === def.name
+        );
+        if (saved?.writes === 'off') {
+          notify.info(
+            `${def.name} writes are off again`,
+            "The server's command, folder or URL changed, so GreenCLI turned writes off."
+          );
+        }
+      }
       setShowForm(false);
       setForm({ ...blankForm });
       setCredsSaved(false);
@@ -379,68 +389,89 @@ export default function McpServers() {
           return (
             <div
               key={s.name}
-              className="flex items-center gap-2 px-3 py-2 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--bg-inset)]"
+              className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--bg-inset)]"
             >
-              <span className="flex-shrink-0" title={s.transport === 'http' ? 'Streamable HTTP' : 'stdio'}>
-                {s.transport === 'http' ? (
-                  <Globe size={15} style={{ color: connected ? 'var(--accent)' : 'var(--text-muted)' }} />
-                ) : (
-                  <Server size={15} style={{ color: connected ? 'var(--accent)' : 'var(--text-muted)' }} />
-                )}
-              </span>
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2">
-                  <span className="text-[13px] font-medium text-[var(--text-primary)] truncate">{s.name}</span>
-                  {connected && (
-                    <span className="flex items-center gap-1 text-[10px] text-[var(--accent-success)]">
-                      <CheckCircle2 size={10} />
-                      {st?.toolCount ?? 0} tool{(st?.toolCount ?? 0) === 1 ? '' : 's'}
-                    </span>
+              <div className="flex items-center gap-2 px-3 py-2">
+                <span className="flex-shrink-0" title={s.transport === 'http' ? 'Streamable HTTP' : 'stdio'}>
+                  {s.transport === 'http' ? (
+                    <Globe size={15} style={{ color: connected ? 'var(--accent)' : 'var(--text-muted)' }} />
+                  ) : (
+                    <Server size={15} style={{ color: connected ? 'var(--accent)' : 'var(--text-muted)' }} />
                   )}
+                </span>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[13px] font-medium text-[var(--text-primary)] truncate">{s.name}</span>
+                    {connected && (
+                      <span className="flex items-center gap-1 text-[10px] text-[var(--accent-success)]">
+                        <CheckCircle2 size={10} />
+                        {st?.toolCount ?? 0} tool{(st?.toolCount ?? 0) === 1 ? '' : 's'}
+                      </span>
+                    )}
+                    {connected && (st?.hiddenToolCount ?? 0) > 0 && (
+                      <span
+                        className="text-[10px] text-[var(--text-muted)]"
+                        title={
+                          st?.access === 'read-only'
+                            ? 'Hidden from the AI because the login is read-only'
+                            : 'Hidden from the AI because writes are off'
+                        }
+                      >
+                        · {st?.hiddenToolCount} hidden
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-[10px] text-[var(--text-muted)] font-mono truncate">
+                    {s.transport === 'http' ? s.url : `${s.command} ${(s.args || []).join(' ')}`}
+                  </div>
                 </div>
-                <div className="text-[10px] text-[var(--text-muted)] font-mono truncate">
-                  {s.transport === 'http' ? s.url : `${s.command} ${(s.args || []).join(' ')}`}
-                </div>
+                {connected ? (
+                  <button
+                    onClick={() => disconnect(s.name)}
+                    className="flex items-center gap-1 px-2 py-1 text-[11px] rounded-md text-[var(--accent-warning)] hover:bg-[var(--bg-tertiary)]"
+                    title="Disconnect"
+                  >
+                    <Power size={12} />
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => connect(s.name)}
+                    disabled={busy === s.name}
+                    className="flex items-center gap-1 px-2 py-1 text-[11px] rounded-md text-[var(--accent)] hover:bg-[var(--bg-tertiary)] disabled:opacity-50"
+                    title="Connect"
+                  >
+                    {busy === s.name ? <Loader2 size={12} className="animate-spin" /> : <Plug size={12} />}
+                  </button>
+                )}
+                <button
+                  onClick={() => edit(s)}
+                  className="p-1 rounded-md text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]"
+                  title="Edit"
+                >
+                  <PencilLine size={12} />
+                </button>
+                <button
+                  onClick={() => duplicate(s)}
+                  className="p-1 rounded-md text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]"
+                  title="Duplicate"
+                >
+                  <Copy size={12} />
+                </button>
+                <button
+                  onClick={() => remove(s.name)}
+                  className="p-1 rounded-md text-[var(--text-muted)] hover:text-[var(--accent-danger)] hover:bg-[var(--bg-tertiary)]"
+                  title="Remove"
+                >
+                  <Trash2 size={12} />
+                </button>
               </div>
-              {connected ? (
-                <button
-                  onClick={() => disconnect(s.name)}
-                  className="flex items-center gap-1 px-2 py-1 text-[11px] rounded-md text-[var(--accent-warning)] hover:bg-[var(--bg-tertiary)]"
-                  title="Disconnect"
-                >
-                  <Power size={12} />
-                </button>
-              ) : (
-                <button
-                  onClick={() => connect(s.name)}
-                  disabled={busy === s.name}
-                  className="flex items-center gap-1 px-2 py-1 text-[11px] rounded-md text-[var(--accent)] hover:bg-[var(--bg-tertiary)] disabled:opacity-50"
-                  title="Connect"
-                >
-                  {busy === s.name ? <Loader2 size={12} className="animate-spin" /> : <Plug size={12} />}
-                </button>
-              )}
-              <button
-                onClick={() => edit(s)}
-                className="p-1 rounded-md text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]"
-                title="Edit"
-              >
-                <PencilLine size={12} />
-              </button>
-              <button
-                onClick={() => duplicate(s)}
-                className="p-1 rounded-md text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]"
-                title="Duplicate"
-              >
-                <Copy size={12} />
-              </button>
-              <button
-                onClick={() => remove(s.name)}
-                className="p-1 rounded-md text-[var(--text-muted)] hover:text-[var(--accent-danger)] hover:bg-[var(--bg-tertiary)]"
-                title="Remove"
-              >
-                <Trash2 size={12} />
-              </button>
+              <McpServerSafety
+                def={s}
+                status={st}
+                busy={busy === s.name}
+                onChanged={refresh}
+                onReconnect={connect}
+              />
             </div>
           );
         })}
@@ -511,6 +542,9 @@ export default function McpServers() {
                 onChange={(e) => setForm({ ...form, url: e.target.value })}
                 placeholder="http://127.0.0.1:8010/mcp"
               />
+              {plainHttpWarning(form.url, 'mcp') && (
+                <p className="text-[var(--accent-warning)] text-[10px] mt-1">{plainHttpWarning(form.url, 'mcp')}</p>
+              )}
               <p className="text-[10px] text-[var(--text-muted)] mt-1">
                 The server must already be running in Streamable HTTP mode (e.g. centralmcp's{' '}
                 <code className="text-[var(--accent)]">run_http_router.sh</code>). One process can serve multiple
@@ -562,6 +596,10 @@ export default function McpServers() {
                     onChange={(e) => setForm({ ...form, envText: e.target.value })}
                     placeholder={'CREDS_PATH=/path/credentials.yaml'}
                   />
+                  <p className="text-[10px] text-[var(--text-muted)] mt-1 leading-snug">
+                    Servers get only a few basic variables from GreenCLI (like PATH, HOME, ssh-agent and proxy settings),
+                    plus the ones you add here.
+                  </p>
                 </div>
               </div>
               {/* Credentials (written to a file + injected as an env path on connect) */}
