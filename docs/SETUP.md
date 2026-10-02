@@ -301,6 +301,16 @@ live compliance:
     problem with its line, filterable by kind; a click selects it. **F8** / **Shift+F8** steps
     through them. A line the switch rejected on Send shows in red with the switch's own words.
     Comment lines are never flagged. The Send dialog lists them too ("1 error, 2 warnings").
+  - **Go to Symbol** (**Ctrl+Shift+O**, or **Outline**): type to jump to an interface, LAG, VLAN,
+    router or Junos section by name.
+  - **Quick fixes** (**Ctrl+.** or the light bulb on a problem): strip terminal junk, comment out a
+    risky or rejected line, add `commit confirmed 5` to a Junos tab, or swap a plain-text password
+    for a blank.
+  - **Hover cards**: hover an Aruba CX or Junos line to see what it does in plain words and how
+    the other vendor writes it (VLANs, access/trunk ports, LAGs, routes, NTP, SNMP, RADIUS, commit
+    confirmed …).
+  - **Code and data files** (YAML, JSON, Python, shell, `.env`, JS/TS, PowerShell, Terraform): a
+    password, token or key written as a value gets a warning; variables and vault lookups don't.
   - **Copy with secrets hidden** (eye button next to Copy): copies the tab with passwords, keys
     and SNMP communities swapped for `<secret hidden>`, for a ticket or chat. A password written
     in plain text gets a blue tip pointing at it.
@@ -341,6 +351,8 @@ live compliance:
 | `Ctrl+Shift+I` | Toggle AI Assistant |
 | `Ctrl+Shift+E` | Toggle Config Editor |
 | `Ctrl+Shift+M` | Config Editor: show or hide the Problems panel |
+| `Ctrl+.` | Config Editor: quick fixes for the problem under the cursor |
+| `Ctrl+Shift+O` | Config Editor: Go to Symbol (interfaces, VLANs, sections) |
 | `Ctrl+=` / `Ctrl+-` | Zoom terminal font in / out |
 | `Ctrl+0` | Reset terminal font size |
 
