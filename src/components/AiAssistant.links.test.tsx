@@ -26,6 +26,13 @@ function click(link: HTMLElement): boolean {
   return !event.defaultPrevented;
 }
 
+/** A middle or right click sends auxclick (not click); true when let through. */
+function auxClick(link: HTMLElement, button: number): boolean {
+  const event = new MouseEvent('auxclick', { button, bubbles: true, cancelable: true });
+  fireEvent(link, event);
+  return !event.defaultPrevented;
+}
+
 beforeEach(() => {
   vi.mocked(invoke).mockReset();
   vi.mocked(invoke).mockResolvedValue(undefined);
@@ -41,6 +48,21 @@ describe('links in an AI answer', () => {
     expect(click(link)).toBe(false);
     expect(invoke).toHaveBeenCalledTimes(1);
     expect(invoke).toHaveBeenCalledWith('open_url', { url });
+  });
+
+  it('a middle click opens it in the browser too (it sends auxclick, not click)', () => {
+    answer('See https://www.juniper.net/documentation/ for more.');
+    const link = screen.getByRole('link', { name: 'https://www.juniper.net/documentation/' });
+    expect(auxClick(link, 1)).toBe(false);
+    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(invoke).toHaveBeenCalledWith('open_url', { url: 'https://www.juniper.net/documentation/' });
+  });
+
+  it('a right click opens nothing (the app menu handles it)', () => {
+    answer('See https://www.juniper.net/documentation/ for more.');
+    const link = screen.getByRole('link', { name: 'https://www.juniper.net/documentation/' });
+    auxClick(link, 2);
+    expect(invoke).not.toHaveBeenCalled();
   });
 
   it('a link that is not a web link stays in the app (open_url says why)', () => {

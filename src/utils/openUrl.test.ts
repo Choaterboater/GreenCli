@@ -117,6 +117,13 @@ describe('the app sends its web links here', () => {
           ),
           `${file}: a ReactMarkdown without an a component that calls openWebLink`,
         ).toBe(true);
+        // A middle click sends auxclick, not click, and the webview follows the link.
+        expect(
+          /\ba\(\{[^)]*\bhref\b[^)]*\}\) \{[^]*?onAuxClick=\{\(e\) => \{\s*if \(e\.button !== 1\) return;\s*e\.preventDefault\(\);/.test(
+            text.slice(at, end),
+          ),
+          `${file}: a ReactMarkdown link without an onAuxClick that stops a middle click`,
+        ).toBe(true);
         seen += 1;
         at = text.indexOf('<ReactMarkdown', end);
       }

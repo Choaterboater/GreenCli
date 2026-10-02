@@ -1122,7 +1122,9 @@ export const MessageItem = memo(function MessageItem({ msg, editTarget }: { msg:
                   // A footnote's link jumps within the answer.
                   if (href?.startsWith('#')) return <a {...rest} href={href}>{children}</a>;
                   // A plain click would load the site in place of GreenCLI,
-                  // so a web link opens in the browser.
+                  // so a web link opens in the browser. A middle click sends
+                  // auxclick, not click, and the webview follows the link on
+                  // that too, so it opens in the browser as well.
                   return (
                     <a
                       {...rest}
@@ -1130,6 +1132,11 @@ export const MessageItem = memo(function MessageItem({ msg, editTarget }: { msg:
                       title={href}
                       className="text-[var(--accent)] underline"
                       onClick={(e) => {
+                        e.preventDefault();
+                        if (href) void openWebLink(href);
+                      }}
+                      onAuxClick={(e) => {
+                        if (e.button !== 1) return;
                         e.preventDefault();
                         if (href) void openWebLink(href);
                       }}
