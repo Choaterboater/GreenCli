@@ -439,6 +439,22 @@ fn current_place() -> InstallPlace {
         .unwrap_or(InstallPlace::Normal)
 }
 
+/// Checking and installing both need updates on and the app in a normal
+/// place. From the disk image or a translocated copy the install can't work,
+/// so a check there would only download an update that can't be used.
+fn may_update(
+    off: Option<OffReason>,
+    place: impl FnOnce() -> InstallPlace,
+) -> Result<(), &'static str> {
+    if off.is_some() {
+        return Err(ERR_OFF);
+    }
+    if place() != InstallPlace::Normal {
+        return Err(ERR_PLACE);
+    }
+    Ok(())
+}
+
 /// Look for a newer version and, when there is one, download it and check its
 /// signature. Returns the new version, or None when this is the latest.
 /// Never installs.
@@ -447,9 +463,7 @@ pub async fn update_check(
     app: AppHandle,
     state: State<'_, UpdaterState>,
 ) -> Result<Option<String>, String> {
-    if state.off.is_some() {
-        return Err(ERR_OFF.into());
-    }
+    may_update(state.off, current_place)?;
     let platform = current_platform().ok_or(ERR_OFF)?;
     let _one_at_a_time = state.checking.lock().await;
     if let Some(version) = state.pending_version() {
@@ -551,12 +565,7 @@ fn plain_error(e: &tauri_plugin_updater::Error) -> String {
 /// the user taps "Restart to update" and confirms.
 #[tauri::command]
 pub async fn update_install(app: AppHandle, state: State<'_, UpdaterState>) -> Result<(), String> {
-    if state.off.is_some() {
-        return Err(ERR_OFF.into());
-    }
-    if current_place() != InstallPlace::Normal {
-        return Err(ERR_PLACE.into());
-    }
+    may_update(state.off, current_place)?;
     let pending = state
         .pending
         .lock()
@@ -937,6 +946,30 @@ mod tests {
             Some(vec!["aruba".to_string(), "mist".to_string()])
         );
         assert_eq!(take_stopped(&stopped), None, "only once");
+    }
+
+    #[test]
+    fn no_check_or_install_from_the_disk_image() {
+        let normal = || InstallPlace::Normal;
+        assert_eq!(may_update(None, normal), Ok(()));
+        for place in [InstallPlace::DiskImage, InstallPlace::Translocated] {
+            assert_eq!(may_update(None, || place), Err(ERR_PLACE), "{place:?}");
+        }
+        for off in [OffReason::Dev, OffReason::Platform, OffReason::Setup] {
+            assert_eq!(may_update(Some(off), normal), Err(ERR_OFF), "{off:?}");
+        }
+        // Both commands start with it, before any download or install.
+        let src = include_str!("updater.rs");
+        for command in ["pub async fn update_check(", "pub async fn update_install("] {
+            let body = &src[src.find(command).expect(command)..];
+            // The first brace opens the body (any line endings).
+            let body = &body[body.find('{').expect("a body") + 1..];
+            assert!(
+                body.trim_start()
+                    .starts_with("may_update(state.off, current_place)?;"),
+                "{command} must call may_update first"
+            );
+        }
     }
 
     #[test]

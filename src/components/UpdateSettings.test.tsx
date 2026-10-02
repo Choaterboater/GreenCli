@@ -93,4 +93,15 @@ describe('UpdateSettings', () => {
       expect((screen.getByText('Restart to update').closest('button') as HTMLButtonElement).disabled).toBe(true),
     );
   });
+
+  it.each(['diskImage', 'translocated'] as const)('does not check for updates from %s', async (place) => {
+    answer({ ...ON, place }, async () => '2.0.1');
+    render(<UpdateSettings />);
+    expect(await screen.findByText(UPDATE_TEXT.moveFirst)).toBeTruthy();
+    const check = screen.getByText('Check for updates').closest('button') as HTMLButtonElement;
+    expect(check.disabled).toBe(true);
+    fireEvent.click(check);
+    expect(screen.queryByText('GreenCLI 2.0.1 is ready.')).toBeNull();
+    expect(invoke.mock.calls.map(([cmd]) => cmd)).not.toContain('update_check');
+  });
 });

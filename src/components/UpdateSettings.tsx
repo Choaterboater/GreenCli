@@ -41,6 +41,8 @@ export default function UpdateSettings() {
   }, []);
 
   const off = offText(status);
+  // From the disk image or a translocated copy the update can't install, so
+  // there is nothing to check for (Rust refuses the check there too).
   const moved = status && status.place !== 'normal';
 
   const runCheck = async () => {
@@ -62,7 +64,7 @@ export default function UpdateSettings() {
       <p className="text-xs text-[var(--text-muted)] mb-3">{UPDATE_TEXT.how}</p>
       {status && <p className="text-sm text-[var(--text-primary)] mb-3">Version {status.version}</p>}
       <div className="flex flex-wrap items-center gap-2 mb-3">
-        <button onClick={runCheck} disabled={!!off || check.kind === 'checking'} className={button}>
+        <button onClick={runCheck} disabled={!!off || !!moved || check.kind === 'checking'} className={button}>
           <RefreshCw size={13} />
           {check.kind === 'checking' ? 'Checking…' : 'Check for updates'}
         </button>
