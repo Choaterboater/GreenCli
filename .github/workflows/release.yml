@@ -280,8 +280,9 @@ jobs:
         with: *tauri-with
 
       # Signed as above, then sent to Apple to notarize. The bundler waits
-      # for Apple and staples the ticket to the app before it makes the .dmg
-      # and the update file, so both hold the notarized app.
+      # for Apple and staples the ticket to the app (one try; see "Check the
+      # Mac app") before it makes the .dmg and the update file, so both hold
+      # the notarized app.
       - name: Build + bundle, signed and notarized (tauri-action)
         id: tauri_notarized
         if: steps.apple.outputs.mode == 'notarize'
@@ -385,10 +386,16 @@ jobs:
 
       # The Mac app must hold greencli-mcp. With Apple signing on, both
       # programs in it must carry the Developer ID signature with the hardened
-      # runtime (Apple's notary refuses anything less), and a notarized app
-      # and .dmg must carry Apple's ticket. (The bundler does not stop when
-      # stapling fails, so this is the check for that.) A problem fails a
-      # notarized build; a signed-only build gets a warning.
+      # runtime (Apple's notary refuses anything less), and a notarized .dmg
+      # must carry Apple's ticket. A problem fails a notarized build; a
+      # signed-only build gets a warning.
+      # A notarized app with no stapled ticket is only a warning: the bundler
+      # staples the app once, right after Apple says "Accepted", and goes on
+      # when that fails (Apple's ticket can lag behind, the same delay "Notarize
+      # the .dmg" retries for). The .dmg and the update file are already made
+      # from that app, so stapling it here would not reach them. Apple did
+      # notarize it: Gatekeeper checks online, and the stapled .dmg covers the
+      # app inside it.
       - name: Check the Mac app
         if: runner.os == 'macOS'
         shell: bash
@@ -424,7 +431,8 @@ jobs:
             echo "The Mac app is signed (not notarized)."
             exit 0
           fi
-          xcrun stapler validate "$app" > /dev/null || problem "The Mac app has no notarization ticket."
+          xcrun stapler validate "$app" > /dev/null ||
+            echo "::warning::The Mac app has no stapled ticket. Apple notarized it, but the bundler's one try to staple the ticket failed (most likely Apple's ticket delay). Gatekeeper checks online, and the stapled .dmg covers the app inside it."
           for dmg in "$BUNDLE"/dmg/*.dmg; do
             xcrun stapler validate "$dmg" > /dev/null || problem "$(basename "$dmg") has no notarization ticket."
           done

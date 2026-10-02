@@ -1799,11 +1799,130 @@ mod tests {
         assert!(mac.run.contains("runtime"));
         assert!(mac.run.contains("xcrun stapler validate \"$app\""));
         assert!(mac.run.contains("xcrun stapler validate \"$dmg\""));
+        // The app's own ticket is only a warning (see the next test); the
+        // .dmg's is a problem.
+        assert!(mac
+            .run
+            .contains("xcrun stapler validate \"$app\" > /dev/null ||\necho \"::warning::"));
+        assert!(mac
+            .run
+            .contains("xcrun stapler validate \"$dmg\" > /dev/null || problem "));
         assert!(at < step(&steps, "Check the update signatures").0);
         assert!(at < step(&steps, "Publish the update key").0);
         let (_, dmg) = step(&steps, "Notarize the .dmg");
         assert!(dmg.run.contains("xcrun stapler staple \"$dmg\" && break\n"));
         assert!(dmg.run.contains("if [ \"$status\" != Accepted ]; then\n"));
+    }
+
+    /// Runs "Check the Mac app" on a stand-in bundle, with stand-in codesign
+    /// (a Developer ID signature with the hardened runtime) and xcrun (no
+    /// stapled ticket on the files named in `no_ticket`, relative to the
+    /// bundle). Returns the exit code and the output.
+    #[cfg(unix)]
+    fn run_mac_check(mode: &str, no_ticket: &[&str]) -> (Option<i32>, String) {
+        use std::os::unix::fs::PermissionsExt;
+        let steps = build_steps(RELEASE_YML);
+        let (_, mac) = step(&steps, "Check the Mac app");
+        let mut dir = std::env::temp_dir();
+        dir.push(format!("greencli-mac-check-test-{}", rand::random::<u64>()));
+        let bundle = dir.join("bundle");
+        let programs = bundle.join("macos/GreenCLI.app/Contents/MacOS");
+        std::fs::create_dir_all(&programs).unwrap();
+        for exe in ["GreenCLI", "greencli-mcp"] {
+            let p = programs.join(exe);
+            std::fs::write(&p, "").unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        std::fs::create_dir_all(bundle.join("dmg")).unwrap();
+        std::fs::write(bundle.join("dmg/GreenCLI_2.0.0_aarch64.dmg"), "").unwrap();
+        let script = format!(
+            "codesign() {{\n\
+             if [ \"$1\" = -d ]; then\n\
+             echo 'Authority=Developer ID Application: Test (TEAMID)' >&2\n\
+             echo 'CodeDirectory v=20500 size=1 flags=0x10000(runtime) hashes=1+1' >&2\n\
+             fi\n\
+             }}\n\
+             xcrun() {{\n\
+             echo \"xcrun $1 $2 ${{3#\"$BUNDLE/\"}}\" >&2\n\
+             for t in $NO_TICKET; do [ \"$3\" = \"$BUNDLE/$t\" ] && return 65; done\n\
+             return 0\n\
+             }}\n\
+             {}",
+            mac.run
+        );
+        let out = std::process::Command::new("bash")
+            .arg("-c")
+            .arg(&script)
+            .env("BUNDLE", &bundle)
+            .env("MODE", mode)
+            .env("NO_TICKET", no_ticket.join(" "))
+            .output()
+            .expect("bash");
+        std::fs::remove_dir_all(&dir).unwrap();
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        (out.status.code(), text)
+    }
+
+    /// The bundler staples the notarized app once, right after Apple says
+    /// "Accepted", and goes on when that fails (Apple's ticket can lag
+    /// behind). The .dmg and the update file are made from that app before
+    /// "Check the Mac app" runs, so an app with no stapled ticket is a
+    /// warning, not a failed job; a .dmg with no ticket still fails it.
+    #[cfg(unix)]
+    #[test]
+    fn release_workflow_warns_when_the_mac_app_has_no_stapled_ticket() {
+        const APP: &str = "macos/GreenCLI.app";
+        const DMG: &str = "dmg/GreenCLI_2.0.0_aarch64.dmg";
+        let (code, out) = run_mac_check("notarize", &[]);
+        assert_eq!(code, Some(0), "{out}");
+        assert!(
+            out.contains(&format!("xcrun stapler validate {APP}\n")),
+            "{out}"
+        );
+        assert!(
+            out.contains(&format!("xcrun stapler validate {DMG}\n")),
+            "{out}"
+        );
+        assert!(
+            !out.contains("::warning::") && !out.contains("::error::"),
+            "{out}"
+        );
+        assert!(out.contains("The Mac app and the .dmg are signed and notarized.\n"));
+
+        let (code, out) = run_mac_check("notarize", &[APP]);
+        assert_eq!(code, Some(0), "{out}");
+        assert_eq!(
+            out.matches("::warning::The Mac app has no stapled ticket.")
+                .count(),
+            1
+        );
+        assert!(!out.contains("::error::"), "{out}");
+        assert!(
+            out.contains(&format!("xcrun stapler validate {DMG}\n")),
+            "{out}"
+        );
+
+        for missing in [&[DMG][..], &[APP, DMG][..]] {
+            let (code, out) = run_mac_check("notarize", missing);
+            assert_eq!(code, Some(1), "{missing:?}: {out}");
+            assert!(
+                out.contains("::error::GreenCLI_2.0.0_aarch64.dmg has no notarization ticket.\n"),
+                "{out}"
+            );
+        }
+
+        // Signed only: no ticket is looked for.
+        let (code, out) = run_mac_check("sign", &[APP, DMG]);
+        assert_eq!(code, Some(0), "{out}");
+        assert!(!out.contains("xcrun"), "{out}");
+        assert!(
+            out.contains("The Mac app is signed (not notarized).\n"),
+            "{out}"
+        );
     }
 
     /// Apple's ticket can take a little while to show up after notarytool

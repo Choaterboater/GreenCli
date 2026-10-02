@@ -194,7 +194,9 @@ Actions**):
 
 - **All five set:** the app, `greencli-mcp` inside it, and the `.dmg` are signed and notarized,
   and Apple's ticket is stapled to the app and the `.dmg`. The update file is made from the
-  signed app.
+  signed app. If Apple's ticket comes late, the app may be left without its stapled ticket: the
+  run shows a warning and still passes, because the app is notarized and the `.dmg`'s ticket
+  covers it.
 - **None set:** releases still build, unsigned. The run shows a notice.
 - **Some set:** releases still build, and the run shows a warning that names the missing
   secrets. With only the certificate and its password, the app is signed but not notarized;
