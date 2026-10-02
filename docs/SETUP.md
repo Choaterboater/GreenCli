@@ -322,7 +322,7 @@ preserved so nothing is silently lost.
 
 ## 5. AI assistant (provider-neutral)
 
-Open the AI panel from the title bar. Settings → **AI + MCP → AI Assistant**:
+Open the AI panel from the title bar. Settings → **AI & MCP → AI Assistant**:
 
 1. **Provider** — pick one:
    - **Anthropic** (Claude) — needs an API key.
@@ -539,7 +539,7 @@ still need one. After a secret filter change, GreenCLI makes the old copies agai
 
 ## 7. Aruba Central
 
-Settings → **Cloud → Aruba Central**:
+Settings → **Integrations → Aruba Central**:
 
 - **Base URL** + **Client ID/Secret** (OAuth client-credentials), **or**
 - **Token** auth — paste an access token for SSO accounts.
@@ -563,8 +563,8 @@ mist); pick a REST version in the Base URL and it's honoured at login.
 
 ### Device REST security (TLS)
 
-Settings → **Cloud → Device REST security → Verify device TLS certificates**. **On by
-default** for new installs — untrusted certs are rejected across AOS-CX/AOS-8/AOS-S.
+Settings → **Connections & Security → Device REST security → Verify device TLS certificates**.
+**On by default** for new installs — untrusted certs are rejected across AOS-CX/AOS-8/AOS-S.
 Turn it off only for self-signed lab gear; the toggle warns that device admin and SSH
 credentials can be intercepted on untrusted networks while verification is disabled.
 The API Explorer's per-login *Verify TLS* checkbox defaults from this setting.
@@ -591,7 +591,7 @@ live compliance:
 
 ## 10. Other tools
 
-- **Output triggers** (Settings → **Backup** → Output triggers): toast + optional beep when a
+- **Output triggers** (Settings → **Automation** → Output triggers): toast + optional beep when a
   keyword/regex appears in any terminal. Regexes are validated when you add them and
   match across output chunks.
 - **Import hosts** (sidebar download icon, command palette, or Settings → **Connections & Security** →
@@ -715,7 +715,7 @@ live compliance:
 |---------|-----|
 | AI: *"is Ollama running?"* | `ollama serve`, and check the URL in Settings. |
 | AI Local CLI not found | The app adds `~/.local/bin`, `~/.cargo/bin`, and Homebrew to PATH; ensure your CLI is installed there. |
-| Device REST fails with a cert error | Verification is **on** by default. For self-signed lab gear, turn *Verify device TLS* off in Settings → **Cloud → Device REST security** (see the interception warning there). |
+| Device REST fails with a cert error | Verification is **on** by default. For self-signed lab gear, turn *Verify device TLS* off in Settings → **Connections & Security → Device REST security** (see the interception warning there). |
 | `tauri-dev` won't start (port in use) | Another Vite dev server is on `:1420` — stop it or close the other instance. |
 | Connected tab but no shell | Some restricted accounts/appliances refuse a PTY/shell — the app now surfaces this as a connect error rather than a frozen tab. |
 | Vault won't unlock after a crash | A corrupt `vault.enc` is preserved, not overwritten. Back it up, then remove it to start fresh (saved secrets are lost only if the file was truly corrupted). |
