@@ -206,7 +206,7 @@ jobs:
           fi
           if ! xcrun notarytool history --key "$dir/AuthKey.p8" \
               --key-id "$APPLE_API_KEY" --issuer "$APPLE_API_ISSUER" > /dev/null; then
-            echo "::error::Apple did not accept the API key. Check APPLE_API_ISSUER, APPLE_API_KEY and APPLE_API_KEY_P8."
+            echo "::error::Apple did not accept the API key. Check APPLE_API_ISSUER, APPLE_API_KEY and APPLE_API_KEY_P8, and that the key is a Team key with Developer access or higher (see docs/SETUP.md)."
             exit 1
           fi
           echo "Apple accepted the API key."

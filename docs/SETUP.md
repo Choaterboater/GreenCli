@@ -161,7 +161,23 @@ Developer ID and have Apple notarize it. Then Mac users get no "unidentified dev
 and they don't need right-click → **Open** or System Settings → Privacy & Security to start
 GreenCLI the first time. A signed app also keeps its Keychain access after an update.
 
-To turn it on, add these five repository secrets (GitHub → **Settings → Secrets and variables →
+First make these at Apple (once):
+
+1. **Certificate** (developer.apple.com → **Certificates, IDs & Profiles**; only the Account
+   Holder can make one). In Keychain Access → Certificate Assistant → **Request a Certificate From
+   a Certificate Authority**, save a certificate request to disk. Use it to make a **Developer ID
+   Application** certificate, download it, and open it to add it to your login keychain. In
+   Keychain Access → **My Certificates**, export that one certificate with its private key as a
+   `.p12` file, with a password. If you already set `APPLE_CERTIFICATE` for an older release with
+   a Developer ID Application `.p12`, you can keep it.
+2. **API key** (appstoreconnect.apple.com → **Users and Access → Integrations → App Store Connect
+   API → Team Keys**; request access first if it asks). Make a key with **Developer** access or
+   higher. An Individual key does not work for notarizing.
+3. Note the **Issuer ID** (shown above the key list) and the **Key ID** (10 characters).
+4. Download `AuthKey_<Key ID>.p8`. Apple lets you download it **only once**, so keep it safe, or
+   revoke the key and make a new one.
+
+Then add these five repository secrets (GitHub → **Settings → Secrets and variables →
 Actions**):
 
 | Secret | What goes in it |
@@ -182,6 +198,9 @@ Actions**):
 
 No `APPLE_SIGNING_IDENTITY` secret is needed: the workflow reads the signing name from the
 certificate. The secrets never show in the build log.
+
+If a Mac build stops with "Apple did not accept the API key", check the three `APPLE_API_*`
+secrets, and that the key is a Team key with **Developer** access or higher (step 2 above).
 
 ---
 
