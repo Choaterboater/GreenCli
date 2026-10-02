@@ -1,11 +1,15 @@
 name: Release
 
-# Builds signed-able installers for macOS (.dmg/.app) and Windows (.msi/.exe NSIS)
-# and uploads them to a draft GitHub Release. Triggered by pushing a v* tag, or
+# Builds installers for macOS (.dmg/.app) and Windows (.msi/.exe NSIS) and
+# uploads them to a draft GitHub Release. Triggered by pushing a v* tag, or
 # manually via the Actions tab.
 #
-# Update files are signed automatically. Nobody keeps a signing key and there
-# are no signing secrets:
+# The Mac app is signed and notarized by Apple only when the Apple secrets are
+# set (see "Check the Apple secrets" below, and "Apple signing (optional)" in
+# docs/SETUP.md). Without them it builds unsigned, and the build still passes.
+#
+# Update files are signed automatically. Nobody keeps an update signing key
+# and there are no update signing secrets:
 # - Each build job makes its own one-time key pair with the Tauri CLI that
 #   `npm ci` installed (locked in package-lock.json), signs its update files
 #   with it, and adds the public half to the same draft release as
@@ -115,44 +119,104 @@ jobs:
             "$(cat "$dir/updkey.pub")" > "$dir/updater.conf.json"
           echo "dir=$dir" >> "$GITHUB_OUTPUT"
 
-      # NOTARIZATION TEMPORARILY DISABLED (2026-06-06): the APPLE_ID /
-      # APPLE_PASSWORD secrets fail Apple auth with HTTP 401 (APPLE_PASSWORD is
-      # 20 chars; an app-specific password is exactly 19: xxxx-xxxx-xxxx-xxxx).
-      # Apps are still SIGNED with the Developer ID cert — users just have to
-      # approve the first launch via System Settings > Privacy & Security.
+      # Apple signing for the Mac app (macOS jobs only). It turns on by itself
+      # when these repo secrets are set (docs/SETUP.md, "Apple signing
+      # (optional)"):
+      #   APPLE_CERTIFICATE           base64 of the Developer ID Application .p12
+      #   APPLE_CERTIFICATE_PASSWORD  the password of that .p12
+      #   APPLE_API_ISSUER            App Store Connect API key: Issuer ID
+      #   APPLE_API_KEY               App Store Connect API key: Key ID
+      #   APPLE_API_KEY_P8            the text of the AuthKey_<Key ID>.p8 file
+      # - All five: signed and notarized (mode "notarize").
+      # - None: not signed (mode "off"), with a notice.
+      # - Only the certificate and its password: signed, not notarized (mode
+      #   "sign"), with a warning that names the missing secrets. This is how
+      #   1.x was built, so a repo that still has only those two keeps signed
+      #   Mac apps.
+      # - Any other mix: not signed (mode "off"), with a warning that names
+      #   the missing secrets.
+      # The build passes in every case.
       #
-      # To re-enable: regenerate an app-specific password at account.apple.com,
-      # re-set the APPLE_ID and APPLE_PASSWORD repo secrets (from the
-      # Choaterboater account), then uncomment this preflight step AND the
-      # three APPLE_ID/APPLE_PASSWORD/APPLE_TEAM_ID env lines on the
-      # tauri-action step below.
-      #
-      # The Tauri bundler can hide notarytool's real stderr behind a generic
-      # "failed to upload app to Apple's notarization servers." — this step
-      # validates the Apple ID / app-specific password / Team ID triple up
-      # front so the actual Apple error (e.g. HTTP 401) shows in the log.
-      # Values are passed via env and never echoed; only lengths are printed.
-      # - name: Preflight - validate Apple notarization credentials
-      #   if: runner.os == 'macOS'
-      #   env:
-      #     APPLE_ID: ${{ secrets.APPLE_ID }}
-      #     APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-      #     APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-      #   run: |
-      #     set -euo pipefail
-      #     : "${APPLE_ID:?APPLE_ID secret is empty or unset}"
-      #     : "${APPLE_PASSWORD:?APPLE_PASSWORD secret is empty or unset}"
-      #     : "${APPLE_TEAM_ID:?APPLE_TEAM_ID secret is empty or unset}"
-      #     echo "APPLE_ID length: ${#APPLE_ID}; APPLE_PASSWORD length: ${#APPLE_PASSWORD} (expect 19); APPLE_TEAM_ID length: ${#APPLE_TEAM_ID} (expect 10)"
-      #     # Real auth round-trip with Apple; prints Apple's native error on failure.
-      #     xcrun notarytool history \
-      #       --apple-id "$APPLE_ID" \
-      #       --password "$APPLE_PASSWORD" \
-      #       --team-id "$APPLE_TEAM_ID"
-      #     echo "Notarization credentials validated successfully."
+      # The Tauri bundler counts a variable that is set but empty as set: an
+      # empty APPLE_CERTIFICATE makes it import an empty certificate and fail,
+      # and empty APPLE_API_* make it try to notarize with no key. So each mode
+      # has its own build step below, and a build without Apple signing gets
+      # no APPLE_* variable at all. This step sees only true or false, never a
+      # secret, and its only output is the mode.
+      # The bundler takes the signing name from the certificate, so there is
+      # no APPLE_SIGNING_IDENTITY (an old secret of that name is not used).
+      - name: Check the Apple secrets
+        id: apple
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          HAS_APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE != '' }}
+          HAS_APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD != '' }}
+          HAS_APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER != '' }}
+          HAS_APPLE_API_KEY: ${{ secrets.APPLE_API_KEY != '' }}
+          HAS_APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 != '' }}
+        run: |
+          set -euo pipefail
+          missing=""
+          count=0
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD \
+              APPLE_API_ISSUER APPLE_API_KEY APPLE_API_KEY_P8; do
+            has="HAS_$name"
+            if [ "${!has}" != true ]; then
+              missing="$missing${missing:+, }$name"
+              count=$((count + 1))
+            fi
+          done
+          see='See "Apple signing (optional)" in docs/SETUP.md.'
+          if [ "$count" -eq 0 ]; then
+            mode=notarize
+            echo "Apple signing is on: the Mac app is signed and notarized."
+          elif [ "$count" -eq 5 ]; then
+            mode=off
+            echo "::notice::No Apple secrets are set, so the Mac app is not signed. $see"
+          elif [ "$HAS_APPLE_CERTIFICATE" = true ] && [ "$HAS_APPLE_CERTIFICATE_PASSWORD" = true ]; then
+            mode=sign
+            echo "::warning::The Mac app is signed but not notarized. Missing secrets: $missing. $see"
+          else
+            mode=off
+            echo "::warning::The Mac app is not signed. Missing secrets: $missing. $see"
+          fi
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
 
+      # Notarizing only: notarytool reads the API key from a file. It goes
+      # under $RUNNER_TEMP, outside the checkout, readable only by this user,
+      # and "Delete the notarization key" removes it after the build, even
+      # when a step failed. Then one quick call to Apple with the key, so a
+      # wrong key shows Apple's own error here, before the long build.
+      - name: Write the notarization key
+        if: steps.apple.outputs.mode == 'notarize'
+        shell: bash
+        env:
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/greencli-apple-key"
+          rm -rf "$dir" && mkdir -p "$dir" && chmod 700 "$dir"
+          (umask 077 && printf '%s\n' "$APPLE_API_KEY_P8" > "$dir/AuthKey.p8")
+          if ! grep -q -e '-----BEGIN PRIVATE KEY-----' "$dir/AuthKey.p8"; then
+            echo "::error::APPLE_API_KEY_P8 must be the whole text of the .p8 file, from the BEGIN PRIVATE KEY line to the END PRIVATE KEY line."
+            exit 1
+          fi
+          if ! xcrun notarytool history --key "$dir/AuthKey.p8" \
+              --key-id "$APPLE_API_KEY" --issuer "$APPLE_API_ISSUER" > /dev/null; then
+            echo "::error::Apple did not accept the API key. Check APPLE_API_ISSUER, APPLE_API_KEY and APPLE_API_KEY_P8."
+            exit 1
+          fi
+          echo "Apple accepted the API key."
+
+      # Exactly one of the next three build steps runs: this one on Windows
+      # and for an unsigned Mac app, the other two for Apple signing. All
+      # three use the same settings (the `with:` block, shared by name).
       - name: Build + bundle (tauri-action)
         id: tauri
+        if: runner.os != 'macOS' || steps.apple.outputs.mode == 'off'
         uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -161,14 +225,6 @@ jobs:
           # "JavaScript heap out of memory". Linux/Windows runners have 16 GB and
           # get a 4 GB default, which is why only the macOS legs failed.
           NODE_OPTIONS: --max-old-space-size=4096
-          # macOS signing (notarization disabled — see comment above; presence
-          # of APPLE_ID/APPLE_PASSWORD is what makes Tauri attempt notarization)
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          # APPLE_ID: ${{ secrets.APPLE_ID }}
-          # APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          # APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           # Windows code signing:
           # WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
           # WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
@@ -176,7 +232,7 @@ jobs:
           # itself, and no password (see "Make a one-time update signing key").
           TAURI_SIGNING_PRIVATE_KEY: ${{ steps.keygen.outputs.dir }}/updkey
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
-        with:
+        with: &tauri-with
           # The Tauri app lives at the repo root (this `project/` folder).
           # Publishing is on for tag and release/** pushes, and for manual
           # runs unless "publish" is unticked. The test is
@@ -205,12 +261,165 @@ jobs:
           updaterJsonPreferNsis: true
           args: --target ${{ matrix.target }} --config ${{ steps.keygen.outputs.dir }}/updater.conf.json
 
+      # Signed with the Developer ID certificate, not notarized. The bundler
+      # signs GreenCLI and greencli-mcp (both in Contents/MacOS) and then the
+      # app, all with the hardened runtime, and makes the .dmg and the update
+      # file from the signed app.
+      - name: Build + bundle, signed (tauri-action)
+        id: tauri_signed
+        if: steps.apple.outputs.mode == 'sign'
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NODE_OPTIONS: --max-old-space-size=4096
+          TAURI_SIGNING_PRIVATE_KEY: ${{ steps.keygen.outputs.dir }}/updkey
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        with: *tauri-with
+
+      # Signed as above, then sent to Apple to notarize. The bundler waits
+      # for Apple and staples the ticket to the app before it makes the .dmg
+      # and the update file, so both hold the notarized app.
+      - name: Build + bundle, signed and notarized (tauri-action)
+        id: tauri_notarized
+        if: steps.apple.outputs.mode == 'notarize'
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NODE_OPTIONS: --max-old-space-size=4096
+          TAURI_SIGNING_PRIVATE_KEY: ${{ steps.keygen.outputs.dir }}/updkey
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          # The file "Write the notarization key" made.
+          APPLE_API_KEY_PATH: ${{ runner.temp }}/greencli-apple-key/AuthKey.p8
+        with: *tauri-with
+
       # The private key is only needed by the build: delete it now, even when
-      # a step failed. The public half stays for the next two steps.
+      # a step failed. The public half stays for "Check the update
+      # signatures" and "Publish the update key".
       - name: Delete the update signing key
         if: always()
         shell: bash
         run: rm -f "${RUNNER_TEMP//\\//}/greencli-update-key/updkey"
+
+      # Notarizing only. The bundler notarizes the app inside the .dmg, but
+      # not the .dmg itself, and macOS checks the .dmg when a user opens the
+      # download. So send the .dmg to Apple too, staple the ticket to it, and
+      # put the stapled .dmg in the release in place of the one tauri-action
+      # uploaded (build only: the stapled .dmg is kept as a workflow
+      # artifact below).
+      - name: Notarize the .dmg
+        if: steps.apple.outputs.mode == 'notarize'
+        shell: bash
+        env:
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PUBLISH: ${{ github.event_name != 'workflow_dispatch' || inputs.publish }}
+          RELEASE_ID: ${{ steps.tauri_notarized.outputs.releaseId }}
+          BUNDLE: src-tauri/target/${{ matrix.target }}/release/bundle
+        run: |
+          set -euo pipefail
+          key="$RUNNER_TEMP/greencli-apple-key/AuthKey.p8"
+          set -- "$BUNDLE"/dmg/*.dmg
+          if [ "$#" -ne 1 ] || [ ! -f "$1" ]; then
+            echo "::error::Expected one .dmg in $BUNDLE/dmg."
+            exit 1
+          fi
+          dmg=$1
+          name=$(basename "$dmg")
+          echo "Sending $name to Apple (this can take a few minutes)..."
+          out=$(xcrun notarytool submit "$dmg" --key "$key" --key-id "$APPLE_API_KEY" \
+            --issuer "$APPLE_API_ISSUER" --wait --timeout 1h --output-format json) || true
+          # notarytool's JSON answer: {"id": ..., "status": ..., "message": ...}
+          status=$(node -p 'JSON.parse(require("fs").readFileSync(0, "utf8")).status || ""' \
+            <<<"$out" 2>/dev/null) || status=""
+          if [ "$status" != Accepted ]; then
+            echo "::error::Apple did not notarize $name (status: ${status:-none})."
+            id=$(node -p 'JSON.parse(require("fs").readFileSync(0, "utf8")).id || ""' \
+              <<<"$out" 2>/dev/null) || id=""
+            if [ -n "$id" ]; then
+              xcrun notarytool log "$id" --key "$key" --key-id "$APPLE_API_KEY" \
+                --issuer "$APPLE_API_ISSUER" || true
+            fi
+            exit 1
+          fi
+          xcrun stapler staple "$dmg"
+          echo "Apple notarized $name, and its ticket is stapled."
+          if [ "$PUBLISH" != true ]; then exit 0; fi
+          test -n "$RELEASE_ID"
+          ids=$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets" --paginate \
+            --jq ".[] | select(.name == \"$name\") | .id")
+          found=$(printf '%s' "$ids" | wc -w | tr -d ' ')
+          if [ "$found" != 1 ]; then
+            echo "::error::The release should have one $name, but has $found."
+            exit 1
+          fi
+          gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$ids"
+          curl -fsS -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Content-Type: application/octet-stream" \
+            --data-binary "@$dmg" \
+            "https://uploads.github.com/repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets?name=$name" > /dev/null
+          echo "The release now has the stapled $name."
+
+      # The notarization key is only needed above: delete it now, even when
+      # a step failed.
+      - name: Delete the notarization key
+        if: always() && runner.os == 'macOS'
+        shell: bash
+        run: rm -rf "$RUNNER_TEMP/greencli-apple-key"
+
+      # The Mac app must hold greencli-mcp. With Apple signing on, both
+      # programs in it must carry the Developer ID signature with the hardened
+      # runtime (Apple's notary refuses anything less), and a notarized app
+      # and .dmg must carry Apple's ticket. (The bundler does not stop when
+      # stapling fails, so this is the check for that.) A problem fails a
+      # notarized build; a signed-only build gets a warning.
+      - name: Check the Mac app
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          BUNDLE: src-tauri/target/${{ matrix.target }}/release/bundle
+          MODE: ${{ steps.apple.outputs.mode }}
+        run: |
+          set -euo pipefail
+          app="$BUNDLE/macos/GreenCLI.app"
+          for exe in GreenCLI greencli-mcp; do
+            if [ ! -x "$app/Contents/MacOS/$exe" ]; then
+              echo "::error::The Mac app has no Contents/MacOS/$exe."
+              exit 1
+            fi
+          done
+          if [ "$MODE" = off ]; then
+            echo "The Mac app holds greencli-mcp. It is not signed (no Apple signing)."
+            exit 0
+          fi
+          problem() {
+            if [ "$MODE" = notarize ]; then echo "::error::$1"; exit 1; fi
+            echo "::warning::$1"
+          }
+          codesign --verify --strict --deep "$app" || problem "The Mac app's signature is not valid."
+          for exe in GreenCLI greencli-mcp; do
+            info=$(codesign -d --verbose=2 "$app/Contents/MacOS/$exe" 2>&1) || true
+            grep -q '^Authority=Developer ID Application:' <<<"$info" ||
+              problem "$exe is not signed with a Developer ID Application certificate."
+            grep -Eq '^CodeDirectory .*flags=0x[0-9a-f]+\([^)]*runtime' <<<"$info" ||
+              problem "$exe is signed without the hardened runtime."
+          done
+          if [ "$MODE" = sign ]; then
+            echo "The Mac app is signed (not notarized)."
+            exit 0
+          fi
+          xcrun stapler validate "$app" > /dev/null || problem "The Mac app has no notarization ticket."
+          for dmg in "$BUNDLE"/dmg/*.dmg; do
+            xcrun stapler validate "$dmg" > /dev/null || problem "$(basename "$dmg") has no notarization ticket."
+          done
+          echo "The Mac app and the .dmg are signed and notarized."
 
       # Every update file must match this build's key before the key is published.
       - name: Check the update signatures
@@ -226,7 +435,8 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_ID: ${{ steps.tauri.outputs.releaseId }}
+          # From the build step that ran (only one of the three runs).
+          RELEASE_ID: ${{ steps.tauri.outputs.releaseId || steps.tauri_signed.outputs.releaseId || steps.tauri_notarized.outputs.releaseId }}
           KEY_NAME: update-key-${{ matrix.updater }}.pub
           KEY_FILE: ${{ steps.keygen.outputs.dir }}/updkey.pub
         run: |

@@ -1073,36 +1073,48 @@ mod tests {
         // The key folder is under $RUNNER_TEMP, outside the checkout.
         assert!(yml.contains("dir=\"${RUNNER_TEMP//\\\\//}/greencli-update-key\""));
         // tauri-action gets the private key as a path, with no password
-        // (the Tauri CLI makes and reads it with an empty one in CI).
-        let signing: Vec<&str> = yml
-            .lines()
-            .map(str::trim)
+        // (the Tauri CLI makes and reads it with an empty one in CI). There
+        // are three tauri-action steps (no Apple signing, signed, signed and
+        // notarized; only one runs), and each gets the same two lines.
+        let lines: Vec<&str> = yml.lines().map(str::trim).collect();
+        let builds = lines
+            .iter()
+            .filter(|l| **l == "uses: tauri-apps/tauri-action@v1")
+            .count();
+        assert_eq!(builds, 3);
+        let signing: Vec<&str> = lines
+            .iter()
+            .copied()
             .filter(|l| l.contains("TAURI_SIGNING"))
             .collect();
-        assert_eq!(
-            signing,
-            [
-                "TAURI_SIGNING_PRIVATE_KEY: ${{ steps.keygen.outputs.dir }}/updkey",
-                "TAURI_SIGNING_PRIVATE_KEY_PASSWORD: \"\"",
-            ]
-        );
+        assert_eq!(signing.len(), 2 * builds, "{signing:#?}");
+        for pair in signing.chunks(2) {
+            assert_eq!(
+                pair,
+                [
+                    "TAURI_SIGNING_PRIVATE_KEY: ${{ steps.keygen.outputs.dir }}/updkey",
+                    "TAURI_SIGNING_PRIVATE_KEY_PASSWORD: \"\"",
+                ]
+            );
+        }
         // Every line that names the private key file: it is made, handed to
         // tauri-action, and deleted. Nothing else reads, prints, stores or
         // uploads it.
-        let lines: Vec<&str> = yml.lines().map(str::trim).collect();
         let private: Vec<usize> = (0..lines.len())
             .filter(|&i| names_private_key(lines[i]))
             .collect();
         assert_eq!(
             private.len(),
-            3,
+            2 + builds,
             "{:#?}",
             private.iter().map(|&i| lines[i]).collect::<Vec<_>>()
         );
         assert!(lines[private[0]].starts_with("npx --no-install tauri signer generate"));
         assert!(lines[private[0]].ends_with("> /dev/null"));
-        assert!(lines[private[1]].starts_with("TAURI_SIGNING_PRIVATE_KEY: "));
-        let delete = private[2];
+        for &i in &private[1..=builds] {
+            assert!(lines[i].starts_with("TAURI_SIGNING_PRIVATE_KEY: "));
+        }
+        let delete = private[builds + 1];
         assert_eq!(
             lines[delete],
             "run: rm -f \"${RUNNER_TEMP//\\\\//}/greencli-update-key/updkey\""
@@ -1115,7 +1127,11 @@ mod tests {
             "the key delete step needs if: always()"
         );
         let after = |what: &str| lines.iter().position(|l| l.contains(what)).unwrap();
-        assert!(after("uses: tauri-apps/tauri-action") < delete);
+        let last_build = lines
+            .iter()
+            .rposition(|l| l.contains("uses: tauri-apps/tauri-action"))
+            .unwrap();
+        assert!(last_build < delete);
         assert!(delete < after("name: Check the update signatures"));
         assert!(delete < after("name: Publish the update key"));
         // Outputs carry only the key folder, never a key.
@@ -1125,5 +1141,540 @@ mod tests {
             }
         }
         assert!(yml.contains("echo \"dir=$dir\" >> \"$GITHUB_OUTPUT\""));
+    }
+
+    // Apple signing in release.yml. Not the updater, but the same file and
+    // the same build steps, so the checks live next to the ones above.
+
+    /// The five repo secrets that turn Apple signing on (docs/SETUP.md,
+    /// "Apple signing (optional)").
+    const APPLE_SECRETS: [&str; 5] = [
+        "APPLE_CERTIFICATE",
+        "APPLE_CERTIFICATE_PASSWORD",
+        "APPLE_API_ISSUER",
+        "APPLE_API_KEY",
+        "APPLE_API_KEY_P8",
+    ];
+
+    const RELEASE_YML: &str = include_str!("../../.github/workflows/release.yml");
+
+    /// Where "Write the notarization key" puts the .p8 file.
+    const P8_DIR: &str = "$RUNNER_TEMP/greencli-apple-key";
+
+    /// One step of release.yml's build job, read from the text with the
+    /// file's own layout: steps at 6 spaces, their keys at 8, env entries at
+    /// 10, run lines deeper. Comment lines are left out.
+    #[derive(Default, Debug)]
+    struct Step {
+        name: String,
+        id: String,
+        cond: String,
+        uses: String,
+        with: String,
+        env: Vec<(String, String)>,
+        run: String,
+    }
+
+    impl Step {
+        fn env(&self, key: &str) -> Option<&str> {
+            self.env
+                .iter()
+                .find(|(k, _)| k == key)
+                .map(|(_, v)| v.as_str())
+        }
+        fn apple_env(&self) -> Vec<&str> {
+            self.env
+                .iter()
+                .map(|(k, _)| k.as_str())
+                .filter(|k| k.starts_with("APPLE_"))
+                .collect()
+        }
+        /// Gets the value of an Apple secret (not just whether it is set).
+        fn holds_apple_secret(&self) -> bool {
+            self.env
+                .iter()
+                .any(|(_, v)| v.contains("secrets.APPLE_") && !v.ends_with(" != '' }}"))
+        }
+    }
+
+    /// Lines of release.yml that are not comments, trimmed.
+    fn code_lines(yml: &str) -> Vec<&str> {
+        yml.lines()
+            .map(str::trim)
+            .filter(|l| !l.starts_with('#'))
+            .collect()
+    }
+
+    fn build_steps(yml: &str) -> Vec<Step> {
+        let indent = |l: &str| l.len() - l.trim_start().len();
+        let lines: Vec<&str> = yml
+            .lines()
+            .filter(|l| !l.trim_start().starts_with('#'))
+            .collect();
+        let start = lines.iter().position(|l| *l == "  build:").unwrap();
+        let end = start
+            + 1
+            + lines[start + 1..]
+                .iter()
+                .position(|l| indent(l) == 2 && !l.trim().is_empty())
+                .unwrap();
+        let mut steps: Vec<Step> = Vec::new();
+        let mut block = "";
+        for line in &lines[start..end] {
+            if line.starts_with("      - ") {
+                steps.push(Step::default());
+            }
+            let Some(step) = steps.last_mut() else {
+                continue;
+            };
+            let (depth, body) = match line.trim().strip_prefix("- ") {
+                Some(rest) if indent(line) == 6 => (8, rest),
+                _ => (indent(line), line.trim()),
+            };
+            if body.is_empty() {
+                continue;
+            }
+            if depth == 8 {
+                let (key, value) = body.split_once(':').unwrap();
+                let value = value.trim().to_string();
+                block = "";
+                match key {
+                    "name" => step.name = value,
+                    "id" => step.id = value,
+                    "if" => step.cond = value,
+                    "uses" => step.uses = value,
+                    "with" => step.with = value,
+                    "env" => block = "env",
+                    "run" if value == "|" || value == ">-" => block = "run",
+                    "run" => step.run = value,
+                    _ => {}
+                }
+            } else if depth == 10 && block == "env" {
+                let (k, v) = body.split_once(':').unwrap();
+                step.env.push((k.to_string(), v.trim().to_string()));
+            } else if depth > 8 && block == "run" {
+                step.run.push_str(body);
+                step.run.push('\n');
+            }
+        }
+        steps
+    }
+
+    fn step<'a>(steps: &'a [Step], name: &str) -> (usize, &'a Step) {
+        let i = steps
+            .iter()
+            .position(|s| s.name == name)
+            .unwrap_or_else(|| panic!("release.yml has no step {name:?}"));
+        (i, &steps[i])
+    }
+
+    fn tauri_builds(steps: &[Step]) -> Vec<(usize, &Step)> {
+        steps
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.uses == "tauri-apps/tauri-action@v1")
+            .collect()
+    }
+
+    /// The parser reads the steps the way GitHub does (checked against a
+    /// YAML parser when this test was written).
+    #[test]
+    fn release_workflow_steps_parse() {
+        let steps = build_steps(RELEASE_YML);
+        let names: Vec<&str> = steps.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "",
+                "Setup Node",
+                "Setup Rust",
+                "Rust cache",
+                "Install frontend dependencies",
+                "Make a one-time update signing key",
+                "Check the Apple secrets",
+                "Write the notarization key",
+                "Build + bundle (tauri-action)",
+                "Build + bundle, signed (tauri-action)",
+                "Build + bundle, signed and notarized (tauri-action)",
+                "Delete the update signing key",
+                "Notarize the .dmg",
+                "Delete the notarization key",
+                "Check the Mac app",
+                "Check the update signatures",
+                "Publish the update key",
+                "Keep installers (build only)",
+            ]
+        );
+        assert_eq!(steps[0].uses, "actions/checkout@v4");
+        let (_, keygen) = step(&steps, "Make a one-time update signing key");
+        assert_eq!(keygen.id, "keygen");
+        assert!(keygen
+            .run
+            .ends_with("echo \"dir=$dir\" >> \"$GITHUB_OUTPUT\"\n"));
+        let (_, publish) = step(&steps, "Publish the update key");
+        assert_eq!(
+            publish
+                .env
+                .iter()
+                .map(|(k, _)| k.as_str())
+                .collect::<Vec<_>>(),
+            ["GH_TOKEN", "RELEASE_ID", "KEY_NAME", "KEY_FILE"]
+        );
+    }
+
+    /// release.yml signs and notarizes the Mac app only when all five Apple
+    /// secrets are set, signs it when only the certificate and its password
+    /// are, and else builds it unsigned. A build without Apple signing (and
+    /// every Windows build) gets no APPLE_* variable at all, because the
+    /// Tauri bundler counts a set but empty variable as set.
+    #[test]
+    fn release_workflow_signs_the_mac_app_only_with_the_apple_secrets() {
+        let steps = build_steps(RELEASE_YML);
+        let code = code_lines(RELEASE_YML);
+
+        // Only the five secrets; never the old Apple ID ones or a signing
+        // identity (the bundler takes it from the certificate).
+        let mut used: Vec<&str> = code
+            .iter()
+            .flat_map(|l| {
+                l.match_indices("secrets.APPLE_")
+                    .map(move |(i, _)| &l[i + 8..])
+            })
+            .map(|rest| {
+                rest.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                    .next()
+                    .unwrap()
+            })
+            .collect();
+        used.sort_unstable();
+        used.dedup();
+        let mut five = APPLE_SECRETS.to_vec();
+        five.sort_unstable();
+        assert_eq!(used, five);
+        for old in [
+            "APPLE_SIGNING_IDENTITY",
+            "APPLE_ID",
+            "APPLE_PASSWORD",
+            "APPLE_TEAM_ID",
+        ] {
+            assert!(
+                !code
+                    .iter()
+                    .any(|l| l.contains(&format!("{old}:"))
+                        || l.contains(&format!("secrets.{old} "))),
+                "release.yml uses {old}"
+            );
+        }
+
+        // The check sees only whether each secret is set, and decides the
+        // mode: no secrets is a notice, some is a warning that names the
+        // missing ones (names only), and the build goes on either way.
+        let (_, check) = step(&steps, "Check the Apple secrets");
+        assert_eq!(check.id, "apple");
+        assert_eq!(check.cond, "runner.os == 'macOS'");
+        let expect: Vec<(String, String)> = APPLE_SECRETS
+            .iter()
+            .map(|n| (format!("HAS_{n}"), format!("${{{{ secrets.{n} != '' }}}}")))
+            .collect();
+        assert_eq!(check.env, expect);
+        assert!(!check.holds_apple_secret());
+        assert!(!check.run.contains("secrets."));
+        assert!(!check.run.contains("$APPLE_"));
+        let mut modes: Vec<&str> = check
+            .run
+            .lines()
+            .filter_map(|l| l.strip_prefix("mode="))
+            .collect();
+        modes.sort_unstable();
+        assert_eq!(modes, ["notarize", "off", "off", "sign"]);
+        assert_eq!(
+            check
+                .run
+                .matches("echo \"::notice::No Apple secrets")
+                .count(),
+            1
+        );
+        assert_eq!(check.run.matches("echo \"::warning::").count(), 2);
+        assert_eq!(check.run.matches("Missing secrets: $missing.").count(), 2);
+        assert!(check
+            .run
+            .contains("missing=\"$missing${missing:+, }$name\""));
+        assert!(!check.run.contains("exit 1"));
+        assert!(!check.run.contains("::error::"));
+
+        // Three build steps, one per mode, with the same settings (one
+        // `with:` block, shared by a YAML alias). Exactly one runs.
+        let builds = tauri_builds(&steps);
+        let b: Vec<&Step> = builds.iter().map(|(_, s)| *s).collect();
+        assert_eq!(
+            b.iter()
+                .map(|s| (s.id.as_str(), s.cond.as_str(), s.with.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                (
+                    "tauri",
+                    "runner.os != 'macOS' || steps.apple.outputs.mode == 'off'",
+                    "&tauri-with"
+                ),
+                (
+                    "tauri_signed",
+                    "steps.apple.outputs.mode == 'sign'",
+                    "*tauri-with"
+                ),
+                (
+                    "tauri_notarized",
+                    "steps.apple.outputs.mode == 'notarize'",
+                    "*tauri-with"
+                ),
+            ]
+        );
+        assert_eq!(RELEASE_YML.matches("&tauri-with").count(), 1);
+        assert_eq!(RELEASE_YML.matches("*tauri-with").count(), 2);
+
+        // The off path (and Windows) gets no APPLE_* variable at all; the
+        // signed builds get exactly what their mode needs.
+        assert_eq!(b[0].apple_env(), Vec::<&str>::new());
+        assert_eq!(
+            b[1].apple_env(),
+            ["APPLE_CERTIFICATE", "APPLE_CERTIFICATE_PASSWORD"]
+        );
+        assert_eq!(
+            b[2].apple_env(),
+            [
+                "APPLE_CERTIFICATE",
+                "APPLE_CERTIFICATE_PASSWORD",
+                "APPLE_API_ISSUER",
+                "APPLE_API_KEY",
+                "APPLE_API_KEY_PATH",
+            ]
+        );
+        for n in ["APPLE_CERTIFICATE", "APPLE_CERTIFICATE_PASSWORD"] {
+            let want = format!("${{{{ secrets.{n} }}}}");
+            assert_eq!(b[1].env(n), Some(want.as_str()));
+            assert_eq!(b[2].env(n), Some(want.as_str()));
+        }
+        // Apart from Apple's, the three builds get the same variables.
+        for s in &b[1..] {
+            let rest: Vec<&(String, String)> = s
+                .env
+                .iter()
+                .filter(|(k, _)| !k.starts_with("APPLE_"))
+                .collect();
+            assert_eq!(rest, b[0].env.iter().collect::<Vec<_>>(), "{}", s.name);
+        }
+        // Any step that gets an APPLE_* variable runs only with Apple
+        // signing on, and none is set for the whole job or workflow.
+        for s in &steps {
+            if !s.apple_env().is_empty() {
+                assert!(
+                    s.cond == "steps.apple.outputs.mode == 'sign'"
+                        || s.cond == "steps.apple.outputs.mode == 'notarize'",
+                    "{} sets APPLE_* without Apple signing on",
+                    s.name
+                );
+            }
+        }
+        let in_steps: usize = steps.iter().map(|s| s.apple_env().len()).sum();
+        let anywhere = code
+            .iter()
+            .filter(|l| l.starts_with("APPLE_") && l.contains(':'))
+            .count();
+        assert_eq!(in_steps, anywhere);
+
+        // The update key is published from whichever build ran.
+        let (_, publish) = step(&steps, "Publish the update key");
+        assert_eq!(
+            publish.env("RELEASE_ID"),
+            Some(
+                "${{ steps.tauri.outputs.releaseId || steps.tauri_signed.outputs.releaseId \
+                 || steps.tauri_notarized.outputs.releaseId }}"
+            )
+        );
+    }
+
+    /// No Apple secret goes into GITHUB_ENV, GITHUB_OUTPUT, the step summary
+    /// or the log: steps that get one never trace their commands, never
+    /// echo one, and hand the API key's id and issuer only to notarytool.
+    #[test]
+    fn release_workflow_keeps_the_apple_secrets_out_of_outputs_and_logs() {
+        let steps = build_steps(RELEASE_YML);
+        let code = code_lines(RELEASE_YML);
+
+        // The only outputs are the update key folder and the Apple mode.
+        let writes: Vec<&str> = code
+            .iter()
+            .copied()
+            .filter(|l| {
+                l.contains("GITHUB_ENV")
+                    || l.contains("GITHUB_OUTPUT")
+                    || l.contains("GITHUB_STEP_SUMMARY")
+            })
+            .collect();
+        assert_eq!(
+            writes,
+            [
+                "echo \"dir=$dir\" >> \"$GITHUB_OUTPUT\"",
+                "echo \"mode=$mode\" >> \"$GITHUB_OUTPUT\"",
+            ]
+        );
+        assert!(!RELEASE_YML.contains("GITHUB_ENV"));
+
+        let holders: Vec<&Step> = steps.iter().filter(|s| s.holds_apple_secret()).collect();
+        assert_eq!(
+            holders.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
+            [
+                "Write the notarization key",
+                "Build + bundle, signed (tauri-action)",
+                "Build + bundle, signed and notarized (tauri-action)",
+                "Notarize the .dmg",
+            ]
+        );
+        for s in &holders {
+            for bad in [
+                "set -x",
+                "set -o xtrace",
+                "add-mask",
+                "GITHUB_ENV",
+                "GITHUB_OUTPUT",
+                "GITHUB_STEP_SUMMARY",
+                "GITHUB_PATH",
+                "env |",
+                "printenv",
+            ] {
+                assert!(!s.run.contains(bad), "{}: {bad}", s.name);
+            }
+            for line in s.run.lines().filter(|l| l.contains("$APPLE_")) {
+                assert!(!line.contains("echo"), "{}: {line}", s.name);
+                // The API key's id and issuer go only to notarytool; the
+                // .p8 text only into its file.
+                let ok = line.contains("--key-id \"$APPLE_API_KEY\"")
+                    || line.contains("--issuer \"$APPLE_API_ISSUER\"")
+                    || line == "(umask 077 && printf '%s\\n' \"$APPLE_API_KEY_P8\" > \"$dir/AuthKey.p8\")";
+                assert!(ok, "{}: {line}", s.name);
+                assert!(!line.contains("$APPLE_CERTIFICATE"), "{}: {line}", s.name);
+            }
+        }
+
+        // The .p8 text is in one step only, which writes it to the file.
+        let p8: Vec<&str> = steps
+            .iter()
+            .filter(|s| {
+                s.env
+                    .iter()
+                    .any(|(_, v)| v == "${{ secrets.APPLE_API_KEY_P8 }}")
+            })
+            .map(|s| s.name.as_str())
+            .collect();
+        assert_eq!(p8, ["Write the notarization key"]);
+        let (_, write) = step(&steps, "Write the notarization key");
+        assert_eq!(write.run.matches("$APPLE_API_KEY_P8").count(), 1);
+        // The certificate and its password go only to the bundler.
+        for s in &steps {
+            let cert = s.env.iter().any(|(_, v)| {
+                v == "${{ secrets.APPLE_CERTIFICATE }}"
+                    || v == "${{ secrets.APPLE_CERTIFICATE_PASSWORD }}"
+            });
+            if cert {
+                assert_eq!(s.uses, "tauri-apps/tauri-action@v1", "{}", s.name);
+            }
+        }
+    }
+
+    /// The .p8 file is written under $RUNNER_TEMP (outside the checkout),
+    /// used by the notarizing build and the .dmg step, and deleted by a step
+    /// that runs even when a step before it failed, before anything is
+    /// checked or published.
+    #[test]
+    fn release_workflow_deletes_the_notarization_key() {
+        let steps = build_steps(RELEASE_YML);
+        let (write_at, write) = step(&steps, "Write the notarization key");
+        assert_eq!(write.cond, "steps.apple.outputs.mode == 'notarize'");
+        assert!(write.run.contains(&format!("dir=\"{P8_DIR}\"\n")));
+        assert!(write
+            .run
+            .contains("rm -rf \"$dir\" && mkdir -p \"$dir\" && chmod 700 \"$dir\"\n"));
+        let builds = tauri_builds(&steps);
+        assert_eq!(
+            builds[2].1.env("APPLE_API_KEY_PATH"),
+            Some("${{ runner.temp }}/greencli-apple-key/AuthKey.p8")
+        );
+        let (dmg_at, dmg) = step(&steps, "Notarize the .dmg");
+        assert_eq!(dmg.cond, "steps.apple.outputs.mode == 'notarize'");
+        assert!(dmg.run.contains(&format!("key=\"{P8_DIR}/AuthKey.p8\"\n")));
+
+        let (delete_at, delete) = step(&steps, "Delete the notarization key");
+        assert!(delete.cond.starts_with("always()"), "{}", delete.cond);
+        assert_eq!(delete.run, format!("rm -rf \"{P8_DIR}\""));
+        assert!(write_at < builds[0].0);
+        assert!(builds[2].0 < delete_at);
+        assert!(dmg_at < delete_at);
+        for later in [
+            "Check the Mac app",
+            "Check the update signatures",
+            "Publish the update key",
+            "Keep installers (build only)",
+        ] {
+            assert!(delete_at < step(&steps, later).0, "{later}");
+        }
+        // Every line that names the key folder: made, used twice, deleted.
+        let named: Vec<&str> = code_lines(RELEASE_YML)
+            .into_iter()
+            .filter(|l| l.contains("greencli-apple-key"))
+            .collect();
+        assert_eq!(named.len(), 4, "{named:#?}");
+    }
+
+    /// After the build, the Mac app is checked: greencli-mcp is inside, a
+    /// signed app's programs are signed with the hardened runtime, and a
+    /// notarized app and .dmg carry Apple's ticket (the bundler does not
+    /// stop when stapling fails).
+    #[test]
+    fn release_workflow_checks_the_mac_app() {
+        let steps = build_steps(RELEASE_YML);
+        let (at, mac) = step(&steps, "Check the Mac app");
+        assert_eq!(mac.cond, "runner.os == 'macOS'");
+        assert_eq!(mac.env("MODE"), Some("${{ steps.apple.outputs.mode }}"));
+        assert!(mac.run.contains("app=\"$BUNDLE/macos/GreenCLI.app\"\n"));
+        assert_eq!(
+            mac.run
+                .matches("for exe in GreenCLI greencli-mcp; do")
+                .count(),
+            2
+        );
+        assert!(mac.run.contains("^Authority=Developer ID Application:"));
+        assert!(mac.run.contains("runtime"));
+        assert!(mac.run.contains("xcrun stapler validate \"$app\""));
+        assert!(mac.run.contains("xcrun stapler validate \"$dmg\""));
+        assert!(at < step(&steps, "Check the update signatures").0);
+        assert!(at < step(&steps, "Publish the update key").0);
+        let (_, dmg) = step(&steps, "Notarize the .dmg");
+        assert!(dmg.run.contains("xcrun stapler staple \"$dmg\"\n"));
+        assert!(dmg.run.contains("if [ \"$status\" != Accepted ]; then\n"));
+    }
+
+    /// greencli-mcp is a second program of this package (src/bin), so the
+    /// Tauri bundler copies it into GreenCLI.app/Contents/MacOS and signs it
+    /// with the hardened runtime before it signs the app. Apple's notary
+    /// refuses an app with an unsigned program inside, so it must not move
+    /// to resources, and the hardened runtime must stay on (Tauri's default).
+    #[test]
+    fn mac_app_signs_greencli_mcp_with_the_hardened_runtime() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        assert!(dir.join("src/bin/greencli-mcp.rs").is_file());
+        let c = conf();
+        let bundle = &c["bundle"];
+        let mac = &bundle["macOS"];
+        let runtime = &mac["hardenedRuntime"];
+        assert!(
+            runtime.is_null() || *runtime == true,
+            "hardenedRuntime: {runtime}"
+        );
+        // No entitlements: GreenCLI needs none under the hardened runtime
+        // (no JIT in the app's own process, no plug-ins, no Apple Events).
+        assert!(mac["entitlements"].is_null());
+        // The signing name comes from the certificate in APPLE_CERTIFICATE.
+        assert!(mac["signingIdentity"].is_null());
+        assert_eq!(bundle["externalBin"], serde_json::json!([]));
+        assert!(!bundle["resources"].to_string().contains("greencli-mcp"));
     }
 }

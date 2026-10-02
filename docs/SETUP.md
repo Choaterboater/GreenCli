@@ -75,6 +75,35 @@ npm run tauri-build -- --target x86_64-pc-windows-msvc     # Windows
 npm run tauri-build -- --target x86_64-unknown-linux-gnu   # Linux
 ```
 
+### Apple signing (optional)
+
+The release workflow (`.github/workflows/release.yml`) can sign the Mac app with your Apple
+Developer ID and have Apple notarize it. Then Mac users get no "unidentified developer" warning,
+and they don't need right-click → **Open** or System Settings → Privacy & Security to start
+GreenCLI the first time. A signed app also keeps its Keychain access after an update.
+
+To turn it on, add these five repository secrets (GitHub → **Settings → Secrets and variables →
+Actions**):
+
+| Secret | What goes in it |
+|--------|-----------------|
+| `APPLE_CERTIFICATE` | Your **Developer ID Application** certificate with its private key, exported as a `.p12` file, in base64 (on a Mac: `base64 -i cert.p12 \| pbcopy`). Put only this one certificate in the `.p12`. |
+| `APPLE_CERTIFICATE_PASSWORD` | The password you set when you exported the `.p12`. |
+| `APPLE_API_ISSUER` | The **Issuer ID** of your App Store Connect API team key. |
+| `APPLE_API_KEY` | The **Key ID** of that API key. |
+| `APPLE_API_KEY_P8` | The whole text of the `AuthKey_<Key ID>.p8` file you downloaded for that key, from `-----BEGIN PRIVATE KEY-----` to `-----END PRIVATE KEY-----`. |
+
+- **All five set:** the app, `greencli-mcp` inside it, and the `.dmg` are signed and notarized,
+  and Apple's ticket is stapled to the app and the `.dmg`. The update file is made from the
+  signed app.
+- **None set:** releases still build, unsigned. The run shows a notice.
+- **Some set:** releases still build, and the run shows a warning that names the missing
+  secrets. With only the certificate and its password, the app is signed but not notarized;
+  with any other mix, it is not signed.
+
+No `APPLE_SIGNING_IDENTITY` secret is needed: the workflow reads the signing name from the
+certificate. The secrets never show in the build log.
+
 ---
 
 ## 3. Where your data lives
