@@ -45,5 +45,115 @@
     },
     "name": "list_devices",
     "title": "List devices"
+  },
+  {
+    "_meta": {
+      "casper/safety": "read"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "List config history"
+    },
+    "description": "Lists a device's saved config snapshots, newest first: ts, source (connect, manual, before-change, after-change), golden, and hasHiddenCopy. Only snapshots with hasHiddenCopy can be read with get_config or get_config_diff.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "cursor": {
+          "description": "nextCursor from the last page, to get the next one.",
+          "type": "string"
+        },
+        "device": {
+          "description": "The device's archiveKey from list_devices (its name in GreenCLI).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "device"
+      ],
+      "type": "object"
+    },
+    "name": "list_config_history",
+    "title": "List config history"
+  },
+  {
+    "_meta": {
+      "casper/safety": "read"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Get config"
+    },
+    "description": "Gets a saved config snapshot with its secrets hidden (passwords, keys and community strings are replaced). Leave out ts for the newest one. Long configs come in pages: pass nextCursor to get the next one.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "cursor": {
+          "description": "nextCursor from the last page, to get the next one.",
+          "type": "string"
+        },
+        "device": {
+          "description": "The device's archiveKey from list_devices (its name in GreenCLI).",
+          "type": "string"
+        },
+        "ts": {
+          "description": "The snapshot's ts from list_config_history. Default: the newest.",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "device"
+      ],
+      "type": "object"
+    },
+    "name": "get_config",
+    "title": "Get config"
+  },
+  {
+    "_meta": {
+      "casper/safety": "read"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Get config diff"
+    },
+    "description": "Shows what changed between two saved config snapshots, as a unified diff of the copies with secrets hidden. A changed password or key looks the same on both sides, so a diff can't show a changed secret. Default: the newest snapshot against the one before it.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "cursor": {
+          "description": "nextCursor from the last page, to get the next one.",
+          "type": "string"
+        },
+        "device": {
+          "description": "The device's archiveKey from list_devices (its name in GreenCLI).",
+          "type": "string"
+        },
+        "from": {
+          "description": "previous (the snapshot before `to`), golden, or a snapshot ts. Default: previous.",
+          "type": "string"
+        },
+        "to": {
+          "description": "The newer snapshot's ts. Default: the newest.",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "device"
+      ],
+      "type": "object"
+    },
+    "name": "get_config_diff",
+    "title": "Get config diff"
   }
 ]

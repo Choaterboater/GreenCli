@@ -14,6 +14,7 @@
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 
+mod archive;
 mod devices;
 mod files;
 mod page;

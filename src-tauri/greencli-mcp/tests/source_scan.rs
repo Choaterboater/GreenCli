@@ -165,6 +165,10 @@ fn only_hidden_copies_are_read() {
         for (i, _) in text.match_indices(".json\"") {
             let start = text[..i].rfind('"').unwrap();
             let literal = &text[start..i + 6];
+            // Test vectors read by unit tests at build time.
+            if literal.starts_with("\"../testdata/") {
+                continue;
+            }
             assert!(
                 allowed.contains(&literal),
                 "{}: names the file {literal}",

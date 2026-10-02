@@ -74,6 +74,52 @@ pub fn take_items(items: &[Value], start: usize, budget: usize) -> (Vec<Value>, 
     (out, next)
 }
 
+/// Bytes `c` takes inside a JSON string.
+fn escaped_len(c: char) -> usize {
+    match c {
+        '"' | '\\' | '\n' | '\r' | '\t' | '\u{8}' | '\u{c}' => 2,
+        c if (c as u32) < 0x20 => 6,
+        c => c.len_utf8(),
+    }
+}
+
+/// A piece of `text` from byte `start`: whole lines that fit in `budget`
+/// bytes once escaped for JSON, or part of one line when a single line is
+/// longer than that. Returns the end of the piece, or None when `start` is
+/// not a place a page can start.
+pub fn take_text(text: &str, start: usize, budget: usize) -> Option<usize> {
+    if start > text.len() || !text.is_char_boundary(start) {
+        return None;
+    }
+    let mut used = 0;
+    let mut end = start;
+    let mut last_line_end = None;
+    for (i, c) in text[start..].char_indices() {
+        let size = escaped_len(c);
+        if used + size > budget {
+            break;
+        }
+        used += size;
+        end = start + i + c.len_utf8();
+        if c == '\n' {
+            last_line_end = Some(end);
+        }
+    }
+    if end == text.len() {
+        return Some(end);
+    }
+    Some(last_line_end.unwrap_or(end))
+}
+
+/// 1-based line number of byte `at` in `text`.
+pub fn line_at(text: &str, at: usize) -> usize {
+    text.as_bytes()[..at]
+        .iter()
+        .filter(|b| **b == b'\n')
+        .count()
+        + 1
+}
+
 /// At most `max` characters of `text`, with "…" when it was cut.
 pub fn clip(text: &str, max: usize) -> String {
     if text.chars().count() <= max {
@@ -100,6 +146,32 @@ mod tests {
         assert!(read_cursor("get_config", "v2:00").is_none());
         assert!(read_cursor("get_config", "garbage").is_none());
         assert!(read_cursor("get_config", &"v1:00".repeat(2000)).is_none());
+    }
+
+    #[test]
+    fn text_pages_cover_everything_once() {
+        let text: String = (0..500).map(|i| format!("line {i} \"quoted\"\n")).collect();
+        let mut start = 0;
+        let mut joined = String::new();
+        while start < text.len() {
+            let end = take_text(&text, start, 1000).unwrap();
+            assert!(end > start);
+            let piece = &text[start..end];
+            assert!(serde_json::to_string(piece).unwrap().len() <= 1002);
+            joined.push_str(piece);
+            start = end;
+        }
+        assert_eq!(joined, text);
+    }
+
+    #[test]
+    fn a_long_line_is_split() {
+        let text = format!("{}\nshort\n", "é".repeat(5000));
+        let end = take_text(&text, 0, 1000).unwrap();
+        assert!(end > 0 && end < 5000 * 2);
+        assert!(text.is_char_boundary(end));
+        assert!(take_text(&text, 1, 1000).is_none());
+        assert!(take_text(&text, text.len() + 1, 1000).is_none());
     }
 
     #[test]
