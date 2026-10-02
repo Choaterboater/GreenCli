@@ -79,7 +79,7 @@ Click a photo for full size. All of them use made-up demo data: no real devices,
     </td>
     <td width="50%" valign="top">
       <a href="docs/screenshots/10-settings-ai.png"><img src="docs/screenshots/10-settings-ai.png" width="100%" alt="Settings, AI Assistant"></a><br>
-      <b>AI settings.</b> Pick the provider and model. The API key is saved in macOS Keychain.
+      <b>AI settings.</b> Pick the provider and model. The API key is saved in Windows Credential Manager.
     </td>
   </tr>
 </table>

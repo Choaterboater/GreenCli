@@ -153,7 +153,7 @@ export function installDemoBackend(D) {
       case 'ai_has_key':
         return true;
       case 'secret_store_status':
-        return { kind: 'keychain', leftoverFiles: [], movePending: false };
+        return { kind: 'credential-manager', leftoverFiles: [], movePending: false };
       case 'update_status':
         return clone(D.update);
       case 'update_check':
@@ -162,7 +162,7 @@ export function installDemoBackend(D) {
       // ── Editor files ──
       case 'read_file_text':
       case 'read_folder_file': {
-        const name = String(args.path || '').split('/').pop();
+        const name = String(args.path || '').split(/[\\/]/).pop();
         return D.files[name] != null ? D.files[name] : '';
       }
       case 'list_folder':

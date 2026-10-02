@@ -190,7 +190,7 @@ function preparePhotos() {
     if (!thumb) throw new Error(`Can't read ${from} (only 8-bit RGB, RGBA and palette PNGs).`);
     writeFileSync(join(dir, 'thumbs', file), thumb);
     const about = shotList.find((s) => s.file === file)?.about || file.replace(/^\d+-|\.png$/g, '').replace(/-/g, ' ');
-    // "Settings, Updates: version 2.0.0 …" → title "Settings, Updates", text "Version 2.0.0 …"
+    // "Settings, Updates: version X …" → title "Settings, Updates", text "Version X …"
     const cut = about.indexOf(': ');
     const title = cut > 0 ? about.slice(0, cut) : about;
     const rest = cut > 0 ? about.slice(cut + 2) : '';

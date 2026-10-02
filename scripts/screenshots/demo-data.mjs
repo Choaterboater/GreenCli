@@ -2,7 +2,12 @@
 // host names like core-sw1, addresses only from the documentation ranges
 // (192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24), MAC addresses from the
 // documentation block 00:00:5e:00:53:xx, the user "netops", and passwords and
-// keys that say FAKE or "NotAReal" in them.
+// keys that say FAKE or "NotAReal" in them. The photos show a Windows PC, so
+// paths are Windows paths. The version is the one in package.json.
+
+import { readFileSync } from 'node:fs';
+
+export const appVersion = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')).version;
 
 const host = (id, name, ip, deviceType, tags) => ({
   id,
@@ -335,7 +340,7 @@ export const files = {
 };
 
 export const folder = {
-  root: '/Users/netops/network-configs',
+  root: 'C:\\Users\\netops\\network-configs',
   truncated: false,
   entries: [
     { path: 'core', isDir: true, size: 0 },
@@ -421,7 +426,7 @@ export const mcp = {
       name: 'centralmcp',
       transport: 'stdio',
       command: 'uv',
-      args: ['run', '--directory', '/Users/netops/mcp/centralmcp', 'aruba-tool-router'],
+      args: ['run', '--directory', 'C:\\Users\\netops\\mcp\\centralmcp', 'aruba-tool-router'],
       env: {},
       cwd: null,
       url: null,
@@ -434,7 +439,7 @@ export const mcp = {
       name: 'junos',
       transport: 'stdio',
       command: 'uv',
-      args: ['run', 'junos-mcp-server', '-f', '/Users/netops/mcp/devices.json'],
+      args: ['run', 'junos-mcp-server', '-f', 'C:\\Users\\netops\\mcp\\devices.json'],
       env: {},
       cwd: null,
       url: null,
@@ -532,7 +537,7 @@ export const mcp = {
     junos: { kind: 'cannot-pin', reason: 'it has no read-only setting' },
   },
   greencli: {
-    path: '/Applications/GreenCLI.app/Contents/MacOS/greencli-mcp',
+    path: 'C:\\Program Files\\GreenCLI\\greencli-mcp.exe',
     exists: true,
     place: 'normal',
   },
@@ -645,17 +650,16 @@ export const intents = [
 ];
 
 export const demo = {
-  version: '2.0.0',
   folders,
   devices,
   files,
   folder,
-  openFile: '/Users/netops/network-configs/core/core-sw1-cameras.cfg',
-  saveFile: '/Users/netops/.mcp.json',
+  openFile: 'C:\\Users\\netops\\network-configs\\core\\core-sw1-cameras.cfg',
+  saveFile: 'C:\\Users\\netops\\.mcp.json',
   ai,
   aiFallback,
   mcp,
-  update: { version: '2.0.0', enabled: true, reason: null, place: 'normal', ready: null },
+  update: { version: appVersion, enabled: true, reason: null, place: 'normal', ready: null },
   answers: {
     intent_list: intents,
     intent_list_strict: intents,

@@ -21,7 +21,7 @@ import { dirname, extname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from '@playwright/test';
 import { installDemoBackend } from './screenshots/demo-backend.mjs';
-import { demo, seedStorage } from './screenshots/demo-data.mjs';
+import { appVersion, demo, seedStorage } from './screenshots/demo-data.mjs';
 import { shots } from './screenshots/shots.mjs';
 import { shrinkPng } from './screenshots/png.mjs';
 
@@ -108,6 +108,9 @@ function startClockAt(start) {
   window.Date = DemoDate;
 }
 
+const WINDOWS_UA =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36 Edg/140.0.0.0';
+
 const started = Date.now();
 let failed = 0;
 for (const shot of shots) {
@@ -118,7 +121,11 @@ for (const shot of shots) {
     colorScheme: 'dark',
     locale: 'en-US',
     timezoneId: 'UTC',
+    // The photos show GreenCLI on a Windows PC (the WebView2 user agent), so
+    // the keys, paths and password store all match one real computer.
+    userAgent: WINDOWS_UA,
   });
+  await context.addInitScript(() => Object.defineProperty(Navigator.prototype, 'platform', { get: () => 'Win32' }));
   await context.addInitScript(startClockAt, DEMO_TIME);
   await context.addInitScript(installDemoBackend, { ...demo, ...(shot.demo || {}) });
   await context.addInitScript(seedStorage, shot.storage || {});
@@ -158,7 +165,7 @@ if (!only.length && !failed) {
   const lines = [
     '# Screenshots',
     '',
-    'GreenCLI 2.0 with made-up demo data: no real devices, addresses, people or keys.',
+    `GreenCLI ${appVersion} on Windows, with made-up demo data: no real devices, addresses, people or keys.`,
     'Each picture is the 1440 x 900 window at 2x (2880 x 1800 pixels). 08 is cropped to the Settings box.',
     '',
     ...shots.map((s) => `- \`${s.file}\`: ${s.about}`),

@@ -5,7 +5,7 @@
 // parts of the demo data, `clip` crops the picture, and `keepMouse` keeps a
 // hover on screen.
 
-import { coreSw1Narrow, devices } from './demo-data.mjs';
+import { appVersion, coreSw1Narrow, devices } from './demo-data.mjs';
 
 const PANEL_WIDTH = 'greencli-side-panel-width';
 
@@ -74,7 +74,7 @@ export const shots = [
   },
   {
     file: '03-ai-review-diff.png',
-    about: 'Config Editor: an AI fix shown as a diff to Apply or Discard. Secrets were put back.',
+    about: 'Config Editor, AI fix: shown as a diff to Apply or Discard. Secrets were put back.',
     storage: { local: { [PANEL_WIDTH]: '840' } },
     async run(page) {
       await openHost(page, 'core-sw1');
@@ -93,7 +93,7 @@ export const shots = [
   },
   {
     file: '04-editor-folder-view.png',
-    about: 'Config Editor: a folder of configs as a tree, next to the open file.',
+    about: 'Config Editor, Folder view: a folder of configs as a tree, next to the open file.',
     storage: { local: { [PANEL_WIDTH]: '840' } },
     async run(page) {
       await openHost(page, 'edge-mx1');
@@ -155,7 +155,7 @@ export const shots = [
   },
   {
     file: '08-settings-updates.png',
-    about: 'Settings, Updates: version 2.0.0, "You have the latest version." and Check once a day.',
+    about: `Settings, Updates: version ${appVersion}, "You have the latest version." and Check once a day.`,
     async run(page) {
       await openHost(page, 'core-sw1');
       await settings(page, 'Updates');
@@ -197,7 +197,7 @@ export const shots = [
   },
   {
     file: '10-settings-ai.png',
-    about: 'Settings, AI: the provider and model, and "Saved in macOS Keychain." under the API key.',
+    about: 'Settings, AI: the provider and model, and "Saved in Windows Credential Manager." under the API key.',
     storage: { settings: { aiUseMcp: true } },
     async run(page) {
       await openHost(page, 'core-sw1');
