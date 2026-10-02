@@ -39,6 +39,7 @@ import {
   EyeOff,
   FileDiff,
   Square,
+  Lock,
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/tauri';
 import { listen } from '@tauri-apps/api/event';
@@ -1682,12 +1683,14 @@ export default function AiAssistant() {
             className="flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full flex-shrink-0"
             style={{ color: activeAgent.color, background: `${activeAgent.color}1f` }}
             title={
-              isReadOnlyAgent(activeAgent)
-                ? `AI agent "${activeAgent.name}" is active for this session. It can't change devices. It only uses MCP tools the server marks as read-only or as checks (checks ask first), plus Junos show commands. Click to manage.`
-                : `AI agent "${activeAgent.name}" is active for this session — click to manage`
+              !isReadOnlyAgent(activeAgent)
+                ? `AI agent "${activeAgent.name}" is active for this session — click to manage`
+                : isCliProvider(provider)
+                  ? `${activeAgent.name} (read-only): its instructions are sent with each question. GreenCLI can't enforce read-only for ${provider === 'casper' ? 'Casper' : 'Local CLI'}. Click to manage.`
+                  : `${activeAgent.name} (read-only): GreenCLI blocks anything that could change a device. MCP: only read-only tools and checks (checks ask first), plus Junos show commands. Click to manage.`
             }
           >
-            <Bot size={10} />
+            {isReadOnlyAgent(activeAgent) ? <Lock size={10} aria-label="read-only" /> : <Bot size={10} />}
             {activeAgent.name}
           </button>
         )}

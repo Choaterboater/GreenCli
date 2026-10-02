@@ -1248,9 +1248,11 @@ export default function SettingsPanel() {
                   </div>
                   {isCliProvider(aiProvider) && (
                     <p className="text-[11px] text-[var(--text-muted)] mt-2 leading-relaxed">
-                      <strong className="text-[var(--text-secondary)]">Local CLI and Casper answer from your question only.</strong>{' '}
-                      They can&apos;t use GreenCLI&apos;s tools, your SSH sessions or GreenCLI&apos;s MCP servers, so the
-                      Assistant tools switches below don&apos;t apply to them.
+                      <strong className="text-[var(--text-secondary)]">
+                        GreenCLI gives {aiProvider === 'casper' ? 'Casper' : 'Local CLI'} only your question
+                      </strong>{' '}
+                      (with the device name and your agent&apos;s instructions), not your SSH sessions, GreenCLI&apos;s
+                      tools or GreenCLI&apos;s MCP servers. The Assistant tools switches below are not used.
                     </p>
                   )}
                 </div>
@@ -1432,6 +1434,12 @@ export default function SettingsPanel() {
                       isCliProvider(aiProvider) ? ' opacity-60' : ''
                     }`}
                   >
+                    {isCliProvider(aiProvider) && (
+                      <p className="text-[11px] text-[var(--text-secondary)]">
+                        Not used by {aiProvider === 'casper' ? 'Casper' : 'Local CLI'}. These apply when you pick
+                        another provider.
+                      </p>
+                    )}
                     {(
                       [
                         { key: 'aiUseTerminal', label: 'Run device CLI commands', hint: 'Execute show/config on the active SSH/terminal session' },
