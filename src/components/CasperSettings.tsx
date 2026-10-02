@@ -117,7 +117,8 @@ export default function CasperSettings() {
         </p>
         <p className="text-[10px] text-[var(--accent-warning)] mt-1">
           Casper can read files outside its folder. It keeps only a short list of private places from the AI (like
-          ~/.ssh), and GreenCLI&apos;s own files are not on that list: your AI keys, MCP logins and session logs. Ask
+          ~/.ssh), and GreenCLI&apos;s own files are not on that list: your session logs, archived configs and the
+          login file of a running MCP server. AI keys and MCP logins in the system password store are not files. Ask
           Casper only about text you trust, since words hidden in a config or log could ask it to read those files.
         </p>
       </div>

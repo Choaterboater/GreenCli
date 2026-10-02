@@ -1,6 +1,6 @@
 [package]
 name = "green-cli"
-version = "1.9.0"
+version = "2.0.0"
 description = "Multi-vendor SSH/Telnet/Serial terminal for network engineers"
 authors = ["ChoateLabs"]
 license = "MIT"
@@ -60,8 +60,6 @@ custom-protocol = ["tauri/custom-protocol"]
 # un-gates our generator, it no longer pulls openssl.
 rsa-keys = []
 
-# [2.0 keys] keyring tables go below.
-#
 # AI keys and MCP logins live in the system password store (secret_store.rs).
 [target.'cfg(target_os = "macos")'.dependencies]
 keyring = { version = "3", features = ["apple-native"] }
@@ -73,8 +71,6 @@ keyring = { version = "3", features = ["windows-native"] }
 [target.'cfg(target_os = "linux")'.dependencies]
 keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
 
-# [2.0 updater] updater dependency table goes below.
-#
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 # Automatic updates (src/updater.rs). The public key is not in tauri.conf.json:
 # each release build makes a one-time key pair, and the app fetches the key
@@ -88,7 +84,7 @@ semver = "1"
 # requests on HTTPS and its redirects on GitHub's release hosts.
 reqwest-updater = { package = "reqwest", version = "0.13", default-features = false }
 
-# [2.0 greencli-mcp] [workspace] table goes below.
-#
+# greencli-mcp, the read-only MCP server that ships next to the app
+# (src/bin/greencli-mcp.rs starts it).
 [workspace]
 members = ["greencli-mcp"]

@@ -2950,7 +2950,7 @@ fn main() {
             // version wrote world-readable.
             let _ = private_fs::private_dir(&app_dir);
             private_fs::tighten_app_dir(&app_dir);
-            // [2.0 keys] Open the system password store and move old key files here.
+            // Open the system password store and move old key files into it.
             let secrets = Arc::new(secret_store::SecretStore::open(&app_dir, &app.config().identifier));
             secrets.move_file(&app_dir.join(secret_store::AI_KEYS_FILE), secret_store::AI_KEY_PREFIX);
             // Before the MCP auto-connect below, so servers find their logins.
@@ -2969,9 +2969,9 @@ fn main() {
                 show_window_fallback(main_window);
             }
 
-            // [2.0 updater] Updates are on only in release builds for the
-            // systems release.yml builds; each check takes the public key
-            // from the same release as the update (updater.rs).
+            // Updates are on only in release builds for the systems
+            // release.yml builds; each check takes the public key from the
+            // same release as the update (updater.rs).
             updater::register(app);
 
             spawn_mcp_connect(app.handle().clone(), None);
@@ -3002,7 +3002,6 @@ fn main() {
             vault_delete,
             vault_is_unlocked,
             vault_is_initialized,
-            // [2.0 updater] new commands below
             updater::update_status,
             updater::update_check,
             updater::update_install,
@@ -3048,7 +3047,6 @@ fn main() {
             sftp_rename_cmd,
             ai_set_key,
             ai_has_key,
-            // [2.0 keys] new commands below
             secret_store_status,
             ai_chat,
             ai_cancel_stream,
@@ -3091,7 +3089,6 @@ fn main() {
             config_archive_get,
             config_archive_devices,
             config_archive_set_golden,
-            // [2.0 greencli-mcp] new commands below
             config_archive_missing_hidden,
             config_archive_set_hidden,
             greencli_mcp_info::greencli_mcp_info,

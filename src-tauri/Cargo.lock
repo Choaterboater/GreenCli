@@ -2181,7 +2181,7 @@ dependencies = [
 
 [[package]]
 name = "green-cli"
-version = "1.9.0"
+version = "2.0.0"
 dependencies = [
  "aes-gcm 0.10.3",
  "argon2 0.5.3",
@@ -2217,7 +2217,7 @@ dependencies = [
 
 [[package]]
 name = "greencli-mcp"
-version = "1.9.0"
+version = "2.0.0"
 dependencies = [
  "dirs",
  "serde",

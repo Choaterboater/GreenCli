@@ -19,17 +19,26 @@ feature overview see the top-level [`README.md`](../README.md); for the work log
 | Need | Why |
 |------|-----|
 | [Node.js](https://nodejs.org/) 18+ and npm | Build the React/TypeScript frontend |
-| [Rust](https://rustup.rs/) stable, **1.85+** (MSRV; russh 0.63 requirement) | Build the Tauri/Rust backend |
-| Tauri OS build tools | Native webview + bundling — see [Tauri prerequisites](https://tauri.app/v1/guides/getting-started/prerequisites) |
+| [Rust](https://rustup.rs/) stable, **1.90+** (MSRV) | Build the Tauri/Rust backend |
+| Tauri 2 OS build tools | Native webview + bundling — see [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) |
 
-**The app runs on** macOS 13.3 (Ventura) or newer, Windows 10/11, and Linux with a recent WebKitGTK. The
+**The app runs on** macOS 13.3 (Ventura) or newer, Windows 10/11, and Linux with WebKitGTK 4.1. The
 secret filter that protects the AI panel needs regex features older macOS WebKit lacks; on an old Linux
 WebKitGTK the AI panel withholds device output rather than send it unchecked.
 
 **Per-OS Tauri deps (summary — follow the link above for specifics):**
 - **macOS**: Xcode Command Line Tools (`xcode-select --install`).
 - **Windows**: Microsoft C++ Build Tools + the WebView2 runtime.
-- **Linux**: `webkit2gtk`, `libssl`, `librsvg2`, `patchelf`, plus the usual build-essential set.
+- **Linux**: Ubuntu 24.04 or newer, which is what CI uses. Tauri 2 needs webkit2gtk-4.1 and
+  libsoup 3. These are the packages CI installs:
+
+  ```bash
+  sudo apt install build-essential libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libudev-dev \
+    libdbus-1-dev pkg-config
+  ```
+
+  They replace the old webkit2gtk-4.0 / libsoup 2 list. `libdbus-1-dev` and `pkg-config` are for
+  the system password store (§3).
 
 ---
 
@@ -74,6 +83,68 @@ npm run tauri-build -- --target universal-apple-darwin     # macOS universal
 npm run tauri-build -- --target x86_64-pc-windows-msvc     # Windows
 npm run tauri-build -- --target x86_64-unknown-linux-gnu   # Linux
 ```
+
+### Updates
+
+GreenCLI updates itself from its GitHub releases on macOS (Apple Silicon and Intel) and Windows.
+There is no Linux release build, so Linux gets no updates.
+
+- Settings → **Updates** shows the version, **Check for updates** and **Check once a day** (on by
+  default). The daily check runs quietly at start, then again once a day while GreenCLI stays open.
+- A check downloads a newer version and checks its signature, but never installs it. When it is
+  ready you see "GreenCLI X is ready." with **Restart to update**.
+- **Restart to update** asks first ("Restart now?"), says how many open sessions will close, and
+  warns when the Config Editor has unsaved edits. It saves the vault before the app closes. It
+  won't start while a Change Job or bulk run is going.
+- Other messages: "You have the latest version.", "Couldn't check for updates. Check your internet
+  connection.", and in a build with no updates (a dev build, or Linux) "Updates are off …".
+- **Mac**: run GreenCLI from Applications. From the disk image (or straight from Downloads) it says
+  "Move GreenCLI to Applications first." and offers no update.
+- **Windows**: close Claude Code and Casper before you update, because a greencli-mcp they run can
+  block the installer. MCP servers stop only when the installer starts, and come back if it fails.
+- 1.9 and older have no updater: install 2.0 by hand once.
+
+### Releasing
+
+1. Bump the version and merge.
+2. Push a tag that matches the version exactly: `v2.0.1` for 2.0.1.
+3. Wait for the **Release** workflow. It runs the CI checks first, then three build jobs (macOS
+   Apple Silicon, macOS Intel, Windows), then **update-files**. All of them must be green.
+4. Open the draft release on GitHub and publish it as the latest release. The app only sees
+   published releases.
+
+There is nothing to set up for update signing: no key to make, keep or paste, and no secrets.
+
+- **Build only**: Actions → **Release** → **Run workflow**, and untick **publish**. Nothing goes to
+  a release; the installers are kept as workflow artifacts named `greencli-<target>`, and
+  update-files doesn't run. Use this to test a build.
+- A push to a `release/**` branch **always publishes** (to a draft named after the app's version),
+  so push one only after the version bump.
+- **Re-running one build job** makes a new key and replaces that build's files and key in the
+  draft. Make sure update-files runs again after it (re-run it by hand if GitHub didn't) and is
+  green before you publish. Don't publish while update-files is red or hasn't run.
+- If the tag doesn't match the version (for example `v2.0` for 2.0.0), update-files fails. Delete
+  the draft and the tag, then tag again with the right name.
+
+### How update signing works
+
+Each build job makes a new key pair just for that build. It signs that build's update files and
+adds the public key to the draft as `update-key-<os>-<arch>.pub`. The private key is deleted right
+after the build and is never saved anywhere.
+
+When GreenCLI checks for updates, it reads the version of the latest release. Then it takes the
+key and the update list (`latest.json`) from that same release, and checks the download against
+the key before it shows **Restart to update**. Every request goes over HTTPS to GitHub only, and
+the update file must be a file of a GreenCLI release.
+
+The signature protects against:
+- a broken or cut-short download;
+- a swapped file, or a file from anywhere other than that GreenCLI release;
+- a mix-up between builds (one system's file with another system's key).
+
+It does not protect against someone who can publish releases on the GitHub account. They could
+publish their own files and key. This is the same trust as downloading GreenCLI from the Releases
+page. **Keep two-factor login on for that account.**
 
 ### Apple signing (optional)
 
@@ -121,17 +192,62 @@ id `com.choatelabs.greencli`:
 |------|----------|-------|
 | `sessions.json` | Saved sessions + folders | **No secrets** — passwords/keys are never written here |
 | `vault.enc` | Encrypted credential vault | AES-256-GCM; written `0600`, atomic |
-| `ai_keys.json` | AI provider API keys | `0600` |
+| `secret_store.json` | Says AI keys and MCP logins are in the system password store | No secrets. Also lists a move from 1.9 that isn't done yet |
+| `ai_keys.json` | AI provider API keys | Only when no system password store is found, or an old 1.9 file that couldn't be moved; `0600` |
 | `mcp_servers.json` | MCP server definitions | — |
-| `mcp_creds.json` + `mcp_creds/` | MCP server credentials | `0600` |
+| `mcp_creds.json` | MCP server logins | Same as `ai_keys.json`; `0600` |
+| `mcp_creds/` | The login file of each running stdio MCP server | Deleted when the server stops; left-overs deleted at start; `0600` |
 | `known_hosts.json` | TOFU SSH host-key fingerprints | atomic writes |
 | `intents.json` | Network-intent definitions + last result | atomic; corrupt file is preserved, never silently wiped |
+| `config_archive/` | Captured running-configs, plus a copy of each with secrets hidden (`<time>.hidden.json`) for greencli-mcp | Owner-only |
+| `logs/` | Session logs, unless you pick another log folder | — |
 
 > Secrets are deliberately kept out of browser `localStorage`. Aruba Central / Mist
 > credentials entered in Settings are stored **encrypted in the credential vault**
 > (`vault.enc`) when it is unlocked, so they survive a restart; while the vault is
 > locked they live in memory for the session only (same model as saved SSH
 > passwords). Account metadata (name / URL / client-id) persists either way.
+
+### AI keys and MCP logins: the system password store
+
+GreenCLI 2.0 keeps AI keys and MCP logins in the system password store, not in files:
+
+| OS | Store |
+|----|-------|
+| macOS | Keychain |
+| Windows | Credential Manager |
+| Linux | The Secret Service (GNOME Keyring, KWallet …) |
+
+- Each one is saved under the service name `com.choatelabs.greencli`, with the account
+  `ai-key:<provider>` or `mcp-creds:<server>`. On a Mac you can see them in Keychain Access.
+  Credential Manager holds at most 2560 bytes per item, so a longer login is split into parts
+  (`part1:…`, `part2:…`).
+- The AI key field and the MCP server form say where keys are kept ("Saved in macOS Keychain.").
+- **The move from 1.9**: at first start, 2.0 moves the keys in `ai_keys.json` and
+  `mcp_creds.json` into the store. Each one is saved, read back and compared, and only when all of
+  them check out is the file deleted.
+- **Left-over files**: if an old file can't be read, it stays where it is and Settings shows its
+  path ("An old key file couldn't be read and may still hold keys: …"). Delete it after you enter
+  your keys again. If some keys didn't move, Settings says "Some keys from 1.9 were not moved yet.
+  GreenCLI will try again next start." Keys you change or remove in the meantime stay as you set
+  them.
+- **No password store** (some Linux setups, for example with no keyring running): keys stay in
+  `ai_keys.json` and `mcp_creds.json` (owner-only, the 1.9 format), and Settings says "Saved in a
+  private file on this computer. No system password store was found." Each start tries the store
+  again.
+- **Store can't be reached** once keys are in it: Settings says "Can't reach the system password
+  store. Your keys are still there. Try again after you log in to the desktop." GreenCLI never
+  goes back to files then.
+- **Going back to 1.9 loses the keys** (1.9 can't read the store), and **copying only the data
+  folder** to another computer doesn't copy them. Before you first run 2.0, copy `ai_keys.json`
+  and `mcp_creds.json` to a private place, or be ready to enter the keys again.
+- **MCP login files**: when a stdio server connects, its login is written to a new owner-only file
+  in `mcp_creds/run-<id>/`, and the server's credentials env var points at it. The file is deleted
+  when the server stops, exits by itself or fails to connect. Files a crash left behind are deleted
+  at the next start. A second running copy of GreenCLI leaves the first one's files alone.
+- **Developers**: on a Mac, an unsigned or `tauri-dev` build may show a Keychain prompt. If nobody
+  answers it within 3 seconds at a first start, that start keeps keys in files and the next start
+  asks again.
 
 ---
 
@@ -156,8 +272,9 @@ Open **Quick Connect** (`Ctrl+T`) or double-click a saved host in the sidebar.
   command/args/cwd) to `sessions.json` — never the password.
 
 > **Settings layout:** Settings (`Ctrl+,`) is organized into left-nav groups —
-> **Appearance**, **Terminal**, **AI + MCP**, **Cloud**, **Backup** — so paths below
-> read "Settings → *group* → *section*".
+> **Appearance**, **Terminal**, **Connections & Security**, **Automation**, **AI & MCP**,
+> **Integrations**, **Updates**, **Backup & Reset** — so paths below read
+> "Settings → *group* → *section*".
 
 ### Credential vault
 
@@ -184,7 +301,7 @@ Open the AI panel from the title bar. Settings → **AI + MCP → AI Assistant**
    - **Casper (no key)** — answer through [Casper](https://github.com/Choaterboater/casper),
      the AI agent installed on your computer, with its own sign-in (see *Casper as the AI*
      below). Needs Casper 0.2.21 or newer.
-2. **API key** — stored `0600` in `ai_keys.json`, **never** in the webview.
+2. **API key** — kept in the system password store (§3), **never** in the webview.
 3. **Model** — per provider.
 4. **Assistant tools (opt-in, all off by default except terminal):**
    - *Run device CLI commands* — execute show/config on the active session (also
@@ -218,8 +335,9 @@ Settings → **AI & MCP → AI Assistant** → provider **Casper (no key)**.
 - Like Local CLI, Casper answers from your question only: it can't use GreenCLI's device tools,
   your SSH sessions or MCP servers. Secrets in your question are hidden first.
 - **Know this:** Casper's own file tools can read files outside its folder, including GreenCLI's
-  saved AI keys, MCP logins and session logs. Only ask Casper about text you trust (a prompt
-  hidden in a pasted log could ask it to read those files).
+  session logs, archived configs and the login file of a running MCP server. AI keys and MCP
+  logins in the system password store are not files. Only ask Casper about text you trust (a
+  prompt hidden in a pasted log could ask it to read those files).
 
 ### Read-only Auditor (enforced)
 
@@ -281,15 +399,15 @@ same wrapped in `{"mcpServers": {"name": {...}}}`. Otherwise, fill in by hand:
 | Working dir | stdio | optional |
 | Server URL | http | `http://127.0.0.1:8010/mcp` |
 | Credentials env var | stdio | env var name the server reads its creds path from (default `CREDS_PATH`) |
-| Credentials content | stdio | pasted secret (e.g. a `credentials.yaml`) — materialised to a `0600` file and injected via the env var above (meaningless for HTTP — the app doesn't launch that server) |
+| Credentials content | stdio | pasted secret (e.g. a `credentials.yaml`) — kept in the system password store (§3); while the server runs it is written to a `0600` file that the env var above points at (meaningless for HTTP — the app doesn't launch that server) |
 
 Click **Connect**; the tool count appears in the AI panel. Example target: the
 author's [`centralmcp`](https://github.com/secure-ssid/centralmcp) (Aruba
 Central / GLP / monitoring / NAC / ops / RAG, hundreds of backend tools behind
 a compact router — `find_tool` / `invoke_read_tool` / `invoke_tool` in its
 default minimal mode). Tool names are namespaced `mcp__<server>__<tool>`.
-Renaming a server moves it (no orphaned duplicate); removing one deletes its
-materialised creds file.
+Renaming a server moves it and its saved login (no orphaned duplicate); removing one
+removes its saved login too. If the password store can't be reached, nothing is removed.
 
 ### MCP safety: the approval box and Allow writes
 
@@ -328,7 +446,52 @@ addresses and `user:password` values become `${NAME}` variables, and after savin
 each name and where it was used. Set them only in the terminal you start Claude Code or Casper
 from (a private file you `source` is safest). Servers with writes off get their read-only
 settings in the file, and the list says that GreenCLI's own writes switch and approval box don't
-travel with it.
+travel with it. The export also adds greencli-mcp (below) as `greencli`, so it works with no
+saved servers too.
+
+### greencli-mcp: GreenCLI data for Casper or Claude Code
+
+GreenCLI ships a small read-only MCP server, `greencli-mcp`, next to the app:
+
+- macOS: `/Applications/GreenCLI.app/Contents/MacOS/greencli-mcp`
+- Windows: `greencli-mcp.exe` in the GreenCLI install folder
+
+It lets Casper or Claude Code read your GreenCLI data. It can't change anything: it only reads
+GreenCLI's data folder, and never writes a file, opens a network connection or starts a program
+(a source-scan test checks this).
+
+**Add it.** Settings → **AI & MCP → MCP Servers** shows its full path, with **Copy** buttons for
+the path and for the command below. Run the command in a terminal:
+
+```bash
+claude mcp add greencli -- "/Applications/GreenCLI.app/Contents/MacOS/greencli-mcp"
+```
+
+Or use **Export for Casper / Claude…**: it adds it as `greencli` (renamed, with a note, if you
+already have a server by that name). On a Mac, move GreenCLI to Applications first, or the path
+changes every time it starts; until then MCP Servers says so and the export leaves it out.
+
+**What it shows** (six read tools):
+
+| Tool | What it gives |
+|------|---------------|
+| `access_check` | That this server is read-only |
+| `list_devices` | Your saved devices: name, folder, protocol, host, port, device type, tags. No passwords, user names, notes or startup commands |
+| `list_config_history` | A device's saved config snapshots, newest first, and whether each has a hidden copy |
+| `get_config` | One saved config, with secrets hidden |
+| `get_config_diff` | What changed between two saved configs, with secrets hidden |
+| `list_intents` | Your network intents, with their last result and each device's status |
+
+**Hidden copies.** When a config is captured, GreenCLI also saves a copy with secrets hidden (the
+same filter the AI uses). greencli-mcp reads configs only from these copies. A snapshot without
+one, or with one from an older filter, is refused ("No hidden copy for this snapshot …" or "… is
+out of date …"), never served raw. Configs captured before 2.0 have no hidden copy: open Config
+archive and click **Make hidden copies**. MCP Servers and Config archive show how many snapshots
+still need one. After a secret filter change, GreenCLI makes the old copies again at start.
+
+- A diff can't show a changed password or key: both sides show it hidden.
+- Two snapshots that differ in more than 20,000 places are refused as a diff; use `get_config` on
+  each.
 
 ---
 
@@ -487,8 +650,13 @@ live compliance:
 
 ## 12. Security notes
 
-- Credentials vault: **AES-256-GCM** + **Argon2id**; `vault.enc`, `ai_keys.json`, and
-  MCP creds are owner-only (`0600`) and written atomically.
+- Credentials vault: **AES-256-GCM** + **Argon2id**; `vault.enc` is owner-only (`0600`) and
+  written atomically.
+- AI keys and MCP logins are in the system password store (§3). An MCP login is on disk only while
+  its server runs, in an owner-only file.
+- Updates come only from GreenCLI's GitHub releases over HTTPS, and each download is checked
+  against its signature before it can install (§2, *How update signing works*).
+- greencli-mcp is read-only and shows configs only with secrets hidden (§6).
 - SSH uses **TOFU** host-key pinning (`known_hosts.json`); a changed key is rejected.
 - No secrets in `localStorage`; no telemetry / outbound calls except the providers and
   devices you configure.
@@ -508,6 +676,11 @@ live compliance:
 | `tauri-dev` won't start (port in use) | Another Vite dev server is on `:1420` — stop it or close the other instance. |
 | Connected tab but no shell | Some restricted accounts/appliances refuse a PTY/shell — the app now surfaces this as a connect error rather than a frozen tab. |
 | Vault won't unlock after a crash | A corrupt `vault.enc` is preserved, not overwritten. Back it up, then remove it to start fresh (saved secrets are lost only if the file was truly corrupted). |
+| *"Can't reach the system password store"* | Your keys are still there. Log in to the desktop (on Linux, make sure a keyring such as GNOME Keyring is running), then try again. |
+| *"An old key file couldn't be read …"* | Enter your keys again, then delete the file Settings names. |
+| greencli-mcp: *"No hidden copy for this snapshot"* or *"out of date"* | Open Config archive and click **Make hidden copies**. |
+| Updates: *"Move GreenCLI to Applications first."* | Drag GreenCLI into Applications and open it from there. |
+| Updates: *"You have the latest version."* but GitHub has a newer one | That release is still a draft. Publish it as the latest release. |
 
 ---
 

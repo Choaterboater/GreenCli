@@ -7,6 +7,104 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-10-02
+
+### Added
+- **Automatic updates** (macOS and Windows): GreenCLI can update itself from its GitHub releases.
+  Settings → **Updates** shows the version, **Check for updates** and **Check once a day** (on by
+  default). When a new version is downloaded and checked, you see "GreenCLI X is ready." with
+  **Restart to update**. Nothing installs until you tap it and say yes. The box says how many open
+  sessions will close and warns about unsaved Config Editor edits. It won't restart while a Change
+  Job or bulk run is going.
+- Every update is checked against its signature before it can install. Each release build signs
+  its own files, so there is no signing key to keep and no secret to set.
+- On Windows, MCP servers stop only when the installer starts, and come back if the install fails.
+- **greencli-mcp**: a read-only MCP server for Casper and Claude Code that ships next to the app.
+  It has six read tools: `access_check`, `list_devices`, `list_config_history`, `get_config`,
+  `get_config_diff` and `list_intents`. It only reads GreenCLI's data folder. It never writes a
+  file, opens a network connection or starts a program. The device list has no passwords, user
+  names, notes or startup commands.
+- **Hidden copies**: when a config is captured, GreenCLI also saves a copy with secrets hidden (the
+  same filter the AI uses). greencli-mcp serves configs and diffs only from these copies, and
+  refuses a snapshot without a current one instead of serving it raw. Config archive has a new
+  **Make hidden copies** button for older snapshots. After a secret filter change, GreenCLI makes
+  the old copies again at start.
+- **MCP Servers** shows where greencli-mcp is, with **Copy** buttons for its path and for the
+  `claude mcp add greencli` command. **Export for Casper / Claude…** adds it as `greencli`, and now
+  works with no saved servers.
+- **Apple signing, ready to turn on**: release builds sign the Mac app (with greencli-mcp inside)
+  and have Apple notarize it and the `.dmg` once the five Apple secrets are set (see
+  docs/SETUP.md). With only the certificate and its password, the app is signed but not notarized.
+
+### Changed
+- **Tauri 2**: GreenCLI now runs on Tauri 2. Settings, saved sessions, the vault, logins and other
+  data stay where they were, and the app keeps the same install ID, so 2.0 installs over 1.9.
+  Pop-out windows, Open/Save dialogs, the clipboard and file drops work as before.
+- **AI keys and MCP logins in the system password store**: macOS Keychain, Windows Credential
+  Manager, or the Secret Service on Linux. At first start, 2.0 moves them from the 1.9 files
+  (`ai_keys.json`, `mcp_creds.json`), reads each one back, and only then deletes the files. The AI
+  key field and the MCP server form say where they are kept.
+- If an old key file can't be read, it stays where it is and Settings shows its path. If some keys
+  didn't move, Settings says so and GreenCLI tries again at the next start. Keys you change or
+  remove in the meantime stay as you set them.
+- Without a system password store (some Linux setups), keys stay in the 1.9 private files.
+- **MCP login files only while a server runs**: a stdio server's saved login is written to a new
+  private file in `mcp_creds/` when it connects, and deleted when the server stops, exits or fails
+  to connect. Files left by a crash are deleted at the next start. A second copy of GreenCLI leaves
+  the first one's files alone.
+- Removing an MCP server also removes its saved login. If the password store can't be reached,
+  nothing is removed.
+- **The window shows as soon as it has drawn.** When the system holds back the first frame (Linux
+  does), it shows after half a second instead of after 4 seconds.
+- **Linux builds need webkit2gtk-4.1** (Ubuntu 24.04 or newer) and Rust 1.90 or newer. See
+  docs/SETUP.md for the packages.
+- Release workflow: manual runs have a **publish** box (untick it to only build), every release
+  starts as a draft, and only the jobs that upload can write to the repo.
+
+### Fixed
+- An AI key or MCP login that fails to save now shows a message. Before, it failed with no
+  message. A failed login save keeps the server form open.
+
+### Security
+- AI keys and MCP logins are no longer plain files in the data folder (on macOS and Windows, and
+  on Linux with a Secret Service), so reading or copying that folder doesn't give them away.
+- An MCP login is on disk only while its server runs, in a private folder.
+- Update checks use HTTPS to GitHub only (github.com, api.github.com and GitHub's download hosts),
+  and the update file must be a file of a GreenCLI release. The app takes the update list and the
+  key from the same release, and checks the download's signature before it shows **Restart to
+  update**. It never goes back to an older version, and drafts don't count.
+- greencli-mcp reads only the data folder, and shows configs only with secrets hidden.
+- The app window may call only a short list of app functions: the same as 1.9, plus showing a
+  window and listing windows.
+
+### Upgrade notes
+- **Install 2.0.0 by hand once.** 1.9 has no updater: get 2.0.0 from the GitHub Releases page and
+  install it over 1.9. Later versions can update themselves.
+- **On a Mac, move GreenCLI to Applications** and open it from there. Updates don't work while it
+  runs from the disk image or straight from Downloads.
+- **Back up your keys first.** At first start your AI keys and MCP logins move into the password
+  store and the old files are deleted. 1.9 can't read the password store, so going back to 1.9
+  loses them. Before you install, copy `ai_keys.json` and `mcp_creds.json` from the data folder to
+  a private place, or be ready to enter the keys again.
+- **Copying only the data folder to another computer does not copy your keys.** They stay in this
+  computer's password store. Enter them again on the new one.
+
+### Known limits
+- Casper's own file tools can read files outside its folder. AI keys and MCP logins in the
+  password store are out of its reach as files, but session logs, archived configs and the login
+  file of a running MCP server can still be read. Settings says so.
+- The update signature catches a broken, cut-short or swapped download, and a file from anywhere
+  else. It does not protect against someone who can publish releases on the GitHub account: they
+  could publish their own files and key. This is the same trust as downloading GreenCLI from the Releases page. Keep
+  two-factor login on for that account.
+- Linux gets no automatic updates (there is no Linux release build).
+- A greencli-mcp diff can't show a changed password: both sides show it hidden.
+- On Windows, a greencli-mcp that Claude Code or Casper is running can block the installer. Close
+  them before you update (Settings → Updates says so).
+- If the Mac app isn't signed (no Apple secrets), macOS may ask to allow Keychain access again
+  after each update.
+- On Windows, processes a CLI leaves behind after it ends by itself are not stopped.
+
 ## [1.9.0] - 2026-10-02
 
 ### Added

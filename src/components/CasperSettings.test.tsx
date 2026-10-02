@@ -41,10 +41,11 @@ describe('CasperSettings', () => {
     expect(useSettingsStore.getState().casperCommand).toBe('casper --model a/b');
   });
 
-  it('says plainly that Casper can read GreenCLI’s own keys and logs', () => {
+  it('says plainly that Casper can read GreenCLI’s own logs and files', () => {
     render(<CasperSettings />);
     expect(screen.getByText(/GreenCLI's own files are not on that list/)).toBeTruthy();
-    expect(screen.getByText(/your AI keys, MCP logins and session logs/)).toBeTruthy();
+    expect(screen.getByText(/your session logs, archived configs and the\s+login file of a running MCP server/)).toBeTruthy();
+    expect(screen.getByText(/AI keys and MCP logins in the system password store are not files/)).toBeTruthy();
     expect(screen.queryByText(/not private ones like ~\/\.ssh/)).toBeNull();
   });
 
