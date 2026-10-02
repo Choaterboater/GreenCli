@@ -48,6 +48,8 @@ import {
 } from './utils/shortcuts';
 import { currentWindow, focusWindow, isTauri } from './utils/tauri';
 import { listenFileDrops } from './utils/fileDrop';
+import { registerBeforeExit } from './utils/beforeExit';
+import { useUpdateCheck } from './hooks/useUpdateCheck';
 import Toaster from './components/Toaster';
 import DialogHost from './components/DialogHost';
 
@@ -453,6 +455,9 @@ function App() {
     };
   }, [addSession]);
 
+  // The quiet once-a-day update check (Settings → Updates).
+  useUpdateCheck();
+
   // First-run: open Help once on an empty workspace, then never again.
   useEffect(() => {
     if (!workspaceLoaded) return;
@@ -701,15 +706,21 @@ function App() {
 
   // Flush a pending debounced persist on window close/reload — secrets typed
   // within the debounce window would otherwise never reach the vault.
+  // Restart to update runs it too (beforeExit), and waits for the save.
   useEffect(() => {
-    const flushPendingPersist = () => {
+    const flushPendingPersist = async () => {
       if (!secretPersistTimerRef.current) return;
       clearTimeout(secretPersistTimerRef.current);
       secretPersistTimerRef.current = null;
-      persistSecrets(useSettingsStore.getState());
+      await persistSecrets(useSettingsStore.getState());
     };
-    window.addEventListener('beforeunload', flushPendingPersist);
-    return () => window.removeEventListener('beforeunload', flushPendingPersist);
+    const onUnload = () => void flushPendingPersist();
+    window.addEventListener('beforeunload', onUnload);
+    const unregister = registerBeforeExit(flushPendingPersist);
+    return () => {
+      window.removeEventListener('beforeunload', onUnload);
+      unregister();
+    };
   }, []);
 
   const activeSession = sessions.find((s) => s.sessionId === activeSessionId);

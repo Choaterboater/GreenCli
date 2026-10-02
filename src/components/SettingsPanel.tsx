@@ -17,6 +17,7 @@ import {
   Sparkles,
   Cloud,
   ArchiveRestore,
+  RefreshCw,
   type LucideIcon,
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
@@ -34,6 +35,7 @@ import HostsManager from './HostsManager';
 import LoginProfiles from './LoginProfiles';
 import TriggersSettings from './TriggersSettings';
 import CentralSettings from './CentralSettings';
+import UpdateSettings from './UpdateSettings';
 import { generateId } from '../utils';
 import { BackupImportMode, createGreenCliBackup, GreenCliBackup, importGreenCliBackup } from '../utils/backup';
 import { sanitizeStandaloneImportedProfiles } from '../utils/deviceProfiles';
@@ -88,6 +90,7 @@ const GROUP_ICONS: Record<SettingsGroupId, LucideIcon> = {
   automation: Workflow,
   ai: Sparkles,
   integrations: Cloud,
+  updates: RefreshCw,
   backup: ArchiveRestore,
 };
 
@@ -1545,6 +1548,9 @@ export default function SettingsPanel() {
                 </p>
               </div>
             </section>
+          </Section>
+          <Section id="updates">
+            <UpdateSettings />
           </Section>
           <Section id="backup">
             <section id="set-backup">

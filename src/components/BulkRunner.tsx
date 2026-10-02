@@ -10,6 +10,7 @@ import { endsAtPager, pagedCommand, pagerQuitKey, withPagingDisabled } from '../
 import { listNames, riskyLines } from '../utils/commandRisk';
 import { Session } from '../types';
 import { tabLabel } from '../utils/tabs';
+import { holdExit } from '../utils/beforeExit';
 
 const isMac = navigator.platform.toUpperCase().includes('MAC');
 
@@ -50,6 +51,9 @@ export default function BulkRunner() {
   const [command, setCommand] = useState('');
   const [running, setRunning] = useState(false);
   const [results, setResults] = useState<RunResult[]>([]);
+
+  // Restart to update waits until the run ends.
+  useEffect(() => (running ? holdExit('A bulk run is running.') : undefined), [running]);
 
   // Preselect the connected ssh/telnet devices each time the modal opens —
   // unless a run is still executing (the component stays mounted while hidden,
