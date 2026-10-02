@@ -532,6 +532,28 @@ impl SecretStore {
         }
     }
 
+    /// Copy `from` to `to` and check the copy reads back the same, through a
+    /// new read. Ok(false) when `from` has nothing saved; `to` is left as it
+    /// is then. `from` always stays; a copy that doesn't check out is removed.
+    pub fn copy(&self, from: &str, to: &str) -> Result<bool, String> {
+        let Some(value) = self.get(from)? else {
+            return Ok(false);
+        };
+        self.set(to, &value)?;
+        let back = {
+            let _ops = self.lock_ops();
+            self.cache().remove(to);
+            self.read_backend(to).map_err(|e| self.user_error(to, e))
+        };
+        let same = matches!(&back, Ok(Some(b)) if b.as_slice() == value.as_bytes());
+        if !same {
+            let _ = self.delete(to);
+            back?;
+            return Err("The saved copy didn't read back the same.".into());
+        }
+        Ok(true)
+    }
+
     /// Move an old 1.9 file (`{name: value}`) into the OS store under
     /// `<prefix><name>`. Only with the OS store. The file is deleted only when
     /// every entry saved and read back byte for byte; a file that can't be
@@ -1043,6 +1065,24 @@ mod tests {
         }
         // One read for the key never saved; none for the saved one.
         assert_eq!(mem.gets.load(Ordering::Relaxed) - before, 1);
+    }
+
+    #[test]
+    fn copy_checks_the_copy_and_keeps_the_original() {
+        let mem = MemBackend::new();
+        let store = SecretStore::os_for_tests(mem.clone());
+        store.set("mcp-creds:a", "content").unwrap();
+        assert!(store.copy("mcp-creds:a", "mcp-creds:b").unwrap());
+        assert_eq!(mem.raw("mcp-creds:b").unwrap(), b"content");
+        assert_eq!(mem.raw("mcp-creds:a").unwrap(), b"content");
+        // Nothing to copy: the target is left alone.
+        assert!(!store.copy("mcp-creds:none", "mcp-creds:b").unwrap());
+        assert_eq!(mem.raw("mcp-creds:b").unwrap(), b"content");
+        // A copy that reads back wrong is an error and is removed.
+        mem.wrong_read.store(true, Ordering::Relaxed);
+        assert!(store.copy("mcp-creds:a", "mcp-creds:c").is_err());
+        assert!(mem.raw("mcp-creds:c").is_none());
+        assert_eq!(mem.raw("mcp-creds:a").unwrap(), b"content");
     }
 
     /// For the owner, against the real store:

@@ -27,6 +27,7 @@ use super::presets::{
     PresetId,
 };
 use crate::error::AppError;
+use crate::secret_store::{self, SecretStore, MCP_CREDS_PREFIX};
 use futures::StreamExt;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{json, Value};
@@ -41,6 +42,7 @@ use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::{mpsc, oneshot, Mutex};
+use zeroize::Zeroizing;
 
 fn default_true() -> bool {
     true
@@ -409,49 +411,48 @@ impl McpConfigStore {
 // ─── Credentials store ───
 //
 // Holds the contents of each server's credentials file (e.g. centralmcp's
-// `credentials.yaml`) kept in the app data dir, OUTSIDE the webview/localStorage.
-// On connect the content is written to a file and the server's credentials env
+// `credentials.yaml`) in the system password store under `mcp-creds:<name>`
+// (or, with no store, the 1.9 `mcp_creds.json`; see secret_store.rs). On
+// connect the content is written to a file and the server's credentials env
 // var (default `CREDS_PATH`) is pointed at it.
+//
+// Every call may block on the store, so commands run them in spawn_blocking
+// and never while holding the MCP manager lock.
 
-pub struct McpSecretStore {
-    path: PathBuf,
+#[derive(Clone)]
+pub struct McpCreds {
+    store: Arc<SecretStore>,
 }
 
-impl McpSecretStore {
-    pub fn new(app_dir: PathBuf) -> Self {
-        Self {
-            path: app_dir.join("mcp_creds.json"),
-        }
+impl McpCreds {
+    pub fn new(store: Arc<SecretStore>) -> Self {
+        Self { store }
     }
 
-    fn load(&self) -> HashMap<String, String> {
-        fs::read(&self.path)
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default()
+    fn account(name: &str) -> String {
+        format!("{}{}", MCP_CREDS_PREFIX, name)
     }
 
-    fn save(&self, m: &HashMap<String, String>) -> Result<(), AppError> {
-        // Create with mode 0600 directly (no world-readable write-then-chmod window).
-        write_secret_file(&self.path, &serde_json::to_vec(m)?)
+    /// Save the content; empty content deletes it.
+    pub fn set(&self, name: &str, content: &str) -> Result<(), String> {
+        self.store.set(&Self::account(name), content)
     }
 
-    pub fn set(&self, name: &str, content: &str) -> Result<(), AppError> {
-        let mut m = self.load();
-        if content.is_empty() {
-            m.remove(name);
-        } else {
-            m.insert(name.to_string(), content.to_string());
-        }
-        self.save(&m)
+    pub fn get(&self, name: &str) -> Result<Option<Zeroizing<String>>, String> {
+        self.store.get(&Self::account(name))
     }
 
-    pub fn get(&self, name: &str) -> Option<String> {
-        self.load().get(name).cloned()
+    pub fn has(&self, name: &str) -> Result<bool, String> {
+        self.store.has(&Self::account(name))
     }
 
-    pub fn has(&self, name: &str) -> bool {
-        self.load().get(name).map(|c| !c.is_empty()).unwrap_or(false)
+    pub fn delete(&self, name: &str) -> Result<(), String> {
+        self.store.delete(&Self::account(name))
+    }
+
+    /// Copy to a new name and check the copy (see SecretStore::copy).
+    pub fn copy(&self, from: &str, to: &str) -> Result<bool, String> {
+        self.store.copy(&Self::account(from), &Self::account(to))
     }
 }
 
@@ -1750,7 +1751,7 @@ impl McpCaller {
 
 pub struct McpManager {
     store: McpConfigStore,
-    secrets: McpSecretStore,
+    creds: McpCreds,
     app_dir: PathBuf,
     clients: HashMap<String, McpClient>,
 }
@@ -1821,13 +1822,18 @@ fn write_secret_file(path: &std::path::Path, content: &[u8]) -> Result<(), AppEr
 }
 
 impl McpManager {
-    pub fn new(app_dir: PathBuf) -> Self {
+    pub fn new(app_dir: PathBuf, creds: McpCreds) -> Self {
         Self {
             store: McpConfigStore::new(app_dir.clone()),
-            secrets: McpSecretStore::new(app_dir.clone()),
+            creds,
             app_dir,
             clients: HashMap::new(),
         }
+    }
+
+    /// The credentials handle, to use AFTER the lock is released.
+    pub fn creds(&self) -> McpCreds {
+        self.creds.clone()
     }
 
     pub fn list_configs(&self) -> Vec<McpServerDef> {
@@ -1885,32 +1891,35 @@ impl McpManager {
         self.store.upsert(def)
     }
 
-    /// Rename a server, migrating everything keyed by name: config entry, stored
-    /// credentials, the materialised creds file, and any live client (so its
-    /// tools stay routable without a reconnect).
-    pub fn rename_server(&mut self, from: &str, to: &str) -> Result<(), AppError> {
-        if from == to {
-            return Ok(());
-        }
-        let mut all = self.store.load_checked()?;
+    /// Why `from` can't be renamed to `to`, checked before anything moves.
+    pub fn check_rename(&self, from: &str, to: &str) -> Result<(), AppError> {
+        let all = self.store.load_checked()?;
         if all.iter().any(|d| d.name == to) {
             return Err(AppError::ApiError(format!(
                 "An MCP server named '{}' already exists",
                 to
             )));
         }
-        let def = all
-            .iter_mut()
-            .find(|d| d.name == from)
-            .ok_or_else(|| AppError::ApiError(format!("No MCP server named '{}'", from)))?;
-        def.name = to.to_string();
-        self.store.save(&all)?;
-        // Move stored credentials to the new name (deleting the old entry used to
-        // silently drop them on rename).
-        if let Some(content) = self.secrets.get(from) {
-            self.secrets.set(to, &content)?;
-            self.secrets.set(from, "")?;
+        if !all.iter().any(|d| d.name == from) {
+            return Err(AppError::ApiError(format!("No MCP server named '{}'", from)));
         }
+        Ok(())
+    }
+
+    /// Rename a server's config entry, the materialised creds file and any
+    /// live client (so its tools stay routable without a reconnect). The
+    /// stored credentials are moved by `rename_server` (the free function),
+    /// outside the lock.
+    pub fn rename_config(&mut self, from: &str, to: &str) -> Result<(), AppError> {
+        if from == to {
+            return Ok(());
+        }
+        self.check_rename(from, to)?;
+        let mut all = self.store.load_checked()?;
+        if let Some(def) = all.iter_mut().find(|d| d.name == from) {
+            def.name = to.to_string();
+        }
+        self.store.save(&all)?;
         // The materialised creds file is keyed by name too; drop the old one (a
         // fresh one is written under the new name on next connect).
         let _ = fs::remove_file(self.app_dir.join("mcp_creds").join(sanitize_filename(from)));
@@ -1925,24 +1934,16 @@ impl McpManager {
         Ok(())
     }
 
-    pub fn set_credentials(&self, name: &str, content: &str) -> Result<(), AppError> {
-        self.secrets.set(name, content)?;
-        if content.is_empty() {
-            // Clearing the stored secret must also delete the materialised
-            // cleartext file, or it lingers on disk until the server is removed.
-            let _ = fs::remove_file(self.app_dir.join("mcp_creds").join(sanitize_filename(name)));
-        }
-        Ok(())
+    /// Delete the materialised cleartext creds file once the stored
+    /// credentials are cleared, so it doesn't linger until the server is removed.
+    pub fn forget_creds_file(&self, name: &str) {
+        let _ = fs::remove_file(self.app_dir.join("mcp_creds").join(sanitize_filename(name)));
     }
 
-    pub fn has_credentials(&self, name: &str) -> bool {
-        self.secrets.has(name)
-    }
-
-    /// Remove a server's config + stored credentials. The caller must first
-    /// `take_client` and shut it down outside the lock.
+    /// Remove a server's config. The caller deletes its stored credentials
+    /// first (outside the lock), takes the client and shuts it down outside
+    /// the lock.
     pub fn remove_config_only(&self, name: &str) -> Result<(), AppError> {
-        let _ = self.secrets.set(name, "");
         // Also delete the materialised cleartext creds file that resolve_connect_def
         // wrote, so the secret doesn't linger on disk after the server is removed.
         let creds_file = self.app_dir.join("mcp_creds").join(sanitize_filename(name));
@@ -1950,12 +1951,16 @@ impl McpManager {
         self.store.remove(name)
     }
 
-    /// Load a server def and materialise its managed credentials into a 0600
-    /// file, injecting the credentials env var. With writes off, a recognised
-    /// server also gets its preset's read-only pins. Cheap + non-blocking, so
-    /// it runs under the (brief) manager lock; the spawn/handshake happens
-    /// unlocked.
-    pub fn resolve_connect_def(&self, name: &str) -> Result<ResolvedDef, AppError> {
+    /// Load a server def and materialise its credentials (`creds`, read from
+    /// the store before the lock) into a 0600 file, injecting the credentials
+    /// env var. With writes off, a recognised server also gets its preset's
+    /// read-only pins. Cheap + non-blocking, so it runs under the (brief)
+    /// manager lock; the spawn/handshake happens unlocked.
+    pub fn resolve_connect_def(
+        &self,
+        name: &str,
+        creds: Option<Zeroizing<String>>,
+    ) -> Result<ResolvedDef, AppError> {
         let mut def = self
             .store
             .load()
@@ -1965,7 +1970,7 @@ impl McpManager {
         // Meaningless for Http: there's no process the app spawns to inject an
         // env var into — the server was already started separately.
         if def.transport == McpTransport::Stdio {
-            if let Some(content) = self.secrets.get(name) {
+            if let Some(content) = creds.filter(|c| !c.is_empty()) {
                 let dir = self.app_dir.join("mcp_creds");
                 std::fs::create_dir_all(&dir).map_err(AppError::from)?;
                 // The files inside are 0600, but the directory itself should not
@@ -2222,10 +2227,21 @@ pub async fn connect_server(
     name: &str,
     web_refused: &(dyn Fn() -> Option<String> + Send + Sync),
 ) -> Result<usize, String> {
+    // The stored credentials are read with the lock released: the store can
+    // be slow or ask the user, and must not hold up every MCP command.
+    let creds = manager.lock().await.creds();
+    let owned = name.to_string();
+    let stored = secret_store::blocking(move || creds.get(&owned)).await;
     let resolved = {
         let mgr = manager.lock().await;
-        mgr.resolve_connect_def(name).map_err(|e| e.to_string())?
+        mgr.resolve_connect_def(name, stored.as_ref().ok().cloned().flatten())
+            .map_err(|e| e.to_string())?
     };
+    // Only a stdio server is given a credentials file, so only it needs the
+    // store. Starting it without its login would fail in a less clear way.
+    if resolved.def.transport == McpTransport::Stdio {
+        stored?;
+    }
     // Only an http server is a web server: a stdio server keeps a url the form
     // left behind, but GreenCLI starts it over pipes.
     let web = resolved.def.transport == McpTransport::Http;
@@ -2261,6 +2277,46 @@ pub async fn connect_server(
         old.shutdown().await;
     }
     Ok(count)
+}
+
+/// The `mcp_rename_server` command without Tauri. The config is checked
+/// first; the stored credentials are copied to the new name and read back
+/// (outside the lock); then the config and live client are renamed under the
+/// lock; only then is the old entry deleted. A failure on the way leaves the
+/// old name with its credentials as it was.
+pub async fn rename_server(manager: &Mutex<McpManager>, from: &str, to: &str) -> Result<(), String> {
+    if from == to {
+        return Ok(());
+    }
+    let creds = {
+        let mgr = manager.lock().await;
+        mgr.check_rename(from, to).map_err(|e| e.to_string())?;
+        mgr.creds()
+    };
+    let (f, t, c) = (from.to_string(), to.to_string(), creds.clone());
+    let copied = secret_store::blocking(move || c.copy(&f, &t)).await?;
+    let renamed = {
+        let mut mgr = manager.lock().await;
+        mgr.rename_config(from, to).map_err(|e| e.to_string())
+    };
+    // Clean up the name the credentials no longer belong to: the old one
+    // after a rename, the new copy after a failed one.
+    let stale = match (&renamed, copied) {
+        (Ok(()), true) => Some(from.to_string()),
+        (Err(_), true) => Some(to.to_string()),
+        // Nothing moved: a login left under the new name by a server deleted
+        // long ago must not come back with this one.
+        (Ok(()), false) => Some(to.to_string()),
+        (Err(_), false) => None,
+    };
+    if let Some(stale) = stale {
+        let c = creds.clone();
+        let s2 = stale.clone();
+        if let Err(e) = secret_store::blocking(move || c.delete(&s2)).await {
+            log::warn!("Couldn't delete the MCP login saved as '{}': {}", stale, e);
+        }
+    }
+    renamed
 }
 
 /// The `mcp_call` command without Tauri: check the call under a brief lock
@@ -2310,6 +2366,18 @@ pub(crate) mod tests {
         p.push(format!("greencli-mcp-test-{}", rand::random::<u64>()));
         std::fs::create_dir_all(&p).unwrap();
         p
+    }
+
+    /// A manager on the 1.9 files in `dir` (no system password store).
+    fn manager(dir: PathBuf) -> McpManager {
+        let store = Arc::new(SecretStore::files(&dir));
+        McpManager::new(dir, McpCreds::new(store))
+    }
+
+    /// A manager on an in-memory password store.
+    fn mem_manager(mem: &Arc<crate::secret_store::mem::MemBackend>) -> McpManager {
+        let store = Arc::new(SecretStore::os_for_tests(mem.clone()));
+        McpManager::new(temp_dir(), McpCreds::new(store))
     }
 
     fn def(name: &str, command: &str, args: &[&str]) -> McpServerDef {
@@ -2819,7 +2887,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn web_urls_cover_saved_and_live_web_servers_only() {
-        let mut mgr = McpManager::new(temp_dir());
+        let mut mgr = manager(temp_dir());
         let mut web = def("web", "", &[]);
         web.transport = McpTransport::Http;
         web.url = Some("https://mcp.example.com/mcp".into());
@@ -2862,10 +2930,10 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn all_tools_reports_the_map_key_after_a_rename() {
-        let mut mgr = McpManager::new(temp_dir());
+        let mut mgr = manager(temp_dir());
         mgr.save_config(def("old", "uvx", &["x"])).unwrap();
         mgr.install_client("old".into(), fake_client("old", vec![tool("old", "get_device")]));
-        mgr.rename_server("old", "new").unwrap();
+        mgr.rename_config("old", "new").unwrap();
         // A tools/list_changed refresh rebuilds the list with the name the
         // refresher was started with.
         if let Some(c) = mgr.clients.get("new") {
@@ -2883,7 +2951,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn a_client_without_a_definition_fails_closed() {
-        let mut mgr = McpManager::new(temp_dir());
+        let mut mgr = manager(temp_dir());
         let tools = vec![
             read_tool("ghost", "find_tool"),
             read_tool("ghost", "invoke_read_tool"),
@@ -2908,7 +2976,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn a_dead_client_offers_nothing() {
-        let mut mgr = McpManager::new(temp_dir());
+        let mut mgr = manager(temp_dir());
         mgr.save_config(def("s", "uvx", &[])).unwrap();
         let client = fake_client("s", vec![tool("s", "get_x")]);
         client.caller.dead.store(true, Ordering::Relaxed);
@@ -2920,7 +2988,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn listing_copies_the_opt_in_and_status_names_the_preset() {
-        let mut mgr = McpManager::new(temp_dir());
+        let mut mgr = manager(temp_dir());
         mgr.save_config(def("srx", "python3", &["jmcp.py"])).unwrap();
         mgr.set_show_opt_in("srx", true).unwrap();
         // Disconnected: matched by the definition.
@@ -2954,11 +3022,11 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn rename_keeps_every_field() {
-        let mut mgr = McpManager::new(temp_dir());
+        let mut mgr = manager(temp_dir());
         mgr.save_config(def("a", "python3", &["jmcp.py"])).unwrap();
         mgr.set_show_opt_in("a", true).unwrap();
         mgr.set_writes("a", McpWrites::On).unwrap();
-        mgr.rename_server("a", "b").unwrap();
+        mgr.rename_config("a", "b").unwrap();
         let all = mgr.list_configs();
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].name, "b");
@@ -2968,7 +3036,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn run_call_refuses_a_call_stopped_before_it_was_sent() {
-        let mut mgr = McpManager::new(temp_dir());
+        let mut mgr = manager(temp_dir());
         mgr.save_config(def("s", "uvx", &[])).unwrap();
         mgr.install_client("s".into(), fake_client("s", vec![tool("s", "get_x")]));
         let manager = Mutex::new(mgr);
@@ -3060,7 +3128,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn set_writes_refuses_on_for_a_read_only_login() {
-        let mut mgr = McpManager::new(temp_dir());
+        let mut mgr = manager(temp_dir());
         mgr.save_config(def("c", "uvx", &["x"])).unwrap();
         let client = fake_client("c", vec![read_tool("c", "get_x")]);
         *client.access.lock().unwrap() = Some(access("read-only"));
@@ -3074,7 +3142,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn writes_off_hides_and_refuses_at_once() {
-        let mut mgr = McpManager::new(temp_dir());
+        let mut mgr = manager(temp_dir());
         mgr.save_config(def("s", "uvx", &["x"])).unwrap();
         let tools = vec![read_tool("s", "get_device"), tool("s", "set_ssid"), tool("s", "execute_command")];
         mgr.install_client("s".into(), fake_client("s", tools));
@@ -3121,7 +3189,7 @@ pub(crate) mod tests {
                 {"name":"plain","command":"uvx","args":["x"],"writes":"on"}]"#,
         )
         .unwrap();
-        let mut mgr = McpManager::new(dir);
+        let mut mgr = manager(dir);
         let st = mgr.status();
         let legacy = &st[0];
         assert_eq!(legacy["writesSet"], false);
@@ -3143,7 +3211,7 @@ pub(crate) mod tests {
         assert!(plain["preset"].is_null());
 
         // Connected: what was applied, the login, and the hidden count.
-        let resolved = mgr.resolve_connect_def("legacy").unwrap();
+        let resolved = mgr.resolve_connect_def("legacy", None).unwrap();
         assert!(!resolved.writes_on);
         assert_eq!(resolved.def.env.get("CENTRALMCP_READONLY").map(String::as_str), Some("1"));
         let mut client = fake_client(
@@ -3165,7 +3233,7 @@ pub(crate) mod tests {
         assert_eq!(mgr.status()[0]["restartNeeded"], true);
         assert_eq!(mgr.status()[0]["hiddenToolCount"], 0);
         // A writes-on connect sends no pins.
-        let resolved = mgr.resolve_connect_def("legacy").unwrap();
+        let resolved = mgr.resolve_connect_def("legacy", None).unwrap();
         assert!(resolved.writes_on);
         assert_eq!(resolved.pins, PinPlan::None);
         assert!(!resolved.def.env.contains_key("CENTRALMCP_READONLY"));
@@ -3173,11 +3241,11 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn resolve_pins_override_the_users_own_value() {
-        let mut mgr = McpManager::new(temp_dir());
+        let mut mgr = manager(temp_dir());
         let mut d = def("c", "uv", &["run", "centralmcp"]);
         d.env.insert("centralmcp_readonly".into(), "0".into());
         mgr.save_config(d).unwrap();
-        let resolved = mgr.resolve_connect_def("c").unwrap();
+        let resolved = mgr.resolve_connect_def("c", None).unwrap();
         let keys: Vec<&String> = resolved
             .def
             .env
@@ -3188,5 +3256,114 @@ pub(crate) mod tests {
         assert_eq!(resolved.def.env["CENTRALMCP_READONLY"], "1");
         mgr.install_client("c".into(), fake_client("c", vec![]));
         assert!(mgr.clients.contains_key("c"));
+    }
+
+    // ─── Logins in the password store (K2) ───
+
+    #[tokio::test]
+    async fn rename_moves_the_login_only_after_the_copy_checks_out() {
+        use crate::secret_store::mem::MemBackend;
+        let mem = MemBackend::new();
+        let mgr = mem_manager(&mem);
+        mgr.save_config(def("a", "uvx", &["x"])).unwrap();
+        mgr.save_config(def("taken", "uvx", &["y"])).unwrap();
+        mgr.creds().set("a", "client_secret: s3cr3t").unwrap();
+        mgr.creds().set("taken", "other login").unwrap();
+        let manager = Mutex::new(mgr);
+
+        // A name that is taken: nothing moves.
+        assert!(rename_server(&manager, "a", "taken").await.is_err());
+        assert_eq!(mem.raw("mcp-creds:a").unwrap(), b"client_secret: s3cr3t");
+        assert_eq!(mem.raw("mcp-creds:taken").unwrap(), b"other login");
+
+        // The copy reads back wrong: the old name keeps its login and config.
+        mem.wrong_read.store(true, Ordering::Relaxed);
+        assert!(rename_server(&manager, "a", "b").await.is_err());
+        mem.wrong_read.store(false, Ordering::Relaxed);
+        assert_eq!(mem.raw("mcp-creds:a").unwrap(), b"client_secret: s3cr3t");
+        assert!(mem.raw("mcp-creds:b").is_none());
+        assert!(manager.lock().await.list_configs().iter().any(|d| d.name == "a"));
+
+        // A good rename: the new entry, then the old one deleted.
+        rename_server(&manager, "a", "b").await.unwrap();
+        assert_eq!(mem.raw("mcp-creds:b").unwrap(), b"client_secret: s3cr3t");
+        assert!(mem.raw("mcp-creds:a").is_none());
+        let names: Vec<String> = manager.lock().await.list_configs().into_iter().map(|d| d.name).collect();
+        assert_eq!(names, vec!["b".to_string(), "taken".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn rename_without_a_login_drops_an_old_login_left_under_the_new_name() {
+        use crate::secret_store::mem::MemBackend;
+        let mem = MemBackend::new();
+        let mgr = mem_manager(&mem);
+        mgr.save_config(def("a", "uvx", &["x"])).unwrap();
+        mgr.creds().set("b", "left from a server deleted long ago").unwrap();
+        let manager = Mutex::new(mgr);
+        rename_server(&manager, "a", "b").await.unwrap();
+        assert!(mem.accounts().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_10kb_login_survives_split_storage_connect_and_export() {
+        use crate::secret_store::mem::MemBackend;
+        let mem = MemBackend::new();
+        mem.max_blob.store(2560, Ordering::Relaxed);
+        let mgr = mem_manager(&mem);
+        mgr.save_config(def("central", "uvx", &["centralmcp"])).unwrap();
+        let yaml: String = (0..400)
+            .map(|i| format!("key_{:03}: value-{:012}\n", i, i * 7919))
+            .collect::<String>()[..10_240]
+            .to_string();
+        mgr.creds().set("central", &yaml).unwrap();
+        assert!(mem.raw("part4:mcp-creds:central").is_some());
+
+        // A fresh handle reads it back whole (export asks has()).
+        let fresh = McpCreds::new(Arc::new(SecretStore::os_for_tests(mem.clone())));
+        assert!(fresh.has("central").unwrap());
+        let stored = fresh.get("central").unwrap();
+        assert_eq!(stored.as_deref().map(String::as_str), Some(yaml.as_str()));
+
+        // Connect: the login file holds exactly the content.
+        let resolved = mgr.resolve_connect_def("central", stored).unwrap();
+        let path = resolved.def.env.get("CREDS_PATH").expect("creds path");
+        assert_eq!(std::fs::read_to_string(path).unwrap(), yaml);
+    }
+
+    #[tokio::test]
+    async fn a_slow_password_store_never_holds_the_mcp_lock() {
+        use crate::secret_store::mem::MemBackend;
+        let mem = MemBackend::new();
+        let mgr = mem_manager(&mem);
+        mgr.save_config(def("slow", "greencli-no-such-command", &[])).unwrap();
+        mem.get_delay_ms.store(2_000, Ordering::Relaxed);
+        let manager = Arc::new(Mutex::new(mgr));
+        let m2 = manager.clone();
+        let connecting = tokio::spawn(async move {
+            let none = || None;
+            connect_server(&m2, "slow", &none).await
+        });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let started = std::time::Instant::now();
+        let listed = manager.lock().await.list_configs();
+        let status = manager.lock().await.status();
+        assert!(started.elapsed() < Duration::from_millis(500), "{:?}", started.elapsed());
+        assert_eq!(listed.len(), 1);
+        assert_eq!(status.len(), 1);
+        // The connect still finishes (the command doesn't exist).
+        assert!(connecting.await.unwrap().is_err());
+    }
+
+    #[tokio::test]
+    async fn a_stdio_server_does_not_start_without_its_login_when_the_store_fails() {
+        use crate::secret_store::mem::MemBackend;
+        let mem = MemBackend::new();
+        let mgr = mem_manager(&mem);
+        mgr.save_config(def("central", "uvx", &["centralmcp"])).unwrap();
+        mem.fail_all.store(true, Ordering::Relaxed);
+        let manager = Mutex::new(mgr);
+        let none = || None;
+        let err = connect_server(&manager, "central", &none).await.unwrap_err();
+        assert_eq!(err, crate::secret_store::UNAVAILABLE);
     }
 }
