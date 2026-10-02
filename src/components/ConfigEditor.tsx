@@ -2000,6 +2000,9 @@ export default function ConfigEditor() {
             padding: { top: 12, bottom: 12 },
             // Problem marks in the scrollbar, like VS Code.
             hideCursorInOverviewRuler: true,
+            // Hover cards and suggestions float over the panel edges instead
+            // of being cut off by the side panel (a card above line 4 lost its top).
+            fixedOverflowWidgets: true,
             renderWhitespace: 'none',
             folding: true,
             // A double-click picks 1/1/5 or ge-0/0/0.100 whole in device configs.
