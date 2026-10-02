@@ -72,9 +72,11 @@ const AUDITOR_READ_CMD =
 /** date only shows the time: no arguments, or only a +FORMAT, -u/--utc, -R or -I. `date -s` sets the clock. */
 const DATE_SHOW_ARG = /^(?:\+\S*|-u|--utc|--universal|-R|--rfc-email|-I\w*|--iso-8601(?:=\w+)?)$/;
 
-/** `tail -f` (and -F, --follow, -fn 20) never ends, so the AI's next line is typed into it. */
+/** `tail -f` (and -F, --follow, -fn 20) never ends, so the AI's next line is typed into it. So does
+ *  the old `tail +1f FILE` (GNU and BSD tail read +Nf and +f as start-at-line N and follow): any word
+ *  starting with + that has an f or F in it counts as follow. */
 function tailFollows(words: string[]): boolean {
-  return words.some((w) => /^--(?:follow|retry)/i.test(w) || /^-[A-Za-z0-9]*[fF]/.test(w));
+  return words.some((w) => /^--(?:follow|retry)/i.test(w) || /^-[A-Za-z0-9]*[fF]/.test(w) || /^\+.*[fF]/.test(w));
 }
 
 /** Words that set how many pings to send: Linux and macOS -c N, Windows -n N, Junos count N,

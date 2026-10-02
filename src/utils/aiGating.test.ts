@@ -125,6 +125,10 @@ describe('auditorAllowsCommand', () => {
     expect(auditorAllowsCommand('tail -fn 20 /var/log/x')).toBe(false);
     expect(auditorAllowsCommand('tail --follow=name /var/log/x')).toBe(false);
     expect(auditorAllowsCommand('cat /var/log/x | tail -f')).toBe(false);
+    // The old +Nf form: start at line N, then follow.
+    for (const cmd of ['tail +1f /etc/hostname', 'tail +f /var/log/x', 'tail +10F /var/log/x', 'tail -q +1f x', 'show log | tail +5f']) {
+      expect([cmd, auditorAllowsCommand(cmd)]).toEqual([cmd, false]);
+    }
     // Plain shows of the same words still pass.
     expect(auditorAllowsCommand('date')).toBe(true);
     expect(auditorAllowsCommand('date -u +%F')).toBe(true);
