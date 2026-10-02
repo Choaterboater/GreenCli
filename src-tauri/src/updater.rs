@@ -1360,21 +1360,37 @@ mod tests {
     }
 
     fn build_steps(yml: &str) -> Vec<Step> {
-        let indent = |l: &str| l.len() - l.trim_start().len();
+        job_steps(yml, "build")
+    }
+
+    fn indent(line: &str) -> usize {
+        line.len() - line.trim_start().len()
+    }
+
+    /// The lines of one job of release.yml, from its header up to the next
+    /// job, with comment lines left out.
+    fn job_lines<'a>(yml: &'a str, job: &str) -> Vec<&'a str> {
         let lines: Vec<&str> = yml
             .lines()
             .filter(|l| !l.trim_start().starts_with('#'))
             .collect();
-        let start = lines.iter().position(|l| *l == "  build:").unwrap();
-        let end = start
-            + 1
-            + lines[start + 1..]
-                .iter()
-                .position(|l| indent(l) == 2 && !l.trim().is_empty())
-                .unwrap();
+        let header = format!("  {job}:");
+        let start = lines
+            .iter()
+            .position(|l| *l == header)
+            .unwrap_or_else(|| panic!("release.yml has no job {job:?}"));
+        let len = lines[start + 1..]
+            .iter()
+            .position(|l| indent(l) <= 2 && !l.trim().is_empty())
+            .unwrap_or(lines.len() - start - 1);
+        lines[start..=start + len].to_vec()
+    }
+
+    /// The steps of one job of release.yml (see [`Step`]).
+    fn job_steps(yml: &str, job: &str) -> Vec<Step> {
         let mut steps: Vec<Step> = Vec::new();
         let mut block = "";
-        for line in &lines[start..end] {
+        for line in job_lines(yml, job) {
             if line.starts_with("      - ") {
                 steps.push(Step::default());
             }
@@ -1654,7 +1670,8 @@ mod tests {
         let steps = build_steps(RELEASE_YML);
         let code = code_lines(RELEASE_YML);
 
-        // The only outputs are the update key folder and the Apple mode.
+        // The only outputs are the gate job's skip flag, the update key
+        // folder and the Apple mode.
         let writes: Vec<&str> = code
             .iter()
             .copied()
@@ -1667,6 +1684,7 @@ mod tests {
         assert_eq!(
             writes,
             [
+                "echo \"skip=true\" >> \"$GITHUB_OUTPUT\"",
                 "echo \"dir=$dir\" >> \"$GITHUB_OUTPUT\"",
                 "echo \"mode=$mode\" >> \"$GITHUB_OUTPUT\"",
             ]
@@ -1923,6 +1941,136 @@ mod tests {
             out.contains("The Mac app is signed (not notarized).\n"),
             "{out}"
         );
+    }
+
+    /// Publishing a draft made by a release/** push or a manual run creates
+    /// its tag, and that tag push starts release.yml again. The gate job
+    /// skips such a run when the tag already has a published release, and
+    /// every other job needs it, so nothing is built again into a second
+    /// v<version> draft. A tag pushed before its release is published still
+    /// builds. Runs the gate's own script with a stand-in gh.
+    #[cfg(unix)]
+    #[test]
+    fn release_workflow_skips_a_tag_that_is_already_published() {
+        // The jobs in order: gate first, and each one needs the one before.
+        let code: Vec<&str> = RELEASE_YML
+            .lines()
+            .filter(|l| !l.trim_start().starts_with('#'))
+            .collect();
+        let jobs_at = code.iter().position(|l| *l == "jobs:").unwrap();
+        let jobs: Vec<&str> = code[jobs_at + 1..]
+            .iter()
+            .copied()
+            .filter(|l| indent(l) == 2 && l.ends_with(':'))
+            .collect();
+        assert_eq!(jobs, ["  gate:", "  ci:", "  build:", "  update-files:"]);
+        let needs = |job: &str| -> Vec<&str> {
+            job_lines(RELEASE_YML, job)
+                .into_iter()
+                .filter_map(|l| l.strip_prefix("    needs: "))
+                .collect()
+        };
+        assert!(needs("gate").is_empty());
+        assert_eq!(needs("ci"), ["gate"]);
+        assert_eq!(needs("build"), ["ci"]);
+        assert_eq!(needs("update-files"), ["build"]);
+        // ci runs unless the gate says skip. No job runs after a skipped
+        // one: no job condition has always(), failure() or cancelled().
+        let conds: Vec<&str> = code
+            .iter()
+            .copied()
+            .filter_map(|l| l.strip_prefix("    if: "))
+            .collect();
+        assert_eq!(
+            conds,
+            [
+                "needs.gate.outputs.skip != 'true'",
+                "${{ github.event_name != 'workflow_dispatch' || inputs.publish }}",
+            ]
+        );
+        assert_eq!(
+            job_lines(RELEASE_YML, "ci")[1..3],
+            [
+                "    needs: gate",
+                "    if: needs.gate.outputs.skip != 'true'"
+            ]
+        );
+        let gate = job_lines(RELEASE_YML, "gate");
+        for line in [
+            "    runs-on: ubuntu-latest",
+            "      contents: read",
+            "      skip: ${{ steps.check.outputs.skip }}",
+        ] {
+            assert!(gate.contains(&line), "{line}");
+        }
+        assert!(!gate.iter().any(|l| l.contains("write")), "{gate:#?}");
+
+        // Only a tag push is looked at; manual runs and release/** pushes
+        // always build.
+        let steps = job_steps(RELEASE_YML, "gate");
+        assert_eq!(steps.len(), 1);
+        let check = &steps[0];
+        assert_eq!(check.id, "check");
+        assert_eq!(
+            check.cond,
+            "github.event_name == 'push' && github.ref_type == 'tag'"
+        );
+        assert_eq!(
+            check.env,
+            [(
+                "GH_TOKEN".to_string(),
+                "${{ secrets.GITHUB_TOKEN }}".to_string()
+            )]
+        );
+
+        // gh exits 0 when GitHub has a published release with that tag, and
+        // 1 when it has none (404, also for a draft) or the call fails.
+        let run = |gh_exit: u32| {
+            let mut dir = std::env::temp_dir();
+            dir.push(format!("greencli-gate-test-{}", rand::random::<u64>()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let output = dir.join("output");
+            let calls = dir.join("calls");
+            std::fs::write(&output, "").unwrap();
+            std::fs::write(&calls, "").unwrap();
+            let script = format!(
+                "gh() {{ echo \"gh $*\" >> \"$CALLS\"; return {gh_exit}; }}\n{}",
+                check.run
+            );
+            let out = std::process::Command::new("bash")
+                .args(["--noprofile", "--norc", "-eo", "pipefail", "-c", &script])
+                .env("GITHUB_REPOSITORY", "Choaterboater/GreenCli")
+                .env("GITHUB_REF_NAME", "v2.0.0")
+                .env("GITHUB_OUTPUT", &output)
+                .env("CALLS", &calls)
+                .output()
+                .expect("bash");
+            let read = |p: &std::path::Path| std::fs::read_to_string(p).unwrap();
+            let result = (
+                out.status.code(),
+                String::from_utf8_lossy(&out.stdout).into_owned(),
+                read(&output),
+                read(&calls),
+            );
+            std::fs::remove_dir_all(&dir).unwrap();
+            result
+        };
+        let call = "gh api repos/Choaterboater/GreenCli/releases/tags/v2.0.0\n";
+
+        let (code, stdout, output, calls) = run(0);
+        assert_eq!(code, Some(0), "{stdout}");
+        assert_eq!(output, "skip=true\n");
+        assert_eq!(calls, call);
+        assert_eq!(
+            stdout,
+            "::notice::v2.0.0 is already published, so there is nothing to build.\n"
+        );
+
+        let (code, stdout, output, calls) = run(1);
+        assert_eq!(code, Some(0), "{stdout}");
+        assert_eq!(output, "");
+        assert_eq!(calls, call);
+        assert_eq!(stdout, "");
     }
 
     /// Apple's ticket can take a little while to show up after notarytool

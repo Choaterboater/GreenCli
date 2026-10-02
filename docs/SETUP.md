@@ -127,6 +127,10 @@ There is nothing to set up for update signing: no key to make, keep or paste, an
   lose the execute bit, so it would not start.)
 - A push to a `release/**` branch **always publishes** (to a draft named after the app's version),
   so push one only after the version bump.
+- Publishing a draft made by a `release/**` push or a manual run creates its tag, and that tag
+  starts the **Release** workflow again. That run sees the release is already published and builds
+  nothing (its **gate** job says so). If you ever see a second `v<version>` draft after publishing,
+  delete it.
 - **Re-running one build job** makes a new key and replaces that build's files and key in the
   draft. Make sure update-files runs again after it (re-run it by hand if GitHub didn't) and is
   green before you publish. Don't publish while update-files is red or hasn't run.

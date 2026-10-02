@@ -26,7 +26,9 @@ on:
     # Pushing a release/* branch also builds — the escape hatch for
     # environments whose credentials can push branches but not tags or
     # workflow_dispatch. The release lands under the app's real version
-    # (v__VERSION__ below), not the branch name.
+    # (v__VERSION__ below), not the branch name. Publishing that draft
+    # creates the tag, and the run that tag push starts is skipped (see the
+    # gate job).
     branches:
       - "release/**"
   workflow_dispatch:
@@ -42,8 +44,37 @@ permissions:
   contents: read
 
 jobs:
-  # The full test/lint gate (ci.yml) must pass before any installer is built.
+  # Publishing a draft made by a release/** push or a manual run creates its
+  # tag, and that tag push starts this workflow again. tauri-action never
+  # changes a published release, so that run would build everything again
+  # into a second v<version> draft. So a tag push whose tag already has a
+  # published release builds nothing. GitHub's release-by-tag call sees only
+  # published releases, never drafts: a tag pushed before its release is
+  # published still builds, and so does a run where the call fails. Manual
+  # runs and release/** pushes are never skipped.
+  gate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      skip: ${{ steps.check.outputs.skip }}
+    steps:
+      - name: Skip a tag that is already published
+        id: check
+        if: github.event_name == 'push' && github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh api "repos/$GITHUB_REPOSITORY/releases/tags/$GITHUB_REF_NAME" > /dev/null 2>&1; then
+            echo "::notice::$GITHUB_REF_NAME is already published, so there is nothing to build."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  # The full test/lint run (ci.yml) must pass before any installer is built.
+  # When the gate job skips it, build and update-files (which need it) skip too.
   ci:
+    needs: gate
+    if: needs.gate.outputs.skip != 'true'
     uses: ./.github/workflows/ci.yml
     permissions:
       contents: read
