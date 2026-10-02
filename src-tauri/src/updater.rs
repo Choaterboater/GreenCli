@@ -216,9 +216,15 @@ pub enum CheckNext {
     /// Answer with the waiting update and fetch nothing: it is still the
     /// latest release, or GitHub couldn't be reached to say otherwise.
     Keep(String),
-    /// Download this release. Anything waiting is another version (one the
-    /// owner replaced or withdrew): drop it first.
+    /// Download this release. Nothing is waiting, or the waiting update is
+    /// this release or newer, so its own release was withdrawn (or its
+    /// version can't be read): drop it first.
     Fetch(Version),
+    /// Download this release, which is newer than the waiting update. The
+    /// waiting update stays ready until the new download passes its signature
+    /// check, so a download that fails (offline, no build for this system,
+    /// refused) leaves it ready, as offline does.
+    Replace(Version),
     /// The check failed and nothing is waiting.
     Fail(&'static str),
 }
@@ -235,6 +241,9 @@ pub fn check_next(
         Err(e) => waiting.map_or(CheckNext::Fail(e), CheckNext::Keep),
         Ok(Some(release)) if is_newer(current, &release) => match waiting {
             Some(w) if w == release.to_string() => CheckNext::Keep(w),
+            Some(w) if Version::parse(&w).is_ok_and(|w| is_newer(&w, &release)) => {
+                CheckNext::Replace(release)
+            }
             _ => CheckNext::Fetch(release),
         },
         Ok(_) => CheckNext::UpToDate,
@@ -498,7 +507,8 @@ fn may_update(
 /// Look for a newer version and, when there is one, download it and check its
 /// signature. Returns the new version, or None when this is the latest.
 /// Never installs. An update already downloaded is checked against the latest
-/// release too, so one the owner replaced or withdrew is dropped.
+/// release too: one the owner withdrew is dropped, and one a newer release
+/// replaces stays ready until the newer download passes its signature check.
 #[tauri::command]
 pub async fn update_check(
     app: AppHandle,
@@ -519,24 +529,53 @@ pub async fn update_check(
         Ok(client) => latest_release(client).await,
         Err(e) => Err(*e),
     };
-    let release = match check_next(&app.package_info().version, waiting, latest) {
+    let (release, kept) = match check_next(&app.package_info().version, waiting.clone(), latest) {
         CheckNext::UpToDate => {
             state.drop_pending();
             return Ok(None);
         }
         CheckNext::Keep(version) => return Ok(Some(version)),
         CheckNext::Fail(e) => return Err(e.into()),
+        // The waiting update's release was withdrawn: it goes whatever
+        // happens to this download.
         CheckNext::Fetch(release) => {
             state.drop_pending();
-            release
+            (release, None)
         }
+        // The waiting update is replaced only once the newer one passes.
+        CheckNext::Replace(release) => (release, waiting),
     };
     // Step 1 used it, so it is there.
     let client = client?;
+    match download_release(&app, &state, &client, release, platform).await {
+        Ok(Some(pending)) => {
+            let version = pending.update.version.clone();
+            *state.pending.lock().unwrap_or_else(|p| p.into_inner()) = Some(pending);
+            Ok(Some(version))
+        }
+        // The newer release can't be used (no build or key for this system,
+        // offline, or refused; logged): the update already waiting stays
+        // ready and is the answer, as when offline.
+        result => match kept {
+            Some(version) => Ok(Some(version)),
+            None => result.map(|_| None).map_err(Into::into),
+        },
+    }
+}
+
+/// Steps 2 and 3 of a check: download `release`'s update for this system and
+/// check its signature. `Ok(None)` when that release has no update for it.
+async fn download_release(
+    app: &AppHandle,
+    state: &UpdaterState,
+    client: &reqwest::Client,
+    release: Version,
+    platform: &str,
+) -> Result<Option<Pending>, &'static str> {
     // 2. That release's key for this system, and 3. that release's manifest:
     // both from the same tag, so a release published in between can't mix
     // one release's key with another's files.
-    let Some(pubkey) = release_key(&client, &release, platform).await? else {
+    let Some(pubkey) = release_key(client, &release, platform).await? else {
         return Ok(None);
     };
     let endpoint = Url::parse(&manifest_url(&release)).map_err(|_| ERR_NETWORK)?;
@@ -577,12 +616,12 @@ pub async fn update_check(
         Err(e) if is_no_release(&e) => return Ok(None),
         Err(e) => {
             log::warn!("Update check failed: {}", plain_error(&e));
-            return Err(ERR_NETWORK.into());
+            return Err(ERR_NETWORK);
         }
     };
     if !download_url_ok(&update.download_url) {
         log::warn!("Update refused: its file is not a GreenCLI release asset");
-        return Err(ERR_SOURCE.into());
+        return Err(ERR_SOURCE);
     }
     update.timeout = Some(DOWNLOAD_TIMEOUT);
     let bytes = update.download(|_, _| {}, || {}).await.map_err(|e| {
@@ -593,9 +632,7 @@ pub async fn update_check(
             ERR_NETWORK
         }
     })?;
-    let version = update.version.clone();
-    *state.pending.lock().unwrap_or_else(|p| p.into_inner()) = Some(Pending { update, bytes });
-    Ok(Some(version))
+    Ok(Some(Pending { update, bytes }))
 }
 
 /// Plugin errors for the log, with reqwest's URL left out.
@@ -876,20 +913,31 @@ mod tests {
             check_next(&current, held(), latest("2.0.1")),
             Keep("2.0.1".into())
         );
-        // A newer release replaced it: fetch that one.
+        // A newer release replaces it, but only once that one's download
+        // passes: a failed one leaves it ready.
         assert_eq!(
             check_next(&current, held(), latest("2.0.2")),
-            Fetch(v("2.0.2"))
+            Replace(v("2.0.2"))
+        );
+        assert_eq!(
+            check_next(&current, Some("2.0.1-beta.1".into()), latest("2.0.1")),
+            Replace(v("2.0.1"))
         );
         // Its release was withdrawn: the latest is this app's version (or
         // older), or there is no release with update files at all.
         assert_eq!(check_next(&current, held(), latest("2.0.0")), UpToDate);
         assert_eq!(check_next(&current, held(), latest("1.9.0")), UpToDate);
         assert_eq!(check_next(&current, held(), Ok(None)), UpToDate);
-        // Withdrawn, with an older release still newer than this app.
+        // Withdrawn, with an older release still newer than this app: it
+        // goes before the download, which may fail.
         assert_eq!(
             check_next(&current, Some("2.0.2".into()), latest("2.0.1")),
             Fetch(v("2.0.1"))
+        );
+        // A waiting version that can't be read is never kept.
+        assert_eq!(
+            check_next(&current, Some("2.0".into()), latest("2.0.2")),
+            Fetch(v("2.0.2"))
         );
         // Offline: what is waiting stays ready; with nothing waiting, the
         // check fails.
