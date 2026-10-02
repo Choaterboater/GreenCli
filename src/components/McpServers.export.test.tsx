@@ -5,10 +5,14 @@ import McpServers from './McpServers';
 import { tauriSave } from '../utils/fileSystem';
 import { notify } from '../store/toastStore';
 import type { McpServerDef } from '../utils/mcpTypes';
+import { resetHiddenRefreshForTests } from '../utils/configArchive';
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 vi.mock('../utils/fileSystem', () => ({ isTauri: true, tauriSave: vi.fn() }));
 vi.mock('../store/toastStore', () => ({ notify: { success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() } }));
+vi.mock('../utils/secrets/forCopy', () => ({
+  hideSecretsInText: vi.fn(async (text: string) => ({ ok: true, text: `hidden ${text}`, hidden: 0, words: [] })),
+}));
 
 const SERVERS: McpServerDef[] = [
   {
@@ -37,10 +41,17 @@ const SERVERS: McpServerDef[] = [
   },
 ];
 
-function backend(servers: McpServerDef[], writeError?: string) {
+function backend(
+  servers: McpServerDef[],
+  writeError?: string,
+  greencli?: { path: string; exists: boolean; place: string },
+  hidden?: { missing: number; stale: number },
+) {
   vi.mocked(invoke).mockImplementation(async (cmd: string, raw?: unknown) => {
     const args = raw as Record<string, unknown> | undefined;
     if (cmd === 'mcp_list_servers') return servers;
+    if (cmd === 'greencli_mcp_info') return greencli;
+    if (cmd === 'config_archive_missing_hidden') return hidden ? { ...hidden, current: 0, todo: [] } : undefined;
     if (cmd === 'mcp_status') return [];
     if (cmd === 'mcp_has_credentials') return args?.name === 'central';
     if (cmd === 'mcp_export_write' && writeError) throw writeError;
@@ -59,17 +70,87 @@ const exportButton = () => screen.getByRole('button', { name: /Export for Casper
 
 describe('McpServers export', () => {
   beforeEach(() => {
+    resetHiddenRefreshForTests();
     vi.mocked(invoke).mockReset();
     vi.mocked(tauriSave).mockReset();
     vi.mocked(notify.success).mockReset();
     vi.mocked(notify.error).mockReset();
+    vi.mocked(notify.warning).mockReset();
   });
 
-  it('is disabled until there is a server', async () => {
-    backend([]);
+  it('with no saved servers, exports GreenCLI\'s own read-only server', async () => {
+    const path = '/Applications/GreenCLI.app/Contents/MacOS/greencli-mcp';
+    backend([], undefined, { path, exists: true, place: 'normal' });
+    vi.mocked(tauriSave).mockResolvedValue('/Users/me/proj/.mcp.json');
     render(<McpServers />);
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('mcp_list_servers'));
-    expect(exportButton()).toBeDisabled();
+    expect(exportButton()).not.toBeDisabled();
+    fireEvent.click(exportButton());
+    await waitFor(() => expect(writes()).toHaveLength(1));
+    expect(JSON.parse(writes()[0].contents)).toEqual({
+      mcpServers: { greencli: { type: 'stdio', command: path, args: [] } },
+    });
+  });
+
+  it('says so when greencli-mcp is missing, and saves nothing without servers', async () => {
+    backend([], undefined, { path: '/opt/GreenCLI/greencli-mcp', exists: false, place: 'normal' });
+    render(<McpServers />);
+    expect(await screen.findByText(/isn't next to GreenCLI in this build/)).toBeTruthy();
+    fireEvent.click(exportButton());
+    await waitFor(() => expect(notify.warning).toHaveBeenCalled());
+    expect(vi.mocked(notify.warning).mock.calls[0][1]).toContain('was left out');
+    expect(tauriSave).not.toHaveBeenCalled();
+    expect(writes()).toHaveLength(0);
+  });
+
+  it('shows the greencli-mcp path, the claude command and the hidden copy count', async () => {
+    const path = '/Applications/GreenCLI.app/Contents/MacOS/greencli-mcp';
+    backend([], undefined, { path, exists: true, place: 'normal' }, { missing: 2, stale: 1 });
+    render(<McpServers />);
+    expect(await screen.findByText(path)).toBeTruthy();
+    expect(screen.getByText(`claude mcp add greencli -- "${path}"`)).toBeTruthy();
+    expect(screen.getByText('3 snapshots need a new hidden copy.')).toBeTruthy();
+    expect(screen.queryByText('Move GreenCLI to Applications first.')).toBeNull();
+  });
+
+  it('counts hidden copies again after the background refresh', async () => {
+    const path = '/Applications/GreenCLI.app/Contents/MacOS/greencli-mcp';
+    let todo = [
+      { device: 'sw1', ts: 1 },
+      { device: 'sw1', ts: 2 },
+    ];
+    vi.mocked(invoke).mockImplementation(async (cmd: string, raw?: unknown) => {
+      const args = raw as { ts: number } | undefined;
+      if (cmd === 'mcp_list_servers') return [];
+      if (cmd === 'greencli_mcp_info') return { path, exists: true, place: 'normal' };
+      if (cmd === 'config_archive_missing_hidden') return { missing: 0, stale: todo.length, current: 0, todo };
+      if (cmd === 'config_archive_get') return 'raw';
+      if (cmd === 'config_archive_set_hidden') {
+        todo = todo.filter((t) => t.ts !== args?.ts);
+        return null;
+      }
+      if (cmd === 'mcp_status') return [];
+      return undefined;
+    });
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    render(<McpServers />);
+    expect(await screen.findByText(path)).toBeTruthy();
+    await waitFor(() => expect(info).toHaveBeenCalled());
+    await waitFor(() => expect(screen.queryByText(/need(s)? a new hidden copy/)).toBeNull());
+    expect(todo).toEqual([]);
+    info.mockRestore();
+  });
+
+  it('asks to move a translocated app, and leaves greencli out of the export', async () => {
+    const path = '/private/var/folders/x/AppTranslocation/1/d/GreenCLI.app/Contents/MacOS/greencli-mcp';
+    backend(SERVERS, undefined, { path, exists: true, place: 'translocated' });
+    vi.mocked(tauriSave).mockResolvedValue('/Users/me/proj/.mcp.json');
+    render(<McpServers />);
+    expect(await screen.findByText('Move GreenCLI to Applications first.')).toBeTruthy();
+    fireEvent.click(exportButton());
+    await waitFor(() => expect(writes()).toHaveLength(1));
+    expect(Object.keys(JSON.parse(writes()[0].contents).mcpServers)).toEqual(['central', 'remote']);
+    expect(await screen.findByText(/move GreenCLI to Applications first, then export again/)).toBeTruthy();
   });
 
   it('saves a .mcp.json without secrets and lists the variables to set', async () => {

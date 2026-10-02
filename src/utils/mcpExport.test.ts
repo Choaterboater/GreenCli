@@ -1266,3 +1266,43 @@ describe('exportSummary', () => {
     expect(summary.check).toBe('Values that look like passwords, keys or tokens were replaced, but check the file before you share it.');
   });
 });
+
+describe('buildMcpExport: greencli-mcp', () => {
+  const path = '/Applications/GreenCLI.app/Contents/MacOS/greencli-mcp';
+
+  it('adds GreenCLI\'s own server, even with no saved servers', () => {
+    const result = buildMcpExport([], { greencli: { command: path } });
+    expect(result.count).toBe(1);
+    expect(result.file.mcpServers).toEqual({ greencli: { type: 'stdio', command: path, args: [] } });
+    expect(result.variables).toEqual([]);
+    expect(result.notes).toEqual([]);
+  });
+
+  it('keeps a saved server named greencli, and renames GreenCLI\'s own with a note', () => {
+    const result = buildMcpExport([def({ name: 'greencli', command: 'uvx', args: ['something'] }), def({ name: 'greencli-2' })], {
+      greencli: { command: path },
+    });
+    expect(result.count).toBe(3);
+    expect(result.file.mcpServers.greencli).toMatchObject({ command: 'uvx' });
+    expect(result.file.mcpServers['greencli-3']).toEqual({ type: 'stdio', command: path, args: [] });
+    expect(result.notes).toContain('GreenCLI\'s read-only server is saved as "greencli-3", because another server already uses "greencli".');
+  });
+
+  it('says why it was left out', () => {
+    const missing = buildMcpExport([def({ name: 'a' })], { greencli: { leftOut: 'missing' } });
+    expect(missing.count).toBe(1);
+    expect(missing.file.mcpServers.greencli).toBeUndefined();
+    expect(missing.notes.join(' ')).toContain("greencli-mcp isn't next to GreenCLI in this build");
+    const moved = buildMcpExport([], { greencli: { leftOut: 'not-installed' } });
+    expect(moved.count).toBe(0);
+    expect(moved.notes.join(' ')).toContain('move GreenCLI to Applications first');
+  });
+
+  it('counts it toward Casper\'s limit', () => {
+    const many = Array.from({ length: CASPER_MAX_SERVERS }, (_, i) => def({ name: `s${i}` }));
+    expect(buildMcpExport(many).notes.join(' ')).not.toContain('at most');
+    const result = buildMcpExport(many, { greencli: { command: path } });
+    expect(result.count).toBe(CASPER_MAX_SERVERS + 1);
+    expect(result.notes.join(' ')).toContain(`at most ${CASPER_MAX_SERVERS} servers`);
+  });
+});

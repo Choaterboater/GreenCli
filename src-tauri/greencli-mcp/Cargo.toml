@@ -1,0 +1,20 @@
+[package]
+name = "greencli-mcp"
+# Same version as the app (a test checks it).
+version = "1.9.0"
+description = "Read-only MCP server for GreenCLI data"
+authors = ["ChoateLabs"]
+license = "MIT"
+repository = "https://github.com/Choaterboater/GreenCli"
+edition = "2021"
+rust-version = "1.90"
+publish = false
+
+# Keep this list short: tests/source_scan.rs allows only serde, serde_json,
+# dirs and similar, and no build script.
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+dirs = "7"
+# Unified diffs for get_config_diff.
+similar = { version = "3", default-features = false, features = ["std", "text"] }

@@ -9,6 +9,7 @@ mod config_archive;
 mod error;
 mod export_file;
 mod folder;
+mod greencli_mcp_info;
 mod intent;
 mod local;
 mod mcp;
@@ -1936,17 +1937,26 @@ async fn intent_webhook_notify(url: String, payload: serde_json::Value) -> Resul
 
 // ─── Config archive (NW-16): per-device versioned config history + golden diff ───
 
+/// `hidden`: the same config with secrets hidden by the frontend's secret
+/// filter, and `filter` the version of that filter (see HIDDEN_COPY_FILTER).
 #[tauri::command]
 fn config_archive_capture(
     device: String,
     source: String,
     content: String,
+    hidden: Option<String>,
+    filter: Option<u32>,
     state: State<'_, AppState>,
-) -> Result<Option<u64>, String> {
-    state
+) -> Result<config_archive::Captured, String> {
+    let hidden = hidden.as_deref().map(|text| (text, filter.unwrap_or(0)));
+    let got = state
         .config_archive
-        .capture(&device, &source, &content)
-        .map_err(|e| e.to_string())
+        .capture(&device, &source, &content, hidden)
+        .map_err(|e| e.to_string())?;
+    if let Some(warning) = &got.warning {
+        log::warn!("config archive: {warning}");
+    }
+    Ok(got)
 }
 
 #[tauri::command]
@@ -1986,6 +1996,28 @@ fn config_archive_set_golden(
     state
         .config_archive
         .set_golden(&device, ts)
+        .map_err(|e| e.to_string())
+}
+
+/// How many snapshots have no hidden copy, or one from an older secret
+/// filter, and which ones (for the "Make hidden copies" loop).
+#[tauri::command]
+fn config_archive_missing_hidden(state: State<'_, AppState>) -> config_archive::HiddenStatus {
+    state.config_archive.hidden_status()
+}
+
+/// Save a hidden copy made later for a snapshot already in the archive.
+#[tauri::command]
+fn config_archive_set_hidden(
+    device: String,
+    ts: u64,
+    hidden: String,
+    filter: u32,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    state
+        .config_archive
+        .set_hidden(&device, ts, &hidden, filter)
         .map_err(|e| e.to_string())
 }
 
@@ -3025,6 +3057,9 @@ fn main() {
             config_archive_devices,
             config_archive_set_golden,
             // [2.0 greencli-mcp] new commands below
+            config_archive_missing_hidden,
+            config_archive_set_hidden,
+            greencli_mcp_info::greencli_mcp_info,
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")
