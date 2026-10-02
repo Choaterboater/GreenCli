@@ -405,7 +405,7 @@ export const HELP_TOPICS: HelpTopic[] = [
       },
       {
         kind: 'note',
-        text: 'Copying the GreenCLI folder to another computer does not copy the AI keys and MCP logins in the password store. Going back to 1.9 loses them, so back up `ai_keys.json` and `mcp_creds.json` before you first run 2.0.',
+        text: 'Copying the GreenCLI folder to another computer does not copy the AI keys and MCP logins in the password store. 1.9 can’t read the password store, so if you go back to 1.9, enter your AI keys and MCP logins again there. They stay in the password store for when you come back to 2.0.',
       },
       { kind: 'p', text: 'Data lives in the OS app-data dir for `com.choatelabs.greencli` (sessions.json, vault.enc, secret_store.json, mcp_servers.json, known_hosts.json, intents.json, config_archive/, logs/). `secret_store.json` only says the keys are in the password store. `ai_keys.json` and `mcp_creds.json` are there only when no password store is found (or an old 1.9 file couldn’t be moved; Settings then shows its path).' },
     ],
