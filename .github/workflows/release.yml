@@ -27,6 +27,12 @@ name: Release
 # from latest.json. The release job finds or makes the draft once and the
 # builds upload into it by its id; update-files writes latest.json once,
 # after all three builds.
+#
+# No run changes a published release. The release job only uses a draft,
+# and every step that uploads into the release or deletes a file from it
+# first checks that it is still a draft (a re-run of one job gets the id
+# the release job found the first time, and the owner may have published
+# that release since). A published release needs a new version.
 on:
   push:
     tags:
@@ -105,10 +111,10 @@ jobs:
   # installers become workflow artifacts).
   # Why manual runs can turn it off: a run builds under the app's current
   # version, so before the version bump it would make a second draft with
-  # the same tag as the already published release (e.g. v1.9.0). This job
-  # never changes a published release, but the extra draft is confusing:
-  # untick publish to only build. A release/** push always publishes: push
-  # one only after the bump.
+  # the same tag as the already published release (e.g. v1.9.0). No job
+  # changes a published release (see the top of this file), but the extra
+  # draft is confusing: untick publish to only build. A release/** push
+  # always publishes: push one only after the bump.
   release:
     needs: ci
     runs-on: ubuntu-latest
@@ -178,6 +184,31 @@ jobs:
     runs-on: ${{ matrix.platform }}
 
     steps:
+      # Re-running one build job (or "Re-run failed jobs") does not run the
+      # release job again: this job gets the id it found the first time,
+      # and the owner may have published that release since. Then stop
+      # before anything is built: tauri-action, "Notarize the .dmg" and
+      # "Publish the update key" would swap the published release's update
+      # file and key for new ones, and its latest.json would point at a
+      # deleted file until update-files ran again (and for good if this run
+      # failed first). The steps that delete a file from the release check
+      # again, because the owner could publish while the build runs. A
+      # build-only run has no id, so there is nothing to check.
+      - name: Stop if the release is already published
+        if: ${{ needs.release.outputs.id != '' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ needs.release.outputs.id }}
+          TAG: ${{ needs.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          draft=$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" --jq .draft)
+          if [ "$draft" != true ]; then
+            echo "::error::The $TAG release is already published, so this run won't change it. Release a new version instead."
+            exit 1
+          fi
+
       - uses: actions/checkout@v4
 
       - name: Setup Node
@@ -414,6 +445,7 @@ jobs:
           PUBLISH: ${{ github.event_name != 'workflow_dispatch' || inputs.publish }}
           # The release job's draft, where tauri-action uploaded the .dmg.
           RELEASE_ID: ${{ needs.release.outputs.id }}
+          TAG: ${{ needs.release.outputs.tag }}
           BUNDLE: src-tauri/target/${{ matrix.target }}/release/bundle
         run: |
           set -euo pipefail
@@ -453,6 +485,12 @@ jobs:
           echo "Apple notarized $name, and its ticket is stapled."
           if [ "$PUBLISH" != true ]; then exit 0; fi
           test -n "$RELEASE_ID"
+          # Still a draft? (See "Stop if the release is already published".)
+          draft=$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" --jq .draft)
+          if [ "$draft" != true ]; then
+            echo "::error::The $TAG release is already published, so this run won't change it. Release a new version instead."
+            exit 1
+          fi
           ids=$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets" --paginate \
             --jq ".[] | select(.name == \"$name\") | .id")
           found=$(printf '%s' "$ids" | wc -w | tr -d ' ')
@@ -545,11 +583,18 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # The release job's draft, where the build uploaded its files.
           RELEASE_ID: ${{ needs.release.outputs.id }}
+          TAG: ${{ needs.release.outputs.tag }}
           KEY_NAME: update-key-${{ matrix.updater }}.pub
           KEY_FILE: ${{ steps.keygen.outputs.dir }}/updkey.pub
         run: |
           set -euo pipefail
           test -n "$RELEASE_ID"
+          # Still a draft? (See "Stop if the release is already published".)
+          draft=$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" --jq .draft)
+          if [ "$draft" != true ]; then
+            echo "::error::The $TAG release is already published, so this run won't change it. Release a new version instead."
+            exit 1
+          fi
           # A re-run makes a new key: replace the old file.
           for id in $(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets" --paginate \
               --jq ".[] | select(.name == \"$KEY_NAME\") | .id"); do
@@ -584,7 +629,8 @@ jobs:
   # before anyone can update to it. Publish the draft only when this is
   # green. (If a build job is re-run, it makes a new key and new files: make
   # sure this job runs again too and is green. It writes latest.json again
-  # from the files the draft has then.)
+  # from the files the draft has then. Once the release is published, this
+  # job stops without changing it, like the build jobs.)
   update-files:
     needs: [release, build]
     if: ${{ github.event_name != 'workflow_dispatch' || inputs.publish }}
@@ -604,9 +650,16 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_ID: ${{ needs.release.outputs.id }}
+          TAG: ${{ needs.release.outputs.tag }}
         run: |
           set -euo pipefail
           test -n "$RELEASE_ID"
+          # Still a draft? (See "Stop if the release is already published".)
+          draft=$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" --jq .draft)
+          if [ "$draft" != true ]; then
+            echo "::error::The $TAG release is already published, so this run won't change it. Release a new version instead."
+            exit 1
+          fi
           version=$(jq -r .version src-tauri/tauri.conf.json)
           gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets?per_page=100" > "$RUNNER_TEMP/assets.json"
           sigs="$RUNNER_TEMP/sigs"

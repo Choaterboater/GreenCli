@@ -136,6 +136,10 @@ There is nothing to set up for update signing: no key to make, keep or paste, an
   draft. Make sure update-files runs again after it (re-run it by hand if GitHub didn't) and is
   green before you publish: it writes `latest.json` again from the files the draft has then.
   Don't publish while update-files is red or hasn't run.
+- **Re-running works on a draft only.** Once the release is published, a re-run of a build job or
+  of update-files stops at once with "already published" and changes nothing, so the live release
+  keeps its files and key. To ship a fix or a new build (for example a signed Mac app after you
+  add the Apple secrets), release a new version.
 - The three build jobs upload into the draft the release job found or made, and only
   update-files writes `latest.json`, so builds that finish at the same moment can't make a
   second draft or lose a platform. If update-files says the release needs one signed update

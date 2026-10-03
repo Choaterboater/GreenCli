@@ -1510,6 +1510,7 @@ mod tests {
         assert_eq!(
             names,
             [
+                "Stop if the release is already published",
                 "",
                 "Setup Node",
                 "Setup Rust",
@@ -1530,7 +1531,7 @@ mod tests {
                 "Keep installers (build only)",
             ]
         );
-        assert_eq!(steps[0].uses, "actions/checkout@v4");
+        assert_eq!(steps[1].uses, "actions/checkout@v4");
         let (_, keygen) = step(&steps, "Make a one-time update signing key");
         assert_eq!(keygen.id, "keygen");
         assert!(keygen
@@ -1543,7 +1544,7 @@ mod tests {
                 .iter()
                 .map(|(k, _)| k.as_str())
                 .collect::<Vec<_>>(),
-            ["GH_TOKEN", "RELEASE_ID", "KEY_NAME", "KEY_FILE"]
+            ["GH_TOKEN", "RELEASE_ID", "TAG", "KEY_NAME", "KEY_FILE"]
         );
     }
 
@@ -2234,7 +2235,7 @@ mod tests {
             .copied()
             .filter(|l| l.starts_with("RELEASE_ID:"))
             .collect();
-        assert_eq!(ids, ["RELEASE_ID: ${{ needs.release.outputs.id }}"; 4]);
+        assert_eq!(ids, ["RELEASE_ID: ${{ needs.release.outputs.id }}"; 5]);
         // The release job is the only one that makes a release.
         let makes: Vec<&str> = code
             .iter()
@@ -2389,6 +2390,7 @@ mod tests {
         let stand_ins = r#"gh() {
   echo "gh $*" >> "$T/calls"
   case "$*" in
+    "api repos/Choaterboater/GreenCli/releases/42 --jq .draft") echo true ;;
     "api repos/Choaterboater/GreenCli/releases/42/assets?per_page=100") cat "$T/assets" ;;
     "api -H Accept: application/octet-stream repos/Choaterboater/GreenCli/releases/assets/"*)
       local url="${@: -1}"
@@ -2421,7 +2423,11 @@ curl() {
             let (code, stdout, dir) = run_step(
                 &write.run,
                 stand_ins,
-                &[("RELEASE_ID", "42"), ("GH_TOKEN", "stand-in")],
+                &[
+                    ("RELEASE_ID", "42"),
+                    ("TAG", "v2.0.1"),
+                    ("GH_TOKEN", "stand-in"),
+                ],
                 &[("assets", &list)],
             );
             let read = |name: &str| std::fs::read_to_string(dir.join(name)).ok();
@@ -2429,7 +2435,9 @@ curl() {
             std::fs::remove_dir_all(&dir).unwrap();
             result
         };
-        let list = "gh api repos/Choaterboater/GreenCli/releases/42/assets?per_page=100\n";
+        // The release is still a draft (release_workflow_never_changes_a_published_release).
+        let list = "gh api repos/Choaterboater/GreenCli/releases/42 --jq .draft\n\
+                    gh api repos/Choaterboater/GreenCli/releases/42/assets?per_page=100\n";
         let sigs: String = [103, 203, 302, 305]
             .iter()
             .map(|id| {
@@ -2490,6 +2498,195 @@ curl() {
             "{calls}"
         );
         assert!(uploaded.is_none());
+    }
+
+    /// The draft check, as each step that changes the release has it (with
+    /// the file's indentation and comments left out, as job_steps reads it).
+    #[cfg(unix)]
+    const STOP_IF_PUBLISHED: &str = "\
+draft=$(gh api \"repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID\" --jq .draft)
+if [ \"$draft\" != true ]; then
+echo \"::error::The $TAG release is already published, so this run won't change it. \
+Release a new version instead.\"
+exit 1
+fi
+";
+
+    /// No run changes a published release. Re-running one build job (or
+    /// "Re-run failed jobs") does not run the release job again, so the
+    /// build gets the id it found the first time, and the owner may have
+    /// published that release since. tauri-action, "Notarize the .dmg",
+    /// "Publish the update key" and update-files would then swap the live
+    /// release's update file and key, and its latest.json would point at a
+    /// deleted file. So the build stops before anything is built, and every
+    /// step that deletes or uploads a release file checks again first. Runs
+    /// those steps with stand-in gh, curl and xcrun.
+    #[cfg(unix)]
+    #[test]
+    fn release_workflow_never_changes_a_published_release() {
+        // The build job's first step, before the key is made and anything
+        // is built; skipped on a build-only run (no id).
+        let steps = build_steps(RELEASE_YML);
+        let stop = &steps[0];
+        assert_eq!(stop.name, "Stop if the release is already published");
+        assert_eq!(stop.cond, "${{ needs.release.outputs.id != '' }}");
+        assert_eq!(
+            stop.env,
+            [
+                ("GH_TOKEN", "${{ secrets.GITHUB_TOKEN }}"),
+                ("RELEASE_ID", "${{ needs.release.outputs.id }}"),
+                ("TAG", "${{ needs.release.outputs.tag }}"),
+            ]
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+        );
+        assert_eq!(stop.run, format!("set -euo pipefail\n{STOP_IF_PUBLISHED}"));
+        let (keygen, _) = step(&steps, "Make a one-time update signing key");
+        assert!(0 < keygen);
+        assert!(tauri_builds(&steps).iter().all(|(i, _)| 0 < *i));
+
+        // Every step that deletes a release file or uploads one checks
+        // first, in every job. These are the ones that do.
+        let mut changers = Vec::new();
+        for job in ["gate", "release", "build", "update-files"] {
+            for s in job_steps(RELEASE_YML, job) {
+                let first = ["-X DELETE", "uploads.github.com"]
+                    .iter()
+                    .filter_map(|w| s.run.find(w))
+                    .min();
+                if let Some(first) = first {
+                    let check = s.run.find(STOP_IF_PUBLISHED);
+                    assert!(check.is_some_and(|c| c < first), "{job}: {}", s.name);
+                    assert_eq!(s.env("TAG"), Some("${{ needs.release.outputs.tag }}"));
+                    changers.push(s.name);
+                }
+            }
+        }
+        assert_eq!(
+            changers,
+            [
+                "Notarize the .dmg",
+                "Publish the update key",
+                "Write latest.json"
+            ]
+        );
+
+        if !have_programs(&["jq", "node"]) {
+            return;
+        }
+        // gh says whether release 42 is a draft from $T/draft (no file: the
+        // call fails), and answers the asset lookups with one old file.
+        let stand_ins = r#"gh() {
+  echo "gh $*" >> "$T/calls"
+  case "$*" in
+    "api repos/Choaterboater/GreenCli/releases/42 --jq .draft") cat "$T/draft" ;;
+    "api repos/Choaterboater/GreenCli/releases/42/assets --paginate --jq "*) echo 7 ;;
+    "api repos/Choaterboater/GreenCli/releases/42/assets?per_page=100") echo '[]' ;;
+    "api -X DELETE "*) ;;
+    *) return 1 ;;
+  esac
+}
+curl() { echo "curl ${@: -1}" >> "$T/calls"; }
+xcrun() {
+  echo "xcrun $1 $2" >> "$T/calls"
+  if [ "$1 $2" = "notarytool submit" ]; then echo '{"id":"n1","status":"Accepted"}'; fi
+}
+BUNDLE="$T/bundle"
+mkdir -p "$BUNDLE/dmg"
+: > "$BUNDLE/dmg/GreenCLI_2.0.1_aarch64.dmg""#;
+        let files = job_steps(RELEASE_YML, "update-files");
+        let scripts = [
+            ("Stop if the release is already published", &stop.run),
+            (
+                "Notarize the .dmg",
+                &step(&steps, "Notarize the .dmg").1.run,
+            ),
+            (
+                "Publish the update key",
+                &step(&steps, "Publish the update key").1.run,
+            ),
+            (
+                "Write latest.json",
+                &step(&files, "Write latest.json").1.run,
+            ),
+        ];
+        let run = |script: &str, draft: Option<&str>| {
+            let mut files = vec![];
+            if let Some(d) = draft {
+                files.push(("draft", d));
+            }
+            let (code, stdout, dir) = run_step(
+                script,
+                stand_ins,
+                &[
+                    ("RELEASE_ID", "42"),
+                    ("TAG", "v2.0.1"),
+                    ("GH_TOKEN", "stand-in"),
+                    ("PUBLISH", "true"),
+                    ("APPLE_API_ISSUER", "stand-in"),
+                    ("APPLE_API_KEY", "stand-in"),
+                    ("KEY_NAME", "update-key-darwin-aarch64.pub"),
+                    ("KEY_FILE", "updkey.pub"),
+                ],
+                &files,
+            );
+            let calls = std::fs::read_to_string(dir.join("calls")).unwrap();
+            std::fs::remove_dir_all(&dir).unwrap();
+            (code, stdout, calls)
+        };
+        let check = "gh api repos/Choaterboater/GreenCli/releases/42 --jq .draft\n";
+        let published = "::error::The v2.0.1 release is already published, so this run won't \
+                         change it. Release a new version instead.\n";
+        for (name, script) in scripts {
+            // Published: the step fails at the check, before it deletes or
+            // uploads anything.
+            let (code, stdout, calls) = run(script, Some("false\n"));
+            assert_eq!(code, Some(1), "{name}: {stdout}");
+            assert!(stdout.ends_with(published), "{name}: {stdout}");
+            assert!(calls.ends_with(check), "{name}: {calls}");
+            assert_eq!(calls.matches("gh ").count(), 1, "{name}: {calls}");
+            assert!(!calls.contains("curl"), "{name}: {calls}");
+
+            // The check itself fails: so does the step, and nothing changes.
+            let (code, stdout, calls) = run(script, None);
+            assert_ne!(code, Some(0), "{name}: {stdout}");
+            assert!(calls.ends_with(check), "{name}: {calls}");
+            assert!(!calls.contains("curl"), "{name}: {calls}");
+
+            // Still a draft: the step goes on past the check.
+            let (code, stdout, calls) = run(script, Some("true\n"));
+            assert!(calls.contains(check), "{name}: {calls}");
+            assert!(!stdout.contains("already published"), "{name}: {stdout}");
+            let upload = |file: &str| {
+                format!(
+                    "gh api -X DELETE repos/Choaterboater/GreenCli/releases/assets/7\n\
+                     curl https://uploads.github.com/repos/Choaterboater/GreenCli/releases/42/\
+                     assets?name={file}\n"
+                )
+            };
+            match name {
+                "Stop if the release is already published" => {
+                    assert_eq!((code, stdout.as_str()), (Some(0), ""));
+                }
+                // It lists the assets (and then finds no update files:
+                // release_workflow_writes_latest_json_once has those).
+                "Write latest.json" => assert!(
+                    calls.contains(&format!(
+                        "{check}gh api repos/Choaterboater/GreenCli/releases/42/assets?per_page=100\n"
+                    )),
+                    "{calls}"
+                ),
+                // It replaces the release's old file with its own.
+                _ => {
+                    assert_eq!(code, Some(0), "{name}: {stdout}");
+                    let file = if name == "Notarize the .dmg" {
+                        "GreenCLI_2.0.1_aarch64.dmg"
+                    } else {
+                        "update-key-darwin-aarch64.pub"
+                    };
+                    assert!(calls.ends_with(&upload(file)), "{name}: {calls}");
+                }
+            }
+        }
     }
 
     /// Apple's ticket can take a little while to show up after notarytool
