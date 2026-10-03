@@ -37,6 +37,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Double-clicking GreenCLI's title bar (the bar with the command field) maximizes the window, or
   zooms it on a Mac, as in other apps. Before, it did nothing. On a Mac that bar is the only title
   bar.
+- Release workflow: a `release/**` push or manual run stops when the version's tag already exists
+  on another commit (for example, a tag push whose run failed). Before, it built and uploaded the
+  other commit, and publishing kept the tag where it was, so the tag and the source archives did
+  not match the installers.
 
 ## [2.0.0] - 2026-10-02
 

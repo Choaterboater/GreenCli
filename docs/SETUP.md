@@ -134,7 +134,15 @@ There is nothing to set up for update signing: no key to make, keep or paste, an
   so push one only after the version bump.
 - A later `release/**` push or manual run for the same version (say, after you push a fix to that
   branch) uploads into the same draft and moves its future tag to the commit it built, so the tag
-  that publishing makes matches the installers.
+  that publishing makes matches the installers. This works only while the tag doesn't exist yet:
+  GitHub keeps a tag that is already there. So when `v<version>` is already on another commit,
+  such a run stops at **release** ("The tag ... already exists") and builds nothing.
+- **If the run for a tag fails**: when nothing in the code needs to change (a step that failed by
+  chance), re-run the failed jobs, or run the workflow with the tag picked under **Use workflow
+  from**. When the code needs a fix, merge it and then either bump the version and tag again, or
+  delete the draft and the tag (`git push origin :refs/tags/v2.0.1`) and push the tag again on the
+  fixed commit. A `release/**` push or a manual run from a branch can't fix it: the tag stays on
+  the old commit.
 - **One Release run at a time.** A run that starts while another is going waits for it (Actions
   shows it as waiting), so two runs never upload into the same draft at once. GitHub keeps only
   the newest waiting run: push again while one waits and the older waiting run is cancelled.

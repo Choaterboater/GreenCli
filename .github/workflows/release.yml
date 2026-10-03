@@ -123,8 +123,10 @@ jobs:
   #   draft is published, and GitHub then makes it at the draft's target.
   #   So such a run points a draft it uses again at its own commit (after a
   #   fix pushed to the same release/** branch, say), keeping its tag name:
-  #   the tag must be the commit that was built. A tag push needs nothing:
-  #   its tag is there.
+  #   the tag must be the commit that was built. That only works while the
+  #   tag doesn't exist: GitHub ignores the target when it does. So such a
+  #   run stops when the tag is already on another commit (a tag push whose
+  #   run failed, say). A tag push needs nothing: its tag is there.
   # - Always a draft: no CI run can make a release "latest" by itself. The
   #   owner publishes the draft by hand.
   # Publishing is on for tag and release/** pushes, and for manual runs
@@ -134,10 +136,11 @@ jobs:
   # the step, so the id is empty and the builds upload nothing (the
   # installers become workflow artifacts).
   # Why manual runs can turn it off: a run builds under the app's current
-  # version, so before the version bump it would make a second draft with
-  # the same tag as the already published release (e.g. v1.9.0). No job
-  # changes a published release (see the top of this file), but the extra
-  # draft is confusing: untick publish to only build. A release/** push
+  # version, so before the version bump its tag is the already published
+  # release's (e.g. v1.9.0). That tag is on an older commit, so the run
+  # stops at release (see above). (Run from the tag's own commit, it would
+  # make a second v1.9.0 draft: no job changes a published release, but
+  # delete that draft.) Untick publish to only build. A release/** push
   # always publishes: push one only after the bump.
   release:
     needs: ci
@@ -160,6 +163,22 @@ jobs:
         run: |
           set -euo pipefail
           if [ "$REF_TYPE" = tag ]; then tag="$REF_NAME"; else tag="v$(jq -r .version src-tauri/tauri.conf.json)"; fi
+          # A release/** push or a manual run: publishing makes the tag at
+          # the draft's target only while the tag doesn't exist. GitHub
+          # ignores the target of a release whose tag is already there, so
+          # when the tag is on another commit (a tag push whose run failed,
+          # say), publishing would keep that tag, and it would not match
+          # the installers this run builds. Stop before any draft is used.
+          # An annotated tag also gives its commit (the ^{} line), which is
+          # what counts. A failed lookup fails the job.
+          if [ "$REF_TYPE" != tag ]; then
+            at=$(git ls-remote --tags origin "refs/tags/$tag" "refs/tags/$tag^{}" |
+              awk 'index($2, "^{}") { commit = $1; next } { plain = $1 } END { print (commit != "" ? commit : plain) }')
+            if [ -n "$at" ] && [ "$at" != "$GITHUB_SHA" ]; then
+              echo "::error::The tag $tag already exists, at $at, not at this run's commit $GITHUB_SHA. Publishing would keep that tag, so it would not match the installers. Run the workflow from the tag instead, or delete the tag and its draft first, or bump the version."
+              exit 1
+            fi
+          fi
           ids=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" |
             jq -r --arg tag "$tag" '.[] | select(.draft == true and .tag_name == $tag) | .id')
           count=$(printf '%s' "$ids" | wc -w | tr -d ' ')
@@ -170,9 +189,10 @@ jobs:
             id=$ids
             echo "Uploading into the $tag draft."
             # For a release/** push or a manual run the tag doesn't exist
-            # yet: publishing makes it at the draft's target. Point that at
-            # this run's commit, the one it builds, not the commit of the
-            # run that made the draft. Name the tag in the same call: GitHub
+            # yet (or is on this run's commit, checked above): publishing
+            # makes it at the draft's target. Point that at this run's
+            # commit, the one it builds, not the commit of the run that
+            # made the draft. Name the tag in the same call: GitHub
             # drops the tag of a draft edited without tag_name (it becomes
             # untagged-...), and then neither the app nor the next run would
             # find this draft.

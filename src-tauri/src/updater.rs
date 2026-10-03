@@ -2316,7 +2316,8 @@ mod tests {
         if !have_programs(&["jq"]) {
             return;
         }
-        // gh --paginate prints one JSON list per page.
+        // gh --paginate prints one JSON list per page. git ls-remote gives
+        // the remote's tags from $T/tags (no file: the call fails).
         let stand_ins = r#"gh() {
   echo "gh $*" >> "$T/calls"
   case "$*" in
@@ -2325,22 +2326,38 @@ mod tests {
     "api -X PATCH repos/Choaterboater/GreenCli/releases/8 "*) echo '{"id":8}' ;;
     *) return 1 ;;
   esac
+}
+git() {
+  echo "git $*" >> "$T/calls"
+  case "$*" in
+    "ls-remote --tags origin "*) cat "$T/tags" ;;
+    *) return 1 ;;
+  esac
 }"#;
+        let run_with_tags =
+            |ref_type: &str, ref_name: &str, pages: &str, made: &str, tags: Option<&str>| {
+                let mut files = vec![("pages", pages), ("made", made)];
+                if let Some(t) = tags {
+                    files.push(("tags", t));
+                }
+                let (code, stdout, dir) = run_step(
+                    &find.run,
+                    stand_ins,
+                    &[
+                        ("REF_TYPE", ref_type),
+                        ("REF_NAME", ref_name),
+                        ("GITHUB_SHA", "abc123"),
+                    ],
+                    &files,
+                );
+                let read = |name: &str| std::fs::read_to_string(dir.join(name)).unwrap();
+                let result = (code, stdout, read("output"), read("calls"));
+                std::fs::remove_dir_all(&dir).unwrap();
+                result
+            };
+        // No tag v<version> on GitHub yet.
         let run = |ref_type: &str, ref_name: &str, pages: &str, made: &str| {
-            let (code, stdout, dir) = run_step(
-                &find.run,
-                stand_ins,
-                &[
-                    ("REF_TYPE", ref_type),
-                    ("REF_NAME", ref_name),
-                    ("GITHUB_SHA", "abc123"),
-                ],
-                &[("pages", pages), ("made", made)],
-            );
-            let read = |name: &str| std::fs::read_to_string(dir.join(name)).unwrap();
-            let result = (code, stdout, read("output"), read("calls"));
-            std::fs::remove_dir_all(&dir).unwrap();
-            result
+            run_with_tags(ref_type, ref_name, pages, made, Some(""))
         };
         let list = "gh api --paginate repos/Choaterboater/GreenCli/releases?per_page=100\n";
         let make = "gh api -X POST repos/Choaterboater/GreenCli/releases -f tag_name=v2.0.0 \
@@ -2377,11 +2394,15 @@ mod tests {
         let (code, stdout, output, calls) = run("branch", "release/x", &pages, "");
         assert_eq!(code, Some(0), "{stdout}");
         assert_eq!(output, format!("id=8\ntag=v{version}\n"));
+        // First it asks GitHub whether the tag exists (and, for an annotated
+        // tag, its commit).
+        let lookup =
+            format!("git ls-remote --tags origin refs/tags/v{version} refs/tags/v{version}^{{}}\n");
         let retarget = format!(
             "gh api -X PATCH repos/Choaterboater/GreenCli/releases/8 \
              -f tag_name=v{version} -f target_commitish=abc123\n"
         );
-        assert_eq!(calls, format!("{list}{retarget}"));
+        assert_eq!(calls, format!("{lookup}{list}{retarget}"));
         assert_eq!(
             stdout,
             format!(
@@ -2408,6 +2429,56 @@ mod tests {
             )),
             "{calls}"
         );
+
+        // The draft's target counts only while its tag doesn't exist: when
+        // v<version> is already on GitHub (a tag push whose run failed,
+        // say), publishing keeps that tag wherever it is. So a run on
+        // another commit stops before it looks up, makes or moves a draft:
+        // the installers would not match the tag. A lightweight tag gives
+        // its commit; an annotated one gives the tag object and its commit
+        // (the ^{} line, in either order), and the commit is what counts.
+        let elsewhere = format!(
+            "::error::The tag v{version} already exists, at def456, not at this run's commit \
+             abc123. Publishing would keep that tag, so it would not match the installers. \
+             Run the workflow from the tag instead, or delete the tag and its draft first, \
+             or bump the version.\n"
+        );
+        for tags in [
+            format!("def456\trefs/tags/v{version}\n"),
+            format!("abc123\trefs/tags/v{version}\ndef456\trefs/tags/v{version}^{{}}\n"),
+            format!("def456\trefs/tags/v{version}^{{}}\nabc123\trefs/tags/v{version}\n"),
+        ] {
+            for pages in ["[]".to_string(), pages.clone()] {
+                let (code, stdout, output, calls) =
+                    run_with_tags("branch", "release/x", &pages, "43\n", Some(&tags));
+                assert_eq!(code, Some(1), "{tags}: {stdout}");
+                assert_eq!(stdout, elsewhere, "{tags}");
+                assert_eq!(output, "", "{tags}");
+                assert_eq!(calls, lookup, "{tags}");
+            }
+        }
+        // The tag is on this run's commit (a re-run from the tag's commit):
+        // publishing keeps it, and it matches.
+        for tags in [
+            format!("abc123\trefs/tags/v{version}\n"),
+            format!("fed987\trefs/tags/v{version}\nabc123\trefs/tags/v{version}^{{}}\n"),
+        ] {
+            let pages = format!("[{{\"id\":8,\"tag_name\":\"v{version}\",\"draft\":true}}]");
+            let (code, stdout, output, calls) =
+                run_with_tags("branch", "release/x", &pages, "", Some(&tags));
+            assert_eq!(code, Some(0), "{tags}: {stdout}");
+            assert_eq!(output, format!("id=8\ntag=v{version}\n"), "{tags}");
+            assert_eq!(calls, format!("{lookup}{list}{retarget}"), "{tags}");
+        }
+        // The lookup fails: so does the job, before any draft is touched.
+        let (code, _, output, calls) = run_with_tags("branch", "release/x", "[]", "43\n", None);
+        assert_ne!(code, Some(0));
+        assert_eq!(output, "");
+        assert_eq!(calls, lookup);
+        // A tag push builds its own tag: it never asks.
+        let (code, _, _, calls) = run_with_tags("tag", "v2.0.0", "[]", "42\n", None);
+        assert_eq!(code, Some(0));
+        assert!(!calls.contains("git "), "{calls}");
 
         // Two drafts with the tag: the owner picks, nothing is uploaded.
         let pages = r#"[{"id":7,"tag_name":"v2.0.0","draft":true},{"id":9,"tag_name":"v2.0.0","draft":true}]"#;
