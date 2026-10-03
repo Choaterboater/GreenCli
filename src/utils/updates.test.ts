@@ -340,6 +340,23 @@ describe('restartToUpdate', () => {
     expect(invoke).not.toHaveBeenCalled();
   });
 
+  it('says "when they end" while two kinds of job are going', async () => {
+    const releaseJob = holdExit('A Change Job is running.');
+    const releaseSend = holdExit('A config send is running.');
+    await expect(restartToUpdate('2.0.1')).resolves.toBe(false);
+    releaseJob();
+    releaseSend();
+    expect(toasts()[0].message).toBe(
+      'A Change Job is running. A config send is running. Restart to update when they end.',
+    );
+    useToastStore.getState().clear();
+    const release = holdExit('A Change Job is running.');
+    await expect(restartToUpdate('2.0.1')).resolves.toBe(false);
+    release();
+    expect(toasts()[0].message).toBe('A Change Job is running. Restart to update when it ends.');
+    expect(askConfirm).not.toHaveBeenCalled();
+  });
+
   it('shows the error when installing fails', async () => {
     askConfirm.mockResolvedValue(true);
     invoke.mockRejectedValue('Move GreenCLI to Applications, then try again.');

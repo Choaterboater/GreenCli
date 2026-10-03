@@ -206,7 +206,8 @@ export async function restartToUpdate(version: string): Promise<boolean> {
   const busy = () => {
     const holds = exitHolds();
     if (holds.length === 0) return false;
-    notify.warning('Not now', `${holds.join(' ')} Restart to update when it ends.`);
+    const end = holds.length === 1 ? 'it ends' : 'they end';
+    notify.warning('Not now', `${holds.join(' ')} Restart to update when ${end}.`);
     return true;
   };
   if (busy()) return false;
