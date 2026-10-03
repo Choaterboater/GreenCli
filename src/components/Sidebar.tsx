@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { LAB_TAG, normalizeTags } from '../utils/tags';
 import {
   ChevronRight,
   ChevronDown,
@@ -250,15 +251,12 @@ export default function Sidebar({ onConnect }: SidebarProps) {
     if (!item || !ctx) return;
     const entered = await askPrompt({
       title: 'Tags',
-      message: 'Comma-separated labels for filtering (e.g. core, site-a, prod).',
+      message: 'Comma-separated labels for filtering (e.g. core, site-a, prod). Tag lab devices "lab".',
       defaultValue: (item.tags ?? []).join(', '),
       placeholder: 'core, site-a',
     });
     if (entered === null) return;
-    const tags = entered
-      .split(',')
-      .map((t) => t.trim())
-      .filter(Boolean);
+    const tags = normalizeTags(entered.split(','));
     const folder = folders.find((f) => f.id === ctx.folderId);
     if (folder) {
       updateFolder(folder.id, {
@@ -524,8 +522,12 @@ export default function Sidebar({ onConnect }: SidebarProps) {
                                     e.stopPropagation();
                                     setQuery(t);
                                   }}
-                                  className="px-1 py-px rounded text-[9px] leading-none bg-[var(--bg-tertiary)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:bg-[var(--accent-soft)]"
-                                  title={`Filter by "${t}"`}
+                                  className={`px-1 py-px rounded text-[9px] leading-none hover:text-[var(--accent)] hover:bg-[var(--accent-soft)] ${
+                                    t === LAB_TAG
+                                      ? 'bg-[var(--accent-soft)] text-[var(--accent)] font-semibold'
+                                      : 'bg-[var(--bg-tertiary)] text-[var(--text-muted)]'
+                                  }`}
+                                  title={t === LAB_TAG ? 'Lab device: filter by "lab"' : `Filter by "${t}"`}
                                 >
                                   {t}
                                 </button>
