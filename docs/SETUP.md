@@ -306,6 +306,10 @@ GreenCLI 2.0 keeps AI keys and MCP logins in the system password store, not in f
   computer has no system password store (some Linux setups), delete `secret_store.json` from the
   copy while GreenCLI is closed there. Otherwise it waits for a store that isn't there. Then start
   GreenCLI and enter your keys again.
+- **Back to 2.0 after 1.9**: once the first move has finished, starting 2.0 again moves 1.9's
+  `ai_keys.json` and `mcp_creds.json` in again. Each key or login in them (typed in 1.9, or copied
+  back from a backup) replaces the one in the password store, and the files are deleted. The others
+  stay as they were. (While a move is still pending, see **Left-over files** above.)
 - **MCP login files**: when a stdio server connects, its login is written to a new owner-only file
   in `mcp_creds/run-<id>/`, and the server's credentials env var points at it. The file is deleted
   when the server stops, exits by itself or fails to connect. Files a crash left behind are deleted
