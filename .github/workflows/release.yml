@@ -52,6 +52,21 @@ on:
         type: boolean
         default: true
 
+# One Release run at a time. Runs for the same version upload into the same
+# draft: each build replaces the files of the same name (signed with its own
+# one-time key) and its update-key-<os>-<arch>.pub, so two runs at once could
+# leave a green update-files on a latest.json whose signatures no longer match
+# the files and keys the other run put in their place. A run that starts while
+# another is going waits for it; one already running is never cancelled. The
+# group is the same for every run, not one per ref: a tag push and a
+# release/** push have different refs but use the same v<version> draft, and
+# the version is only known inside a job. GitHub keeps one waiting run: a newer
+# one cancels it. (ci.yml, which this calls, must not use this group: the run
+# would wait for itself.)
+concurrency:
+  group: release-${{ github.repository }}
+  cancel-in-progress: false
+
 # Read-only by default; only release (which makes the draft), the build jobs
 # (which upload into it) and update-files (which writes latest.json) get
 # write.

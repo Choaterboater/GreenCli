@@ -2561,6 +2561,49 @@ exit 1
 fi
 ";
 
+    /// One Release run at a time. Runs for the same version upload into
+    /// the same draft, and each build replaces any file of the same name
+    /// with its own, signed with its own one-time key. Two runs at once
+    /// could leave a green update-files check on a latest.json whose
+    /// signatures no longer match the files (or keys) the other run put in
+    /// their place. So a run that starts while another one is going waits
+    /// for it. The group is the same for every run of this workflow, not
+    /// one per ref: a tag push and a release/** push have different refs
+    /// but upload into the same v<version> draft. A running run is never
+    /// cancelled halfway through its uploads.
+    #[test]
+    fn release_workflow_runs_one_at_a_time() {
+        // Top level, with nothing after the group: no ref, no event.
+        let lines: Vec<&str> = RELEASE_YML
+            .lines()
+            .filter(|l| !l.trim_start().starts_with('#'))
+            .collect();
+        let at = lines
+            .iter()
+            .position(|l| *l == "concurrency:")
+            .expect("release.yml has no top-level concurrency");
+        assert_eq!(
+            lines[at + 1..at + 3],
+            [
+                "  group: release-${{ github.repository }}",
+                "  cancel-in-progress: false",
+            ]
+        );
+        assert_eq!(indent(lines[at + 3]), 0, "{:?}", lines[at + 3]);
+        // Before the jobs, and no job has a group of its own.
+        let jobs = lines.iter().position(|l| *l == "jobs:").unwrap();
+        assert!(at < jobs);
+        let groups = code_lines(RELEASE_YML)
+            .into_iter()
+            .filter(|l| l.starts_with("concurrency:"))
+            .count();
+        assert_eq!(groups, 1);
+        // release.yml runs ci.yml (workflow_call) inside the same run, so a
+        // ci.yml in this group would wait for the Release run it is part of.
+        let ci = include_str!("../../.github/workflows/ci.yml");
+        assert!(!ci.contains("release-${{ github.repository }}"));
+    }
+
     /// No run changes a published release. Re-running one build job (or
     /// "Re-run failed jobs") does not run the release job again, so the
     /// build gets the id it found the first time, and the owner may have
