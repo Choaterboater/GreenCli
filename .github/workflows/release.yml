@@ -32,7 +32,10 @@ name: Release
 # and every step that uploads into the release or deletes a file from it
 # first checks that it is still a draft (a re-run of one job gets the id
 # the release job found the first time, and the owner may have published
-# that release since). A published release needs a new version.
+# that release since, or may publish it while a build runs). tauri-action
+# only builds: it gets no release id and no token, so it can't upload
+# anything, and the build job's own upload step, which checks, puts the
+# files into the draft. A published release needs a new version.
 on:
   push:
     tags:
@@ -192,7 +195,7 @@ jobs:
 
   build:
     needs: release
-    # tauri-action uploads the installers into the release job's draft.
+    # Uploads the installers and the update key into the release job's draft.
     permissions:
       contents: write
     strategy:
@@ -220,13 +223,14 @@ jobs:
       # Re-running one build job (or "Re-run failed jobs") does not run the
       # release job again: this job gets the id it found the first time,
       # and the owner may have published that release since. Then stop
-      # before anything is built: tauri-action, "Notarize the .dmg" and
-      # "Publish the update key" would swap the published release's update
-      # file and key for new ones, and its latest.json would point at a
-      # deleted file until update-files ran again (and for good if this run
-      # failed first). The steps that delete a file from the release check
-      # again, because the owner could publish while the build runs. A
-      # build-only run has no id, so there is nothing to check.
+      # before anything is built: "Upload the installers and the update key"
+      # would swap the published release's files and key for new ones,
+      # which its latest.json does not match (update-files stops without
+      # changing a published release). That upload step is the only build
+      # step that changes the release (tauri-action only builds), and it
+      # checks again right before it does, because the owner could publish
+      # while the build runs. A build-only run has no id, so there is
+      # nothing to check.
       - name: Stop if the release is already published
         if: ${{ needs.release.outputs.id != '' }}
         shell: bash
@@ -387,7 +391,6 @@ jobs:
         if: runner.os != 'macOS' || steps.apple.outputs.mode == 'off'
         uses: tauri-apps/tauri-action@v1
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # macOS runners have 7 GB RAM, so Node 20 sizes its default old-space
           # heap near 2 GB and `vite build` (the beforeBuildCommand) aborts with
           # "JavaScript heap out of memory". Linux/Windows runners have 16 GB and
@@ -402,17 +405,15 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         with: &tauri-with
           # The Tauri app lives at the repo root (this `project/` folder).
-          # Uploads go into the release job's draft, by its id. There is no
-          # tagName, so tauri-action never looks up or makes a release
-          # itself. On a build-only run the id is empty, so nothing is
-          # uploaded to any release (the installers become workflow
-          # artifacts below).
-          releaseId: ${{ needs.release.outputs.id }}
-          # Each update file goes into the release with its .sig
-          # (uploadUpdaterSignatures is on by default), but not latest.json:
-          # tauri-action would read it, add this build's platforms and write
-          # it back, and two builds that finish together can drop each
-          # other's entries. update-files writes it after all three builds.
+          # tauri-action only builds. It gets no releaseId or tagName (and
+          # no token), so it never looks up, makes or changes a release.
+          # Given an id, it would replace the release's files at the end of
+          # the long build, with no check that the release is still a
+          # draft. "Upload the installers and the update key" puts the files
+          # into the draft after the checks below, and update-files writes
+          # latest.json (off here too: tauri-action would read it, add this
+          # build's platforms and write it back, and two builds that finish
+          # together can drop each other's entries).
           uploadUpdaterJson: false
           args: --target ${{ matrix.target }} --config ${{ steps.keygen.outputs.dir }}/updater.conf.json
 
@@ -425,7 +426,6 @@ jobs:
         if: steps.apple.outputs.mode == 'sign'
         uses: tauri-apps/tauri-action@v1
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NODE_OPTIONS: --max-old-space-size=4096
           TAURI_SIGNING_PRIVATE_KEY: ${{ steps.keygen.outputs.dir }}/updkey
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
@@ -442,7 +442,6 @@ jobs:
         if: steps.apple.outputs.mode == 'notarize'
         uses: tauri-apps/tauri-action@v1
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NODE_OPTIONS: --max-old-space-size=4096
           TAURI_SIGNING_PRIVATE_KEY: ${{ steps.keygen.outputs.dir }}/updkey
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
@@ -456,7 +455,7 @@ jobs:
 
       # The private key is only needed by the build: delete it now, even when
       # a step failed. The public half stays for "Check the update
-      # signatures" and "Publish the update key".
+      # signatures" and "Upload the installers and the update key".
       - name: Delete the update signing key
         if: always()
         shell: bash
@@ -464,21 +463,16 @@ jobs:
 
       # Notarizing only. The bundler notarizes the app inside the .dmg, but
       # not the .dmg itself, and macOS checks the .dmg when a user opens the
-      # download. So send the .dmg to Apple too, staple the ticket to it, and
-      # put the stapled .dmg in the release in place of the one tauri-action
-      # uploaded (build only: the stapled .dmg is kept as a workflow
-      # artifact below).
+      # download. So send the .dmg to Apple too and staple the ticket to it.
+      # "Upload the installers and the update key" then puts the stapled
+      # .dmg in the release (build only: it is kept as a workflow artifact
+      # below).
       - name: Notarize the .dmg
         if: steps.apple.outputs.mode == 'notarize'
         shell: bash
         env:
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PUBLISH: ${{ github.event_name != 'workflow_dispatch' || inputs.publish }}
-          # The release job's draft, where tauri-action uploaded the .dmg.
-          RELEASE_ID: ${{ needs.release.outputs.id }}
-          TAG: ${{ needs.release.outputs.tag }}
           BUNDLE: src-tauri/target/${{ matrix.target }}/release/bundle
         run: |
           set -euo pipefail
@@ -516,28 +510,6 @@ jobs:
             sleep 30
           done
           echo "Apple notarized $name, and its ticket is stapled."
-          if [ "$PUBLISH" != true ]; then exit 0; fi
-          test -n "$RELEASE_ID"
-          # Still a draft? (See "Stop if the release is already published".)
-          draft=$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" --jq .draft)
-          if [ "$draft" != true ]; then
-            echo "::error::The $TAG release is already published, so this run won't change it. Release a new version instead."
-            exit 1
-          fi
-          ids=$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets" --paginate \
-            --jq ".[] | select(.name == \"$name\") | .id")
-          found=$(printf '%s' "$ids" | wc -w | tr -d ' ')
-          if [ "$found" != 1 ]; then
-            echo "::error::The release should have one $name, but has $found."
-            exit 1
-          fi
-          gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$ids"
-          curl -fsS -X POST \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H "Content-Type: application/octet-stream" \
-            --data-binary "@$dmg" \
-            "https://uploads.github.com/repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets?name=$name" > /dev/null
-          echo "The release now has the stapled $name."
 
       # The notarization key is only needed above: delete it now, even when
       # a step failed.
@@ -600,7 +572,8 @@ jobs:
           done
           echo "The Mac app and the .dmg are signed and notarized."
 
-      # Every update file must match this build's key before the key is published.
+      # Every update file must match this build's key before anything goes
+      # into the release.
       - name: Check the update signatures
         shell: bash
         run: >-
@@ -608,37 +581,54 @@ jobs:
           "src-tauri/target/${{ matrix.target }}/release/bundle"
           "${{ steps.keygen.outputs.dir }}/updkey.pub"
 
-      # The public half goes into the release as update-key-<os>-<arch>.pub.
-      - name: Publish the update key
+      # The build goes into the release job's draft, after every check
+      # above: on a Mac the .dmg (stapled when notarized) and the update
+      # file GreenCLI.app.tar.gz, on Windows the .msi and the NSIS
+      # installer, each update file with its .sig, and last this build's
+      # public key as update-key-<os>-<arch>.pub. This is the only build
+      # step that changes the release (tauri-action only builds), and the
+      # owner could have published the release while this job built, so it
+      # checks right before it changes anything. Each file gets the name
+      # tauri-action gave it (scripts/update-signature.mjs uploads), which
+      # update-files looks for, and replaces any file of that name: a
+      # re-run makes new files and a new key.
+      - name: Upload the installers and the update key
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.publish }}
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # The release job's draft, where the build uploaded its files.
+          # The release job's draft.
           RELEASE_ID: ${{ needs.release.outputs.id }}
           TAG: ${{ needs.release.outputs.tag }}
+          BUNDLE: src-tauri/target/${{ matrix.target }}/release/bundle
+          TARGET: ${{ matrix.target }}
           KEY_NAME: update-key-${{ matrix.updater }}.pub
           KEY_FILE: ${{ steps.keygen.outputs.dir }}/updkey.pub
         run: |
           set -euo pipefail
           test -n "$RELEASE_ID"
+          # One line per file: its path, its name in the release and its
+          # label (URL-encoded), split by tabs.
+          files=$(node scripts/update-signature.mjs uploads "$BUNDLE" "$TARGET" src-tauri/tauri.conf.json)
+          files="$files"$'\n'"$KEY_FILE"$'\t'"$KEY_NAME"$'\t'"$KEY_NAME"
           # Still a draft? (See "Stop if the release is already published".)
           draft=$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" --jq .draft)
           if [ "$draft" != true ]; then
             echo "::error::The $TAG release is already published, so this run won't change it. Release a new version instead."
             exit 1
           fi
-          # A re-run makes a new key: replace the old file.
-          for id in $(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets" --paginate \
-              --jq ".[] | select(.name == \"$KEY_NAME\") | .id"); do
-            gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$id"
-          done
-          curl -fsS -X POST \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H "Content-Type: application/octet-stream" \
-            --data-binary "@$KEY_FILE" \
-            "https://uploads.github.com/repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets?name=$KEY_NAME" > /dev/null
-          echo "Published $KEY_NAME"
+          while IFS=$'\t' read -r file name label <&3; do
+            for id in $(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets" --paginate \
+                --jq ".[] | select(.name == \"$name\") | .id"); do
+              gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$id"
+            done
+            curl -fsS -X POST \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Content-Type: application/octet-stream" \
+              --data-binary "@$file" \
+              "https://uploads.github.com/repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets?name=$name&label=$label" > /dev/null
+            echo "Uploaded $name"
+          done 3<<<"$files"
 
       # Build only: keep the installers as workflow artifacts instead.
       - name: Keep installers (build only)

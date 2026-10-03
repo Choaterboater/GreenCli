@@ -148,8 +148,9 @@ There is nothing to set up for update signing: no key to make, keep or paste, an
   Don't publish while update-files is red or hasn't run.
 - **Re-running works on a draft only.** Once the release is published, a re-run of a build job or
   of update-files stops at once with "already published" and changes nothing, so the live release
-  keeps its files and key. To ship a fix or a new build (for example a signed Mac app after you
-  add the Apple secrets), release a new version.
+  keeps its files and key. A build job that was still running when you published stops the same
+  way when it is about to upload. To ship a fix or a new build (for example a signed Mac app after
+  you add the Apple secrets), release a new version.
 - The three build jobs upload into the draft the release job found or made, and only
   update-files writes `latest.json`, so builds that finish at the same moment can't make a
   second draft or lose a platform. If update-files says the release needs one signed update

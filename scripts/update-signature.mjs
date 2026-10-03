@@ -11,7 +11,13 @@
 //
 //   node scripts/update-signature.mjs verify-dir <dir> <key.pub>
 //       Every *.sig under <dir> must match its file and the key. Fails when
-//       there is no .sig at all. (Each build job, before it publishes its key.)
+//       there is no .sig at all. (Each build job, before it uploads anything.)
+//   node scripts/update-signature.mjs uploads <bundle-dir> <target> <tauri.conf.json>
+//       Prints the files of one build that go into the release, one per
+//       line: the path, the name in the release and the label (URL-encoded),
+//       split by tabs. The names are the ones tauri-action gave them, which
+//       latest-json looks for. Fails when there is no file at all. (Each
+//       build job's upload step.)
 //   node scripts/update-signature.mjs latest-json <assets.json> <sig-dir> <owner/repo> <version>
 //       Prints the release's latest.json: one entry per update file, with
 //       the text of its .sig (from <sig-dir>) and its download link.
@@ -187,6 +193,71 @@ export function buildLatestJson(assets, readSig, { repo, version, pubDate = new 
   return { version: String(version), notes: '', pub_date: pubDate.toISOString(), platforms };
 }
 
+/** The build files that go into the release, by bundle folder. */
+const BUILD_FILES = {
+  dmg: ['.dmg'],
+  macos: ['.app.tar.gz', '.app.tar.gz.sig'],
+  msi: ['.msi', '.msi.sig'],
+  nsis: ['-setup.exe', '-setup.exe.sig'],
+};
+
+/** GitHub's rule for asset names, as tauri-action's ghAssetName has it. */
+export function githubAssetName(name) {
+  return String(name)
+    .trim()
+    .replace(/[^a-zA-Z0-9_-]/g, '.')
+    .replace(/\.\./g, '.');
+}
+
+/**
+ * The name a build file gets in the release, and its label: what
+ * tauri-action v1 gave it (getAssetName, then ghAssetName), so a re-run
+ * replaces the file of the same name and latest-json finds the update files.
+ * A file keeps its own name, except the Mac update file and its .sig
+ * (<product>.app.tar.gz), which become <product>_<version>_<arch>.app.tar.gz
+ * with arch aarch64 or x64 (from the Rust target). In the name, GitHub turns
+ * each character other than A-Z, a-z, 0-9, _ and - into '.'; the label keeps
+ * the name from before that.
+ */
+export function releaseAssetName(fileName, { version, target }) {
+  const mac = /^(.+)(\.app\.tar\.gz(?:\.sig)?)$/.exec(fileName);
+  let label = fileName;
+  if (mac) {
+    const cpu = String(target).split('-')[0];
+    const arch = cpu === 'x86_64' ? 'x64' : cpu === 'arm64' ? 'aarch64' : cpu;
+    label = `${mac[1]}_${version}_${arch}${mac[2]}`;
+  }
+  return { name: githubAssetName(label), label };
+}
+
+/**
+ * The files of one build (under its bundle folder) that go into the
+ * release, as tauri-action v1 uploaded them: the .dmg, the Mac update file,
+ * the .msi files and the NSIS installer, each update file with its .sig.
+ * Not the GreenCLI.app folder: the update file holds it.
+ */
+export function buildUploads(bundleDir, { version, target }) {
+  if (!PLAIN_VERSION.test(String(version))) {
+    throw new Error(`The version ${version} is not a plain version like 2.0.1`);
+  }
+  const uploads = [];
+  for (const [folder, endings] of Object.entries(BUILD_FILES)) {
+    const dir = `${bundleDir}/${folder}`;
+    if (!existsSync(dir)) continue;
+    for (const file of readdirSync(dir).sort()) {
+      const path = `${dir}/${file}`;
+      if (!endings.some((e) => file.endsWith(e)) || !statSync(path).isFile()) continue;
+      const { name, label } = releaseAssetName(file, { version, target });
+      // A second file of the same name would replace the first in the release.
+      const same = uploads.find((u) => u.name === name);
+      if (same) throw new Error(`${same.path} and ${path} would both be ${name} in the release`);
+      uploads.push({ path, name, label });
+    }
+  }
+  if (uploads.length === 0) throw new Error(`No installers under ${bundleDir}`);
+  return uploads;
+}
+
 function entryFiles(manifest, release) {
   return Object.entries(manifest.platforms ?? {}).map(([entry, value]) => {
     const name = releaseFileName(value?.url, release);
@@ -252,6 +323,12 @@ function main(argv) {
   const [cmd, ...args] = argv;
   if (cmd === 'verify-dir' && args.length === 2) {
     verifyDir(args[0], readFileSync(args[1], 'utf8'));
+  } else if (cmd === 'uploads' && args.length === 3) {
+    const [bundleDir, target, confPath] = args;
+    const { version } = JSON.parse(readFileSync(confPath, 'utf8'));
+    for (const { path, name, label } of buildUploads(bundleDir, { version, target })) {
+      console.log(`${path}\t${name}\t${encodeURIComponent(label)}`);
+    }
   } else if (cmd === 'latest-json' && args.length === 4) {
     const [assetsPath, sigDir, repo, version] = args;
     const readSig = (name) => {
@@ -270,6 +347,7 @@ function main(argv) {
   } else {
     console.error(
       'usage: update-signature.mjs verify-dir <dir> <key.pub>' +
+        ' | uploads <bundle-dir> <target> <tauri.conf.json>' +
         ' | latest-json <assets.json> <sig-dir> <owner/repo> <version>' +
         ' | release-files <latest.json> <assets.json> <owner/repo> <tag>' +
         ' | check-release <dir> <assets.json> <owner/repo> <tag> <platform>...',

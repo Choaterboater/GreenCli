@@ -4,7 +4,7 @@
 // test release_signatures_verify_with_the_fetched_key in updater.rs).
 
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -63,6 +63,131 @@ describe('update-signature.mjs verify-dir (each build job)', () => {
     );
     expect(run('verify-dir', bundle(), key('junk')).code).toBe(1);
     expect(run('verify-dir', tempDir(), key(SIGNED_PUB)).err).toContain('No update signatures');
+  });
+});
+
+describe('update-signature.mjs uploads (each build job)', () => {
+  /** A bundle folder with these files (a name ending in / is a folder). */
+  function bundle(files: string[]) {
+    const d = tempDir();
+    for (const f of files) {
+      const p = join(d, f);
+      if (f.endsWith('/')) {
+        mkdirSync(p, { recursive: true });
+      } else {
+        mkdirSync(join(p, '..'), { recursive: true });
+        writeFileSync(p, 'x');
+      }
+    }
+    return d;
+  }
+  function conf(version = '2.0.1') {
+    const f = join(tempDir(), 'tauri.conf.json');
+    writeFileSync(f, JSON.stringify({ productName: 'GreenCLI', version }));
+    return f;
+  }
+  function uploads(dir: string, target: string, version = '2.0.1') {
+    const r = run('uploads', dir, target, conf(version));
+    const lines = r.out.split('\n').filter((l) => l.length > 0);
+    return { ...r, rows: lines.map((l) => l.split('\t')) };
+  }
+
+  const MAC = [
+    'dmg/GreenCLI_2.0.1_aarch64.dmg',
+    'macos/GreenCLI.app/Contents/MacOS/GreenCLI',
+    'macos/GreenCLI.app.tar.gz',
+    'macos/GreenCLI.app.tar.gz.sig',
+  ];
+  const WINDOWS = [
+    'msi/GreenCLI_2.0.1_x64_en-US.msi',
+    'msi/GreenCLI_2.0.1_x64_en-US.msi.sig',
+    'nsis/GreenCLI_2.0.1_x64-setup.exe',
+    'nsis/GreenCLI_2.0.1_x64-setup.exe.sig',
+  ];
+
+  it('names the Mac files as tauri-action did, each update file with its .sig', () => {
+    const d = bundle(MAC);
+    const r = uploads(d, 'aarch64-apple-darwin');
+    expect(r.err).toBe('');
+    expect(r.code).toBe(0);
+    // Not the GreenCLI.app folder: the update file holds it.
+    expect(r.rows).toEqual([
+      [`${d}/dmg/GreenCLI_2.0.1_aarch64.dmg`, 'GreenCLI_2.0.1_aarch64.dmg', 'GreenCLI_2.0.1_aarch64.dmg'],
+      [
+        `${d}/macos/GreenCLI.app.tar.gz`,
+        'GreenCLI_2.0.1_aarch64.app.tar.gz',
+        'GreenCLI_2.0.1_aarch64.app.tar.gz',
+      ],
+      [
+        `${d}/macos/GreenCLI.app.tar.gz.sig`,
+        'GreenCLI_2.0.1_aarch64.app.tar.gz.sig',
+        'GreenCLI_2.0.1_aarch64.app.tar.gz.sig',
+      ],
+    ]);
+    const intel = uploads(bundle(['dmg/GreenCLI_2.0.1_x64.dmg', ...MAC.slice(1)]), 'x86_64-apple-darwin');
+    expect(intel.rows.map((row) => row[1])).toEqual([
+      'GreenCLI_2.0.1_x64.dmg',
+      'GreenCLI_2.0.1_x64.app.tar.gz',
+      'GreenCLI_2.0.1_x64.app.tar.gz.sig',
+    ]);
+  });
+
+  it('keeps the Windows file names, and leaves other files out', () => {
+    const d = bundle([...WINDOWS, 'msi/GreenCLI_2.0.1_x64_de-DE.msi', 'nsis/notes.txt', 'msi/sub/']);
+    const r = uploads(d, 'x86_64-pc-windows-msvc');
+    expect(r.err).toBe('');
+    expect(r.rows.map((row) => row[0])).toEqual([
+      `${d}/msi/GreenCLI_2.0.1_x64_de-DE.msi`,
+      ...WINDOWS.map((f) => `${d}/${f}`),
+    ]);
+    for (const [path, name, label] of r.rows) {
+      expect(name).toBe(path.slice(path.lastIndexOf('/') + 1));
+      expect(label).toBe(name);
+    }
+  });
+
+  it('gives latest-json the names it looks for, for every platform', () => {
+    const builds = [
+      uploads(bundle(['dmg/GreenCLI_2.0.1_aarch64.dmg', ...MAC.slice(1)]), 'aarch64-apple-darwin'),
+      uploads(bundle(['dmg/GreenCLI_2.0.1_x64.dmg', ...MAC.slice(1)]), 'x86_64-apple-darwin'),
+      uploads(bundle(WINDOWS), 'x86_64-pc-windows-msvc'),
+    ];
+    const names = builds.flatMap((b) => b.rows.map((row) => row[1]));
+    const assets = names.map((name, i) => ({ id: i + 1, name }));
+    const signed = names.filter((n) => names.includes(`${n}.sig`));
+    const r = latestJson(assets, sigDir(signed));
+    expect(r.err).toBe('');
+    expect(r.code).toBe(0);
+    expect(Object.keys(JSON.parse(r.out).platforms).sort()).toEqual([
+      'darwin-aarch64',
+      'darwin-aarch64-app',
+      'darwin-x86_64',
+      'darwin-x86_64-app',
+      'windows-x86_64',
+      'windows-x86_64-msi',
+      'windows-x86_64-nsis',
+    ]);
+  });
+
+  it("uses GitHub's name rule, with the name from before it as the label", () => {
+    const d = bundle(['macos/Green CLI.app.tar.gz', 'nsis/Green..CLI_2.0.1_x64-setup.exe']);
+    const r = uploads(d, 'aarch64-apple-darwin');
+    expect(r.err).toBe('');
+    expect(r.rows.map((row) => row.slice(1))).toEqual([
+      ['Green.CLI_2.0.1_aarch64.app.tar.gz', 'Green%20CLI_2.0.1_aarch64.app.tar.gz'],
+      ['Green.CLI_2.0.1_x64-setup.exe', 'Green..CLI_2.0.1_x64-setup.exe'],
+    ]);
+  });
+
+  it('fails with no files, a version that is not plain, or two files of one name', () => {
+    expect(uploads(bundle(['macos/GreenCLI.app/']), 'aarch64-apple-darwin').err).toContain('No installers under');
+    const bad = uploads(bundle(MAC), 'aarch64-apple-darwin', '2.0.1+5');
+    expect(bad.err).toContain('not a plain version');
+    expect(bad.out).toBe('');
+    const two = uploads(bundle(['nsis/A b-setup.exe', 'nsis/A.b-setup.exe']), 'x86_64-pc-windows-msvc');
+    expect(two.code).toBe(1);
+    expect(two.err).toContain('would both be A.b-setup.exe in the release');
+    expect(run('uploads', tempDir(), 'aarch64-apple-darwin').err).toContain('usage:');
   });
 });
 

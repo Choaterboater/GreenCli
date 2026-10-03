@@ -1344,7 +1344,7 @@ mod tests {
             .unwrap();
         assert!(last_build < delete);
         assert!(delete < after("name: Check the update signatures"));
-        assert!(delete < after("name: Publish the update key"));
+        assert!(delete < after("name: Upload the installers and the update key"));
         // Outputs carry only the key folder, never a key.
         for line in lines.iter().filter(|l| l.contains("GITHUB_OUTPUT")) {
             for bad in ["updkey", "TAURI_SIGNING", "$("] {
@@ -1382,6 +1382,8 @@ mod tests {
         cond: String,
         uses: String,
         with: String,
+        /// The keys of the `with:` block (not of the block an alias names).
+        with_keys: Vec<String>,
         env: Vec<(String, String)>,
         run: String,
     }
@@ -1470,7 +1472,10 @@ mod tests {
                     "id" => step.id = value,
                     "if" => step.cond = value,
                     "uses" => step.uses = value,
-                    "with" => step.with = value,
+                    "with" => {
+                        step.with = value;
+                        block = "with";
+                    }
                     "env" => block = "env",
                     "run" if value == "|" || value == ">-" => block = "run",
                     "run" => step.run = value,
@@ -1479,6 +1484,9 @@ mod tests {
             } else if depth == 10 && block == "env" {
                 let (k, v) = body.split_once(':').unwrap();
                 step.env.push((k.to_string(), v.trim().to_string()));
+            } else if depth == 10 && block == "with" {
+                let (k, _) = body.split_once(':').unwrap();
+                step.with_keys.push(k.to_string());
             } else if depth > 8 && block == "run" {
                 step.run.push_str(body);
                 step.run.push('\n');
@@ -1529,7 +1537,7 @@ mod tests {
                 "Delete the notarization key",
                 "Check the Mac app",
                 "Check the update signatures",
-                "Publish the update key",
+                "Upload the installers and the update key",
                 "Keep installers (build only)",
             ]
         );
@@ -1539,15 +1547,27 @@ mod tests {
         assert!(keygen
             .run
             .ends_with("echo \"dir=$dir\" >> \"$GITHUB_OUTPUT\"\n"));
-        let (_, publish) = step(&steps, "Publish the update key");
+        let (_, upload) = step(&steps, "Upload the installers and the update key");
         assert_eq!(
-            publish
+            upload
                 .env
                 .iter()
                 .map(|(k, _)| k.as_str())
                 .collect::<Vec<_>>(),
-            ["GH_TOKEN", "RELEASE_ID", "TAG", "KEY_NAME", "KEY_FILE"]
+            [
+                "GH_TOKEN",
+                "RELEASE_ID",
+                "TAG",
+                "BUNDLE",
+                "TARGET",
+                "KEY_NAME",
+                "KEY_FILE"
+            ]
         );
+        let (_, build) = step(&steps, "Build + bundle (tauri-action)");
+        assert_eq!(build.with_keys, ["uploadUpdaterJson", "args"]);
+        let (_, keep) = step(&steps, "Keep installers (build only)");
+        assert_eq!(keep.with_keys, ["name", "path", "if-no-files-found"]);
     }
 
     /// release.yml signs and notarizes the Mac app only when all five Apple
@@ -1709,17 +1729,16 @@ mod tests {
             .count();
         assert_eq!(in_steps, anywhere);
 
-        // The update key and the stapled .dmg go into the draft the builds
-        // uploaded to, whichever build ran (tauri-action has no releaseId
-        // output when it is given one).
-        for name in ["Publish the update key", "Notarize the .dmg"] {
-            let (_, s) = step(&steps, name);
-            assert_eq!(
-                s.env("RELEASE_ID"),
-                Some("${{ needs.release.outputs.id }}"),
-                "{name}"
-            );
-        }
+        // The stapled .dmg goes into the release job's draft with the other
+        // files: "Notarize the .dmg" only staples it, before the upload step.
+        let (dmg_at, dmg) = step(&steps, "Notarize the .dmg");
+        assert_eq!(dmg.env("RELEASE_ID"), None);
+        let (upload_at, upload) = step(&steps, "Upload the installers and the update key");
+        assert_eq!(
+            upload.env("RELEASE_ID"),
+            Some("${{ needs.release.outputs.id }}")
+        );
+        assert!(dmg_at < upload_at);
     }
 
     /// No Apple secret goes into GITHUB_ENV, GITHUB_OUTPUT, the step summary
@@ -1845,7 +1864,7 @@ mod tests {
         for later in [
             "Check the Mac app",
             "Check the update signatures",
-            "Publish the update key",
+            "Upload the installers and the update key",
             "Keep installers (build only)",
         ] {
             assert!(delete_at < step(&steps, later).0, "{later}");
@@ -1888,7 +1907,7 @@ mod tests {
             .run
             .contains("xcrun stapler validate \"$dmg\" > /dev/null || problem "));
         assert!(at < step(&steps, "Check the update signatures").0);
-        assert!(at < step(&steps, "Publish the update key").0);
+        assert!(at < step(&steps, "Upload the installers and the update key").0);
         let (_, dmg) = step(&steps, "Notarize the .dmg");
         assert!(dmg.run.contains("xcrun stapler staple \"$dmg\" && break\n"));
         assert!(dmg.run.contains("if [ \"$status\" != Accepted ]; then\n"));
@@ -2220,7 +2239,9 @@ mod tests {
     fn release_workflow_makes_one_draft_for_all_builds() {
         let code = code_lines(RELEASE_YML);
         // No build looks up or makes a release, or writes latest.json.
+        // (tauri-action only builds: release_workflow_never_changes_a_published_release.)
         for bad in [
+            "releaseId:",
             "tagName:",
             "releaseName:",
             "releaseDraft:",
@@ -2229,7 +2250,6 @@ mod tests {
         ] {
             assert!(!code.iter().any(|l| l.contains(bad)), "{bad}");
         }
-        assert!(code.contains(&"releaseId: ${{ needs.release.outputs.id }}"));
         assert!(code.contains(&"uploadUpdaterJson: false"));
         // Everything that uploads after the build uses the same draft.
         let ids: Vec<&str> = code
@@ -2237,7 +2257,7 @@ mod tests {
             .copied()
             .filter(|l| l.starts_with("RELEASE_ID:"))
             .collect();
-        assert_eq!(ids, ["RELEASE_ID: ${{ needs.release.outputs.id }}"; 5]);
+        assert_eq!(ids, ["RELEASE_ID: ${{ needs.release.outputs.id }}"; 4]);
         // The release job is the only one that makes a release.
         let makes: Vec<&str> = code
             .iter()
@@ -2607,12 +2627,15 @@ fi
     /// No run changes a published release. Re-running one build job (or
     /// "Re-run failed jobs") does not run the release job again, so the
     /// build gets the id it found the first time, and the owner may have
-    /// published that release since. tauri-action, "Notarize the .dmg",
-    /// "Publish the update key" and update-files would then swap the live
-    /// release's update file and key, and its latest.json would point at a
-    /// deleted file. So the build stops before anything is built, and every
-    /// step that deletes or uploads a release file checks again first. Runs
-    /// those steps with stand-in gh, curl and xcrun.
+    /// published that release since, or may publish it while the build
+    /// runs. A build that then put its files and key into the live release
+    /// would leave its latest.json with the old signatures, which the new
+    /// files fail, so that platform could not update until a new version
+    /// shipped. So the build stops before anything is built, every
+    /// step that deletes or uploads a release file checks again first, and
+    /// tauri-action (which would replace the release's files at the end of
+    /// the build, with no check) only builds. Runs those steps with stand-in
+    /// gh and curl.
     #[cfg(unix)]
     #[test]
     fn release_workflow_never_changes_a_published_release() {
@@ -2634,7 +2657,42 @@ fi
         assert_eq!(stop.run, format!("set -euo pipefail\n{STOP_IF_PUBLISHED}"));
         let (keygen, _) = step(&steps, "Make a one-time update signing key");
         assert!(0 < keygen);
-        assert!(tauri_builds(&steps).iter().all(|(i, _)| 0 < *i));
+        let builds = tauri_builds(&steps);
+        assert!(builds.iter().all(|(i, _)| 0 < *i));
+
+        // tauri-action only builds. Given a releaseId or tagName it uploads
+        // the build's files at the end, deleting any of the same name, with
+        // no check that the release is still a draft; and it is a `uses:`
+        // step, which the scan of `run:` scripts below can't see. So it
+        // gets neither, and no token. (The three builds share one `with:`
+        // block.)
+        assert_eq!(builds.len(), 3);
+        assert_eq!(builds[0].1.with, "&tauri-with");
+        for (_, b) in &builds[1..] {
+            assert_eq!(b.with, "*tauri-with", "{}", b.name);
+            assert!(b.with_keys.is_empty(), "{}", b.name);
+        }
+        for key in ["releaseId", "tagName"] {
+            assert!(!builds[0].1.with_keys.iter().any(|k| k == key), "{key}");
+        }
+        let tokens: Vec<&str> = job_lines(RELEASE_YML, "build")
+            .into_iter()
+            .map(str::trim)
+            .filter(|l| l.contains("GITHUB_TOKEN") || l.contains("github.token"))
+            .collect();
+        assert_eq!(tokens, ["GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}"; 2]);
+        let with_token: Vec<&str> = steps
+            .iter()
+            .filter(|s| s.env("GH_TOKEN").is_some())
+            .map(|s| s.name.as_str())
+            .collect();
+        assert_eq!(
+            with_token,
+            [
+                "Stop if the release is already published",
+                "Upload the installers and the update key"
+            ]
+        );
 
         // Every step that deletes a release file or uploads one checks
         // first, in every job. These are the ones that do.
@@ -2656,17 +2714,42 @@ fi
         assert_eq!(
             changers,
             [
-                "Notarize the .dmg",
-                "Publish the update key",
+                "Upload the installers and the update key",
                 "Write latest.json"
             ]
+        );
+        // The build's one upload comes after it is built, notarized and
+        // checked, and the key it uploads is the one the build signed with.
+        let (upload_at, upload) = step(&steps, "Upload the installers and the update key");
+        for before in [
+            "Delete the update signing key",
+            "Notarize the .dmg",
+            "Check the Mac app",
+            "Check the update signatures",
+        ] {
+            assert!(step(&steps, before).0 < upload_at, "{before}");
+        }
+        assert!(builds.iter().all(|(i, _)| *i < upload_at));
+        assert_eq!(
+            upload.cond,
+            "${{ github.event_name != 'workflow_dispatch' || inputs.publish }}"
+        );
+        assert_eq!(
+            upload.env("KEY_FILE"),
+            Some("${{ steps.keygen.outputs.dir }}/updkey.pub")
+        );
+        assert_eq!(upload.env("TARGET"), Some("${{ matrix.target }}"));
+        assert_eq!(
+            upload.env("BUNDLE"),
+            Some("src-tauri/target/${{ matrix.target }}/release/bundle")
         );
 
         if !have_programs(&["jq", "node"]) {
             return;
         }
         // gh says whether release 42 is a draft from $T/draft (no file: the
-        // call fails), and answers the asset lookups with one old file.
+        // call fails), and answers the asset lookups with one old file. The
+        // bundle is a Mac build's.
         let stand_ins = r#"gh() {
   echo "gh $*" >> "$T/calls"
   case "$*" in
@@ -2677,25 +2760,20 @@ fi
     *) return 1 ;;
   esac
 }
-curl() { echo "curl ${@: -1}" >> "$T/calls"; }
-xcrun() {
-  echo "xcrun $1 $2" >> "$T/calls"
-  if [ "$1 $2" = "notarytool submit" ]; then echo '{"id":"n1","status":"Accepted"}'; fi
+curl() {
+  local a file=""
+  for a in "$@"; do case "$a" in @*) file="${a#@}" ;; esac; done
+  echo "curl ${file#"$T"/} ${@: -1}" >> "$T/calls"
 }
 BUNDLE="$T/bundle"
-mkdir -p "$BUNDLE/dmg"
-: > "$BUNDLE/dmg/GreenCLI_2.0.1_aarch64.dmg""#;
+mkdir -p "$BUNDLE/dmg" "$BUNDLE/macos/GreenCLI.app"
+: > "$BUNDLE/dmg/GreenCLI_2.0.1_aarch64.dmg"
+: > "$BUNDLE/macos/GreenCLI.app.tar.gz"
+: > "$BUNDLE/macos/GreenCLI.app.tar.gz.sig""#;
         let files = job_steps(RELEASE_YML, "update-files");
         let scripts = [
             ("Stop if the release is already published", &stop.run),
-            (
-                "Notarize the .dmg",
-                &step(&steps, "Notarize the .dmg").1.run,
-            ),
-            (
-                "Publish the update key",
-                &step(&steps, "Publish the update key").1.run,
-            ),
+            ("Upload the installers and the update key", &upload.run),
             (
                 "Write latest.json",
                 &step(&files, "Write latest.json").1.run,
@@ -2713,9 +2791,7 @@ mkdir -p "$BUNDLE/dmg"
                     ("RELEASE_ID", "42"),
                     ("TAG", "v2.0.1"),
                     ("GH_TOKEN", "stand-in"),
-                    ("PUBLISH", "true"),
-                    ("APPLE_API_ISSUER", "stand-in"),
-                    ("APPLE_API_KEY", "stand-in"),
+                    ("TARGET", "aarch64-apple-darwin"),
                     ("KEY_NAME", "update-key-darwin-aarch64.pub"),
                     ("KEY_FILE", "updkey.pub"),
                 ],
@@ -2729,32 +2805,22 @@ mkdir -p "$BUNDLE/dmg"
         let published = "::error::The v2.0.1 release is already published, so this run won't \
                          change it. Release a new version instead.\n";
         for (name, script) in scripts {
-            // Published: the step fails at the check, before it deletes or
-            // uploads anything.
+            // Published (say, while the build ran): the step fails at the
+            // check, before it deletes or uploads anything.
             let (code, stdout, calls) = run(script, Some("false\n"));
             assert_eq!(code, Some(1), "{name}: {stdout}");
             assert!(stdout.ends_with(published), "{name}: {stdout}");
-            assert!(calls.ends_with(check), "{name}: {calls}");
-            assert_eq!(calls.matches("gh ").count(), 1, "{name}: {calls}");
-            assert!(!calls.contains("curl"), "{name}: {calls}");
+            assert_eq!(calls, check, "{name}");
 
             // The check itself fails: so does the step, and nothing changes.
             let (code, stdout, calls) = run(script, None);
             assert_ne!(code, Some(0), "{name}: {stdout}");
-            assert!(calls.ends_with(check), "{name}: {calls}");
-            assert!(!calls.contains("curl"), "{name}: {calls}");
+            assert_eq!(calls, check, "{name}");
 
             // Still a draft: the step goes on past the check.
             let (code, stdout, calls) = run(script, Some("true\n"));
-            assert!(calls.contains(check), "{name}: {calls}");
+            assert!(calls.starts_with(check), "{name}: {calls}");
             assert!(!stdout.contains("already published"), "{name}: {stdout}");
-            let upload = |file: &str| {
-                format!(
-                    "gh api -X DELETE repos/Choaterboater/GreenCli/releases/assets/7\n\
-                     curl https://uploads.github.com/repos/Choaterboater/GreenCli/releases/42/\
-                     assets?name={file}\n"
-                )
-            };
             match name {
                 "Stop if the release is already published" => {
                     assert_eq!((code, stdout.as_str()), (Some(0), ""));
@@ -2767,18 +2833,49 @@ mkdir -p "$BUNDLE/dmg"
                     )),
                     "{calls}"
                 ),
-                // It replaces the release's old file with its own.
+                // It replaces the release's old files with the build's,
+                // named as tauri-action named them, and then the key.
                 _ => {
                     assert_eq!(code, Some(0), "{name}: {stdout}");
-                    let file = if name == "Notarize the .dmg" {
-                        "GreenCLI_2.0.1_aarch64.dmg"
-                    } else {
-                        "update-key-darwin-aarch64.pub"
-                    };
-                    assert!(calls.ends_with(&upload(file)), "{name}: {calls}");
+                    let v = conf()["version"].as_str().unwrap().to_string();
+                    let mut want = check.to_string();
+                    let mut said = String::new();
+                    for (file, asset) in [
+                        (
+                            "bundle/dmg/GreenCLI_2.0.1_aarch64.dmg",
+                            "GreenCLI_2.0.1_aarch64.dmg".to_string(),
+                        ),
+                        (
+                            "bundle/macos/GreenCLI.app.tar.gz",
+                            format!("GreenCLI_{v}_aarch64.app.tar.gz"),
+                        ),
+                        (
+                            "bundle/macos/GreenCLI.app.tar.gz.sig",
+                            format!("GreenCLI_{v}_aarch64.app.tar.gz.sig"),
+                        ),
+                        ("updkey.pub", "update-key-darwin-aarch64.pub".to_string()),
+                    ] {
+                        want.push_str(&format!(
+                            "gh api repos/Choaterboater/GreenCli/releases/42/assets --paginate \
+                             --jq .[] | select(.name == \"{asset}\") | .id\n\
+                             gh api -X DELETE repos/Choaterboater/GreenCli/releases/assets/7\n\
+                             curl {file} https://uploads.github.com/repos/Choaterboater/GreenCli/\
+                             releases/42/assets?name={asset}&label={asset}\n"
+                        ));
+                        said.push_str(&format!("Uploaded {asset}\n"));
+                    }
+                    assert_eq!(calls, want);
+                    assert_eq!(stdout, said);
                 }
             }
         }
+
+        // With no build files the upload step stops before it changes
+        // anything, even on a draft.
+        let empty = format!("rm -r \"$BUNDLE\"\n{}", upload.run);
+        let (code, _, calls) = run(&empty, Some("true\n"));
+        assert_eq!(code, Some(1));
+        assert_eq!(calls, "");
     }
 
     /// Apple's ticket can take a little while to show up after notarytool
