@@ -287,12 +287,13 @@ GreenCLI 2.0 keeps AI keys and MCP logins in the system password store, not in f
 - **The move from 1.9**: at first start, 2.0 moves the keys in `ai_keys.json` and
   `mcp_creds.json` into the store. Each one is saved, read back and compared, and only when all of
   them check out is the file deleted.
-- **Left-over files**: if an old file can't be read, it stays where it is and Settings shows its
-  path ("An old key file couldn't be read and may still hold keys: …"). Delete it after you enter
-  your keys again. If some keys didn't move, Settings says "Some keys from 1.9 were not moved yet.
-  GreenCLI will try again next start." Until then they keep working from the old file. Keys you
-  change or remove in 2.0 in the meantime stay as you set them. If you go back to 1.9 in the
-  meantime, keys you change or remove there are changed or removed in 2.0 too at its next start.
+- **Left-over files**: if an old file can't be read as keys, it stays where it is and Settings
+  shows its path ("An old key file couldn't be read and may still hold keys: …"). Delete it after
+  you enter your keys again. If some keys didn't move, the file stays in the data folder and
+  Settings says "Some keys from 1.9 were not moved yet. GreenCLI will try again next start." Until
+  then they keep working from the old file, as long as GreenCLI can read it. Keys you change or
+  remove in 2.0 in the meantime stay as you set them. If you go back to 1.9 in the meantime, keys
+  you change or remove there are changed or removed in 2.0 too at its next start.
 - **No password store** (some Linux setups, for example with no keyring running, or a store that
   doesn't answer within 3 seconds): keys stay in `ai_keys.json` and `mcp_creds.json` (owner-only,
   the 1.9 format), and Settings says "Saved in a private file on this computer. The system password
@@ -405,9 +406,10 @@ Settings → **AI & MCP → AI Assistant** → provider **Casper (no key)**.
   your SSH sessions or MCP servers. Secrets in your question are hidden first.
 - **Know this:** Casper's own file tools can read files outside its folder, including GreenCLI's
   session logs, archived configs and the login file of a running MCP server, plus `ai_keys.json`
-  and `mcp_creds.json` when no system password store is found (or an old 1.9 file is left;
-  Settings names it). AI keys and MCP logins in the system password store are not files. Only ask
-  Casper about text you trust (a prompt hidden in a pasted log could ask it to read those files).
+  and `mcp_creds.json` when no system password store is found (or an old 1.9 file is left in the
+  data folder; Settings says so). AI keys and MCP logins in the system password store are not
+  files. Only ask Casper about text you trust (a prompt hidden in a pasted log could ask it to read
+  those files).
 
 ### Read-only Auditor (enforced)
 
