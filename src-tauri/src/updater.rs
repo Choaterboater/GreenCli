@@ -39,9 +39,11 @@ pub const RELEASES: &str = "https://github.com/Choaterboater/GreenCli/releases";
 pub const LATEST_JSON_URL: &str =
     "https://github.com/Choaterboater/GreenCli/releases/latest/download/latest.json";
 /// Update files must be assets of a GreenCLI release: release.yml writes
-/// their API address into latest.json (`api.github.com/repos/<repo>/releases/
-/// assets/<id>`, as tauri-action does); a plain release download link is
-/// accepted too.
+/// their download link into latest.json (`github.com/<repo>/releases/
+/// download/v<version>/<name>`, which doesn't count against GitHub's API
+/// limit). Their API address (`api.github.com/repos/<repo>/releases/assets/
+/// <id>`, as tauri-action writes it) is accepted too: 2.0.0's latest.json
+/// has it.
 const ASSET_API_PREFIX: &str = "/repos/Choaterboater/GreenCli/releases/assets/";
 const DOWNLOAD_PATH_PREFIX: &str = "/Choaterboater/GreenCli/releases/download/";
 /// The only hosts update requests may reach: github.com and its API, and the
@@ -2488,10 +2490,16 @@ curl() {
         let manifest: Value = serde_json::from_str(&uploaded.unwrap()).unwrap();
         assert_eq!(manifest["version"], v.as_str());
         let platforms = manifest["platforms"].as_object().unwrap();
+        // Each url is the file's download link in the v<version> release,
+        // not its API address: GitHub counts API downloads against its
+        // limit of 60 requests an hour per address without a login.
         let entry = |id: u32| {
+            let file = assets.iter().find(|a| a["id"] == id).unwrap()["name"]
+                .as_str()
+                .unwrap();
             serde_json::json!({
                 "signature": format!("sig-{}", id + 1),
-                "url": format!("https://api.github.com/repos/Choaterboater/GreenCli/releases/assets/{id}"),
+                "url": format!("https://github.com/Choaterboater/GreenCli/releases/download/v{v}/{file}"),
             })
         };
         let want = [
@@ -2506,6 +2514,9 @@ curl() {
         assert_eq!(platforms.len(), want.len());
         for (name, id) in want {
             assert_eq!(platforms[name], entry(id), "{name}");
+            // The app takes it.
+            let link = platforms[name]["url"].as_str().unwrap();
+            assert!(download_url_ok(&url(link)), "{link}");
         }
         // Every name the app looks up for a shipped build is there.
         for p in SHIPPED_PLATFORMS {

@@ -74,7 +74,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   drafts or drop each other's update entries. Re-running a job changes a draft only: once the
   release is published, the build jobs and update-files stop with "already published". A later
   `release/**` push or manual run that uploads into a draft also moves its future tag to the commit
-  it built.
+  it built. `latest.json` gives each update file's download link, not its GitHub API address, so
+  update downloads don't count against GitHub's API limit of 60 requests an hour per address (a
+  busy office network could hit it, and the update then failed).
 
 ### Fixed
 - An AI key or MCP login that fails to save now shows a message. Before, it failed with no

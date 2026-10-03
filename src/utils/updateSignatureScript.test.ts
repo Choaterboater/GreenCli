@@ -135,20 +135,40 @@ describe('update-signature.mjs latest-json (the update-files job)', () => {
     expect(manifest.version).toBe('2.0.1');
     expect(manifest.notes).toBe('');
     expect(new Date(manifest.pub_date).toISOString()).toBe(manifest.pub_date);
-    const asset = (id: number) => ({
+    // Each url is the file's download link in the v2.0.1 release, not its
+    // API address (tauri-action's default): GitHub counts API downloads
+    // against its limit of 60 requests an hour per address without a login.
+    const file = (name: string) => ({
       signature: SIGNED_SIG,
-      url: `https://api.github.com/repos/${REPO}/releases/assets/${id}`,
+      url: `https://github.com/${REPO}/releases/download/v2.0.1/${name}`,
     });
     expect(manifest.platforms).toEqual({
-      'darwin-aarch64': asset(102),
-      'darwin-aarch64-app': asset(102),
-      'darwin-x86_64': asset(202),
-      'darwin-x86_64-app': asset(202),
+      'darwin-aarch64': file('GreenCLI_2.0.1_aarch64.app.tar.gz'),
+      'darwin-aarch64-app': file('GreenCLI_2.0.1_aarch64.app.tar.gz'),
+      'darwin-x86_64': file('GreenCLI_2.0.1_x64.app.tar.gz'),
+      'darwin-x86_64-app': file('GreenCLI_2.0.1_x64.app.tar.gz'),
       // The NSIS installer is the plain Windows entry (updaterJsonPreferNsis).
-      'windows-x86_64': asset(304),
-      'windows-x86_64-nsis': asset(304),
-      'windows-x86_64-msi': asset(301),
+      'windows-x86_64': file('GreenCLI_2.0.1_x64-setup.exe'),
+      'windows-x86_64-nsis': file('GreenCLI_2.0.1_x64-setup.exe'),
+      'windows-x86_64-msi': file('GreenCLI_2.0.1_x64_en-US.msi'),
     });
+    for (const { url } of Object.values(manifest.platforms) as { url: string }[]) {
+      expect(url).not.toContain('api.github.com');
+    }
+  });
+
+  it('writes a download link that keeps an odd file name in one piece', () => {
+    const odd = RELEASE_ASSETS.map((a) =>
+      a.name.startsWith('GreenCLI_2.0.1_x64-setup.exe')
+        ? { ...a, name: a.name.replace('GreenCLI_', 'Green CLI#_') }
+        : a,
+    );
+    const names = odd.map((a) => a.name).filter((n) => odd.some((s) => s.name === `${n}.sig`));
+    const r = latestJson(odd, sigDir(names));
+    expect(r.err).toBe('');
+    expect(JSON.parse(r.out).platforms['windows-x86_64'].url).toBe(
+      `https://github.com/${REPO}/releases/download/v2.0.1/Green%20CLI%23_2.0.1_x64-setup.exe`,
+    );
   });
 
   it('fails when a platform has no signed update file', () => {

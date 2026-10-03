@@ -14,7 +14,7 @@
 //       there is no .sig at all. (Each build job, before it publishes its key.)
 //   node scripts/update-signature.mjs latest-json <assets.json> <sig-dir> <owner/repo> <version>
 //       Prints the release's latest.json: one entry per update file, with
-//       the text of its .sig (from <sig-dir>) and its asset's API address.
+//       the text of its .sig (from <sig-dir>) and its download link.
 //       Fails unless every platform has exactly one signed update file.
 //       (The update-files job: the only writer of latest.json, so the three
 //       build jobs can't overwrite each other's entries.)
@@ -103,9 +103,10 @@ export function keyPlatform(entry) {
 
 /**
  * The release file an entry's url points to, or null when it isn't a file of
- * this release. tauri-action writes the API address of the asset
- * (api.github.com/repos/<repo>/releases/assets/<id>); a plain download link
- * (github.com/<repo>/releases/download/<tag>/<name>) is accepted too.
+ * this release. latest-json writes the download link
+ * (github.com/<repo>/releases/download/<tag>/<name>); the API address of the
+ * asset (api.github.com/repos/<repo>/releases/assets/<id>, which tauri-action
+ * writes and 2.0.0's latest.json has) is accepted too.
  */
 export function releaseFileName(url, { repo, tag, assets }) {
   if (typeof url !== 'string') return null;
@@ -153,7 +154,12 @@ export const LATEST_JSON_ENTRIES = UPDATE_FILES.flatMap((f) => f.entries);
 /**
  * The release's latest.json, from its asset list and the text of each update
  * file's .sig (`readSig(name)`, name being the .sig asset's). Each url is the
- * API address of the asset, as tauri-action writes it.
+ * file's download link in the release tagged v<version>, the tag the app
+ * reads the manifest from. Not the asset's API address (tauri-action's
+ * default): GitHub counts each API download against its limit of 60
+ * requests an hour per address without a login, so behind a shared office
+ * address the update download would fail with 403. Download links have no
+ * such limit, and redirect to the same download host.
  */
 export function buildLatestJson(assets, readSig, { repo, version, pubDate = new Date() }) {
   if (!PLAIN_VERSION.test(String(version))) {
@@ -172,10 +178,9 @@ export function buildLatestJson(assets, readSig, { repo, version, pubDate = new 
       );
     }
     const [file] = signed;
-    if (!/^[0-9]+$/.test(String(file.id))) throw new Error(`${entries[0]}: ${file.name} has no asset id`);
     const entry = {
       signature: readSig(`${file.name}.sig`),
-      url: `https://api.github.com/repos/${repo}/releases/assets/${file.id}`,
+      url: `https://github.com/${repo}/releases/download/v${version}/${encodeURIComponent(file.name)}`,
     };
     for (const e of entries) platforms[e] = entry;
   }
