@@ -2300,6 +2300,7 @@ mod tests {
   case "$*" in
     "api --paginate repos/Choaterboater/GreenCli/releases?per_page=100") cat "$T/pages" ;;
     "api -X POST repos/Choaterboater/GreenCli/releases "*) cat "$T/made" ;;
+    "api -X PATCH repos/Choaterboater/GreenCli/releases/8 "*) echo '{"id":8}' ;;
     *) return 1 ;;
   esac
 }"#;
@@ -2341,13 +2342,43 @@ mod tests {
         assert_eq!(calls, format!("{list}{make}"));
         assert_eq!(stdout, "Made the v2.0.0 draft.\n");
 
-        // A release/** push or a manual run uses v<app version>.
+        // A release/** push or a manual run uses v<app version>. Its tag
+        // is made when the draft is published, at the draft's target: a
+        // draft it uses again (made by an earlier run, on an older commit)
+        // is pointed at this run's commit, the one it builds. A tag push
+        // (above) changes nothing: its tag is already there.
         let version = conf()["version"].as_str().unwrap().to_string();
         let pages = format!("[{{\"id\":8,\"tag_name\":\"v{version}\",\"draft\":true}}]");
         let (code, stdout, output, calls) = run("branch", "release/x", &pages, "");
         assert_eq!(code, Some(0), "{stdout}");
         assert_eq!(output, format!("id=8\ntag=v{version}\n"));
-        assert_eq!(calls, list);
+        let retarget = "gh api -X PATCH repos/Choaterboater/GreenCli/releases/8 \
+                        -f target_commitish=abc123\n";
+        assert_eq!(calls, format!("{list}{retarget}"));
+        assert_eq!(
+            stdout,
+            format!(
+                "Uploading into the v{version} draft.\nPointed the v{version} draft at abc123.\n"
+            )
+        );
+        // A new draft is made on this commit, so there is nothing to move.
+        let (code, stdout, output, calls) = run("branch", "release/x", "[]", "43\n");
+        assert_eq!(code, Some(0), "{stdout}");
+        assert_eq!(output, format!("id=43\ntag=v{version}\n"));
+        assert!(!calls.contains("PATCH"), "{calls}");
+        assert!(
+            calls.ends_with("-f target_commitish=abc123 --jq .id\n"),
+            "{calls}"
+        );
+        // GitHub refuses the move: no id, so nothing is built or uploaded.
+        let pages = format!("[{{\"id\":9,\"tag_name\":\"v{version}\",\"draft\":true}}]");
+        let (code, stdout, output, calls) = run("branch", "release/x", &pages, "");
+        assert_ne!(code, Some(0), "{stdout}");
+        assert_eq!(output, "");
+        assert!(
+            calls.ends_with("releases/9 -f target_commitish=abc123\n"),
+            "{calls}"
+        );
 
         // Two drafts with the tag: the owner picks, nothing is uploaded.
         let pages = r#"[{"id":7,"tag_name":"v2.0.0","draft":true},{"id":9,"tag_name":"v2.0.0","draft":true}]"#;

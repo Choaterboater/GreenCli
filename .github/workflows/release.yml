@@ -101,6 +101,11 @@ jobs:
   # - A draft with that tag is used again (a re-run uploads into it); with
   #   none, it makes one. GitHub's release-by-tag call never returns drafts,
   #   so it looks through the list of releases.
+  # - For a release/** push or a manual run, the tag doesn't exist until the
+  #   draft is published, and GitHub then makes it at the draft's target.
+  #   So such a run points a draft it uses again at its own commit (after a
+  #   fix pushed to the same release/** branch, say): the tag must be the
+  #   commit that was built. A tag push needs nothing: its tag is there.
   # - Always a draft: no CI run can make a release "latest" by itself. The
   #   owner publishes the draft by hand.
   # Publishing is on for tag and release/** pushes, and for manual runs
@@ -145,6 +150,15 @@ jobs:
           elif [ "$count" -eq 1 ]; then
             id=$ids
             echo "Uploading into the $tag draft."
+            # For a release/** push or a manual run the tag doesn't exist
+            # yet: publishing makes it at the draft's target. Point that at
+            # this run's commit, the one it builds, not the commit of the
+            # run that made the draft.
+            if [ "$REF_TYPE" != tag ]; then
+              gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$id" \
+                -f target_commitish="$GITHUB_SHA" > /dev/null
+              echo "Pointed the $tag draft at $GITHUB_SHA."
+            fi
           else
             id=$(gh api -X POST "repos/$GITHUB_REPOSITORY/releases" -f tag_name="$tag" \
               -f name="GreenCli $tag" -F draft=true -F prerelease=false \

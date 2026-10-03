@@ -72,7 +72,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   draft, the build jobs upload into it, and update-files writes `latest.json` and checks it. One
   job makes the draft and one writes `latest.json`, so builds that finish together can't make two
   drafts or drop each other's update entries. Re-running a job changes a draft only: once the
-  release is published, the build jobs and update-files stop with "already published".
+  release is published, the build jobs and update-files stop with "already published". A later
+  `release/**` push or manual run that uploads into a draft also moves its future tag to the commit
+  it built.
 
 ### Fixed
 - An AI key or MCP login that fails to save now shows a message. Before, it failed with no

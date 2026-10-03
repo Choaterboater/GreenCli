@@ -128,6 +128,9 @@ There is nothing to set up for update signing: no key to make, keep or paste, an
   lose the execute bit, so it would not start.)
 - A push to a `release/**` branch **always publishes** (to a draft named after the app's version),
   so push one only after the version bump.
+- A later `release/**` push or manual run for the same version (say, after you push a fix to that
+  branch) uploads into the same draft and moves its future tag to the commit it built, so the tag
+  that publishing makes matches the installers.
 - Publishing a draft made by a `release/**` push or a manual run creates its tag, and that tag
   starts the **Release** workflow again. That run sees the release is already published and builds
   nothing (its **gate** job says so). If you ever see a second `v<version>` draft after publishing,
