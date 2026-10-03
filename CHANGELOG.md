@@ -151,7 +151,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - On Windows, a greencli-mcp that Claude Code or Casper is running can block the installer. Close
   them before you update (Settings → Updates says so).
 - If the Mac app isn't signed (no Apple secrets), macOS may ask to allow Keychain access again
-  after each update.
+  after each update. Enter your login password and choose **Always Allow** (**Allow** alone asks
+  again later). If you chose **Deny**, GreenCLI says it can't reach the system password store:
+  open Settings or the AI panel again and allow it.
 - On Windows, processes a CLI leaves behind after it ends by itself are not stopped.
 
 ## [1.9.0] - 2026-10-02

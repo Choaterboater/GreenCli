@@ -507,7 +507,7 @@ export const HELP_TOPICS: HelpTopic[] = [
           'Local CLI not found — the app adds `~/.local/bin`, `~/.cargo/bin`, and Homebrew to PATH; install your CLI there.',
           'Device REST cert error — verification is on by default; for self-signed lab gear turn *Verify device TLS* off in Settings → Connections & Security (heed the interception warning).',
           'Connected tab but no shell — a restricted account/appliance refused a PTY/shell; this now surfaces as a connect error.',
-          '“Can’t reach the system password store” — keys saved on this computer are still there. Log in to the desktop (on Linux, start a keyring such as GNOME Keyring), then try again. If you copied the GreenCLI folder from another computer, the keys aren’t on this one: start a keyring, or quit GreenCLI and delete `secret_store.json` to keep keys in private files, then enter them again.',
+          '“Can’t reach the system password store” — keys saved on this computer are still there. Log in to the desktop (on Linux, start a keyring such as GNOME Keyring), then try again. On a Mac after an update, macOS may ask to let GreenCLI use its Keychain items: enter your login password and choose **Always Allow** (**Allow** alone asks again later). If you chose **Deny**, open Settings or the AI panel again and allow it. If you copied the GreenCLI folder from another computer, the keys aren’t on this one: start a keyring, or quit GreenCLI and delete `secret_store.json` to keep keys in private files, then enter them again.',
           'greencli-mcp says a snapshot has no hidden copy, or it is out of date — open **Config Archive** (activity bar or command palette) and click **Make hidden copies**.',
         ],
       },
