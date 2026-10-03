@@ -20,7 +20,7 @@ import {
   RefreshCw,
   type LucideIcon,
 } from 'lucide-react';
-import { isMac, platform, shortcutLabel, type ShortcutId } from '../utils/shortcuts';
+import { formatChord, isMac, platform, shortcutLabel, type ShortcutId } from '../utils/shortcuts';
 
 // Help text names the chords for THIS OS (⌘ on macOS, Ctrl / Ctrl+Shift on
 // Windows and Linux) — the owner switches between both.
@@ -184,7 +184,7 @@ export const HELP_TOPICS: HelpTopic[] = [
       { kind: 'note', text: 'Responses stream token-by-token; **Stop** actually aborts the provider request, not just the UI. Local CLI and Casper answer all at once, and **Stop** ends the CLI.' },
       {
         kind: 'note',
-        text: '**Casper**: each question gets a fresh folder (or one you pick with **Choose…**; **Check Casper** tests it). GreenCLI never turns Casper’s sandbox off, and won’t start Casper while a port forward or a local MCP server is open. Casper can’t use device tools or MCP servers. Its own file tools can read files outside its folder, including GreenCLI’s session logs and archived configs, so only ask it about text you trust.',
+        text: '**Casper**: each question gets a fresh folder (or one you pick with **Choose…**; **Check Casper** tests it). GreenCLI never turns Casper’s sandbox off, and won’t start Casper while a port forward or a local MCP server is open. Casper can’t use device tools or MCP servers. Its own file tools can read files outside its folder, including GreenCLI’s session logs and archived configs, and `ai_keys.json` and `mcp_creds.json` when no system password store is found, so only ask it about text you trust.',
       },
       {
         kind: 'note',
@@ -256,13 +256,13 @@ export const HELP_TOPICS: HelpTopic[] = [
     title: 'greencli-mcp (for Casper / Claude Code)',
     icon: Database,
     summary: 'A read-only MCP server that lets Casper or Claude Code read your GreenCLI data.',
-    keywords: ['greencli-mcp', 'greencli', 'mcp', 'claude code', 'casper', 'claude mcp add', 'read-only', 'hidden copy', 'make hidden copies', 'config archive', 'diff', 'devices', 'intents'],
+    keywords: ['greencli-mcp', 'greencli', 'mcp', 'claude code', 'casper', 'claude mcp add', 'read-only', 'hidden copy', 'make hidden copies', 'config archive', 'diff', 'devices', 'intents', 'list_archive_devices', 'renamed device'],
     blocks: [
       { kind: 'p', text: 'greencli-mcp lets Casper or Claude Code read your GreenCLI data. It can’t change anything: it only reads GreenCLI’s data folder, and never writes a file, opens a network connection or starts a program. It sits next to the app.' },
       {
         kind: 'steps',
         items: [
-          'Settings → **AI & MCP → MCP Servers**: copy its path, or copy the `claude mcp add greencli -- "<path>"` command and run it in a terminal.',
+          'Settings → **AI & MCP → MCP Servers**: copy its path, or copy the `claude mcp add --scope user greencli -- "<path>" --data-dir "<data folder>"` command and run it in a terminal. `--scope user` makes it available in every folder; without it Claude Code only adds it for the folder you run the command in. `--data-dir` is GreenCLI’s data folder, so greencli-mcp reads the same one as the app.',
           'Or use **Export for Casper / Claude…**, which adds it as `greencli`.',
           'On a Mac, move GreenCLI to Applications first, or the path changes every time it starts.',
         ],
@@ -271,7 +271,8 @@ export const HELP_TOPICS: HelpTopic[] = [
         kind: 'bullets',
         items: [
           'It shows your devices (no passwords, user names, notes or startup commands), config history, configs and diffs with secrets hidden, and intent results.',
-          'Configs come only from **hidden copies** made when a config is captured. If a tool says a snapshot has no hidden copy, or that it is out of date, open **Config archive** and click **Make hidden copies**.',
+          'Config history stays under the name a device had when it was captured. After you rename or delete a saved device, or for a Quick Connect you never saved, the AI finds that history with `list_archive_devices`.',
+          'Configs come only from **hidden copies** made when a config is captured. If a tool says a snapshot has no hidden copy, or that it is out of date, open **Config Archive** (activity bar or command palette) and click **Make hidden copies**. If it says the copy was made by a newer GreenCLI, restart Claude Code or Casper so they use the updated greencli-mcp.',
           'A diff can’t show a changed password: both sides show it hidden.',
         ],
       },
@@ -307,19 +308,19 @@ export const HELP_TOPICS: HelpTopic[] = [
     title: 'Updates',
     icon: RefreshCw,
     summary: 'GreenCLI updates itself from its GitHub releases (macOS and Windows).',
-    keywords: ['update', 'updates', 'new version', 'upgrade', 'check for updates', 'restart to update', 'release', 'github', 'signature', 'daily'],
+    keywords: ['update', 'updates', 'new version', 'upgrade', 'check for updates', 'restart to update', 'release', 'github', 'signature', 'daily', 'vault'],
     blocks: [
       { kind: 'p', text: 'Settings → **Updates** shows the version, **Check for updates** and **Check once a day** (on by default).' },
       {
         kind: 'bullets',
         items: [
           'A check downloads a newer version and checks its signature, but never installs it. When it is ready you see “GreenCLI X is ready.” with **Restart to update**.',
-          '**Restart to update** asks first, says how many open sessions will close, and warns about unsaved Config Editor edits. It won’t restart while a Change Job or bulk run is going.',
+          '**Restart to update** asks first, says how many open sessions will close, and warns about unsaved Config Editor edits or a password change still waiting for the vault to unlock (it would be lost). It says when an AI answer is still running, and won’t restart while a Change Job, bulk run, Config Editor send or SFTP upload or download is going.',
           'Updates come only from GreenCLI releases on GitHub. Each release build signs its own files, and the app checks the signature before it installs.',
           isMac
-            ? 'Run GreenCLI from **Applications**. From the disk image (or straight from Downloads) it offers no update.'
+            ? 'Run GreenCLI from **Applications**. From the disk image (or straight from Downloads) it offers no update. After an update, restart Claude Code and Casper so they use the new greencli-mcp.'
             : platform === 'windows'
-              ? 'Close Claude Code and Casper before you update. MCP servers stop only when the installer starts, and come back if it fails.'
+              ? 'Close Claude Code and Casper before you update (the **Restart to update** box reminds you). GreenCLI closes when the installer starts. If the installer then shows “Error opening file for writing”, close Claude Code and Casper and click **Retry**. After **Abort**, open GreenCLI again.'
               : 'There is no Linux release build, so updates are off on Linux.',
         ],
       },
@@ -365,22 +366,22 @@ export const HELP_TOPICS: HelpTopic[] = [
       {
         kind: 'bullets',
         items: [
-          '**Config Editor problems**: risky lines, blanks to fill in, terminal junk and a Junos edit with no commit are underlined and counted in the toolbar. Click the count (or **Ctrl+Shift+M**) for the Problems panel; **F8** jumps to the next one. A line the switch rejected shows in red.',
-          '**Go to Symbol**: press **Ctrl+Shift+O** (or click Outline) and type to jump to an interface, VLAN or section.',
-          '**Quick fixes**: on a problem press **Ctrl+.** (or click the light bulb) to strip terminal junk, comment out a risky line, add commit confirmed 5, or swap a plain-text password for a blank.',
+          '**Config Editor problems**: risky lines, blanks to fill in, terminal junk and a Junos edit with no commit are underlined and counted in the toolbar. Click the count (or **' + formatChord('Mod+Shift+M') + '**) for the Problems panel; **F8** jumps to the next one. A line the switch rejected shows in red.',
+          '**Go to Symbol**: press **' + formatChord('Mod+Shift+O') + '** (or click Outline) and type to jump to an interface, VLAN or section.',
+          '**Quick fixes**: on a problem press **' + formatChord('Mod+.') + '** (or click the light bulb) to strip terminal junk, comment out a risky line, add commit confirmed 5, or swap a plain-text password for a blank.',
           '**Hover cards**: hover an Aruba CX or Junos line to see what it does and how the other vendor writes it.',
           '**Secrets in code files**: a password, token or key written into a YAML, JSON, Python, shell or .env file gets a warning.',
           '**Copy with secrets hidden**: the eye button next to Copy copies the tab with passwords, keys and SNMP communities hidden, safe for a ticket or chat.',
           '**Editor status line**: where Send goes, the device\'s CLI, **CONFIG MODE**, and when you pulled its config. It warns in red when the tab is for another vendor than the device.',
           '**After a Send**: bars beside the lines show what reached the switch (green), what it rejected (red) and what was never sent (grey).',
-          '**Config Editor smarts**: **Ctrl+/** comments a line (`!` Aruba, `#` Junos); a double-click picks `1/1/5` or `ge-0/0/0.100` whole.',
+          '**Config Editor smarts**: **' + formatChord('Mod+/') + '** comments a line (`!` Aruba, `#` Junos); a double-click picks `1/1/5` or `ge-0/0/0.100` whole.',
           '**Snippets**: type `cx-access`, `junos-trunk`, … at the start of a line, or pick from *Snippets*; **Tab** moves to the next blank.',
           '**Diff**: compare the editor with the running-config you pulled, or with a file. Edit your tab on the right; the arrow beside a change takes the left side.',
           '**Folder view**: the folder button opens a folder as a file tree beside the editor; click a file to open it.',
           '**Send selected lines**: select lines, then the arrow next to Send (or right-click). Only those lines go out.',
           '**Send safely**: the arrow next to Send opens Change Jobs with the tab and this device filled in: a dry run, then the switch\'s own rollback timer.',
           '**Ask AI** (editor toolbar or right-click): explain, check, fix, or convert Aruba ↔ Junos the selected lines. Secrets are hidden first.',
-          '**Review in Editor**: an AI answer\'s code opens as a diff against the lines you asked about. Apply or Discard; Ctrl+Z undoes an Apply.',
+          '**Review in Editor**: an AI answer\'s code opens as a diff against the lines you asked about. Apply or Discard; ' + formatChord('Mod+Z') + ' undoes an Apply.',
         ],
       },
     ],
@@ -391,7 +392,7 @@ export const HELP_TOPICS: HelpTopic[] = [
     title: 'Security & your data',
     icon: ShieldCheck,
     summary: 'What is encrypted, where keys are kept, where data lives.',
-    keywords: ['security', 'data', 'storage', 'permissions', '0600', 'known_hosts', 'privacy', 'telemetry', 'keychain', 'credential manager', 'password store', 'keyring', 'secret_store', 'ai_keys', 'mcp_creds', 'backup', 'downgrade'],
+    keywords: ['security', 'data', 'storage', 'permissions', '0600', 'known_hosts', 'privacy', 'telemetry', 'keychain', 'credential manager', 'password store', 'keyring', 'secret_store', 'ai_keys', 'mcp_creds', 'backup', 'downgrade', 'outbound', 'firewall'],
     blocks: [
       {
         kind: 'bullets',
@@ -399,14 +400,14 @@ export const HELP_TOPICS: HelpTopic[] = [
           'AI keys and MCP logins are kept in the system password store: macOS Keychain, Windows Credential Manager, or the Secret Service on Linux. Settings says where.',
           'The vault (`vault.enc`) and the other secret files are owner-only (`0600`), written atomically.',
           'SSH uses **TOFU** host-key pinning — a changed key is rejected.',
-          'No secrets in browser storage; no telemetry — only the providers and devices you configure.',
+          'No secrets in browser storage; no telemetry. GreenCLI calls only the providers and devices you configure, plus GitHub for the update check on macOS and Windows (turn off **Check once a day** in Settings → **Updates**).',
         ],
       },
       {
         kind: 'note',
-        text: 'Copying the GreenCLI folder to another computer does not copy the AI keys and MCP logins in the password store. Going back to 1.9 loses them, so back up `ai_keys.json` and `mcp_creds.json` before you first run 2.0.',
+        text: 'Copying the GreenCLI folder to another computer does not copy the AI keys and MCP logins in the password store. On a Linux computer with no keyring, delete `secret_store.json` from the copy while GreenCLI is closed, then enter the keys again. 1.9 can’t read the password store, so if you go back to 1.9, enter your AI keys and MCP logins again there. When you start 2.0 again, any key or login in 1.9’s files (typed there, or copied back from a backup) replaces the one in the password store, and the files are deleted. The others stay as they were. If you go back to 2.0.0, enter again there any MCP login it shows as not saved (on Windows, one for a server whose name has a capital letter or a character other than `a-z`, `0-9` and `-_.: `, such as “Central”) or that reaches the server as a short `GCS1 …` line (a very long login). On Windows, enter the first kind once more after you update again.',
       },
-      { kind: 'p', text: 'Data lives in the OS app-data dir for `com.choatelabs.greencli` (sessions.json, vault.enc, secret_store.json, mcp_servers.json, known_hosts.json, intents.json, config_archive/, logs/). `secret_store.json` only says the keys are in the password store. `ai_keys.json` and `mcp_creds.json` are there only when no password store is found (or an old 1.9 file couldn’t be moved; Settings then shows its path).' },
+      { kind: 'p', text: 'Data lives in the OS app-data dir for `com.choatelabs.greencli` (sessions.json, vault.enc, secret_store.json, mcp_servers.json, known_hosts.json, intents.json, config_archive/, logs/). `secret_store.json` only says the keys are in the password store. `ai_keys.json` and `mcp_creds.json` are there only when no password store is found, or when an old 1.9 file is left in this folder: Settings shows the path of one it can’t read as keys, or says some keys were not moved yet.' },
     ],
   },
   {
@@ -450,6 +451,7 @@ export const HELP_TOPICS: HelpTopic[] = [
       'terminal', 'copy', 'paste', 'select', 'selection', 'mouse', 'right-click', 'context menu', 'paste guard', 'open in editor', 'colors',
       'log', 'logging', 'record', 'drop', 'file', 'path', 'split', 'pane', 'pop-out', 'window', 'tab', 'reconnect',
       'scrollback', 'save', 'option', 'alt', 'meta', 'rename', 'duplicate', 'config mode', 'configure', 'prompt', 'hostname',
+      'link', 'url', 'web', 'browser',
     ],
     blocks: [
       {
@@ -461,6 +463,7 @@ export const HELP_TOPICS: HelpTopic[] = [
             : '**Selecting inside full-screen apps** (vim, tmux, htop, AI CLIs): when the app uses the mouse a plain drag goes to the app — hold `Shift` while dragging to select text anyway.',
           '**Keyboard selection**: `Shift+Arrow`, `Shift+Home` / `Shift+End` extend a selection from the cursor; `Esc` clears it (at the normal prompt — full-screen apps keep those keys).',
           `**Copy an address**: \`${MOD}\`-click an IP address, MAC address, interface name or path in the output to copy it (Settings → Terminal → Smart Links).`,
+          `**Open a web address**: \`${MOD}\`-click an http/https link in the output to open it in your browser. A plain click does nothing, so clicking to focus the pane or clear a selection doesn't open a page.`,
           '**Right-click** opens a menu: Copy, Paste, **Copy & Paste** (types the selection at the prompt), **Find Selection**, **Open in Editor** (the selection in a new Config Editor tab, in the device\'s language), Select All, **Save Scrollback…** (the whole buffer to a text file) and Clear. `Esc` closes it. Settings → Terminal → **Right-Click in Terminal** can make it paste straight away (PuTTY) or copy-if-selected-else-paste (Windows Terminal).',
           '**Paste guard**: pasting two or more lines asks first, because every line runs as a command on the device. Change the threshold or turn it off in Settings → Terminal.',
           '**Logging**: click **Log** in the status bar to record the session to a file (it shows **REC** while recording). Click again to stop.',
@@ -504,8 +507,9 @@ export const HELP_TOPICS: HelpTopic[] = [
           'Local CLI not found — the app adds `~/.local/bin`, `~/.cargo/bin`, and Homebrew to PATH; install your CLI there.',
           'Device REST cert error — verification is on by default; for self-signed lab gear turn *Verify device TLS* off in Settings → Connections & Security (heed the interception warning).',
           'Connected tab but no shell — a restricted account/appliance refused a PTY/shell; this now surfaces as a connect error.',
-          '“Can’t reach the system password store” — your keys are still there. Log in to the desktop (on Linux, start a keyring such as GNOME Keyring), then try again.',
-          'greencli-mcp says a snapshot has no hidden copy, or it is out of date — open **Config archive** and click **Make hidden copies**.',
+          '“Can’t reach the system password store” — keys saved on this computer are still there. Log in to the desktop (on Linux, start a keyring such as GNOME Keyring), then try again. On a Mac after an update, macOS may ask to let GreenCLI use its Keychain items: enter your login password and choose **Always Allow** (**Allow** alone asks again later). If you chose **Deny**, open Settings or the AI panel again and allow it. If you copied the GreenCLI folder from another computer, the keys aren’t on this one: start a keyring, or quit GreenCLI and delete `secret_store.json` to keep keys in private files, then enter them again.',
+          'greencli-mcp says a snapshot has no hidden copy, or it is out of date — open **Config Archive** (activity bar or command palette) and click **Make hidden copies**.',
+          'greencli-mcp says a hidden copy was made by a newer GreenCLI — GreenCLI was updated while Claude Code or Casper kept running the old greencli-mcp. Restart Claude Code or Casper. After you update GreenCLI, restart them so they use the new greencli-mcp.',
         ],
       },
     ],

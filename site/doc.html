@@ -1,0 +1,19 @@
+<!-- A guide page (guide/, help/, whats-new/): a menu on the left (a fold-out
+     box on phones) and the text. The build makes every part from the repo's
+     own files. -->
+<div class="wrap doc-layout">
+  <nav class="toc" aria-label="On this page">
+    <p class="toc-title">On this page</p>
+    {{{toc}}}
+  </nav>
+  <article class="doc">
+    <h1>{{heading}}</h1>
+    {{{intro}}}
+    <details class="toc-mobile">
+      <summary>On this page</summary>
+      {{{toc}}}
+    </details>
+    {{{content}}}
+    <p class="doc-source">Made from <a href="{{sourceUrl}}">{{sourceName}}</a> in the GreenCLI repo.</p>
+  </article>
+</div>

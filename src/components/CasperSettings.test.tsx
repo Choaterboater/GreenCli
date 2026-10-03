@@ -45,7 +45,11 @@ describe('CasperSettings', () => {
     render(<CasperSettings />);
     expect(screen.getByText(/GreenCLI's own files are not on that list/)).toBeTruthy();
     expect(screen.getByText(/your session logs, archived configs and the\s+login file of a running MCP server/)).toBeTruthy();
-    expect(screen.getByText(/AI keys and MCP logins in the system password store are not files/)).toBeTruthy();
+    // With no password store (or a 1.9 file left over) the keys are files it can read too.
+    expect(
+      screen.getByText(/When no system password store is found, or an old 1\.9 key file is left, your AI keys and\s+MCP logins are files too \(ai_keys\.json, mcp_creds\.json\)/),
+    ).toBeTruthy();
+    expect(screen.getByText(/Keys in the system password store are not files/)).toBeTruthy();
     expect(screen.queryByText(/not private ones like ~\/\.ssh/)).toBeNull();
   });
 

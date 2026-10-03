@@ -7,10 +7,13 @@
 // readable by every local account. These helpers write them 0600 (folders
 // 0700) and keep the write-then-rename pattern the stores already used.
 //
-// Windows: the files live under %APPDATA%, which already carries a per-user
-// ACL, so a plain write is used. Spawning icacls here (as ai::write_key_file
-// does for API keys) would block the UI thread for the sync archive commands
-// and flash a console window on every capture.
+// Windows: the data-store files live under %APPDATA%, which already carries a
+// per-user ACL, so write_private / write_private_atomic use a plain write.
+// Spawning icacls for them would block the UI thread for the sync archive
+// commands and flash a console window on every capture. Key files
+// (write_key_file: the 1.9 key files used when there is no system password
+// store, and each MCP server's login file) are the exception: they get an
+// owner-only ACL via icacls (restrict_key_file).
 
 use crate::error::AppError;
 use std::fs;

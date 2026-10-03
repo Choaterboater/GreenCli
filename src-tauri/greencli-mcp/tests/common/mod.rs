@@ -144,3 +144,27 @@ pub fn snap(ts: u64, raw: &str, hidden: Option<(&str, Option<u32>)>) -> Snap {
         hidden: hidden.map(|(c, f)| (c.to_string(), f)),
     }
 }
+
+/// Every page of a list tool's `field`, following nextCursor to the end.
+pub fn list_pages(dir: &Path, tool: &str, args: Value, field: &str) -> Vec<Vec<Value>> {
+    let mut pages = Vec::new();
+    let mut cursor: Option<String> = None;
+    loop {
+        let mut a = args.clone();
+        if let Some(c) = &cursor {
+            a["cursor"] = json!(c);
+        }
+        let (is_error, body, text) = call(dir, tool, a);
+        assert!(!is_error, "{text}");
+        pages.push(body[field].as_array().unwrap().clone());
+        match body["nextCursor"].as_str() {
+            Some(c) => cursor = Some(c.to_string()),
+            None => return pages,
+        }
+    }
+}
+
+/// How many items each page holds.
+pub fn page_sizes(pages: &[Vec<Value>]) -> Vec<usize> {
+    pages.iter().map(Vec::len).collect()
+}

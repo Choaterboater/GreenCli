@@ -125,7 +125,13 @@ fn a_missing_copy_is_refused_and_the_raw_config_never_shows() {
         error_text(&body).starts_with("No hidden copy for this snapshot."),
         "{text}"
     );
-    assert!(error_text(&body).contains("Make hidden copies"));
+    // The Config Archive panel has the button; Settings' "Config archive" doesn't.
+    assert!(
+        error_text(&body).contains(
+            "open Config Archive (activity bar or command palette) and click Make hidden copies"
+        ),
+        "{text}"
+    );
     assert!(!text.contains("RAW-SECRET"));
     // A ts that isn't in the index.
     let (is_error, body, _) = call(&dir, "get_config", json!({"device": "sw1", "ts": 101}));
@@ -149,6 +155,69 @@ fn an_out_of_date_copy_is_refused() {
     let (is_error, _, text) = call(&dir, "list_config_history", json!({"device": "sw3"}));
     assert!(!is_error);
     assert!(!text.contains("COPY-TEXT"));
+    std::fs::remove_dir_all(dir).ok();
+}
+
+/// GreenCLI was updated while this server kept running (a Mac update replaces
+/// the app under it), and the new app made copies with a newer filter. The
+/// new app counts them as current, so it shows no Make hidden copies button:
+/// the error and the history say to restart what started this server.
+#[test]
+fn a_copy_from_a_newer_greencli_asks_for_a_restart() {
+    let dir = fixture("newer");
+    write_archive(
+        &dir,
+        "sw4",
+        &[
+            snap(80, RAW, Some(("NEWER-COPY-TEXT", Some(F + 1)))),
+            snap(70, RAW, Some((HIDDEN, Some(F)))),
+        ],
+    );
+    let restart = "Restart Claude Code or Casper so they start the updated greencli-mcp.";
+    let (is_error, body, text) = call(&dir, "get_config", json!({"device": "sw4"}));
+    assert!(is_error);
+    assert!(
+        error_text(&body).contains("made by a newer GreenCLI"),
+        "{text}"
+    );
+    assert!(error_text(&body).contains(restart), "{text}");
+    assert!(!error_text(&body).contains("Make hidden copies"), "{text}");
+    assert!(
+        !text.contains("COPY-TEXT") && !text.contains("RAW-SECRET"),
+        "{text}"
+    );
+    let (is_error, body, text) = call(&dir, "get_config_diff", json!({"device": "sw4"}));
+    assert!(is_error);
+    assert!(error_text(&body).contains(restart), "{text}");
+    // This filter's copy is still served.
+    let (is_error, body, text) = call(&dir, "get_config", json!({"device": "sw4", "ts": 70}));
+    assert!(!is_error, "{text}");
+    assert_eq!(body["text"], HIDDEN);
+    // History: the newer copy can't be read here, and a note says why.
+    let (is_error, body, text) = call(&dir, "list_config_history", json!({"device": "sw4"}));
+    assert!(!is_error, "{text}");
+    assert_eq!(body["snapshots"][0]["hasHiddenCopy"], false);
+    assert_eq!(body["snapshots"][1]["hasHiddenCopy"], true);
+    assert!(
+        body["note"].as_str().unwrap_or_default().contains(restart),
+        "{text}"
+    );
+    // The app makes the copy again only when this server can't use it.
+    let folder = dir.join("config_archive").join(dir_for("sw4"));
+    assert!(!greencli_mcp::hidden_copy_usable(
+        &folder.join("80.hidden.json"),
+        "sw4",
+        80
+    ));
+    // An older filter's copy still asks for Make hidden copies, with no note.
+    let (is_error, body, text) = call(&dir, "get_config", json!({"device": "sw2"}));
+    assert!(is_error);
+    assert!(error_text(&body).contains("out of date"), "{text}");
+    assert!(error_text(&body).contains("Make hidden copies"), "{text}");
+    let (_, body, _) = call(&dir, "list_config_history", json!({"device": "sw2"}));
+    assert_eq!(body["note"], Value::Null);
+    let (_, body, _) = call(&dir, "list_config_history", json!({"device": "sw1"}));
+    assert_eq!(body["note"], Value::Null);
     std::fs::remove_dir_all(dir).ok();
 }
 
@@ -358,6 +427,176 @@ fn a_corrupt_index_is_an_error_and_left_alone() {
         .map(|e| e.unwrap().file_name())
         .collect();
     assert_eq!(names, ["index.json"]);
+    std::fs::remove_dir_all(dir).ok();
+}
+
+/// History filed under a name no saved device has any more (a renamed or
+/// deleted device, or a Quick Connect that was never saved) can be found
+/// with list_archive_devices, and then read.
+#[test]
+fn archive_devices_list_history_under_old_names() {
+    let dir = temp_dir("archive-devices");
+    std::fs::write(
+        dir.join("sessions.json"),
+        json!({"folders": [{"name": "Core", "items": [
+            {"id": "s1", "name": "core-sw1", "host": "10.0.0.1"},
+            {"id": "s2", "name": "", "host": "10.0.0.2"}
+        ]}], "sessions": []})
+        .to_string(),
+    )
+    .unwrap();
+    // "sw1" is core-sw1's old name; 10.9.9.9 a Quick Connect never saved.
+    write_archive(
+        &dir,
+        "sw1",
+        &[
+            snap(20, RAW, Some((HIDDEN, Some(F)))),
+            snap(10, RAW, Some((HIDDEN, Some(F)))),
+        ],
+    );
+    write_archive(&dir, "core-sw1", &[snap(30, RAW, Some((HIDDEN, Some(F))))]);
+    write_archive(&dir, "10.9.9.9", &[snap(5, RAW, Some((HIDDEN, Some(F))))]);
+    write_archive(&dir, "10.0.0.2", &[snap(7, RAW, None)]);
+    write_archive(&dir, "empty", &[]);
+
+    // list_devices only knows the saved names.
+    let (_, body, _) = call(&dir, "list_devices", json!({}));
+    let saved: Vec<&str> = body["devices"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["archiveKey"].as_str().unwrap())
+        .collect();
+    assert_eq!(saved, ["core-sw1", "10.0.0.2"]);
+    // The old name points the way.
+    let (is_error, body, _) = call(&dir, "list_config_history", json!({"device": "core-sw2"}));
+    assert!(is_error);
+    assert!(error_text(&body).contains("list_archive_devices"), "{body}");
+
+    let (is_error, body, text) = call(&dir, "list_archive_devices", json!({}));
+    assert!(!is_error, "{text}");
+    assert!(!text.contains("RAW-SECRET"));
+    assert_eq!(body["total"], 4);
+    assert_eq!(body["nextCursor"], Value::Null);
+    assert_eq!(
+        body["devices"],
+        json!([
+            {"archiveKey": "10.0.0.2", "snapshots": 1, "newestTs": 7, "savedDevice": true},
+            {"archiveKey": "10.9.9.9", "snapshots": 1, "newestTs": 5, "savedDevice": false},
+            {"archiveKey": "core-sw1", "snapshots": 1, "newestTs": 30, "savedDevice": true},
+            {"archiveKey": "sw1", "snapshots": 2, "newestTs": 20, "savedDevice": false},
+        ])
+    );
+    // Each listed name works with the config tools.
+    for (key, total) in [("sw1", 2), ("10.9.9.9", 1)] {
+        let (is_error, body, text) = call(&dir, "list_config_history", json!({"device": key}));
+        assert!(!is_error, "{text}");
+        assert_eq!(body["total"], total);
+        let (is_error, body, text) = call(&dir, "get_config", json!({"device": key}));
+        assert!(!is_error, "{text}");
+        assert_eq!(body["text"], HIDDEN);
+    }
+
+    // Saved sessions that can't be read: savedDevice is unknown, the list still works.
+    std::fs::write(dir.join("sessions.json"), "{").unwrap();
+    let (is_error, body, text) = call(&dir, "list_archive_devices", json!({}));
+    assert!(!is_error, "{text}");
+    assert_eq!(body["total"], 4);
+    assert!(body["devices"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|d| d["savedDevice"].is_null()));
+    // No archive at all: an empty list.
+    let empty = temp_dir("archive-devices-none");
+    let (is_error, body, _) = call(&empty, "list_archive_devices", json!({}));
+    assert!(!is_error);
+    assert_eq!(body["total"], 0);
+    assert_eq!(body["devices"], json!([]));
+    std::fs::remove_dir_all(empty).ok();
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn archive_devices_come_in_pages() {
+    let dir = temp_dir("archive-devices-pages");
+    let names: Vec<String> = (0..120)
+        .map(|i| format!("{i:03}-{}", "x".repeat(200)))
+        .collect();
+    for name in &names {
+        write_archive(&dir, name, &[snap(1, "raw", None)]);
+    }
+    let mut seen = Vec::new();
+    let mut cursor: Option<String> = None;
+    let mut pages = 0;
+    loop {
+        let args = match &cursor {
+            Some(c) => json!({"cursor": c}),
+            None => json!({}),
+        };
+        let (is_error, body, text) = call(&dir, "list_archive_devices", args);
+        assert!(!is_error, "{text}");
+        assert_eq!(body["total"], 120);
+        pages += 1;
+        for d in body["devices"].as_array().unwrap() {
+            seen.push(d["archiveKey"].as_str().unwrap().to_string());
+        }
+        match body["nextCursor"].as_str() {
+            Some(c) => cursor = Some(c.to_string()),
+            None => break,
+        }
+    }
+    assert!(pages > 1);
+    assert_eq!(seen, names);
+    // Another tool's cursor doesn't fit.
+    let (_, body, _) = call(&dir, "list_config_history", json!({"device": names[0]}));
+    assert_eq!(body["nextCursor"], Value::Null);
+    let other: String = json!(["list_devices", null, 1])
+        .to_string()
+        .bytes()
+        .fold("v1:".to_string(), |s, b| s + &format!("{b:02x}"));
+    let (is_error, body, _) = call(&dir, "list_archive_devices", json!({"cursor": other}));
+    assert!(is_error);
+    assert!(error_text(&body).contains("Start again without a cursor"));
+    std::fs::remove_dir_all(dir).ok();
+}
+
+// Casper cuts every list to 50 items and keeps the cursor, so a page with
+// more than 50 would skip archive names or snapshots.
+#[test]
+fn a_page_holds_at_most_fifty_names_or_snapshots() {
+    let dir = temp_dir("archive-fifty");
+    let names: Vec<String> = (0..120).map(|i| format!("sw-{i:03}")).collect();
+    for name in &names[1..] {
+        write_archive(&dir, name, &[snap(1, "raw", None)]);
+    }
+    // 100 snapshots, as many as the app keeps for one device.
+    let stamps: Vec<u64> = (0..100).rev().map(|i| 1_700_000_000_000 + i).collect();
+    let snaps: Vec<Snap> = stamps.iter().map(|&ts| snap(ts, "raw", None)).collect();
+    write_archive(&dir, &names[0], &snaps);
+
+    let pages = list_pages(&dir, "list_archive_devices", json!({}), "devices");
+    assert_eq!(page_sizes(&pages), [50, 50, 20]);
+    let seen: Vec<&str> = pages
+        .iter()
+        .flatten()
+        .map(|d| d["archiveKey"].as_str().unwrap())
+        .collect();
+    assert_eq!(seen, names);
+
+    let pages = list_pages(
+        &dir,
+        "list_config_history",
+        json!({"device": names[0]}),
+        "snapshots",
+    );
+    assert_eq!(page_sizes(&pages), [50, 50]);
+    let seen: Vec<u64> = pages
+        .iter()
+        .flatten()
+        .map(|r| r["ts"].as_u64().unwrap())
+        .collect();
+    assert_eq!(seen, stamps);
     std::fs::remove_dir_all(dir).ok();
 }
 

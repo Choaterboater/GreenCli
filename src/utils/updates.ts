@@ -7,10 +7,11 @@
 import { invoke } from '@tauri-apps/api/core';
 import { isTauri } from './tauri';
 import { askConfirm } from '../store/dialogStore';
-import { notify } from '../store/toastStore';
+import { notify, useToastStore } from '../store/toastStore';
 import { useSessionStore } from '../store/sessionStore';
 import { useSidePanelStore } from '../store/sidePanelStore';
 import { exitHolds, runBeforeExit } from './beforeExit';
+import { deferredVaultWrites } from './vaultAccess';
 
 /** Why updates are off: a dev build, a system with no release build, or the
  * updater didn't start. */
@@ -35,10 +36,22 @@ export const UPDATE_TEXT = {
   checkFailed: "Couldn't check for updates. Check your internet connection.",
   off: 'Updates are off in this build. Get new versions from the GitHub Releases page.',
   offDev: 'Updates are off in development builds.',
+  offPlatform: 'There is no release build for this system, so updates are off. Build new versions from source.',
   moveFirst: 'Move GreenCLI to Applications first.',
+  notReady: 'Check for updates first.',
   windows: 'Close Claude Code and Casper before updating.',
   dirtyEditor: 'The config editor has unsaved edits. They will be lost.',
+  // Saved (or deleted) while the vault was locked; they go in at the next unlock.
+  vaultWaiting: (n: number) =>
+    n === 1
+      ? 'A password change is waiting for the vault to unlock. Unlock it first, or the change will be lost.'
+      : `${n} password changes are waiting for the vault to unlock. Unlock it first, or they will be lost.`,
+  aiBusy: 'The AI assistant is still answering. It will stop.',
 } as const;
+
+/** Windows, checked when asked (not when the module loads) so tests can stub it. */
+export const onWindows = (): boolean =>
+  typeof navigator !== 'undefined' && /Windows/i.test(navigator.userAgent);
 
 export const DAY_MS = 24 * 60 * 60 * 1000;
 const LAST_CHECK_KEY = 'greencli-update-last-check';
@@ -47,7 +60,11 @@ const DAILY_KEY = 'greencli-update-daily';
 /** Why updates are off, in words; null when they are on. */
 export function offText(status: UpdateStatus | null): string | null {
   if (status?.enabled) return null;
-  return status?.reason === 'dev' ? UPDATE_TEXT.offDev : UPDATE_TEXT.off;
+  if (status?.reason === 'dev') return UPDATE_TEXT.offDev;
+  // Only the release targets get builds on the Releases page (macOS and
+  // Windows x64), so a 'platform' build was built from source.
+  if (status?.reason === 'platform') return UPDATE_TEXT.offPlatform;
+  return UPDATE_TEXT.off;
 }
 
 /** The app's update status; null outside the app. */
@@ -63,6 +80,9 @@ export async function getUpdateStatus(): Promise<UpdateStatus | null> {
 export async function checkForUpdate(): Promise<string | null> {
   const version = await invoke<string | null>('update_check');
   recordCheck();
+  // A ready card still on screen says what this check found.
+  if (!version) hideUpdateReady();
+  else if (readyCardOnScreen() && readyCard?.version !== version) showUpdateReady(version);
   return version;
 }
 
@@ -111,12 +131,46 @@ export function dailyCheckDue(now: number, last: number | null): boolean {
   return last === null || last > now || now - last >= DAY_MS;
 }
 
-/** The sticky "GreenCLI X is ready." toast with its Restart to update button. */
+/** The ready card showUpdateReady put up last (the Toaster may have closed it since). */
+let readyCard: { id: string; version: string } | null = null;
+
+function readyCardOnScreen(): boolean {
+  const id = readyCard?.id;
+  return !!id && useToastStore.getState().toasts.some((t) => t.id === id);
+}
+
+/** Close the "GreenCLI X is ready." card, if it is on screen. */
+export function hideUpdateReady(): void {
+  if (readyCard) useToastStore.getState().dismiss(readyCard.id);
+  readyCard = null;
+}
+
+/**
+ * The sticky "GreenCLI X is ready." toast with its Restart to update button.
+ * It replaces the card already up, so a newer version never stacks a second
+ * card and the same one never counts up as ×N.
+ */
 export function showUpdateReady(version: string): void {
-  notify.info(UPDATE_TEXT.ready(version), undefined, {
+  hideUpdateReady();
+  const id = notify.info(UPDATE_TEXT.ready(version), undefined, {
     duration: 0,
-    action: { label: UPDATE_TEXT.restart, run: () => void restartToUpdate(version) },
+    action: {
+      label: UPDATE_TEXT.restart,
+      // The Toaster closes the card before this runs. When nothing installed
+      // (Not now, Cancel, a failed install), bring it back, so the button the
+      // "Not now" message refers to is still there.
+      run: () => void restartToUpdate(version).then((installed) => showAgain(installed, version)),
+    },
   });
+  readyCard = { id, version };
+}
+
+/** The ready toast again, for the update still waiting (if any). */
+async function showAgain(installed: boolean, version: string): Promise<void> {
+  if (installed) return;
+  const status = await getUpdateStatus().catch(() => null);
+  const ready = status ? status.ready : version;
+  if (ready) showUpdateReady(ready);
 }
 
 /**
@@ -133,7 +187,9 @@ export async function dailyUpdateCheck(now = Date.now()): Promise<void> {
     // Counted when it starts, so a failing check waits a day like a good one.
     recordCheck(now);
     const version = await invoke<string | null>('update_check');
+    // Nothing waiting any more (its release withdrawn): the card goes too.
     if (version) showUpdateReady(version);
+    else hideUpdateReady();
   } catch (e) {
     console.warn('Daily update check failed:', e);
   }
@@ -141,14 +197,17 @@ export async function dailyUpdateCheck(now = Date.now()): Promise<void> {
 
 /**
  * Install the downloaded update and restart, after the user confirms. Not
- * while a Change Job or bulk run is going. Resolves false when nothing was
- * installed (refused, cancelled or failed).
+ * while a Change Job, bulk run, Config Editor send or SFTP upload or download
+ * is going (they hold the exit). `version` is what the toast or button
+ * showed; the confirm names the update waiting now. Resolves false when
+ * nothing was installed (refused, nothing waiting, cancelled or failed).
  */
 export async function restartToUpdate(version: string): Promise<boolean> {
   const busy = () => {
     const holds = exitHolds();
     if (holds.length === 0) return false;
-    notify.warning('Not now', `${holds.join(' ')} Restart to update when it ends.`);
+    const end = holds.length === 1 ? 'it ends' : 'they end';
+    notify.warning('Not now', `${holds.join(' ')} Restart to update when ${end}.`);
     return true;
   };
   if (busy()) return false;
@@ -160,19 +219,35 @@ export async function restartToUpdate(version: string): Promise<boolean> {
     notify.warning('Not now', UPDATE_TEXT.moveFirst);
     return false;
   }
+  // The update waiting now: a check since the toast or button appeared may
+  // have replaced it with a newer one, or dropped it (its release withdrawn).
+  const ready = status ? status.ready : version;
+  if (!ready) {
+    notify.warning('Not now', UPDATE_TEXT.notReady);
+    return false;
+  }
 
   const open = useSessionStore.getState().sessions.length;
-  const dirty = useSidePanelStore.getState().status.editor === 'dirty';
+  const panel = useSidePanelStore.getState().status;
+  const dirty = panel.editor === 'dirty';
+  // The save before closing can't write these: the vault is locked.
+  const waiting = deferredVaultWrites();
   const lines = [
-    `GreenCLI ${version} installs, then opens again.`,
+    `GreenCLI ${ready} installs, then opens again.`,
     open > 0 ? `${open} open session${open === 1 ? '' : 's'} will close.` : '',
+    // A running greencli-mcp.exe (from Claude Code or Casper) blocks the
+    // installer, which only checks for GreenCLI.exe itself.
+    onWindows() ? UPDATE_TEXT.windows : '',
     dirty ? UPDATE_TEXT.dirtyEditor : '',
+    waiting > 0 ? UPDATE_TEXT.vaultWaiting(waiting) : '',
+    // An answer cut off is only lost, so it is a warning, not a hold.
+    panel.ai === 'busy' ? UPDATE_TEXT.aiBusy : '',
   ].filter(Boolean);
   const ok = await askConfirm({
     title: 'Restart now?',
     message: lines.join(' '),
     confirmLabel: UPDATE_TEXT.restart,
-    danger: dirty,
+    danger: dirty || waiting > 0,
   });
   if (!ok || busy()) return false;
 

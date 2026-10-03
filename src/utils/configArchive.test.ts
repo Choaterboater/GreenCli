@@ -140,24 +140,41 @@ describe('refreshStaleHiddenCopies', () => {
     });
     hideSecretsInText.mockResolvedValue({ ok: true, text: 'h', hidden: 0, words: [] });
     const info = vi.spyOn(console, 'info').mockImplementation(() => {});
-    refreshStaleHiddenCopies();
-    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith('config_archive_set_hidden', { device: 'sw1', ts: 9, hidden: 'h', filter: HIDDEN_COPY_FILTER }));
-    await vi.waitFor(() => expect(info).toHaveBeenCalled());
+    // It says it made copies, so a caller counts them again.
+    await expect(refreshStaleHiddenCopies()).resolves.toBe(true);
+    expect(invoke).toHaveBeenCalledWith('config_archive_set_hidden', { device: 'sw1', ts: 9, hidden: 'h', filter: HIDDEN_COPY_FILTER });
+    expect(info).toHaveBeenCalled();
     info.mockRestore();
   });
 
-  it('every call gets the same promise, which ends when the run is done', async () => {
+  it('calls while the run goes share its promise, which ends when the run is done', async () => {
     invoke.mockResolvedValue({ missing: 0, stale: 0, current: 0, todo: [] });
     const run = refreshStaleHiddenCopies();
     expect(refreshStaleHiddenCopies()).toBe(run);
-    await expect(run).resolves.toBeUndefined();
-    expect(refreshStaleHiddenCopies()).toBe(run);
+    await expect(run).resolves.toBe(false);
+  });
+
+  it('says false at once after the run, even when the run made copies', async () => {
+    // Every snapshot made before this call, so a count after it sees them.
+    const todo = [{ device: 'sw1', ts: 9 }];
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === 'config_archive_missing_hidden') return { missing: 0, stale: 1, current: 0, todo };
+      if (cmd === 'config_archive_get') return 'raw';
+      return null;
+    });
+    hideSecretsInText.mockResolvedValue({ ok: true, text: 'h', hidden: 0, words: [] });
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    await expect(refreshStaleHiddenCopies()).resolves.toBe(true);
+    invoke.mockClear();
+    await expect(refreshStaleHiddenCopies()).resolves.toBe(false);
+    expect(invoke).not.toHaveBeenCalled();
+    info.mockRestore();
   });
 
   it('never throws outside the app', async () => {
     invoke.mockRejectedValue(new Error('no IPC'));
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    await expect(refreshStaleHiddenCopies()).resolves.toBeUndefined();
+    await expect(refreshStaleHiddenCopies()).resolves.toBe(false);
     expect(warn).toHaveBeenCalled();
     warn.mockRestore();
   });

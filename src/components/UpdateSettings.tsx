@@ -6,6 +6,7 @@ import {
   dailyCheckOn,
   getUpdateStatus,
   offText,
+  onWindows,
   restartToUpdate,
   setDailyCheck,
   updateErrorText,
@@ -18,8 +19,6 @@ type CheckState =
   | { kind: 'latest' }
   | { kind: 'ready'; version: string }
   | { kind: 'error'; message: string };
-
-const isWindows = typeof navigator !== 'undefined' && /Windows/i.test(navigator.userAgent);
 
 /** Settings → Updates: version, Check for updates, Restart to update, daily check. */
 export default function UpdateSettings() {
@@ -42,6 +41,8 @@ export default function UpdateSettings() {
   }, []);
 
   const off = offText(status);
+  // From the disk image or a translocated copy the update can't install, so
+  // there is nothing to check for (Rust refuses the check there too).
   const moved = status && status.place !== 'normal';
 
   const runCheck = async () => {
@@ -63,7 +64,7 @@ export default function UpdateSettings() {
       <p className="text-xs text-[var(--text-muted)] mb-3">{UPDATE_TEXT.how}</p>
       {status && <p className="text-sm text-[var(--text-primary)] mb-3">Version {status.version}</p>}
       <div className="flex flex-wrap items-center gap-2 mb-3">
-        <button onClick={runCheck} disabled={!!off || check.kind === 'checking'} className={button}>
+        <button onClick={runCheck} disabled={!!off || !!moved || check.kind === 'checking'} className={button}>
           <RefreshCw size={13} />
           {check.kind === 'checking' ? 'Checking…' : 'Check for updates'}
         </button>
@@ -98,7 +99,7 @@ export default function UpdateSettings() {
             Check once a day
           </label>
           {moved && <p className="text-xs text-[var(--accent-warning)]">{UPDATE_TEXT.moveFirst}</p>}
-          {isWindows && <p className="text-xs text-[var(--text-muted)]">{UPDATE_TEXT.windows}</p>}
+          {onWindows() && <p className="text-xs text-[var(--text-muted)]">{UPDATE_TEXT.windows}</p>}
         </>
       )}
     </section>

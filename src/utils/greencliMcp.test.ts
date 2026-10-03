@@ -20,10 +20,11 @@ const TOOLS: ListedTool[] = JSON.parse(
 );
 
 describe('greencli-mcp tools', () => {
-  it('has the six read tools', () => {
+  it('has the seven read tools', () => {
     expect(TOOLS.map((t) => t.name)).toEqual([
       'access_check',
       'list_devices',
+      'list_archive_devices',
       'list_config_history',
       'get_config',
       'get_config_diff',

@@ -44,7 +44,7 @@ jobs:
         run: npm run smoke
 
   rust:
-    # Tauri 2 uses webkit2gtk-4.1 / libsoup 3, which ubuntu-24.04 ships.
+    # Tauri 2 uses webkit2gtk-4.1 (2.40+) / libsoup 3: ubuntu-24.04 (22.04 also works).
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4

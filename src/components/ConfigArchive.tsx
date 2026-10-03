@@ -68,9 +68,12 @@ export default function ConfigArchive({ onOpenSnapshot, onClose }: ConfigArchive
   }, []);
 
   useEffect(() => {
+    // Asked before the count: it says whether copies were made after it.
+    const refresh = refreshStaleHiddenCopies();
     void loadHiddenStatus();
-    // The background refresh may fix stale copies: count again when it ends.
-    void refreshStaleHiddenCopies().then(loadHiddenStatus);
+    // The background refresh may fix stale copies: count again only if it
+    // made some (the count reads every copy).
+    void refresh.then((made) => (made ? loadHiddenStatus() : undefined));
   }, [loadHiddenStatus]);
 
   const onMakeHiddenCopies = async () => {

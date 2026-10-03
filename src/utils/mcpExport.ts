@@ -85,10 +85,11 @@ export interface McpExportOptions {
   greencli?: GreencliExport;
 }
 
-/** greencli-mcp in the export: the binary's full path, or why it is left out
- *  ("missing": not next to GreenCLI in this build; "not-installed": GreenCLI runs
- *  from outside Applications, so the path would change). */
-export type GreencliExport = { command: string } | { leftOut: 'missing' | 'not-installed' };
+/** greencli-mcp in the export: the binary's full path and GreenCLI's data folder (passed as
+ *  `--data-dir`, since Casper starts servers without the app's environment), or why it is left
+ *  out ("missing": not next to GreenCLI in this build; "not-installed": GreenCLI runs from
+ *  outside Applications, so the path would change). */
+export type GreencliExport = { command: string; dataDir: string } | { leftOut: 'missing' | 'not-installed' };
 
 /** The server name greencli-mcp gets in the file. */
 export const GREENCLI_SERVER_NAME = 'greencli';
@@ -1301,7 +1302,9 @@ export function buildMcpExport(servers: readonly McpServerDef[], options: McpExp
     );
   }
 
-  // GreenCLI's own read-only server. It has nothing secret in it: just its path.
+  // GreenCLI's own read-only server. It has nothing secret in it: just its path, and the app's
+  // data folder. On Linux, Casper starts it without XDG_DATA_HOME, so without the folder it
+  // could read another one than the app's.
   const greencli = options.greencli;
   if (greencli && 'command' in greencli) {
     let name = GREENCLI_SERVER_NAME;
@@ -1310,7 +1313,7 @@ export function buildMcpExport(servers: readonly McpServerDef[], options: McpExp
     if (name !== GREENCLI_SERVER_NAME) {
       notes.push(`GreenCLI's read-only server is saved as "${name}", because another server already uses "${GREENCLI_SERVER_NAME}".`);
     }
-    entries.push([name, { type: 'stdio', command: greencli.command, args: [] }]);
+    entries.push([name, { type: 'stdio', command: greencli.command, args: ['--data-dir', greencli.dataDir] }]);
   } else if (greencli) {
     notes.push(
       greencli.leftOut === 'missing'

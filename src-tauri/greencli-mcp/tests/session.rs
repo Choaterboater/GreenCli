@@ -182,6 +182,7 @@ fn a_whole_session_leaks_nothing_and_changes_nothing() {
         [
             "access_check",
             "list_devices",
+            "list_archive_devices",
             "list_config_history",
             "get_config",
             "get_config_diff",
@@ -191,6 +192,7 @@ fn a_whole_session_leaks_nothing_and_changes_nothing() {
 
     assert_eq!(s.all_pages("access_check", json!({})), 1);
     assert_eq!(s.all_pages("list_devices", json!({})), 1);
+    assert_eq!(s.all_pages("list_archive_devices", json!({})), 1);
     assert_eq!(s.all_pages("list_intents", json!({})), 1);
     for device in ["sw-core-01", "10.0.0.2"] {
         s.all_pages("list_config_history", json!({"device": device}));
@@ -239,6 +241,11 @@ fn a_whole_session_leaks_nothing_and_changes_nothing() {
         ("get_config", json!({"device": "nope"}), "no config history"),
         (
             "list_devices",
+            json!({"cursor": "v1:7b7d"}),
+            "Start again without a cursor",
+        ),
+        (
+            "list_archive_devices",
             json!({"cursor": "v1:7b7d"}),
             "Start again without a cursor",
         ),

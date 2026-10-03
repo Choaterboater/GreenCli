@@ -11,7 +11,19 @@
 //
 //   node scripts/update-signature.mjs verify-dir <dir> <key.pub>
 //       Every *.sig under <dir> must match its file and the key. Fails when
-//       there is no .sig at all. (Each build job, before it publishes its key.)
+//       there is no .sig at all. (Each build job, before it uploads anything.)
+//   node scripts/update-signature.mjs uploads <bundle-dir> <target> <tauri.conf.json>
+//       Prints the files of one build that go into the release, one per
+//       line: the path, the name in the release and the label (URL-encoded),
+//       split by tabs. The names are the ones tauri-action gave them, which
+//       latest-json looks for. Fails when there is no file at all. (Each
+//       build job's upload step.)
+//   node scripts/update-signature.mjs latest-json <assets.json> <sig-dir> <owner/repo> <version>
+//       Prints the release's latest.json: one entry per update file, with
+//       the text of its .sig (from <sig-dir>) and its download link.
+//       Fails unless every platform has exactly one signed update file.
+//       (The update-files job: the only writer of latest.json, so the three
+//       build jobs can't overwrite each other's entries.)
 //   node scripts/update-signature.mjs release-files <latest.json> <assets.json> <owner/repo> <tag>
 //       Prints the release file names latest.json points to, one per line.
 //       <assets.json> is the release's asset list from the GitHub API.
@@ -97,9 +109,10 @@ export function keyPlatform(entry) {
 
 /**
  * The release file an entry's url points to, or null when it isn't a file of
- * this release. tauri-action writes the API address of the asset
- * (api.github.com/repos/<repo>/releases/assets/<id>); a plain download link
- * (github.com/<repo>/releases/download/<tag>/<name>) is accepted too.
+ * this release. latest-json writes the download link
+ * (github.com/<repo>/releases/download/<tag>/<name>); the API address of the
+ * asset (api.github.com/repos/<repo>/releases/assets/<id>, which tauri-action
+ * writes and 2.0.0's latest.json has) is accepted too.
  */
 export function releaseFileName(url, { repo, tag, assets }) {
   if (typeof url !== 'string') return null;
@@ -117,10 +130,132 @@ export function releaseFileName(url, { repo, tag, assets }) {
   return null;
 }
 
-function releaseInfo(assetsPath, repo, tag) {
+function readAssets(assetsPath) {
   const assets = JSON.parse(readFileSync(assetsPath, 'utf8'));
   if (!Array.isArray(assets)) throw new Error('The asset list is not a list');
-  return { repo, tag, assets };
+  return assets;
+}
+
+function releaseInfo(assetsPath, repo, tag) {
+  return { repo, tag, assets: readAssets(assetsPath) };
+}
+
+/**
+ * The update file each release build uploads (tauri-action names them
+ * <product>_<version>_<arch><ending>) and the latest.json entries it gets:
+ * the same entries tauri-action writes with updaterJsonPreferNsis, so the
+ * plain windows-x86_64 entry is the NSIS installer. Only the first WiX
+ * language's .msi is signed, so the .msi is the one with a .sig.
+ */
+const UPDATE_FILES = [
+  { entries: ['darwin-aarch64', 'darwin-aarch64-app'], ending: '_aarch64\\.app\\.tar\\.gz' },
+  { entries: ['darwin-x86_64', 'darwin-x86_64-app'], ending: '_x64\\.app\\.tar\\.gz' },
+  { entries: ['windows-x86_64', 'windows-x86_64-nsis'], ending: '_x64-setup\\.exe' },
+  { entries: ['windows-x86_64-msi'], ending: '_x64_[A-Za-z0-9-]+\\.msi' },
+];
+
+/** Every entry latest.json gets, in UPDATE_FILES order. */
+export const LATEST_JSON_ENTRIES = UPDATE_FILES.flatMap((f) => f.entries);
+
+/**
+ * The release's latest.json, from its asset list and the text of each update
+ * file's .sig (`readSig(name)`, name being the .sig asset's). Each url is the
+ * file's download link in the release tagged v<version>, the tag the app
+ * reads the manifest from. Not the asset's API address (tauri-action's
+ * default): GitHub counts each API download against its limit of 60
+ * requests an hour per address without a login, so behind a shared office
+ * address the update download would fail with 403. Download links have no
+ * such limit, and redirect to the same download host.
+ */
+export function buildLatestJson(assets, readSig, { repo, version, pubDate = new Date() }) {
+  if (!PLAIN_VERSION.test(String(version))) {
+    throw new Error(`The version ${version} is not a plain version like 2.0.1`);
+  }
+  const names = new Set(assets.map((a) => a.name));
+  const escaped = String(version).replace(/\./g, '\\.');
+  const platforms = {};
+  for (const { entries, ending } of UPDATE_FILES) {
+    const pattern = new RegExp(`^[^/\\\\]+_${escaped}${ending}$`);
+    const signed = assets.filter((a) => pattern.test(a.name) && names.has(`${a.name}.sig`));
+    if (signed.length !== 1) {
+      const found = signed.length === 0 ? 'none' : signed.map((a) => a.name).join(', ');
+      throw new Error(
+        `${entries[0]}: the release needs one signed update file for version ${version} (found ${found})`,
+      );
+    }
+    const [file] = signed;
+    const entry = {
+      signature: readSig(`${file.name}.sig`),
+      url: `https://github.com/${repo}/releases/download/v${version}/${encodeURIComponent(file.name)}`,
+    };
+    for (const e of entries) platforms[e] = entry;
+  }
+  return { version: String(version), notes: '', pub_date: pubDate.toISOString(), platforms };
+}
+
+/** The build files that go into the release, by bundle folder. */
+const BUILD_FILES = {
+  dmg: ['.dmg'],
+  macos: ['.app.tar.gz', '.app.tar.gz.sig'],
+  msi: ['.msi', '.msi.sig'],
+  nsis: ['-setup.exe', '-setup.exe.sig'],
+};
+
+/** GitHub's rule for asset names, as tauri-action's ghAssetName has it. */
+export function githubAssetName(name) {
+  return String(name)
+    .trim()
+    .replace(/[^a-zA-Z0-9_-]/g, '.')
+    .replace(/\.\./g, '.');
+}
+
+/**
+ * The name a build file gets in the release, and its label: what
+ * tauri-action v1 gave it (getAssetName, then ghAssetName), so a re-run
+ * replaces the file of the same name and latest-json finds the update files.
+ * A file keeps its own name, except the Mac update file and its .sig
+ * (<product>.app.tar.gz), which become <product>_<version>_<arch>.app.tar.gz
+ * with arch aarch64 or x64 (from the Rust target). In the name, GitHub turns
+ * each character other than A-Z, a-z, 0-9, _ and - into '.'; the label keeps
+ * the name from before that.
+ */
+export function releaseAssetName(fileName, { version, target }) {
+  const mac = /^(.+)(\.app\.tar\.gz(?:\.sig)?)$/.exec(fileName);
+  let label = fileName;
+  if (mac) {
+    const cpu = String(target).split('-')[0];
+    const arch = cpu === 'x86_64' ? 'x64' : cpu === 'arm64' ? 'aarch64' : cpu;
+    label = `${mac[1]}_${version}_${arch}${mac[2]}`;
+  }
+  return { name: githubAssetName(label), label };
+}
+
+/**
+ * The files of one build (under its bundle folder) that go into the
+ * release, as tauri-action v1 uploaded them: the .dmg, the Mac update file,
+ * the .msi files and the NSIS installer, each update file with its .sig.
+ * Not the GreenCLI.app folder: the update file holds it.
+ */
+export function buildUploads(bundleDir, { version, target }) {
+  if (!PLAIN_VERSION.test(String(version))) {
+    throw new Error(`The version ${version} is not a plain version like 2.0.1`);
+  }
+  const uploads = [];
+  for (const [folder, endings] of Object.entries(BUILD_FILES)) {
+    const dir = `${bundleDir}/${folder}`;
+    if (!existsSync(dir)) continue;
+    for (const file of readdirSync(dir).sort()) {
+      const path = `${dir}/${file}`;
+      if (!endings.some((e) => file.endsWith(e)) || !statSync(path).isFile()) continue;
+      const { name, label } = releaseAssetName(file, { version, target });
+      // A second file of the same name would replace the first in the release.
+      const same = uploads.find((u) => u.name === name);
+      if (same) throw new Error(`${same.path} and ${path} would both be ${name} in the release`);
+      uploads.push({ path, name, label });
+    }
+  }
+  if (uploads.length === 0) throw new Error(`No installers under ${bundleDir}`);
+  return uploads;
 }
 
 function entryFiles(manifest, release) {
@@ -188,6 +323,21 @@ function main(argv) {
   const [cmd, ...args] = argv;
   if (cmd === 'verify-dir' && args.length === 2) {
     verifyDir(args[0], readFileSync(args[1], 'utf8'));
+  } else if (cmd === 'uploads' && args.length === 3) {
+    const [bundleDir, target, confPath] = args;
+    const { version } = JSON.parse(readFileSync(confPath, 'utf8'));
+    for (const { path, name, label } of buildUploads(bundleDir, { version, target })) {
+      console.log(`${path}\t${name}\t${encodeURIComponent(label)}`);
+    }
+  } else if (cmd === 'latest-json' && args.length === 4) {
+    const [assetsPath, sigDir, repo, version] = args;
+    const readSig = (name) => {
+      const p = join(sigDir, name);
+      if (/[/\\]/.test(name) || !existsSync(p)) throw new Error(`${name} was not downloaded`);
+      return readFileSync(p, 'utf8');
+    };
+    const manifest = buildLatestJson(readAssets(assetsPath), readSig, { repo, version });
+    console.log(JSON.stringify(manifest, null, 2));
   } else if (cmd === 'release-files' && args.length === 4) {
     const manifest = JSON.parse(readFileSync(args[0], 'utf8'));
     const release = releaseInfo(args[1], args[2], args[3]);
@@ -197,6 +347,8 @@ function main(argv) {
   } else {
     console.error(
       'usage: update-signature.mjs verify-dir <dir> <key.pub>' +
+        ' | uploads <bundle-dir> <target> <tauri.conf.json>' +
+        ' | latest-json <assets.json> <sig-dir> <owner/repo> <version>' +
         ' | release-files <latest.json> <assets.json> <owner/repo> <tag>' +
         ' | check-release <dir> <assets.json> <owner/repo> <tag> <platform>...',
     );

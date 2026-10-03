@@ -33,6 +33,7 @@ import { useEditorInbox } from '../store/editorInboxStore';
 import { isTauri, browserSave, tauriWriteText } from '../utils/fileSystem';
 import { save as saveDialog } from '@tauri-apps/plugin-dialog';
 import { currentWindowLabel } from '../utils/tauri';
+import { isLinkClick, terminalOscLinkHandler, terminalWebLinkHandler } from '../utils/openUrl';
 import 'xterm/css/xterm.css';
 
 // Pop-out windows render one session in a fresh store — the background-activity
@@ -142,8 +143,7 @@ function semanticLinksForLine(term: XTerm, bufferLineNumber: number): ILink[] | 
           // click silently replaced whatever the user had just copied (and a
           // right-click "paste" on Windows could paste the IP instead).
           // Require Ctrl+click (Cmd+click on macOS), like VS Code / iTerm2.
-          const modifier = isMac ? event.metaKey : event.ctrlKey;
-          if (event.button !== 0 || !modifier) return;
+          if (!isLinkClick(event, isMac)) return;
           copyText(text).then((ok) =>
             ok ? notify.info(`Copied ${kind}`, text) : notify.warning('Copy failed', text)
           );
@@ -263,7 +263,8 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
   useEffect(() => {
     if (!containerRef.current || terminalRef.current) return;
 
-    const term = new XTerm({
+    // Typed, so the link handler below can refer to the terminal it is on.
+    const term: XTerm = new XTerm({
       theme: terminalTheme,
       fontSize,
       fontFamily,
@@ -289,11 +290,21 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
       convertEol: false,
       overviewRulerWidth: 15,
       wordSeparator: ' ()[]{}\'"`',
+      // OSC 8 hyperlinks (gcc, gh, claude… print them) follow the same
+      // Ctrl/Cmd+click rule as plain URLs, but their address is hidden behind
+      // the text on screen: hovering one shows it, and one whose text is not
+      // its address asks before it opens (see openUrl.ts). xterm's own handler
+      // takes a plain click, then confirm() + window.open, which open nothing
+      // in Tauri 2, and its provider wins over the WebLinksAddon on the same
+      // text. allowNonHttpProtocols stays off: file:, man: … links are ignored.
+      linkHandler: terminalOscLinkHandler(isMac, () => term),
     });
 
     const fitAddon = new FitAddon();
     const searchAddon = new SearchAddon();
-    const linksAddon = new WebLinksAddon();
+    // URLs open in the system browser on Ctrl/Cmd+click (see openUrl.ts): the
+    // addon's default window.open opens nothing in Tauri 2.
+    const linksAddon = new WebLinksAddon(terminalWebLinkHandler(isMac));
 
     term.loadAddon(fitAddon);
     term.loadAddon(searchAddon);

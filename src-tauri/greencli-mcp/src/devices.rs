@@ -9,6 +9,7 @@ use crate::page::{self, clip, make_cursor, read_cursor, take_items, PAGE_BUDGET}
 use crate::tools::ToolFail;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::collections::HashSet;
 use std::path::Path;
 
 const MAX_FILE: u64 = 16 * 1024 * 1024;
@@ -86,6 +87,19 @@ fn archive_key(d: &Device) -> String {
     } else {
         d.id.clone()
     }
+}
+
+/// The archiveKey of every saved device (list_archive_devices uses it to say
+/// which archive names are still a saved device's).
+pub(crate) fn saved_archive_keys(data_dir: &Path) -> Result<HashSet<String>, ToolFail> {
+    let data = read_sessions(data_dir)?;
+    Ok(data
+        .folders
+        .iter()
+        .flat_map(|f| &f.items)
+        .chain(&data.sessions)
+        .map(archive_key)
+        .collect())
 }
 
 fn device_json(d: &Device, folder: Option<&str>) -> Value {

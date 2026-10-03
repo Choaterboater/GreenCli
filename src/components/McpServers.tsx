@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import {
   Plus,
@@ -16,6 +16,7 @@ import {
   Eye,
   EyeOff,
   Download,
+  History,
 } from 'lucide-react';
 import { notify } from '../store/toastStore';
 import { askConfirm } from '../store/dialogStore';
@@ -35,13 +36,21 @@ import type { ExportSummary, GreencliExport } from '../utils/mcpExport';
 import { isTauri, tauriSave } from '../utils/fileSystem';
 import { secretFilterSupported } from '../utils/secrets/support';
 import { copyText } from '../utils/clipboard';
-import { refreshStaleHiddenCopies } from '../utils/configArchive';
+import { openConfigArchive, refreshStaleHiddenCopies } from '../utils/configArchive';
 
 /** greencli_mcp_info: GreenCLI's own read-only MCP server, next to the app. */
 interface GreencliMcpInfo {
   path: string;
   exists: boolean;
   place: 'normal' | 'translocated' | 'diskImage';
+  /** GreenCLI's data folder, for greencli-mcp's `--data-dir`. */
+  dataDir: string;
+}
+
+/** greencli_mcp_info, or null when it can't be read. */
+async function readGreencliInfo(): Promise<GreencliMcpInfo | null> {
+  const info = await invoke<GreencliMcpInfo | null>('greencli_mcp_info').catch(() => null);
+  return info && typeof info.path === 'string' && typeof info.dataDir === 'string' ? info : null;
 }
 
 /** How the export should treat greencli-mcp. */
@@ -49,7 +58,7 @@ function greencliForExport(info: GreencliMcpInfo | null): GreencliExport | undef
   if (!info) return undefined;
   if (!info.exists) return { leftOut: 'missing' };
   if (info.place !== 'normal') return { leftOut: 'not-installed' };
-  return { command: info.path };
+  return { command: info.path, dataDir: info.dataDir };
 }
 
 const blankForm = {
@@ -122,13 +131,32 @@ function parseMcpConfigPaste(text: string): Partial<typeof blankForm> | null {
   return patch;
 }
 
+/** The Claude Code command that adds greencli-mcp. `--scope user` makes it
+ *  work in every folder: Claude Code's default scope (local) adds a server
+ *  only for the folder the command is run in, and greencli-mcp reads
+ *  GreenCLI's own data, not a project's. `--data-dir` names that data's
+ *  folder, which greencli-mcp can't always find from its own environment. */
+function claudeAddCommand(info: GreencliMcpInfo): string {
+  return `claude mcp add --scope user greencli -- "${info.path}" --data-dir "${info.dataDir}"`;
+}
+
 export default function McpServers() {
   const [servers, setServers] = useState<McpServerDef[]>([]);
   const [status, setStatus] = useState<Record<string, McpStatus>>({});
   const [busy, setBusy] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({ ...blankForm });
-  const [credsSaved, setCredsSaved] = useState(false);
+  // null: the password store couldn't be asked, not "no login".
+  const [credsSaved, setCredsSaved] = useState<boolean | null>(false);
+  const [credsCheckError, setCredsCheckError] = useState<string | null>(null);
+  // Bumped whenever the form changes server, so a slow check for the server
+  // an earlier Edit opened can't land on another one.
+  const credsCheck = useRef(0);
+  const resetCredsSaved = () => {
+    credsCheck.current += 1;
+    setCredsSaved(false);
+    setCredsCheckError(null);
+  };
   // Credentials are masked by default; toggle only reveals them while editing.
   const [showCreds, setShowCreds] = useState(false);
   // The name the form was opened on, so a rename can move the server instead of
@@ -153,14 +181,16 @@ export default function McpServers() {
       return hidden ? (hidden.missing ?? 0) + (hidden.stale ?? 0) : 0;
     };
     void (async () => {
-      const info = await invoke<GreencliMcpInfo | null>('greencli_mcp_info').catch(() => null);
+      // Asked before the count: it says whether copies were made after it.
+      const refresh = refreshStaleHiddenCopies();
+      const info = await readGreencliInfo();
       const need = await readNeedHidden();
       if (cancelled) return;
-      setGreencli(info && typeof info.path === 'string' ? info : null);
+      setGreencli(info);
       setNeedHidden(need);
-      // The background refresh may fix stale copies: count again when it ends.
-      await refreshStaleHiddenCopies();
-      if (cancelled) return;
+      // The background refresh may fix stale copies: count again only if it
+      // made some (the count reads every copy).
+      if (!(await refresh) || cancelled) return;
       const after = await readNeedHidden();
       if (!cancelled) setNeedHidden(after);
     })();
@@ -260,10 +290,17 @@ export default function McpServers() {
       credsContent: '',
       enabled: s.enabled !== false,
     });
-    setCredsSaved(false);
+    resetCredsSaved();
+    const check = credsCheck.current;
     invoke<boolean>('mcp_has_credentials', { name: s.name })
-      .then(setCredsSaved)
-      .catch(() => setCredsSaved(false));
+      .then((has) => {
+        if (credsCheck.current === check) setCredsSaved(has === true);
+      })
+      .catch((e) => {
+        if (credsCheck.current !== check) return;
+        setCredsSaved(null);
+        setCredsCheckError(keyCheckError(e));
+      });
     setShowConfigPaste(false);
     setConfigPasteText('');
     setShowCreds(false);
@@ -289,7 +326,7 @@ export default function McpServers() {
       credsContent: '',
       enabled: s.enabled !== false,
     });
-    setCredsSaved(false);
+    resetCredsSaved();
     setShowConfigPaste(false);
     setConfigPasteText('');
     setShowCreds(false);
@@ -408,7 +445,7 @@ export default function McpServers() {
       await configSaved();
       setShowForm(false);
       setForm({ ...blankForm });
-      setCredsSaved(false);
+      resetCredsSaved();
       setShowCreds(false);
       setEditingName(null);
       setShowConfigPaste(false);
@@ -458,8 +495,7 @@ export default function McpServers() {
       const pins = new Map(Object.entries(pinList ?? {}));
       const { buildMcpExport, exportSummary, refusedExportPath, EXPORT_FILE_NAME } = await import('../utils/mcpExport');
       // GreenCLI's own read-only server goes in too, even with no saved servers.
-      const info = await invoke<GreencliMcpInfo | null>('greencli_mcp_info').catch(() => null);
-      const greencliEntry = greencliForExport(info && typeof info.path === 'string' ? info : null);
+      const greencliEntry = greencliForExport(await readGreencliInfo());
       const result = buildMcpExport(defs, { withCredentials, pins, greencli: greencliEntry });
       if (result.count === 0) {
         notify.warning(
@@ -505,7 +541,7 @@ export default function McpServers() {
           <button
             onClick={() => {
               setForm({ ...blankForm });
-              setCredsSaved(false);
+              resetCredsSaved();
               setShowCreds(false);
               setEditingName(null);
               setShowConfigPaste(false);
@@ -548,11 +584,9 @@ export default function McpServers() {
                 </button>
               </div>
               <div className="flex items-start gap-2">
-                <code className="flex-1 min-w-0 break-all text-[var(--accent)]">
-                  {`claude mcp add greencli -- "${greencli.path}"`}
-                </code>
+                <code className="flex-1 min-w-0 break-all text-[var(--accent)]">{claudeAddCommand(greencli)}</code>
                 <button
-                  onClick={() => void copy(`claude mcp add greencli -- "${greencli.path}"`)}
+                  onClick={() => void copy(claudeAddCommand(greencli))}
                   title="Copy the command"
                   className="flex-shrink-0 flex items-center gap-1 px-1.5 py-0.5 text-[10px] rounded bg-[var(--bg-tertiary)] hover:bg-[var(--border-strong)] text-[var(--text-secondary)]"
                 >
@@ -563,9 +597,18 @@ export default function McpServers() {
                 <p className="text-[var(--accent-warning)]">Move GreenCLI to Applications first.</p>
               )}
               {needHidden > 0 && (
-                <p>
-                  {needHidden} {needHidden === 1 ? 'snapshot needs' : 'snapshots need'} a new hidden copy.
-                </p>
+                <div className="flex items-start gap-2">
+                  <p className="flex-1 min-w-0">
+                    {needHidden} {needHidden === 1 ? 'snapshot needs' : 'snapshots need'} a new hidden copy. Open
+                    Config Archive and click Make hidden copies.
+                  </p>
+                  <button
+                    onClick={openConfigArchive}
+                    className="flex-shrink-0 flex items-center gap-1 px-1.5 py-0.5 text-[10px] rounded bg-[var(--bg-tertiary)] hover:bg-[var(--border-strong)] text-[var(--text-secondary)]"
+                  >
+                    <History size={10} /> Open Config Archive
+                  </button>
+                </div>
               )}
             </>
           ) : (
@@ -865,7 +908,9 @@ export default function McpServers() {
                     placeholder={
                       credsSaved
                         ? '•••••••• saved — type to replace the credentials file'
-                        : 'Paste the server\'s credentials file (e.g. centralmcp credentials.yaml)…\ncentral_account:\n  client_id: ...\n  client_secret: ...\n  base_url: ...'
+                        : credsSaved === null
+                          ? "Can't check for a saved login. Type to replace it."
+                          : 'Paste the server\'s credentials file (e.g. centralmcp credentials.yaml)…\ncentral_account:\n  client_id: ...\n  client_secret: ...\n  base_url: ...'
                     }
                   />
                   <button
@@ -877,6 +922,7 @@ export default function McpServers() {
                     {showCreds ? <EyeOff size={13} /> : <Eye size={13} />}
                   </button>
                 </div>
+                {credsCheckError && <p className="text-[10px] text-[var(--accent-warning)]">{credsCheckError}</p>}
                 <SecretStoreNote
                   after="On connect it's written to a private file that the env var above points at. The file is deleted when the server stops."
                   refreshKey={showForm}
@@ -900,7 +946,7 @@ export default function McpServers() {
               onClick={() => {
                 setShowForm(false);
                 setForm({ ...blankForm });
-                setCredsSaved(false);
+                resetCredsSaved();
                 setEditingName(null);
                 setShowConfigPaste(false);
                 setConfigPasteText('');

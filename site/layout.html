@@ -1,0 +1,62 @@
+<!doctype html>
+<!-- The page shell for every page of the GreenCLI site, filled in by
+     scripts/build-site.mjs. Two braces hold text (the build escapes it);
+     three braces hold HTML the build made itself. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self'; style-src 'self'; script-src 'self'; base-uri 'none'; form-action 'none'">
+<meta name="color-scheme" content="dark light">
+<meta name="theme-color" content="#0a0e14" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+<title>{{title}}</title>
+<meta name="description" content="{{description}}">
+<link rel="canonical" href="{{canonical}}">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="GreenCLI">
+<meta property="og:title" content="{{title}}">
+<meta property="og:description" content="{{description}}">
+<meta property="og:url" content="{{canonical}}">
+<meta property="og:image" content="{{ogImage}}">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="{{base}}assets/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="{{base}}assets/icon-256.png">
+<link rel="stylesheet" href="{{base}}assets/site.css">
+<script src="{{base}}assets/site.js"></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to the content</a>
+<header class="top">
+  <div class="wrap top-in">
+    <a class="brand" href="{{base}}">
+      <img src="{{base}}assets/icon.svg" alt="" width="30" height="30">
+      <span class="brand-name">GreenCLI</span>
+      <span class="brand-by">by ChoateLabs</span>
+    </a>
+    <nav class="nav" aria-label="Site">
+      <a href="{{base}}#download">Download</a>
+      <a href="{{base}}#photos">Photos</a>
+      <a href="{{base}}guide/"{{{navGuide}}}>Guide</a>
+      <a href="{{base}}help/"{{{navHelp}}}>Help</a>
+      <a href="{{base}}whats-new/"{{{navNew}}}>What's new</a>
+      <a class="nav-gh" href="{{repoUrl}}">GitHub</a>
+    </nav>
+  </div>
+</header>
+<main id="main">
+{{{body}}}
+</main>
+<footer class="foot">
+  <div class="wrap foot-in">
+    <p><strong>GreenCLI</strong> by ChoateLabs. Free and open source (MIT license).</p>
+    <p>
+      <a href="{{repoUrl}}">Source on GitHub</a> ·
+      <a href="{{repoUrl}}/issues">Report a problem</a> ·
+      <a href="{{repoUrl}}/releases">All releases</a>
+    </p>
+    <p class="muted">This site has no tracking and no cookies. Aruba, Juniper and Mist are names of their owners; GreenCLI is not made by them. Photos use made-up demo data.</p>
+  </div>
+</footer>
+</body>
+</html>

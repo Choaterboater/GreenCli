@@ -218,7 +218,7 @@ export default function IntentPanel() {
           </div>
           <h2 className="text-[16px] font-semibold text-[var(--text-primary)] whitespace-nowrap">Network Intent</h2>
           {violations > 0 && (
-            <span className="text-[11px] px-2 py-0.5 rounded-full" style={{ background: 'var(--accent-danger-soft)', color: 'var(--accent-danger)' }}>
+            <span className="text-[11px] px-2 py-0.5 rounded-full whitespace-nowrap shrink-0" style={{ background: 'var(--accent-danger-soft)', color: 'var(--accent-danger)' }}>
               {violations} violation{violations > 1 ? 's' : ''}
             </span>
           )}

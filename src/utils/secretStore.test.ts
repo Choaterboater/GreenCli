@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
@@ -5,6 +7,7 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 import { invoke } from '@tauri-apps/api/core';
 import { useToastStore } from '../store/toastStore';
 import {
+  AI_KEY_CHANGED_EVENT,
   keyCheckError,
   leftoverLine,
   loadSecretStoreStatus,
@@ -26,10 +29,13 @@ describe('secretStoreLine', () => {
     ['keychain', 'Saved in macOS Keychain.'],
     ['credential-manager', 'Saved in Windows Credential Manager.'],
     ['secret-service', 'Saved in your system keyring.'],
-    ['file', 'Saved in a private file on this computer. No system password store was found.'],
+    [
+      'file',
+      "Saved in a private file on this computer. The system password store couldn't be used when GreenCLI started; it tries again at each start.",
+    ],
     [
       'unavailable',
-      "Can't reach the system password store. Your keys are still there. Try again after you log in to the desktop.",
+      "Can't reach the system password store. Keys saved on this computer are still there. Try again after you log in to the desktop.",
     ],
   ];
   it.each(cases)('%s', (kind, line) => {
@@ -42,6 +48,10 @@ describe('secretStoreLine', () => {
 
   it('matches the Rust text for an unreachable store', () => {
     expect(UNAVAILABLE_LINE).toBe(secretStoreLine({ kind: 'unavailable', leftoverFiles: [], movePending: false }));
+    // A failed call returns the Rust text, so both must say the same thing.
+    const rust = readFileSync(resolve(process.cwd(), 'src-tauri/src/secret_store.rs'), 'utf8');
+    const m = /pub const UNAVAILABLE: &str =\s*"([^"]*)";/.exec(rust);
+    expect(m?.[1]).toBe(UNAVAILABLE_LINE);
   });
 });
 
@@ -75,11 +85,43 @@ describe('loadSecretStoreStatus', () => {
 });
 
 describe('saving keys', () => {
+  /** Collects the providers announced as changed; stop() removes the listener. */
+  function watchKeyChanges() {
+    const seen: string[] = [];
+    const listener = (e: Event) => seen.push((e as CustomEvent<string>).detail);
+    window.addEventListener(AI_KEY_CHANGED_EVENT, listener);
+    return { seen, stop: () => window.removeEventListener(AI_KEY_CHANGED_EVENT, listener) };
+  }
+
   it('saves an AI key without a toast', async () => {
     vi.mocked(invoke).mockResolvedValue(undefined);
     await expect(saveAiKey('anthropic', 'sk-ant-x')).resolves.toBe(true);
     expect(invoke).toHaveBeenCalledWith('ai_set_key', { provider: 'anthropic', key: 'sk-ant-x' });
     expect(useToastStore.getState().toasts).toHaveLength(0);
+  });
+
+  it('announces a key saved or removed, once the save is done', async () => {
+    const { seen, stop } = watchKeyChanges();
+    let finish: () => void = () => {};
+    vi.mocked(invoke).mockImplementation(() => new Promise<void>((resolve) => (finish = resolve)));
+    const saving = saveAiKey('anthropic', 'sk-ant-x');
+    await Promise.resolve();
+    expect(seen).toEqual([]);
+    finish();
+    await expect(saving).resolves.toBe(true);
+    expect(seen).toEqual(['anthropic']);
+    vi.mocked(invoke).mockResolvedValue(undefined);
+    await saveAiKey('openai', '');
+    expect(seen).toEqual(['anthropic', 'openai']);
+    stop();
+  });
+
+  it('announces nothing when the save fails', async () => {
+    const { seen, stop } = watchKeyChanges();
+    vi.mocked(invoke).mockRejectedValue(UNAVAILABLE_LINE);
+    await expect(saveAiKey('anthropic', 'sk-ant-x')).resolves.toBe(false);
+    expect(seen).toEqual([]);
+    stop();
   });
 
   it('shows a toast when an AI key is not saved', async () => {
