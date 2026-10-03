@@ -283,11 +283,14 @@ GreenCLI 2.0 keeps AI keys and MCP logins in the system password store, not in f
   the 1.9 format), and Settings says "Saved in a private file on this computer. The system password
   store couldn't be used when GreenCLI started; it tries again at each start."
 - **Store can't be reached** once keys are in it: Settings says "Can't reach the system password
-  store. Your keys are still there. Try again after you log in to the desktop." GreenCLI never
-  goes back to files then.
+  store. Keys saved on this computer are still there. Try again after you log in to the desktop."
+  GreenCLI never goes back to files then.
 - **Going back to 1.9 loses the keys** (1.9 can't read the store), and **copying only the data
   folder** to another computer doesn't copy them. Before you first run 2.0, copy `ai_keys.json`
-  and `mcp_creds.json` to a private place, or be ready to enter the keys again.
+  and `mcp_creds.json` to a private place, or be ready to enter the keys again. If the new
+  computer has no system password store (some Linux setups), delete `secret_store.json` from the
+  copy while GreenCLI is closed there. Otherwise it waits for a store that isn't there. Then start
+  GreenCLI and enter your keys again.
 - **MCP login files**: when a stdio server connects, its login is written to a new owner-only file
   in `mcp_creds/run-<id>/`, and the server's credentials env var points at it. The file is deleted
   when the server stops, exits by itself or fails to connect. Files a crash left behind are deleted
@@ -733,7 +736,7 @@ live compliance:
 | `tauri-dev` won't start (port in use) | Another Vite dev server is on `:1420` — stop it or close the other instance. |
 | Connected tab but no shell | Some restricted accounts/appliances refuse a PTY/shell — the app now surfaces this as a connect error rather than a frozen tab. |
 | Vault won't unlock after a crash | A corrupt `vault.enc` is preserved, not overwritten. Back it up, then remove it to start fresh (saved secrets are lost only if the file was truly corrupted). |
-| *"Can't reach the system password store"* | Your keys are still there. Log in to the desktop (on Linux, make sure a keyring such as GNOME Keyring is running), then try again. |
+| *"Can't reach the system password store"* | Keys saved on this computer are still there. Log in to the desktop (on Linux, make sure a keyring such as GNOME Keyring is running), then try again. If you copied the data folder from another computer, the keys aren't on this one. Start a keyring, or quit GreenCLI and delete `secret_store.json` to keep keys in private files, then enter them again. |
 | *"An old key file couldn't be read …"* | Enter your keys again, then delete the file Settings names. |
 | greencli-mcp: *"No hidden copy for this snapshot"* or *"out of date"* | Open the Config Archive panel (activity bar or command palette) and click **Make hidden copies**. |
 | Updates: *"Move GreenCLI to Applications first."* | Drag GreenCLI into Applications and open it from there. |

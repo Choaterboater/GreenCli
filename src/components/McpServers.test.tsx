@@ -325,7 +325,7 @@ describe('McpServers login save', () => {
       if (cmd === 'mcp_status') return status;
       if (cmd === 'secret_store_status') return { kind: 'unavailable', leftoverFiles: [], movePending: false };
       if (cmd === 'mcp_set_credentials') {
-        throw "Can't reach the system password store. Your keys are still there. Try again after you log in to the desktop.";
+        throw "Can't reach the system password store. Keys saved on this computer are still there. Try again after you log in to the desktop.";
       }
       return null;
     });

@@ -107,7 +107,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `%APPDATA%\com.choatelabs.greencli\`, Linux `~/.local/share/com.choatelabs.greencli/`; see
   docs/SETUP.md §3) to a private place, or be ready to enter the keys again.
 - **Copying only the data folder to another computer does not copy your keys.** They stay in this
-  computer's password store. Enter them again on the new one.
+  computer's password store. Enter them again on the new one. On a Linux computer with no keyring,
+  first delete `secret_store.json` from the copied folder while GreenCLI is closed.
 
 ### Known limits
 - Casper's own file tools can read files outside its folder. AI keys and MCP logins in the

@@ -252,7 +252,7 @@ describe('McpServers export', () => {
 
   it('stops with a message when a login can not be checked', async () => {
     const unreachable =
-      "Can't reach the system password store. Your keys are still there. Try again after you log in to the desktop.";
+      "Can't reach the system password store. Keys saved on this computer are still there. Try again after you log in to the desktop.";
     vi.mocked(invoke).mockImplementation(async (cmd: string) => {
       if (cmd === 'mcp_list_servers') return SERVERS;
       if (cmd === 'mcp_status') return [];

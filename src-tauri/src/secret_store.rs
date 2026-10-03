@@ -80,8 +80,10 @@ const MIN_PART: usize = 64;
 const MAX_PARTS: usize = 999_999;
 
 /// The error for any failed call to the OS store (the cause goes to the log).
+/// It says "saved on this computer": a data folder copied from another
+/// computer brings the marker but not the keys.
 pub const UNAVAILABLE: &str =
-    "Can't reach the system password store. Your keys are still there. Try again after you log in to the desktop.";
+    "Can't reach the system password store. Keys saved on this computer are still there. Try again after you log in to the desktop.";
 
 /// Which store holds the keys.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

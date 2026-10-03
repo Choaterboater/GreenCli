@@ -43,7 +43,7 @@ describe('SecretStoreNote', () => {
     render(<SecretStoreNote />);
     await waitFor(() =>
       expect(screen.getByTestId('secret-store-line').textContent).toBe(
-        "Can't reach the system password store. Your keys are still there. Try again after you log in to the desktop."
+        "Can't reach the system password store. Keys saved on this computer are still there. Try again after you log in to the desktop."
       )
     );
   });

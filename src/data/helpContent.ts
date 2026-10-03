@@ -405,7 +405,7 @@ export const HELP_TOPICS: HelpTopic[] = [
       },
       {
         kind: 'note',
-        text: 'Copying the GreenCLI folder to another computer does not copy the AI keys and MCP logins in the password store. 1.9 can’t read the password store, so if you go back to 1.9, enter your AI keys and MCP logins again there. They stay in the password store for when you come back to 2.0.',
+        text: 'Copying the GreenCLI folder to another computer does not copy the AI keys and MCP logins in the password store. On a Linux computer with no keyring, delete `secret_store.json` from the copy while GreenCLI is closed, then enter the keys again. 1.9 can’t read the password store, so if you go back to 1.9, enter your AI keys and MCP logins again there. They stay in the password store for when you come back to 2.0.',
       },
       { kind: 'p', text: 'Data lives in the OS app-data dir for `com.choatelabs.greencli` (sessions.json, vault.enc, secret_store.json, mcp_servers.json, known_hosts.json, intents.json, config_archive/, logs/). `secret_store.json` only says the keys are in the password store. `ai_keys.json` and `mcp_creds.json` are there only when no password store is found (or an old 1.9 file couldn’t be moved; Settings then shows its path).' },
     ],
@@ -507,7 +507,7 @@ export const HELP_TOPICS: HelpTopic[] = [
           'Local CLI not found — the app adds `~/.local/bin`, `~/.cargo/bin`, and Homebrew to PATH; install your CLI there.',
           'Device REST cert error — verification is on by default; for self-signed lab gear turn *Verify device TLS* off in Settings → Connections & Security (heed the interception warning).',
           'Connected tab but no shell — a restricted account/appliance refused a PTY/shell; this now surfaces as a connect error.',
-          '“Can’t reach the system password store” — your keys are still there. Log in to the desktop (on Linux, start a keyring such as GNOME Keyring), then try again.',
+          '“Can’t reach the system password store” — keys saved on this computer are still there. Log in to the desktop (on Linux, start a keyring such as GNOME Keyring), then try again. If you copied the GreenCLI folder from another computer, the keys aren’t on this one: start a keyring, or quit GreenCLI and delete `secret_store.json` to keep keys in private files, then enter them again.',
           'greencli-mcp says a snapshot has no hidden copy, or it is out of date — open **Config Archive** (activity bar or command palette) and click **Make hidden copies**.',
         ],
       },

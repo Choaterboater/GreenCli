@@ -17,7 +17,7 @@ export interface SecretStoreStatus {
 }
 
 export const UNAVAILABLE_LINE =
-  "Can't reach the system password store. Your keys are still there. Try again after you log in to the desktop.";
+  "Can't reach the system password store. Keys saved on this computer are still there. Try again after you log in to the desktop.";
 /** For an old key file that couldn't be read: where it is, and what to do. */
 export function leftoverLine(path: string): string {
   return `An old key file couldn't be read and may still hold keys: ${path}. Delete it after you re-enter your keys.`;

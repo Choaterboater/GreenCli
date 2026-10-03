@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
@@ -33,7 +35,7 @@ describe('secretStoreLine', () => {
     ],
     [
       'unavailable',
-      "Can't reach the system password store. Your keys are still there. Try again after you log in to the desktop.",
+      "Can't reach the system password store. Keys saved on this computer are still there. Try again after you log in to the desktop.",
     ],
   ];
   it.each(cases)('%s', (kind, line) => {
@@ -46,6 +48,10 @@ describe('secretStoreLine', () => {
 
   it('matches the Rust text for an unreachable store', () => {
     expect(UNAVAILABLE_LINE).toBe(secretStoreLine({ kind: 'unavailable', leftoverFiles: [], movePending: false }));
+    // A failed call returns the Rust text, so both must say the same thing.
+    const rust = readFileSync(resolve(process.cwd(), 'src-tauri/src/secret_store.rs'), 'utf8');
+    const m = /pub const UNAVAILABLE: &str =\s*"([^"]*)";/.exec(rust);
+    expect(m?.[1]).toBe(UNAVAILABLE_LINE);
   });
 });
 
