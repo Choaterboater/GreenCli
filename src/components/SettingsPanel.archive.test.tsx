@@ -20,7 +20,9 @@ describe('SettingsPanel config archive', () => {
     fireEvent.change(await screen.findByPlaceholderText('Search settings…'), {
       target: { value: 'make hidden copies' },
     });
-    expect(await screen.findByText(/greencli-mcp reads configs only from hidden copies/)).toBeTruthy();
+    const note = await screen.findByText(/greencli-mcp reads configs only from hidden copies/);
+    // The button is in Config Archive only while some snapshot needs a copy.
+    expect(note.textContent).toContain('If some snapshots have none or an old one, Config Archive shows a "Make hidden copies" button.');
     fireEvent.click(screen.getByRole('button', { name: 'Open Config Archive' }));
     expect(useSessionStore.getState()).toMatchObject({ showSettings: false, showConfigEditor: true, showArchive: true });
   });

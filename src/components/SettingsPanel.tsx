@@ -1200,8 +1200,8 @@ export default function SettingsPanel() {
 
               <p className="text-[11px] text-[var(--text-secondary)] mt-3 mb-2">
                 greencli-mcp reads configs only from hidden copies (secrets
-                hidden). Make them with {'"'}Make hidden copies{'"'} in the
-                Config Archive panel.
+                hidden), made when a config is captured. If some snapshots have
+                none or an old one, Config Archive shows a {'"'}Make hidden copies{'"'} button.
               </p>
               <button
                 onClick={openConfigArchive}
