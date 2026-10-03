@@ -142,3 +142,31 @@ fn pop_outs_keep_https() {
     }
     assert!(seen >= 1, "the pop-out builder is in main.rs");
 }
+
+/// Sync commands run on the main thread, so slow work in one freezes every
+/// window. The config archive reads and parses files under one lock (the
+/// hidden copy count reads every hidden copy), so each command that uses it
+/// is async and hands the work to the blocking pool through `archive_task`.
+#[test]
+fn config_archive_commands_leave_the_main_thread() {
+    let mut seen = 0;
+    for (at, _) in MAIN_RS.match_indices("#[tauri::command") {
+        let rest = &MAIN_RS[at..];
+        let end = rest.find("\n}\n").expect("each command ends with a closing brace");
+        let item = &rest[..end];
+        if !item.contains("config_archive") {
+            continue;
+        }
+        let name = item.lines().find(|l| l.contains("fn ")).unwrap_or(item);
+        assert!(
+            name.contains("async fn "),
+            "{name}: a config archive command must be async"
+        );
+        assert!(
+            item.contains("archive_task(") && !item.contains(".config_archive"),
+            "{name}: use the archive only inside archive_task"
+        );
+        seen += 1;
+    }
+    assert!(seen >= 7, "found only {seen} config archive commands");
+}
