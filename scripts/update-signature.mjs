@@ -12,6 +12,12 @@
 //   node scripts/update-signature.mjs verify-dir <dir> <key.pub>
 //       Every *.sig under <dir> must match its file and the key. Fails when
 //       there is no .sig at all. (Each build job, before it publishes its key.)
+//   node scripts/update-signature.mjs latest-json <assets.json> <sig-dir> <owner/repo> <version>
+//       Prints the release's latest.json: one entry per update file, with
+//       the text of its .sig (from <sig-dir>) and its asset's API address.
+//       Fails unless every platform has exactly one signed update file.
+//       (The update-files job: the only writer of latest.json, so the three
+//       build jobs can't overwrite each other's entries.)
 //   node scripts/update-signature.mjs release-files <latest.json> <assets.json> <owner/repo> <tag>
 //       Prints the release file names latest.json points to, one per line.
 //       <assets.json> is the release's asset list from the GitHub API.
@@ -117,10 +123,63 @@ export function releaseFileName(url, { repo, tag, assets }) {
   return null;
 }
 
-function releaseInfo(assetsPath, repo, tag) {
+function readAssets(assetsPath) {
   const assets = JSON.parse(readFileSync(assetsPath, 'utf8'));
   if (!Array.isArray(assets)) throw new Error('The asset list is not a list');
-  return { repo, tag, assets };
+  return assets;
+}
+
+function releaseInfo(assetsPath, repo, tag) {
+  return { repo, tag, assets: readAssets(assetsPath) };
+}
+
+/**
+ * The update file each release build uploads (tauri-action names them
+ * <product>_<version>_<arch><ending>) and the latest.json entries it gets:
+ * the same entries tauri-action writes with updaterJsonPreferNsis, so the
+ * plain windows-x86_64 entry is the NSIS installer. Only the first WiX
+ * language's .msi is signed, so the .msi is the one with a .sig.
+ */
+const UPDATE_FILES = [
+  { entries: ['darwin-aarch64', 'darwin-aarch64-app'], ending: '_aarch64\\.app\\.tar\\.gz' },
+  { entries: ['darwin-x86_64', 'darwin-x86_64-app'], ending: '_x64\\.app\\.tar\\.gz' },
+  { entries: ['windows-x86_64', 'windows-x86_64-nsis'], ending: '_x64-setup\\.exe' },
+  { entries: ['windows-x86_64-msi'], ending: '_x64_[A-Za-z0-9-]+\\.msi' },
+];
+
+/** Every entry latest.json gets, in UPDATE_FILES order. */
+export const LATEST_JSON_ENTRIES = UPDATE_FILES.flatMap((f) => f.entries);
+
+/**
+ * The release's latest.json, from its asset list and the text of each update
+ * file's .sig (`readSig(name)`, name being the .sig asset's). Each url is the
+ * API address of the asset, as tauri-action writes it.
+ */
+export function buildLatestJson(assets, readSig, { repo, version, pubDate = new Date() }) {
+  if (!PLAIN_VERSION.test(String(version))) {
+    throw new Error(`The version ${version} is not a plain version like 2.0.1`);
+  }
+  const names = new Set(assets.map((a) => a.name));
+  const escaped = String(version).replace(/\./g, '\\.');
+  const platforms = {};
+  for (const { entries, ending } of UPDATE_FILES) {
+    const pattern = new RegExp(`^[^/\\\\]+_${escaped}${ending}$`);
+    const signed = assets.filter((a) => pattern.test(a.name) && names.has(`${a.name}.sig`));
+    if (signed.length !== 1) {
+      const found = signed.length === 0 ? 'none' : signed.map((a) => a.name).join(', ');
+      throw new Error(
+        `${entries[0]}: the release needs one signed update file for version ${version} (found ${found})`,
+      );
+    }
+    const [file] = signed;
+    if (!/^[0-9]+$/.test(String(file.id))) throw new Error(`${entries[0]}: ${file.name} has no asset id`);
+    const entry = {
+      signature: readSig(`${file.name}.sig`),
+      url: `https://api.github.com/repos/${repo}/releases/assets/${file.id}`,
+    };
+    for (const e of entries) platforms[e] = entry;
+  }
+  return { version: String(version), notes: '', pub_date: pubDate.toISOString(), platforms };
 }
 
 function entryFiles(manifest, release) {
@@ -188,6 +247,15 @@ function main(argv) {
   const [cmd, ...args] = argv;
   if (cmd === 'verify-dir' && args.length === 2) {
     verifyDir(args[0], readFileSync(args[1], 'utf8'));
+  } else if (cmd === 'latest-json' && args.length === 4) {
+    const [assetsPath, sigDir, repo, version] = args;
+    const readSig = (name) => {
+      const p = join(sigDir, name);
+      if (/[/\\]/.test(name) || !existsSync(p)) throw new Error(`${name} was not downloaded`);
+      return readFileSync(p, 'utf8');
+    };
+    const manifest = buildLatestJson(readAssets(assetsPath), readSig, { repo, version });
+    console.log(JSON.stringify(manifest, null, 2));
   } else if (cmd === 'release-files' && args.length === 4) {
     const manifest = JSON.parse(readFileSync(args[0], 'utf8'));
     const release = releaseInfo(args[1], args[2], args[3]);
@@ -197,6 +265,7 @@ function main(argv) {
   } else {
     console.error(
       'usage: update-signature.mjs verify-dir <dir> <key.pub>' +
+        ' | latest-json <assets.json> <sig-dir> <owner/repo> <version>' +
         ' | release-files <latest.json> <assets.json> <owner/repo> <tag>' +
         ' | check-release <dir> <assets.json> <owner/repo> <tag> <platform>...',
     );

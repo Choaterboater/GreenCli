@@ -18,7 +18,15 @@ name: Release
 # - The app reads the version from the latest release's latest.json, then
 #   takes the manifest and the key from that same release (tag v<version>)
 #   and checks each download against that key (src-tauri/src/updater.rs).
-# - The update-files job checks the whole draft before the owner publishes it.
+# - The update-files job writes latest.json and checks the whole draft before
+#   the owner publishes it.
+#
+# The three build jobs run at the same time, so none of them looks up or
+# makes the draft, and none writes latest.json: two builds that finished
+# together could each make their own draft, or drop each other's entries
+# from latest.json. The release job finds or makes the draft once and the
+# builds upload into it by its id; update-files writes latest.json once,
+# after all three builds.
 on:
   push:
     tags:
@@ -38,20 +46,21 @@ on:
         type: boolean
         default: true
 
-# Read-only by default; only the build jobs (which upload) and update-files
-# (which must see the draft) get write.
+# Read-only by default; only release (which makes the draft), the build jobs
+# (which upload into it) and update-files (which writes latest.json) get
+# write.
 permissions:
   contents: read
 
 jobs:
   # Publishing a draft made by a release/** push or a manual run creates its
-  # tag, and that tag push starts this workflow again. tauri-action never
-  # changes a published release, so that run would build everything again
-  # into a second v<version> draft. So a tag push whose tag already has a
-  # published release builds nothing. GitHub's release-by-tag call sees only
-  # published releases, never drafts: a tag pushed before its release is
-  # published still builds, and so does a run where the call fails. Manual
-  # runs and release/** pushes are never skipped.
+  # tag, and that tag push starts this workflow again. The release job uses
+  # only a draft, never a published release, so that run would build
+  # everything again into a second v<version> draft. So a tag push whose tag
+  # already has a published release builds nothing. GitHub's release-by-tag
+  # call sees only published releases, never drafts: a tag pushed before its
+  # release is published still builds, and so does a run where the call
+  # fails. Manual runs and release/** pushes are never skipped.
   gate:
     runs-on: ubuntu-latest
     permissions:
@@ -71,7 +80,7 @@ jobs:
           fi
 
   # The full test/lint run (ci.yml) must pass before any installer is built.
-  # When the gate job skips it, build and update-files (which need it) skip too.
+  # When the gate job skips it, the jobs after it (which need it) skip too.
   ci:
     needs: gate
     if: needs.gate.outputs.skip != 'true'
@@ -79,9 +88,72 @@ jobs:
     permissions:
       contents: read
 
-  build:
+  # The one job that finds or makes the draft release. The three builds
+  # (which start uploading at the same time) all upload into it by its id.
+  # - The tag is the pushed tag, or v<app version> (tauri.conf.json) for a
+  #   release/** push or a manual run: the app looks for the tag v<version>.
+  # - A draft with that tag is used again (a re-run uploads into it); with
+  #   none, it makes one. GitHub's release-by-tag call never returns drafts,
+  #   so it looks through the list of releases.
+  # - Always a draft: no CI run can make a release "latest" by itself. The
+  #   owner publishes the draft by hand.
+  # Publishing is on for tag and release/** pushes, and for manual runs
+  # unless "publish" is unticked. The test is
+  #   github.event_name != 'workflow_dispatch' || inputs.publish
+  # because `inputs.publish` is null on push events. A build-only run skips
+  # the step, so the id is empty and the builds upload nothing (the
+  # installers become workflow artifacts).
+  # Why manual runs can turn it off: a run builds under the app's current
+  # version, so before the version bump it would make a second draft with
+  # the same tag as the already published release (e.g. v1.9.0). This job
+  # never changes a published release, but the extra draft is confusing:
+  # untick publish to only build. A release/** push always publishes: push
+  # one only after the bump.
+  release:
     needs: ci
-    # tauri-action creates the draft release and uploads the installers.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      id: ${{ steps.draft.outputs.id }}
+      tag: ${{ steps.draft.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Find or make the draft release
+        id: draft
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.publish }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ "$REF_TYPE" = tag ]; then tag="$REF_NAME"; else tag="v$(jq -r .version src-tauri/tauri.conf.json)"; fi
+          ids=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" |
+            jq -r --arg tag "$tag" '.[] | select(.draft == true and .tag_name == $tag) | .id')
+          count=$(printf '%s' "$ids" | wc -w | tr -d ' ')
+          if [ "$count" -gt 1 ]; then
+            echo "::error::There are $count draft releases for $tag. Delete all but one of them, then run this again."
+            exit 1
+          elif [ "$count" -eq 1 ]; then
+            id=$ids
+            echo "Uploading into the $tag draft."
+          else
+            id=$(gh api -X POST "repos/$GITHUB_REPOSITORY/releases" -f tag_name="$tag" \
+              -f name="GreenCli $tag" -F draft=true -F prerelease=false \
+              -f target_commitish="$GITHUB_SHA" --jq .id)
+            echo "Made the $tag draft."
+          fi
+          case "$id" in
+            "" | *[!0-9]*) echo "::error::GitHub gave no release id for $tag."; exit 1 ;;
+          esac
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: release
+    # tauri-action uploads the installers into the release job's draft.
     permissions:
       contents: write
     strategy:
@@ -266,31 +338,18 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         with: &tauri-with
           # The Tauri app lives at the repo root (this `project/` folder).
-          # Publishing is on for tag and release/** pushes, and for manual
-          # runs unless "publish" is unticked. The test is
-          #   github.event_name != 'workflow_dispatch' || inputs.publish
-          # because `inputs.publish` is null on push events. With publishing
-          # off, tagName and releaseName are empty, so nothing is uploaded to
-          # any release (the installers become workflow artifacts below).
-          # Why manual runs can turn it off: a run builds under the app's
-          # current version (tauri-action substitutes __VERSION__ from
-          # tauri.conf.json), so before the version bump it would make a
-          # second draft release with the same tag as the already published
-          # one (e.g. v1.9.0). tauri-action v1 never changes a published
-          # release, but the extra draft is confusing: untick publish to only
-          # build.
-          # A release/** push always publishes: push one only after the bump.
-          tagName: ${{ (github.event_name != 'workflow_dispatch' || inputs.publish) && (github.ref_type == 'tag' && github.ref_name || 'v__VERSION__') || '' }}
-          releaseName: ${{ (github.event_name != 'workflow_dispatch' || inputs.publish) && (github.ref_type == 'tag' && format('GreenCli {0}', github.ref_name) || 'GreenCli v__VERSION__') || '' }}
-          # Always a draft: no CI run can make a release "latest" by itself.
-          # The owner publishes the draft by hand.
-          releaseDraft: true
-          prerelease: false
-          # Update files: tauri-action writes latest.json into the release,
-          # or adds this build's platforms to the one already there. The
-          # Windows default entry is the NSIS installer.
-          uploadUpdaterJson: true
-          updaterJsonPreferNsis: true
+          # Uploads go into the release job's draft, by its id. There is no
+          # tagName, so tauri-action never looks up or makes a release
+          # itself. On a build-only run the id is empty, so nothing is
+          # uploaded to any release (the installers become workflow
+          # artifacts below).
+          releaseId: ${{ needs.release.outputs.id }}
+          # Each update file goes into the release with its .sig
+          # (uploadUpdaterSignatures is on by default), but not latest.json:
+          # tauri-action would read it, add this build's platforms and write
+          # it back, and two builds that finish together can drop each
+          # other's entries. update-files writes it after all three builds.
+          uploadUpdaterJson: false
           args: --target ${{ matrix.target }} --config ${{ steps.keygen.outputs.dir }}/updater.conf.json
 
       # Signed with the Developer ID certificate, not notarized. The bundler
@@ -353,7 +412,8 @@ jobs:
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PUBLISH: ${{ github.event_name != 'workflow_dispatch' || inputs.publish }}
-          RELEASE_ID: ${{ steps.tauri_notarized.outputs.releaseId }}
+          # The release job's draft, where tauri-action uploaded the .dmg.
+          RELEASE_ID: ${{ needs.release.outputs.id }}
           BUNDLE: src-tauri/target/${{ matrix.target }}/release/bundle
         run: |
           set -euo pipefail
@@ -483,8 +543,8 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # From the build step that ran (only one of the three runs).
-          RELEASE_ID: ${{ steps.tauri.outputs.releaseId || steps.tauri_signed.outputs.releaseId || steps.tauri_notarized.outputs.releaseId }}
+          # The release job's draft, where the build uploaded its files.
+          RELEASE_ID: ${{ needs.release.outputs.id }}
           KEY_NAME: update-key-${{ matrix.updater }}.pub
           KEY_FILE: ${{ steps.keygen.outputs.dir }}/updkey.pub
         run: |
@@ -516,49 +576,81 @@ jobs:
             !src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app/**
           if-no-files-found: error
 
-  # After all three builds: latest.json in the draft must be for this tag
-  # (v<version>) and list every platform, every entry must point at a file of
-  # this release, and every signature must match its file, the key published
-  # for its platform in this release, and the version. This catches a build
-  # mistake before anyone can update to it. Publish the draft only when this
-  # is green. (If a build job is re-run, it makes a new key: make sure this
-  # job runs again too and is green.)
+  # After all three builds: writes latest.json into the release job's draft,
+  # then checks the draft. latest.json must be for this tag (v<version>) and
+  # list every platform, every entry must point at a file of this release,
+  # and every signature must match its file, the key published for its
+  # platform in this release, and the version. This catches a build mistake
+  # before anyone can update to it. Publish the draft only when this is
+  # green. (If a build job is re-run, it makes a new key and new files: make
+  # sure this job runs again too and is green. It writes latest.json again
+  # from the files the draft has then.)
   update-files:
-    needs: build
+    needs: [release, build]
     if: ${{ github.event_name != 'workflow_dispatch' || inputs.publish }}
     runs-on: ubuntu-latest
-    # Read-only work, but draft releases are only visible with write access.
+    # Writes latest.json into the draft (and drafts are only visible with
+    # write access).
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
 
+      # The only writer of latest.json. Each build uploaded its update files
+      # with their .sig files; this writes one entry per update file, the
+      # same entries tauri-action writes (scripts/update-signature.mjs
+      # latest-json), and puts it in place of any older latest.json.
+      - name: Write latest.json
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ needs.release.outputs.id }}
+        run: |
+          set -euo pipefail
+          test -n "$RELEASE_ID"
+          version=$(jq -r .version src-tauri/tauri.conf.json)
+          gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets?per_page=100" > "$RUNNER_TEMP/assets.json"
+          sigs="$RUNNER_TEMP/sigs"
+          mkdir -p "$sigs"
+          jq -r '.[] | select(.name | endswith(".sig")) | "\(.id) \(.name)"' "$RUNNER_TEMP/assets.json" > "$RUNNER_TEMP/sigs.txt"
+          while read -r aid name; do
+            gh api -H "Accept: application/octet-stream" "repos/$GITHUB_REPOSITORY/releases/assets/$aid" > "$sigs/$name"
+          done < "$RUNNER_TEMP/sigs.txt"
+          node scripts/update-signature.mjs latest-json "$RUNNER_TEMP/assets.json" "$sigs" \
+            "$GITHUB_REPOSITORY" "$version" > "$RUNNER_TEMP/latest.json"
+          for aid in $(jq -r '.[] | select(.name == "latest.json") | .id' "$RUNNER_TEMP/assets.json"); do
+            gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$aid"
+          done
+          curl -fsS -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Content-Type: application/json" \
+            --data-binary "@$RUNNER_TEMP/latest.json" \
+            "https://uploads.github.com/repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets?name=latest.json" > /dev/null
+          echo "Wrote latest.json for $version."
+
       - name: Check latest.json and the update signatures
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REF_TYPE: ${{ github.ref_type }}
-          REF_NAME: ${{ github.ref_name }}
+          RELEASE_ID: ${{ needs.release.outputs.id }}
+          TAG: ${{ needs.release.outputs.tag }}
         run: |
           set -euo pipefail
-          # The release tag: the pushed tag, or v<app version> (tauri-action's v__VERSION__).
-          if [ "$REF_TYPE" = tag ]; then tag="$REF_NAME"; else tag="v$(jq -r .version src-tauri/tauri.conf.json)"; fi
-          id=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=50" \
-            --jq "[.[] | select(.tag_name == \"$tag\")][0].id // empty")
-          if [ -z "$id" ]; then echo "::error::No release for $tag"; exit 1; fi
-          gh api "repos/$GITHUB_REPOSITORY/releases/$id/assets?per_page=100" > "$RUNNER_TEMP/assets.json"
+          test -n "$RELEASE_ID"
+          test -n "$TAG"
+          gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets?per_page=100" > "$RUNNER_TEMP/assets.json"
           dir="$RUNNER_TEMP/release"
           mkdir -p "$dir"
           get() {
             local aid
             aid=$(jq -r --arg n "$1" '[.[] | select(.name == $n)][0].id // empty' "$RUNNER_TEMP/assets.json")
-            if [ -z "$aid" ]; then echo "::error::The $tag release has no $1"; exit 1; fi
+            if [ -z "$aid" ]; then echo "::error::The $TAG release has no $1"; exit 1; fi
             gh api -H "Accept: application/octet-stream" "repos/$GITHUB_REPOSITORY/releases/assets/$aid" > "$dir/$1"
           }
           get latest.json
           for p in darwin-aarch64 darwin-x86_64 windows-x86_64; do get "update-key-$p.pub"; done
           node scripts/update-signature.mjs release-files "$dir/latest.json" \
-            "$RUNNER_TEMP/assets.json" "$GITHUB_REPOSITORY" "$tag" > "$RUNNER_TEMP/files.txt"
+            "$RUNNER_TEMP/assets.json" "$GITHUB_REPOSITORY" "$TAG" > "$RUNNER_TEMP/files.txt"
           while read -r f; do get "$f"; done < "$RUNNER_TEMP/files.txt"
           node scripts/update-signature.mjs check-release "$dir" \
-            "$RUNNER_TEMP/assets.json" "$GITHUB_REPOSITORY" "$tag" \
-            darwin-aarch64 darwin-x86_64 windows-x86_64 windows-x86_64-msi windows-x86_64-nsis
+            "$RUNNER_TEMP/assets.json" "$GITHUB_REPOSITORY" "$TAG" \
+            darwin-aarch64 darwin-aarch64-app darwin-x86_64 darwin-x86_64-app \
+            windows-x86_64 windows-x86_64-msi windows-x86_64-nsis

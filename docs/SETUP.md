@@ -113,8 +113,9 @@ There is no Linux release build, so Linux gets no updates.
 
 1. Bump the version and merge.
 2. Push a tag that matches the version exactly: `v2.0.1` for 2.0.1.
-3. Wait for the **Release** workflow. It runs the CI checks first, then three build jobs (macOS
-   Apple Silicon, macOS Intel, Windows), then **update-files**. All of them must be green.
+3. Wait for the **Release** workflow. It runs the CI checks first, then **release** (it finds or
+   makes the draft), then three build jobs (macOS Apple Silicon, macOS Intel, Windows), then
+   **update-files** (it writes `latest.json` and checks the draft). All of them must be green.
 4. Open the draft release on GitHub and publish it as the latest release. The app only sees
    published releases.
 
@@ -133,12 +134,15 @@ There is nothing to set up for update signing: no key to make, keep or paste, an
   delete it.
 - **Re-running one build job** makes a new key and replaces that build's files and key in the
   draft. Make sure update-files runs again after it (re-run it by hand if GitHub didn't) and is
-  green before you publish. Don't publish while update-files is red or hasn't run.
-- The three build jobs write to the same draft without waiting for each other, so two that finish
-  at the same moment can lose a platform from `latest.json` or make two `v<version>` drafts. If
-  update-files says `latest.json has no <platform> entry` or that the release has no
-  `update-key-<platform>.pub`, or there are two `v<version>` drafts: delete the extra draft (the
-  one with fewer files), then re-run only the build job for the missing platform.
+  green before you publish: it writes `latest.json` again from the files the draft has then.
+  Don't publish while update-files is red or hasn't run.
+- The three build jobs upload into the draft the release job found or made, and only
+  update-files writes `latest.json`, so builds that finish at the same moment can't make a
+  second draft or lose a platform. If update-files says the release needs one signed update
+  file for a platform, or has no `update-key-<platform>.pub`, that platform's files are missing
+  from the draft: re-run only the build job for that platform.
+- If release says there are two drafts for the tag, delete the extra one (the one with fewer
+  files), then run the workflow again.
 - If the tag doesn't match the version (for example `v2.0` for 2.0.0), update-files fails. Delete
   the draft and the tag, then tag again with the right name.
 

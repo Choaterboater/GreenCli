@@ -38,9 +38,10 @@ pub const RELEASES: &str = "https://github.com/Choaterboater/GreenCli/releases";
 /// The latest published release's manifest. The app reads only its version.
 pub const LATEST_JSON_URL: &str =
     "https://github.com/Choaterboater/GreenCli/releases/latest/download/latest.json";
-/// Update files must be assets of a GreenCLI release: tauri-action writes
+/// Update files must be assets of a GreenCLI release: release.yml writes
 /// their API address into latest.json (`api.github.com/repos/<repo>/releases/
-/// assets/<id>`); a plain release download link is accepted too.
+/// assets/<id>`, as tauri-action does); a plain release download link is
+/// accepted too.
 const ASSET_API_PREFIX: &str = "/repos/Choaterboater/GreenCli/releases/assets/";
 const DOWNLOAD_PATH_PREFIX: &str = "/Choaterboater/GreenCli/releases/download/";
 /// The only hosts update requests may reach: github.com and its API, and the
@@ -134,13 +135,14 @@ pub fn manifest_version(body: &[u8]) -> Option<Version> {
 }
 
 /// Where one release keeps its files. release.yml tags a release
-/// `v<version>` (tauri-action's `v__VERSION__`), and its update-files job
-/// fails when latest.json's version doesn't match the tag.
+/// `v<version>` (its release job), and its update-files job fails when
+/// latest.json's version doesn't match the tag.
 fn release_dir(version: &Version) -> String {
     format!("{RELEASES}/download/v{version}")
 }
 
-/// One release's update manifest (written by tauri-action).
+/// One release's update manifest (written by release.yml's update-files
+/// job, from the release's update files and their .sig files).
 pub fn manifest_url(version: &Version) -> String {
     format!("{}/latest.json", release_dir(version))
 }
@@ -1005,7 +1007,7 @@ mod tests {
 
     #[test]
     fn update_files_must_be_greencli_release_assets() {
-        // What tauri-action writes into latest.json.
+        // What release.yml (like tauri-action) writes into latest.json.
         assert!(download_url_ok(&url(
             "https://api.github.com/repos/Choaterboater/GreenCli/releases/assets/301234567"
         )));
@@ -1255,9 +1257,14 @@ mod tests {
             "KEY_NAME: {}",
             key_asset_name("${{ matrix.updater }}")
         )));
-        assert!(yml.contains("uploadUpdaterJson: true"));
+        // The builds upload their update files and .sig files; only
+        // update-files writes latest.json (release_workflow_makes_one_draft_for_all_builds).
+        assert!(yml.contains("uploadUpdaterJson: false"));
         // The app builds release URLs from v<version>.
-        assert!(yml.contains("'v__VERSION__'"));
+        assert!(yml.contains(
+            "if [ \"$REF_TYPE\" = tag ]; then tag=\"$REF_NAME\"; \
+             else tag=\"v$(jq -r .version src-tauri/tauri.conf.json)\"; fi"
+        ));
 
         // The key is made by the locked Tauri CLI (package-lock.json, put in
         // place by `npm ci`), never one fetched at run time. No secrets.
@@ -1699,15 +1706,17 @@ mod tests {
             .count();
         assert_eq!(in_steps, anywhere);
 
-        // The update key is published from whichever build ran.
-        let (_, publish) = step(&steps, "Publish the update key");
-        assert_eq!(
-            publish.env("RELEASE_ID"),
-            Some(
-                "${{ steps.tauri.outputs.releaseId || steps.tauri_signed.outputs.releaseId \
-                 || steps.tauri_notarized.outputs.releaseId }}"
-            )
-        );
+        // The update key and the stapled .dmg go into the draft the builds
+        // uploaded to, whichever build ran (tauri-action has no releaseId
+        // output when it is given one).
+        for name in ["Publish the update key", "Notarize the .dmg"] {
+            let (_, s) = step(&steps, name);
+            assert_eq!(
+                s.env("RELEASE_ID"),
+                Some("${{ needs.release.outputs.id }}"),
+                "{name}"
+            );
+        }
     }
 
     /// No Apple secret goes into GITHUB_ENV, GITHUB_OUTPUT, the step summary
@@ -1718,8 +1727,8 @@ mod tests {
         let steps = build_steps(RELEASE_YML);
         let code = code_lines(RELEASE_YML);
 
-        // The only outputs are the gate job's skip flag, the update key
-        // folder and the Apple mode.
+        // The only outputs are the gate job's skip flag, the draft's id and
+        // tag, the update key folder and the Apple mode.
         let writes: Vec<&str> = code
             .iter()
             .copied()
@@ -1733,6 +1742,8 @@ mod tests {
             writes,
             [
                 "echo \"skip=true\" >> \"$GITHUB_OUTPUT\"",
+                "echo \"id=$id\" >> \"$GITHUB_OUTPUT\"",
+                "echo \"tag=$tag\" >> \"$GITHUB_OUTPUT\"",
                 "echo \"dir=$dir\" >> \"$GITHUB_OUTPUT\"",
                 "echo \"mode=$mode\" >> \"$GITHUB_OUTPUT\"",
             ]
@@ -2000,7 +2011,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn release_workflow_skips_a_tag_that_is_already_published() {
-        // The jobs in order: gate first, and each one needs the one before.
+        // The jobs in order: gate first, and each one needs the one before
+        // (update-files also needs the release job, for the draft's id).
         let code: Vec<&str> = RELEASE_YML
             .lines()
             .filter(|l| !l.trim_start().starts_with('#'))
@@ -2011,7 +2023,16 @@ mod tests {
             .copied()
             .filter(|l| indent(l) == 2 && l.ends_with(':'))
             .collect();
-        assert_eq!(jobs, ["  gate:", "  ci:", "  build:", "  update-files:"]);
+        assert_eq!(
+            jobs,
+            [
+                "  gate:",
+                "  ci:",
+                "  release:",
+                "  build:",
+                "  update-files:"
+            ]
+        );
         let needs = |job: &str| -> Vec<&str> {
             job_lines(RELEASE_YML, job)
                 .into_iter()
@@ -2020,8 +2041,9 @@ mod tests {
         };
         assert!(needs("gate").is_empty());
         assert_eq!(needs("ci"), ["gate"]);
-        assert_eq!(needs("build"), ["ci"]);
-        assert_eq!(needs("update-files"), ["build"]);
+        assert_eq!(needs("release"), ["ci"]);
+        assert_eq!(needs("build"), ["release"]);
+        assert_eq!(needs("update-files"), ["[release, build]"]);
         // ci runs unless the gate says skip. No job runs after a skipped
         // one: no job condition has always(), failure() or cancelled().
         let conds: Vec<&str> = code
@@ -2119,6 +2141,355 @@ mod tests {
         assert_eq!(output, "");
         assert_eq!(calls, call);
         assert_eq!(stdout, "");
+    }
+
+    /// Whether these programs run. The step tests below use the real jq
+    /// and node, which GitHub's runners have; elsewhere a missing one skips
+    /// the test with a note.
+    #[cfg(unix)]
+    fn have_programs(programs: &[&str]) -> bool {
+        let missing: Vec<&str> = programs
+            .iter()
+            .copied()
+            .filter(|p| {
+                !std::process::Command::new(p)
+                    .arg("--version")
+                    .output()
+                    .is_ok_and(|o| o.status.success())
+            })
+            .collect();
+        if missing.is_empty() {
+            return true;
+        }
+        assert!(
+            std::env::var_os("CI").is_none(),
+            "the release.yml step tests need {missing:?}"
+        );
+        eprintln!("skipped: {missing:?} not installed");
+        false
+    }
+
+    /// Runs a release.yml step's script with bash from the repo root, with
+    /// stand-in commands (shell functions) in front of it. `$T` is a new
+    /// temp folder holding `files`; it is also $RUNNER_TEMP, $T/output is
+    /// $GITHUB_OUTPUT and the stand-ins log their calls to $T/calls.
+    /// Returns the exit code, stdout and the folder (the caller removes it).
+    #[cfg(unix)]
+    fn run_step(
+        script: &str,
+        stand_ins: &str,
+        env: &[(&str, &str)],
+        files: &[(&str, &str)],
+    ) -> (Option<i32>, String, std::path::PathBuf) {
+        let mut dir = std::env::temp_dir();
+        dir.push(format!("greencli-step-test-{}", rand::random::<u64>()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for (name, text) in files.iter().chain(&[("output", ""), ("calls", "")]) {
+            std::fs::write(dir.join(name), text).unwrap();
+        }
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap();
+        let out = std::process::Command::new("bash")
+            .args(["--noprofile", "--norc", "-c"])
+            .arg(format!("{stand_ins}\n{script}"))
+            .current_dir(root)
+            .env("T", &dir)
+            .env("RUNNER_TEMP", &dir)
+            .env("GITHUB_OUTPUT", dir.join("output"))
+            .env("GITHUB_REPOSITORY", "Choaterboater/GreenCli")
+            .envs(env.iter().copied())
+            .output()
+            .expect("bash");
+        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+        (out.status.code(), stdout, dir)
+    }
+
+    /// One job, release, finds or makes the draft, and the three builds
+    /// upload into it by its id. When each build looked the draft up itself
+    /// (tauri-action's tagName), two that started uploading together could
+    /// each make their own. And only update-files writes latest.json: when
+    /// each build added its entries to it (uploadUpdaterJson), two that
+    /// finished together could drop each other's. Runs the release job's
+    /// script with a stand-in gh.
+    #[cfg(unix)]
+    #[test]
+    fn release_workflow_makes_one_draft_for_all_builds() {
+        let code = code_lines(RELEASE_YML);
+        // No build looks up or makes a release, or writes latest.json.
+        for bad in [
+            "tagName:",
+            "releaseName:",
+            "releaseDraft:",
+            "outputs.releaseId",
+            "uploadUpdaterJson: true",
+        ] {
+            assert!(!code.iter().any(|l| l.contains(bad)), "{bad}");
+        }
+        assert!(code.contains(&"releaseId: ${{ needs.release.outputs.id }}"));
+        assert!(code.contains(&"uploadUpdaterJson: false"));
+        // Everything that uploads after the build uses the same draft.
+        let ids: Vec<&str> = code
+            .iter()
+            .copied()
+            .filter(|l| l.starts_with("RELEASE_ID:"))
+            .collect();
+        assert_eq!(ids, ["RELEASE_ID: ${{ needs.release.outputs.id }}"; 4]);
+        // The release job is the only one that makes a release.
+        let makes: Vec<&str> = code
+            .iter()
+            .copied()
+            .filter(|l| l.contains("-X POST \"repos/$GITHUB_REPOSITORY/releases\""))
+            .collect();
+        assert_eq!(makes.len(), 1, "{makes:#?}");
+        let job = job_lines(RELEASE_YML, "release");
+        for line in [
+            "    runs-on: ubuntu-latest",
+            "      contents: write",
+            "      id: ${{ steps.draft.outputs.id }}",
+            "      tag: ${{ steps.draft.outputs.tag }}",
+        ] {
+            assert!(job.contains(&line), "{line}");
+        }
+        let steps = job_steps(RELEASE_YML, "release");
+        assert_eq!(steps.len(), 2);
+        assert_eq!(steps[0].uses, "actions/checkout@v4");
+        let (_, find) = step(&steps, "Find or make the draft release");
+        assert_eq!(find.id, "draft");
+        // Only publishing runs: a build-only run gets no id, so nothing is
+        // uploaded.
+        assert_eq!(
+            find.cond,
+            "${{ github.event_name != 'workflow_dispatch' || inputs.publish }}"
+        );
+        assert!(find.run.contains(makes[0]));
+        // latest.json is uploaded in one place: update-files, after all
+        // three builds, which then checks it.
+        let uploads: Vec<&str> = code
+            .iter()
+            .copied()
+            .filter(|l| l.contains("name=latest.json"))
+            .collect();
+        assert_eq!(uploads.len(), 1, "{uploads:#?}");
+        let files = job_steps(RELEASE_YML, "update-files");
+        assert_eq!(
+            files.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
+            [
+                "",
+                "Write latest.json",
+                "Check latest.json and the update signatures"
+            ]
+        );
+        assert!(files[1].run.contains(uploads[0]));
+        assert_eq!(
+            files[2].env("TAG"),
+            Some("${{ needs.release.outputs.tag }}")
+        );
+        assert!(files[2].run.contains(
+            "darwin-aarch64 darwin-aarch64-app darwin-x86_64 darwin-x86_64-app \\\n\
+             windows-x86_64 windows-x86_64-msi windows-x86_64-nsis\n"
+        ));
+
+        if !have_programs(&["jq"]) {
+            return;
+        }
+        // gh --paginate prints one JSON list per page.
+        let stand_ins = r#"gh() {
+  echo "gh $*" >> "$T/calls"
+  case "$*" in
+    "api --paginate repos/Choaterboater/GreenCli/releases?per_page=100") cat "$T/pages" ;;
+    "api -X POST repos/Choaterboater/GreenCli/releases "*) cat "$T/made" ;;
+    *) return 1 ;;
+  esac
+}"#;
+        let run = |ref_type: &str, ref_name: &str, pages: &str, made: &str| {
+            let (code, stdout, dir) = run_step(
+                &find.run,
+                stand_ins,
+                &[
+                    ("REF_TYPE", ref_type),
+                    ("REF_NAME", ref_name),
+                    ("GITHUB_SHA", "abc123"),
+                ],
+                &[("pages", pages), ("made", made)],
+            );
+            let read = |name: &str| std::fs::read_to_string(dir.join(name)).unwrap();
+            let result = (code, stdout, read("output"), read("calls"));
+            std::fs::remove_dir_all(&dir).unwrap();
+            result
+        };
+        let list = "gh api --paginate repos/Choaterboater/GreenCli/releases?per_page=100\n";
+        let make = "gh api -X POST repos/Choaterboater/GreenCli/releases -f tag_name=v2.0.0 \
+                    -f name=GreenCli v2.0.0 -F draft=true -F prerelease=false \
+                    -f target_commitish=abc123 --jq .id\n";
+        let published = r#"[{"id":5,"tag_name":"v2.0.0","draft":false},{"id":6,"tag_name":"v1.9.0","draft":true}]"#;
+
+        // The draft with the tag is used again, on whichever page it is; a
+        // published release or another tag's draft never counts.
+        let pages = format!("{published}\n[{{\"id\":7,\"tag_name\":\"v2.0.0\",\"draft\":true}}]\n");
+        let (code, stdout, output, calls) = run("tag", "v2.0.0", &pages, "");
+        assert_eq!(code, Some(0), "{stdout}");
+        assert_eq!(output, "id=7\ntag=v2.0.0\n");
+        assert_eq!(calls, list);
+        assert_eq!(stdout, "Uploading into the v2.0.0 draft.\n");
+
+        // With none, it makes the draft once, on this commit.
+        let (code, stdout, output, calls) = run("tag", "v2.0.0", published, "42\n");
+        assert_eq!(code, Some(0), "{stdout}");
+        assert_eq!(output, "id=42\ntag=v2.0.0\n");
+        assert_eq!(calls, format!("{list}{make}"));
+        assert_eq!(stdout, "Made the v2.0.0 draft.\n");
+
+        // A release/** push or a manual run uses v<app version>.
+        let version = conf()["version"].as_str().unwrap().to_string();
+        let pages = format!("[{{\"id\":8,\"tag_name\":\"v{version}\",\"draft\":true}}]");
+        let (code, stdout, output, calls) = run("branch", "release/x", &pages, "");
+        assert_eq!(code, Some(0), "{stdout}");
+        assert_eq!(output, format!("id=8\ntag=v{version}\n"));
+        assert_eq!(calls, list);
+
+        // Two drafts with the tag: the owner picks, nothing is uploaded.
+        let pages = r#"[{"id":7,"tag_name":"v2.0.0","draft":true},{"id":9,"tag_name":"v2.0.0","draft":true}]"#;
+        let (code, stdout, output, calls) = run("tag", "v2.0.0", pages, "");
+        assert_eq!(code, Some(1), "{stdout}");
+        assert_eq!(output, "");
+        assert_eq!(calls, list);
+        assert_eq!(
+            stdout,
+            "::error::There are 2 draft releases for v2.0.0. Delete all but one of them, \
+             then run this again.\n"
+        );
+
+        // No id back from GitHub, or a failed list: no output, the job fails.
+        let (code, stdout, output, _) = run("tag", "v2.0.0", published, "");
+        assert_eq!(code, Some(1), "{stdout}");
+        assert_eq!(output, "");
+        assert!(stdout.ends_with("::error::GitHub gave no release id for v2.0.0.\n"));
+        let (code, _, output, calls) = run("tag", "v2.0.0", "not json", "42\n");
+        assert_ne!(code, Some(0));
+        assert_eq!(output, "");
+        assert_eq!(calls, list);
+    }
+
+    /// update-files writes latest.json from the draft's update files and
+    /// their .sig files, in place of any older one. Runs the step with
+    /// stand-in gh and curl (and the real jq and node).
+    #[cfg(unix)]
+    #[test]
+    fn release_workflow_writes_latest_json_once() {
+        if !have_programs(&["jq", "node"]) {
+            return;
+        }
+        let files = job_steps(RELEASE_YML, "update-files");
+        let (_, write) = step(&files, "Write latest.json");
+        assert_eq!(
+            write.env("RELEASE_ID"),
+            Some("${{ needs.release.outputs.id }}")
+        );
+        let stand_ins = r#"gh() {
+  echo "gh $*" >> "$T/calls"
+  case "$*" in
+    "api repos/Choaterboater/GreenCli/releases/42/assets?per_page=100") cat "$T/assets" ;;
+    "api -H Accept: application/octet-stream repos/Choaterboater/GreenCli/releases/assets/"*)
+      local url="${@: -1}"
+      printf 'sig-%s' "${url##*/}" ;;
+    "api -X DELETE repos/Choaterboater/GreenCli/releases/assets/"*) ;;
+    *) return 1 ;;
+  esac
+}
+curl() {
+  echo "curl ${@: -1}" >> "$T/calls"
+  local a
+  for a in "$@"; do case "$a" in @*) cp "${a#@}" "$T/uploaded" ;; esac; done
+}"#;
+        let v = conf()["version"].as_str().unwrap().to_string();
+        let asset = |id: u32, name: String| serde_json::json!({ "id": id, "name": name });
+        let mut assets = vec![
+            asset(101, format!("GreenCLI_{v}_aarch64.dmg")),
+            asset(102, format!("GreenCLI_{v}_aarch64.app.tar.gz")),
+            asset(103, format!("GreenCLI_{v}_aarch64.app.tar.gz.sig")),
+            asset(202, format!("GreenCLI_{v}_x64.app.tar.gz")),
+            asset(203, format!("GreenCLI_{v}_x64.app.tar.gz.sig")),
+            asset(301, format!("GreenCLI_{v}_x64_en-US.msi")),
+            asset(302, format!("GreenCLI_{v}_x64_en-US.msi.sig")),
+            asset(304, format!("GreenCLI_{v}_x64-setup.exe")),
+            asset(305, format!("GreenCLI_{v}_x64-setup.exe.sig")),
+            asset(401, "update-key-darwin-aarch64.pub".into()),
+        ];
+        let run = |assets: &[Value]| {
+            let list = serde_json::to_string(assets).unwrap();
+            let (code, stdout, dir) = run_step(
+                &write.run,
+                stand_ins,
+                &[("RELEASE_ID", "42"), ("GH_TOKEN", "stand-in")],
+                &[("assets", &list)],
+            );
+            let read = |name: &str| std::fs::read_to_string(dir.join(name)).ok();
+            let result = (code, stdout, read("calls").unwrap(), read("uploaded"));
+            std::fs::remove_dir_all(&dir).unwrap();
+            result
+        };
+        let list = "gh api repos/Choaterboater/GreenCli/releases/42/assets?per_page=100\n";
+        let sigs: String = [103, 203, 302, 305]
+            .iter()
+            .map(|id| {
+                format!(
+                    "gh api -H Accept: application/octet-stream \
+                     repos/Choaterboater/GreenCli/releases/assets/{id}\n"
+                )
+            })
+            .collect();
+        let upload = "curl https://uploads.github.com/repos/Choaterboater/GreenCli/releases/42/\
+                      assets?name=latest.json\n";
+
+        // A first run: no latest.json yet.
+        let (code, stdout, calls, uploaded) = run(&assets);
+        assert_eq!(code, Some(0), "{stdout}");
+        assert_eq!(calls, format!("{list}{sigs}{upload}"));
+        let manifest: Value = serde_json::from_str(&uploaded.unwrap()).unwrap();
+        assert_eq!(manifest["version"], v.as_str());
+        let platforms = manifest["platforms"].as_object().unwrap();
+        let entry = |id: u32| {
+            serde_json::json!({
+                "signature": format!("sig-{}", id + 1),
+                "url": format!("https://api.github.com/repos/Choaterboater/GreenCli/releases/assets/{id}"),
+            })
+        };
+        let want = [
+            ("darwin-aarch64", 102),
+            ("darwin-aarch64-app", 102),
+            ("darwin-x86_64", 202),
+            ("darwin-x86_64-app", 202),
+            ("windows-x86_64", 304),
+            ("windows-x86_64-nsis", 304),
+            ("windows-x86_64-msi", 301),
+        ];
+        assert_eq!(platforms.len(), want.len());
+        for (name, id) in want {
+            assert_eq!(platforms[name], entry(id), "{name}");
+        }
+        // Every name the app looks up for a shipped build is there.
+        for p in SHIPPED_PLATFORMS {
+            assert!(platforms.contains_key(p), "{p}");
+        }
+
+        // A re-run: the older latest.json goes, after the new one is made.
+        assets.push(asset(99, "latest.json".into()));
+        let (code, stdout, calls, uploaded) = run(&assets);
+        assert_eq!(code, Some(0), "{stdout}");
+        let delete = "gh api -X DELETE repos/Choaterboater/GreenCli/releases/assets/99\n";
+        assert_eq!(calls, format!("{list}{sigs}{delete}{upload}"));
+        assert!(uploaded.is_some());
+
+        // A build's files are missing: nothing is deleted or uploaded.
+        assets.retain(|a| !a["name"].as_str().unwrap().contains("_x64.app.tar.gz"));
+        let (code, _, calls, uploaded) = run(&assets);
+        assert_eq!(code, Some(1));
+        assert!(
+            !calls.contains("DELETE") && !calls.contains("curl"),
+            "{calls}"
+        );
+        assert!(uploaded.is_none());
     }
 
     /// Apple's ticket can take a little while to show up after notarytool
