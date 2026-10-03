@@ -7,6 +7,7 @@
 // Passwords are never imported from any source: CSV has no password column,
 // and SecureCRT's encrypted password fields are ignored.
 
+import { normalizeTags } from './tags';
 import { ConnectionConfig, DeviceType } from '../types';
 import { hostIdentity, parseHostSpec } from './hosts';
 import type { ImportedHost } from './sshImport';
@@ -65,10 +66,6 @@ function str(x: unknown): string {
   if (typeof x === 'string') return x.trim();
   if (typeof x === 'number' && Number.isFinite(x)) return String(x);
   return '';
-}
-
-function uniq(items: string[]): string[] {
-  return [...new Set(items.map((t) => t.trim()).filter(Boolean))];
 }
 
 function validPort(n: number | undefined): number | undefined {
@@ -311,7 +308,7 @@ export function parseHostsCsv(text: string): ImportParse {
       username: get('user') || spec.user,
       deviceType,
       folder: get('folder') || undefined,
-      tags: uniq(get('tags').split(';')),
+      tags: normalizeTags(get('tags').split(';')),
       notes,
     };
 
@@ -619,7 +616,7 @@ export function centralDevicesToHosts(kind: CentralKind, rows: unknown[]): Impor
       port: 22,
       deviceType,
       folder: str(row.site) || undefined,
-      tags: uniq([str(row.group_name), ...labelNames(row.labels)]),
+      tags: normalizeTags([str(row.group_name), ...labelNames(row.labels)]),
       notes: [],
     });
   }

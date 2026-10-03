@@ -14,11 +14,14 @@ export const AI_READ_ONLY_CMD =
 export const AI_CONFIG_ENTER = /^\s*conf(ig(ure)?)?\b/i;
 export const AI_DESTRUCTIVE_CMD =
   /\b(write|erase|delete|clear|reload|reboot|boot|commit|rollback|copy|format|factory-reset|factory-default|zeroize|request\s+system|install|upgrade)\b/i;
-export const AI_DANGER_CMD = /\b(erase|delete|reload|reboot|format|factory|write|zeroize|rollback)\b/i;
 // A pipe stage or shell redirect that writes a file: Junos `| save`, `| append` and `| tee` (and
 // their short forms: Junos takes `| s` for save and `| a` for append), `| redirect`, and `>`.
 // `show log messages | save /var/log/messages` looks like a read but overwrites a file.
 export const AI_WRITE_PIPE = /\|\s*(s|sa|sav|save|a|ap|app|appe|appen|append|te|tee|redirect)(\s|$)|>/i;
+
+// A second command on the same line (`;`, `&` or `&&`, `||`, backticks, `$(`, `<(` / `>(`): on a
+// Linux or Windows host it could be anything, so such a line is never judged a read.
+export const COMMAND_CHAIN = /;|&|\|\||`|\$\(|[<>]\(/;
 
 // Every line break a device treats as Enter. A bare `\r` counts: the command
 // goes out with `\r` appended (utils/terminal.ts), so "show version\rconf t"
@@ -35,16 +38,29 @@ export function normalizeLineBreaks(cmd: string): string {
   return cmd.split(LINE_BREAK).join('\n');
 }
 
-/** Heuristic: does this (possibly multi-line) command modify device state? */
+/**
+ * True only for a line that plainly just looks: a read verb, no risky word in the command itself,
+ * and every stage after a `|` a known filter (include, match, grep …). So `show run | include reload`
+ * is a read, but `cat x | xargs reboot`, `ping x & reboot` or `sh -c …` are not. Shared with
+ * riskyLines.ts, so every check agrees on what a read is.
+ */
+export function isReadLine(line: string): boolean {
+  const c = line.trim();
+  if (!c) return true;
+  if (AI_CONFIG_ENTER.test(c) || AI_WRITE_PIPE.test(c) || COMMAND_CHAIN.test(c)) return false;
+  const [first = '', ...filters] = c.split('|').map((stage) => stage.trim());
+  if (!AI_READ_ONLY_CMD.test(first) || AI_DESTRUCTIVE_CMD.test(first)) return false;
+  // On a Linux host `sh` runs a shell: only a network-style `sh <word>` (no option, no path) reads.
+  const words = first.replace(/^do\s+/i, '').split(/\s+/);
+  if (/^sh$/i.test(words[0] ?? '') && (!words[1] || /^-|[./]/.test(words[1]))) return false;
+  return filters.every((stage) => AUDITOR_PIPES.has((stage.split(/\s+/)[0] ?? '').toLowerCase()));
+}
+
+/** Heuristic: does this (possibly multi-line) command modify device state? Anything that is not
+ *  plainly a read is confirmed (fail-safe). */
 export function aiIsWriteCommand(cmd: string): boolean {
   if (CONTROL_CHARS.test(cmd)) return true; // can't be judged line by line: confirm
-  return cmd.split(LINE_BREAK).some((line) => {
-    const c = line.trim();
-    if (!c) return false;
-    if (AI_CONFIG_ENTER.test(c) || AI_DESTRUCTIVE_CMD.test(c) || AI_WRITE_PIPE.test(c)) return true;
-    if (AI_READ_ONLY_CMD.test(c)) return false;
-    return true; // unknown verb (set/no/interface/vlan/…): confirm to be safe
-  });
+  return cmd.split(LINE_BREAK).some((line) => !isReadLine(line));
 }
 
 // ─── Read-only Auditor ───

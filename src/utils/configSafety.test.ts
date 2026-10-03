@@ -66,7 +66,7 @@ describe('isDangerousLine', () => {
     expect(isDangerousLine('delete system services ssh')).toBe(true);
     expect(isDangerousLine('delete system login user bob')).toBe(true);
     expect(isDangerousLine('delete system syslog host 10.0.0.9')).toBe(false);
-    expect(isDangerousLine('delete vlans GUEST')).toBe(false);
+    expect(isDangerousLine('delete vlans GUEST')).toBe(true); // like `no vlan N`: removes the VLAN
     expect(isDangerousLine('load override terminal')).toBe(true);
     expect(isDangerousLine('set interfaces ge-0/0/1 disable')).toBe(true);
     expect(isDangerousLine('set interfaces ge-0/0/1 description disable-me')).toBe(false);

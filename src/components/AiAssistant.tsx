@@ -52,12 +52,12 @@ import { sleep, stripAnsi, sendAndCapture } from '../utils/terminal';
 import {
   aiIsWriteCommand,
   auditorAllowsCommand,
-  AI_DANGER_CMD,
   AUDITOR_REFUSAL,
   CONTROL_CHARS,
   isReadOnlyAgent,
   normalizeLineBreaks,
 } from '../utils/aiGating';
+import { commandIsDangerous } from '../utils/riskyLines';
 import { pickAiSession } from '../utils/aiSession';
 import { activeStreamIds, cancelActiveAiStreams, nextStreamId, runStoppable } from '../utils/aiRuns';
 import { hiddenSecretGate } from '../utils/secrets/gate';
@@ -546,7 +546,7 @@ async function executeToolRaw(
         title: `Run on ${activeSession.config.name || activeSession.config.host || 'device'}?`,
         message: command,
         confirmLabel: 'Run command',
-        danger: AI_DANGER_CMD.test(command),
+        danger: commandIsDangerous(command),
         group: 'ai',
       });
       if (!ok) return rawErr('User declined to run this command.');
