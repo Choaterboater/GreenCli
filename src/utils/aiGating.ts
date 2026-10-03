@@ -14,11 +14,14 @@ export const AI_READ_ONLY_CMD =
 export const AI_CONFIG_ENTER = /^\s*conf(ig(ure)?)?\b/i;
 export const AI_DESTRUCTIVE_CMD =
   /\b(write|erase|delete|clear|reload|reboot|boot|commit|rollback|copy|format|factory-reset|factory-default|zeroize|request\s+system|install|upgrade)\b/i;
-export const AI_DANGER_CMD = /\b(erase|delete|reload|reboot|format|factory|write|zeroize|rollback)\b/i;
 // A pipe stage or shell redirect that writes a file: Junos `| save`, `| append` and `| tee` (and
 // their short forms: Junos takes `| s` for save and `| a` for append), `| redirect`, and `>`.
 // `show log messages | save /var/log/messages` looks like a read but overwrites a file.
 export const AI_WRITE_PIPE = /\|\s*(s|sa|sav|save|a|ap|app|appe|appen|append|te|tee|redirect)(\s|$)|>/i;
+
+// A second command on the same line (`;`, `&&`, `||`, backticks, `$(`): on a Linux or Windows host
+// it could be anything, so such a line is never judged a read.
+export const COMMAND_CHAIN = /;|&&|\|\||`|\$\(/;
 
 // Every line break a device treats as Enter. A bare `\r` counts: the command
 // goes out with `\r` appended (utils/terminal.ts), so "show version\rconf t"
@@ -41,9 +44,10 @@ export function aiIsWriteCommand(cmd: string): boolean {
   return cmd.split(LINE_BREAK).some((line) => {
     const c = line.trim();
     if (!c) return false;
-    if (AI_CONFIG_ENTER.test(c) || AI_DESTRUCTIVE_CMD.test(c) || AI_WRITE_PIPE.test(c)) return true;
+    if (AI_CONFIG_ENTER.test(c) || AI_WRITE_PIPE.test(c) || COMMAND_CHAIN.test(c)) return true;
+    // A read verb wins over a risky word in its filter (`show run | include reload`).
     if (AI_READ_ONLY_CMD.test(c)) return false;
-    return true; // unknown verb (set/no/interface/vlan/…): confirm to be safe
+    return true; // anything else (reload, set, no, interface, vlan, …): confirm to be safe
   });
 }
 

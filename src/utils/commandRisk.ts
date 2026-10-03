@@ -5,23 +5,14 @@
 // click straight through the dialog. Only verbs that change, save, or disrupt
 // the box count.
 
-import {
-  AI_CONFIG_ENTER,
-  AI_DESTRUCTIVE_CMD,
-  AI_READ_ONLY_CMD,
-  CONTROL_CHARS,
-  LINE_BREAK,
-} from './aiGating';
+import { CONTROL_CHARS, LINE_BREAK } from './aiGating';
+import { classifyLine } from './riskyLines';
 
-// Verbs the AI lists don't cover: `no …` undoes config, `shutdown` takes a port
-// (or the box) down.
-const EXTRA_RISKY = /^\s*(do\s+)?(no\s+\S|shut(down)?\b|halt\b|power-?off\b)/i;
-
+// A change or a dangerous line (riskyLines.ts). A plain config line (`interface 1/1/1`, a
+// description) is not: a person typed it, and flagging it would train clicking through.
 function isRiskyLine(line: string): boolean {
-  const c = line.trim();
-  if (!c) return false;
-  if (AI_READ_ONLY_CMD.test(c)) return false;
-  return AI_CONFIG_ENTER.test(c) || AI_DESTRUCTIVE_CMD.test(c) || EXTRA_RISKY.test(c);
+  const kind = classifyLine(line).kind;
+  return kind === 'change' || kind === 'dangerous';
 }
 
 /** True when a CLI command looks like it changes device state (reload, write
