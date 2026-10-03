@@ -44,8 +44,8 @@ export const UPDATE_TEXT = {
   // Saved (or deleted) while the vault was locked; they go in at the next unlock.
   vaultWaiting: (n: number) =>
     n === 1
-      ? 'A password change is waiting for the vault to unlock. It will be lost.'
-      : `${n} password changes are waiting for the vault to unlock. They will be lost.`,
+      ? 'A password change is waiting for the vault to unlock. Unlock it first, or the change will be lost.'
+      : `${n} password changes are waiting for the vault to unlock. Unlock it first, or they will be lost.`,
   aiBusy: 'The AI assistant is still answering. It will stop.',
 } as const;
 

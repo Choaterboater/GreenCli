@@ -289,7 +289,9 @@ describe('restartToUpdate', () => {
     await expect(restartToUpdate('2.0.1')).resolves.toBe(false);
     const opts = askConfirm.mock.calls[0][0];
     expect(opts.message).toContain(UPDATE_TEXT.vaultWaiting(2));
-    expect(opts.message).toContain('2 password changes are waiting for the vault to unlock. They will be lost.');
+    expect(opts.message).toContain(
+      '2 password changes are waiting for the vault to unlock. Unlock it first, or they will be lost.',
+    );
     expect(opts.danger).toBe(true);
     // After an unlock they are written, and the warning goes.
     await flushDeferredVaultWrites();
