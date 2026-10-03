@@ -688,8 +688,8 @@ pub struct StoreStatus {
     pub kind: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
-    /// Old 1.9 key files that couldn't be read. They are left in place and
-    /// may still hold keys.
+    /// Old 1.9 key files that couldn't be read at start and are still there.
+    /// They are left in place and may still hold keys.
     pub leftover_files: Vec<String>,
     /// Some keys in an old 1.9 file didn't move; the next start tries again.
     pub move_pending: bool,
@@ -813,11 +813,14 @@ impl SecretStore {
     /// (a read of an account that doesn't exist), so a locked or missing
     /// store shows as unavailable.
     pub fn status(&self) -> StoreStatus {
+        // Only the ones still there: one the user deleted as Settings says
+        // is no longer named. A link counts, as it does for the marker.
         let leftover_files: Vec<String> = self
             .leftover
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .iter()
+            .filter(|p| fs::symlink_metadata(p).is_ok())
             .map(|p| p.display().to_string())
             .collect();
         let move_pending = self.move_pending.load(Ordering::Relaxed);
@@ -1735,6 +1738,9 @@ mod tests {
             assert_eq!(store.status().leftover_files, vec![path.display().to_string()]);
             assert!(!store.status().move_pending);
             assert!(mem.accounts().is_empty());
+            // Once deleted, it is no longer named.
+            fs::remove_file(&path).unwrap();
+            assert!(store.status().leftover_files.is_empty());
         }
     }
 

@@ -24,6 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   without that variable, so it read another folder and found no devices, configs or intents.
   Export again to update a file made before. When the data folder isn't there, greencli-mcp's
   tools now say so instead of answering with empty lists.
+- Settings stops naming an old 1.9 key file it couldn't read once you delete it. Before, it kept
+  saying to delete the file until GreenCLI restarted.
 
 ## [2.0.0] - 2026-10-02
 

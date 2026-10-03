@@ -10,7 +10,7 @@ export type SecretStoreKind = 'keychain' | 'credential-manager' | 'secret-servic
 export interface SecretStoreStatus {
   kind: SecretStoreKind;
   reason?: string;
-  /** Old 1.9 key files that couldn't be read. Left in place; they may still hold keys. */
+  /** Old 1.9 key files that couldn't be read at start and are still there. They may still hold keys. */
   leftoverFiles: string[];
   /** Some keys in an old 1.9 file didn't move yet; the next start tries again. */
   movePending: boolean;
