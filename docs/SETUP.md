@@ -146,7 +146,10 @@ There is nothing to set up for update signing: no key to make, keep or paste, an
 - **One Release run at a time.** A run that starts while another is going waits for it (Actions
   shows it as waiting), so two runs never upload into the same draft at once. GitHub keeps only
   the newest waiting run: push again while one waits and the older waiting run is cancelled.
-  Publish only when the last run's update-files is green.
+  Build-only runs don't wait and can't cancel a waiting run: they upload nothing. Publishing a
+  draft (its tag starts a run) or starting a run for another version while a run waits still
+  cancels the waiting one. Publish only when the run for the newest commit on the release branch
+  (or for the tag) has a green update-files: a cancelled run there means the draft is older.
 - Publishing a draft made by a `release/**` push or a manual run creates its tag, and that tag
   starts the **Release** workflow again. That run sees the release is already published and builds
   nothing (its **gate** job says so). If you ever see a second `v<version>` draft after publishing,

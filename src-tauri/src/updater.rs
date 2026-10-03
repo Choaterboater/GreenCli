@@ -2658,13 +2658,18 @@ fi
     /// could leave a green update-files check on a latest.json whose
     /// signatures no longer match the files (or keys) the other run put in
     /// their place. So a run that starts while another one is going waits
-    /// for it. The group is the same for every run of this workflow, not
-    /// one per ref: a tag push and a release/** push have different refs
-    /// but upload into the same v<version> draft. A running run is never
-    /// cancelled halfway through its uploads.
+    /// for it. The group is the same for every publishing run of this
+    /// workflow, not one per ref: a tag push and a release/** push have
+    /// different refs but upload into the same v<version> draft. A running
+    /// run is never cancelled halfway through its uploads.
+    ///
+    /// GitHub keeps one waiting run per group, and a newer one cancels it.
+    /// A build-only run uploads nothing, so it has a group of its own (one
+    /// per run): it neither waits for a publishing run nor cancels one that
+    /// waits (say, the run for a fix pushed to a release/** branch).
     #[test]
     fn release_workflow_runs_one_at_a_time() {
-        // Top level, with nothing after the group: no ref, no event.
+        // Top level, with nothing after the group.
         let lines: Vec<&str> = RELEASE_YML
             .lines()
             .filter(|l| !l.trim_start().starts_with('#'))
@@ -2676,11 +2681,22 @@ fi
         assert_eq!(
             lines[at + 1..at + 3],
             [
-                "  group: release-${{ github.repository }}",
+                "  group: ${{ (github.event_name != 'workflow_dispatch' || inputs.publish) \
+                 && format('release-{0}', github.repository) \
+                 || format('release-build-only-{0}', github.run_id) }}",
                 "  cancel-in-progress: false",
             ]
         );
         assert_eq!(indent(lines[at + 3]), 0, "{:?}", lines[at + 3]);
+        // A publishing run is the one that finds or makes the draft: the
+        // same test. Every publishing run gets the one group, with no ref,
+        // event or run in it; each build-only run gets its own, which can't
+        // be that group (a repository name has a '/').
+        let publishing = "github.event_name != 'workflow_dispatch' || inputs.publish";
+        let release = job_steps(RELEASE_YML, "release");
+        let (_, find) = step(&release, "Find or make the draft release");
+        assert_eq!(find.cond, format!("${{{{ {publishing} }}}}"));
+        assert!(lines[at + 1].starts_with(&format!("  group: ${{{{ ({publishing}) && ")));
         // Before the jobs, and no job has a group of its own.
         let jobs = lines.iter().position(|l| *l == "jobs:").unwrap();
         assert!(at < jobs);
@@ -2692,7 +2708,8 @@ fi
         // release.yml runs ci.yml (workflow_call) inside the same run, so a
         // ci.yml in this group would wait for the Release run it is part of.
         let ci = include_str!("../../.github/workflows/ci.yml");
-        assert!(!ci.contains("release-${{ github.repository }}"));
+        assert!(!ci.contains("concurrency:"));
+        assert!(!ci.contains("release-"));
     }
 
     /// No run changes a published release. Re-running one build job (or

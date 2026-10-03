@@ -61,13 +61,22 @@ on:
 # leave a green update-files on a latest.json whose signatures no longer match
 # the files and keys the other run put in their place. A run that starts while
 # another is going waits for it; one already running is never cancelled. The
-# group is the same for every run, not one per ref: a tag push and a
-# release/** push have different refs but use the same v<version> draft, and
+# group is the same for every publishing run, not one per ref: a tag push and
+# a release/** push have different refs but use the same v<version> draft, and
 # the version is only known inside a job. GitHub keeps one waiting run: a newer
-# one cancels it. (ci.yml, which this calls, must not use this group: the run
-# would wait for itself.)
+# one in the group cancels it.
+# - A build-only run (a manual run with publish unticked, the same test as
+#   "Find or make the draft release") uploads nothing, so it gets a group of
+#   its own: it doesn't wait for publishing runs, and it never cancels one
+#   that waits.
+# - Every tag push still joins the shared group, also the one that
+#   publishing a draft starts (its gate job skips it, but that is only known
+#   inside a job), and so does a run for another version. Either can still
+#   cancel a waiting run.
+# (ci.yml, which this calls, must not use this group: the run would wait for
+# itself.)
 concurrency:
-  group: release-${{ github.repository }}
+  group: ${{ (github.event_name != 'workflow_dispatch' || inputs.publish) && format('release-{0}', github.repository) || format('release-build-only-{0}', github.run_id) }}
   cancel-in-progress: false
 
 # Read-only by default; only release (which makes the draft), the build jobs

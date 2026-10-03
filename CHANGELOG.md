@@ -10,7 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Release workflow: one run at a time. A run that starts while another is going waits for it, so
   two runs for the same version can't upload into the same draft at once and replace each other's
-  update files and keys after update-files has checked them.
+  update files and keys after update-files has checked them. Build-only runs (publish unticked)
+  upload nothing, so they don't wait, and they never cancel a run that is waiting.
 
 ### Fixed
 - Windows: an MCP login that GreenCLI 2.0.0 saved for a server with a capital letter (or a
