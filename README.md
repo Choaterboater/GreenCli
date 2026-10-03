@@ -182,20 +182,26 @@ full path, with Copy buttons for the path and the command. On a Mac, move GreenC
 first. To add it to Claude Code:
 
 ```bash
-claude mcp add greencli -- "/Applications/GreenCLI.app/Contents/MacOS/greencli-mcp"
+claude mcp add --scope user greencli -- "/Applications/GreenCLI.app/Contents/MacOS/greencli-mcp" \
+  --data-dir "$HOME/Library/Application Support/com.choatelabs.greencli"
 ```
+
+`--scope user` makes it work in every folder; without it Claude Code adds it only for the folder
+you run the command in. `--data-dir` is GreenCLI's data folder, so greencli-mcp reads the same one
+as the app (the copied command has yours filled in).
 
 **Export for Casper / Claude…** adds it to the `.mcp.json` file too.
 
-It has six read tools: `access_check`, `list_devices`, `list_config_history`, `get_config`,
-`get_config_diff` and `list_intents`.
+It has seven read tools: `access_check`, `list_devices`, `list_archive_devices`,
+`list_config_history`, `get_config`, `get_config_diff` and `list_intents`. `list_archive_devices`
+finds config history kept under a device's old name, after a rename or delete in GreenCLI.
 
 - It only reads GreenCLI's data folder. It never writes a file, opens a network connection or
   starts a program (a test checks the source for this).
 - The device list has no passwords, user names, notes or startup commands.
 - Configs and diffs come only from copies with secrets hidden, saved when a config is captured. A
   snapshot with no up-to-date hidden copy is refused, never served raw. For older snapshots, open
-  Config archive and click **Make hidden copies**.
+  the Config Archive panel and click **Make hidden copies**.
 - A diff can't show a changed secret: both sides show it hidden.
 
 More in the guide: [greencli-mcp](docs/SETUP.md#greencli-mcp-greencli-data-for-casper-or-claude-code).
@@ -208,7 +214,7 @@ You need:
 - [Rust](https://rustup.rs/) 1.90 or newer.
 - The Tauri 2 build tools for your system: see [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/).
   On a Mac that is the Xcode Command Line Tools. On Windows, the Microsoft C++ Build Tools and
-  WebView2. On Linux (Ubuntu 24.04 or newer):
+  WebView2. On Linux (WebKitGTK 4.1, 2.40 or newer: an updated Ubuntu 22.04 or newer):
 
   ```bash
   sudo apt install build-essential libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libudev-dev \
@@ -268,8 +274,8 @@ builds it and serves it at http://127.0.0.1:4173/. See [Screenshots](docs/SETUP.
 
 - **SSH passwords** are in an encrypted vault: AES-256-GCM, with a key made from your master
   password by Argon2id. The vault file is owner-only.
-- **AI keys and MCP logins** are in the system password store. An MCP login is on disk only while
-  its server runs, in an owner-only file.
+- **AI keys and MCP logins** are in the system password store. With one, an MCP login is on disk
+  only while its server runs, in an owner-only file.
 - **Device secrets are hidden from the AI**: passwords, keys, SNMP communities and private keys in
   tool output reach it as `<secret hidden>`.
 - **SSH host keys** are pinned the first time you connect. A changed key is refused, and a new key
