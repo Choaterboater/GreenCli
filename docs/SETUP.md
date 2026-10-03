@@ -295,7 +295,9 @@ GreenCLI 2.0 keeps AI keys and MCP logins in the system password store, not in f
   you enter your keys again. If some keys didn't move, the file stays in the data folder and
   Settings says "Some keys from 1.9 were not moved yet. GreenCLI will try again next start." Until
   then they keep working from the old file, as long as GreenCLI can read it. Keys you change or
-  remove in 2.0 in the meantime stay as you set them. If you go back to 1.9 in the meantime, keys
+  remove in 2.0 in the meantime stay as you set them. GreenCLI notes each such change in
+  `secret_store.json`; if it can't write that file (for example, the disk is full), it doesn't
+  make the change and says "Nothing was changed. …". If you go back to 1.9 in the meantime, keys
   you change or remove there are changed or removed in 2.0 too at its next start.
 - **No password store** (some Linux setups, for example with no keyring running, or a store that
   doesn't answer within 3 seconds): keys stay in `ai_keys.json` and `mcp_creds.json` (owner-only,
@@ -768,6 +770,7 @@ live compliance:
 | Vault won't unlock after a crash | A corrupt `vault.enc` is preserved, not overwritten. Back it up, then remove it to start fresh (saved secrets are lost only if the file was truly corrupted). |
 | *"Can't reach the system password store"* | Keys saved on this computer are still there. Log in to the desktop (on Linux, make sure a keyring such as GNOME Keyring is running), then try again. On a Mac after an update, macOS may ask to let GreenCLI use its Keychain items: enter your login password and choose **Always Allow** (**Allow** alone asks again later). If you chose **Deny**, open Settings or the AI panel again and allow it. If you copied the data folder from another computer, the keys aren't on this one. Start a keyring, or quit GreenCLI and delete `secret_store.json` to keep keys in private files, then enter them again. |
 | *"An old key file couldn't be read …"* | Enter your keys again, then delete the file Settings names. |
+| *"Nothing was changed. GreenCLI can't write secret_store.json …"* | Some keys from 1.9 are still moving, and each change to them must be noted in that file. Free some disk space (or make the data folder writable), then save or remove the key again. |
 | greencli-mcp: *"No hidden copy for this snapshot"* or *"out of date"* | Open the Config Archive panel (activity bar or command palette) and click **Make hidden copies**. |
 | Updates: *"Move GreenCLI to Applications first."* | Drag GreenCLI into Applications and open it from there. |
 | Updates: *"You have the latest version."* but GitHub has a newer one | That release is still a draft, or wasn't set as the latest release: publish it as the latest release. If it is already published as the latest, its update files are missing or wrong (update-files wasn't green for it): release a new version and publish it only after update-files is green. |

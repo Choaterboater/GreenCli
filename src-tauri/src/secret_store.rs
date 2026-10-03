@@ -28,10 +28,12 @@
 // value still waiting in the file reads as saved, so it keeps working. The
 // marker keeps the files being moved (`moving`), the accounts the move
 // already copied (`moved`) and the accounts the user saved or removed since
-// (`done`). A retry skips the user's changes, so it never puts an old 1.9
-// value back over a 2.0 change. It skips a copied account only while the
-// store still holds the file's value: one changed in 1.9 since (going back
-// to 1.9 between the two starts) is copied again, and one removed there is
+// (`done`). A save or remove is noted before the store is changed, and one
+// the marker can't note is refused, since the next start would undo it. A
+// retry skips the user's changes, so it never puts an old 1.9 value back
+// over a 2.0 change. It skips a copied account only while the store still
+// holds the file's value: one changed in 1.9 since (going back to 1.9
+// between the two starts) is copied again, and one removed there is
 // removed. A file that is gone ends its move, and the marker forgets it.
 //
 // Values are cached per account, in both modes. Every change writes a new
@@ -95,6 +97,11 @@ const MAX_PARTS: usize = 999_999;
 /// computer brings the marker but not the keys.
 pub const UNAVAILABLE: &str =
     "Can't reach the system password store. Keys saved on this computer are still there. Try again after you log in to the desktop.";
+
+/// The error for a save or remove refused because the marker can't note it
+/// while a move from 1.9 is pending (see note_user_change).
+const NOT_NOTED: &str =
+    "Nothing was changed. GreenCLI can't write secret_store.json in its data folder (is the disk full?), and while keys from 1.9 are still moving it must note each change there.";
 
 /// Which store holds the keys. A build only makes its own system's kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -695,6 +702,13 @@ pub struct StoreStatus {
     pub move_pending: bool,
 }
 
+/// What the marker held for an account before note_user_change noted it.
+#[derive(Debug, Default, Clone, Copy)]
+struct PriorNote {
+    done: bool,
+    moved: bool,
+}
+
 /// The result of moving one old file into the OS store.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MoveOutcome {
@@ -862,9 +876,16 @@ impl SecretStore {
     /// is noted as moving in the same write: a move that failed before it
     /// could note the file (a read error, or a marker write that failed)
     /// would otherwise make the next start a first try, which forgets `done`.
-    fn note_user_change(&self, account: &str) {
+    ///
+    /// Called before the change, with `ops` held. For an account a pending
+    /// file holds, the note must land, or the next start would undo the
+    /// change: when the marker can't be written the change is refused, and
+    /// the store is left as it was. For any other account it is best effort.
+    /// Returns what the marker held, so a change that then fails can put it
+    /// back (None: nothing was noted).
+    fn note_user_change(&self, account: &str) -> Result<Option<PriorNote>, String> {
         if !matches!(self.mode, Mode::Os(_)) || !self.move_pending.load(Ordering::Relaxed) {
-            return;
+            return Ok(None);
         }
         let files: Vec<String> = self
             .pending
@@ -874,15 +895,50 @@ impl SecretStore {
             .filter(|(_, prefix)| account.starts_with(prefix.as_str()))
             .filter_map(|(path, _)| path.file_name().map(|n| n.to_string_lossy().to_string()))
             .collect();
-        if let Err(e) = self.update_marker(|m| {
+        let mut prior = PriorNote::default();
+        let noted = self.update_marker(|m| {
+            prior = PriorNote {
+                done: list_of(m, DONE).iter().any(|a| a == account),
+                moved: list_of(m, MOVED).iter().any(|a| a == account),
+            };
             remove_from_list(m, MOVED, |a| a == account);
             add_to_list(m, DONE, account);
             for file in &files {
                 add_to_list(m, MOVING, file);
             }
-        }) {
-            log::warn!("Couldn't note {} in {}: {}", account, MARKER_FILE, e);
+        });
+        match noted {
+            Ok(()) => Ok(Some(prior)),
+            Err(e) => {
+                log::warn!("Couldn't note {} in {}: {}", account, MARKER_FILE, e);
+                if files.is_empty() {
+                    Ok(None)
+                } else {
+                    Err(NOT_NOTED.to_string())
+                }
+            }
         }
+    }
+
+    /// A save or remove that note_user_change noted failed: put the marker
+    /// back as it was for `account`, so the next start moves its old value as
+    /// before. Its file stays noted as moving, which only keeps the next start
+    /// from forgetting the changes that were made. Returns the error as the
+    /// user sees it.
+    fn change_failed(&self, account: &str, noted: Option<PriorNote>, e: String) -> String {
+        if let Some(prior) = noted {
+            if let Err(undo) = self.update_marker(|m| {
+                if !prior.done {
+                    remove_from_list(m, DONE, |a| a == account);
+                }
+                if prior.moved {
+                    add_to_list(m, MOVED, account);
+                }
+            }) {
+                log::warn!("Couldn't take {} back out of {}: {}", account, MARKER_FILE, undo);
+            }
+        }
+        self.user_error(account, e)
     }
 
     fn move_failed(&self, path: &Path, prefix: &str) -> MoveOutcome {
@@ -1046,6 +1102,7 @@ impl SecretStore {
         }
         let _ops = self.lock_ops();
         self.sync_cache_locked();
+        let noted = self.note_user_change(account)?;
         let result = self.write_backend(account, value.as_bytes());
         if result.is_ok() {
             self.cache()
@@ -1056,18 +1113,13 @@ impl SecretStore {
         }
         // Even a save that failed may have changed something.
         self.note_change_locked();
-        match result {
-            Ok(()) => {
-                self.note_user_change(account);
-                Ok(())
-            }
-            Err(e) => Err(self.user_error(account, e)),
-        }
+        result.map_err(|e| self.change_failed(account, noted, e))
     }
 
     pub fn delete(&self, account: &str) -> Result<(), String> {
         let _ops = self.lock_ops();
         self.sync_cache_locked();
+        let noted = self.note_user_change(account)?;
         let result = self.delete_backend(account);
         if result.is_ok() {
             self.cache().insert(account.to_string(), None);
@@ -1075,13 +1127,7 @@ impl SecretStore {
             self.cache().remove(account);
         }
         self.note_change_locked();
-        match result {
-            Ok(()) => {
-                self.note_user_change(account);
-                Ok(())
-            }
-            Err(e) => Err(self.user_error(account, e)),
-        }
+        result.map_err(|e| self.change_failed(account, noted, e))
     }
 
     /// Copy `from` to `to` and check the copy reads back the same, through a
@@ -1920,6 +1966,86 @@ mod tests {
             let marker = read_marker(&dir.join(MARKER_FILE));
             assert!(marker.get(MOVING).is_none() && marker.get(MOVED).is_none() && marker.get(DONE).is_none());
         }
+    }
+
+    #[test]
+    fn a_change_the_marker_cant_note_is_refused_and_the_store_left_as_it_was() {
+        // This start's move fails because the marker can't be written, and
+        // that lasts the whole session (a full disk), so no change can be noted.
+        for remove in [false, true] {
+            let dir = temp_dir();
+            let mem = MemBackend::new();
+            drop(os_store(&dir, &mem));
+            let path = dir.join(AI_KEYS_FILE);
+            fs::write(&path, r#"{"anthropic":"OLD","openai":"O1"}"#).unwrap();
+            let blocker = dir.join("secret_store.json.tmp");
+            fs::create_dir(&blocker).unwrap();
+            let first = os_store(&dir, &mem);
+            assert_eq!(first.move_file(&path, AI_KEY_PREFIX), MoveOutcome::Failed);
+            assert!(first.status().move_pending);
+            // The user saves or removes a key the file holds: refused, and
+            // nothing changes, so the next start doesn't undo a change the
+            // user was told was made.
+            let change = if remove {
+                first.delete("ai-key:anthropic")
+            } else {
+                first.set("ai-key:anthropic", "NEW")
+            };
+            assert_eq!(change.unwrap_err(), NOT_NOTED, "remove: {}", remove);
+            assert!(mem.raw("ai-key:anthropic").is_none());
+            assert_eq!(first.get("ai-key:anthropic").unwrap().unwrap().as_str(), "OLD");
+            // A key no pending file holds saves as before.
+            first.set("mcp-creds:central", "token: x").unwrap();
+            assert_eq!(mem.raw("mcp-creds:central").unwrap(), b"token: x");
+            drop(first);
+
+            // Next start, with the marker writable again: the old key moves.
+            fs::remove_dir(&blocker).unwrap();
+            let next = os_store(&dir, &mem);
+            assert_eq!(next.move_file(&path, AI_KEY_PREFIX), MoveOutcome::Moved(2));
+            assert_eq!(mem.raw("ai-key:anthropic").unwrap(), b"OLD");
+            assert_eq!(mem.raw("ai-key:openai").unwrap(), b"O1");
+            assert!(!path.exists());
+        }
+    }
+
+    #[test]
+    fn a_save_or_remove_that_fails_while_the_move_is_pending_keeps_the_marker_as_it_was() {
+        let dir = temp_dir();
+        let mem = MemBackend::new();
+        let path = dir.join(AI_KEYS_FILE);
+        // anthropic and moonshot move; openai fails, so it and openrouter wait in the file.
+        let body = r#"{"anthropic":"A1","moonshot":"M1","openai":"O1","openrouter":"R1"}"#;
+        let first = partial_move(&dir, &mem, body);
+        first.set("ai-key:openrouter", "R2").unwrap();
+        // The store then refuses a save of a waiting key, of a moved key and
+        // of a key changed already, and a remove of a moved key.
+        for (account, value) in [("ai-key:openai", "O2"), ("ai-key:anthropic", "A2"), ("ai-key:openrouter", "R3")] {
+            *mem.fail_account.lock().unwrap() = Some(account.into());
+            assert!(first.set(account, value).is_err(), "{}", account);
+        }
+        *mem.fail_account.lock().unwrap() = None;
+        mem.fail_all.store(true, Ordering::Relaxed);
+        assert!(first.delete("ai-key:moonshot").is_err());
+        mem.fail_all.store(false, Ordering::Relaxed);
+        let marker = read_marker(&dir.join(MARKER_FILE));
+        assert_eq!(list_of(&marker, DONE), vec!["ai-key:openrouter".to_string()]);
+        let mut moved = list_of(&marker, MOVED);
+        moved.sort();
+        assert_eq!(moved, vec!["ai-key:anthropic".to_string(), "ai-key:moonshot".to_string()]);
+        // The waiting key still reads from the file.
+        assert_eq!(first.get("ai-key:openai").unwrap().unwrap().as_str(), "O1");
+        drop(first);
+
+        // Next start: every key the user didn't change moves, and the change
+        // that was made stays.
+        let next = os_store(&dir, &mem);
+        assert_eq!(next.move_file(&path, AI_KEY_PREFIX), MoveOutcome::Moved(4));
+        assert_eq!(mem.raw("ai-key:openai").unwrap(), b"O1");
+        assert_eq!(mem.raw("ai-key:anthropic").unwrap(), b"A1");
+        assert_eq!(mem.raw("ai-key:moonshot").unwrap(), b"M1");
+        assert_eq!(mem.raw("ai-key:openrouter").unwrap(), b"R2");
+        assert!(!path.exists());
     }
 
     #[test]

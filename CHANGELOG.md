@@ -26,6 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tools now say so instead of answering with empty lists.
 - Settings stops naming an old 1.9 key file it couldn't read once you delete it. Before, it kept
   saying to delete the file until GreenCLI restarted.
+- While keys from 1.9 are still moving, a key you save or remove is noted in `secret_store.json`
+  before it is changed. If GreenCLI can't write that file (for example, the disk is full), the
+  change is refused with "Nothing was changed. …". Before, the change was made, and the next start
+  could put the old 1.9 key back over it.
 
 ## [2.0.0] - 2026-10-02
 
