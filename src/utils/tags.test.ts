@@ -22,3 +22,11 @@ describe('imports keep the lab tag in its one spelling', () => {
     expect(hosts[0]?.tags).toEqual(['lab', 'core']);
   });
 });
+
+describe('review: a stored Lab tag counts as the lab tag', () => {
+  it('isLabTag ignores case', async () => {
+    const { isLabTag } = await import('./tags');
+    expect(isLabTag('Lab')).toBe(true);
+    expect(isLabTag('labs')).toBe(false);
+  });
+});

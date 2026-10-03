@@ -83,3 +83,43 @@ describe('riskyLines: one verdict for every check', () => {
     expect(isRiskyCommand('interface 1/1/1')).toBe(false);
   });
 });
+
+describe('review: the AI gate never lets a hidden second command or a non-filter pipe pass as a read', () => {
+  it('asks for every chain, background job, process substitution and shell', () => {
+    for (const cmd of [
+      'ping -c1 x & reboot', 'dir & format c: /q', 'cat /etc/hosts | xargs reboot', 'echo y | sudo reboot',
+      'head x | delete', 'ping 1.1.1.1 | install', 'get system | reload', 'cat <(reboot)', 'sh -c "reboot"',
+      'sh install.sh', 'show version; reload', 'show reload',
+    ]) expect({ cmd, write: aiIsWriteCommand(cmd) }).toEqual({ cmd, write: true });
+  });
+
+  it('keeps real reads with filters as reads', () => {
+    for (const cmd of [
+      'show running-config | include reload', 'sh run | i shutdown', 'show interfaces | match down | count',
+      'show log messages | last 20', 'cat /var/log/syslog | grep error', 'display current-configuration | include vlan',
+    ]) expect({ cmd, write: aiIsWriteCommand(cmd) }).toEqual({ cmd, write: false });
+  });
+
+  it('a read with a risky word in its filter is a read for every check', () => {
+    for (const line of ['show interface | include shutdown', 'show log | include zeroize', 'show run | include clear']) {
+      expect(kind(line)).toBe('read');
+      expect(isRiskyCommand(line)).toBe(false);
+    }
+  });
+});
+
+describe('review: wipes and reboots keep their danger styling', () => {
+  it('flags format, filesystem deletes, factory resets and shell reboots', () => {
+    for (const cmd of [
+      'format flash:', 'delete flash:vlan.dat', 'delete /force nvram:startup-config', 'factory-reset', 'factory-default',
+      'sudo reboot', 'systemctl reboot', 'show ver; reload',
+    ]) expect({ cmd, danger: commandIsDangerous(cmd) }).toEqual({ cmd, danger: true });
+  });
+
+  it('does not flag clearing the screen or the Linux install tool', () => {
+    expect(kind('clear')).not.toBe('dangerous');
+    expect(kind('clear screen')).not.toBe('dangerous');
+    expect(kind('install -m 644 a b')).not.toBe('dangerous');
+    expect(kind('clear counters')).toBe('dangerous');
+  });
+});

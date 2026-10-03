@@ -13,7 +13,12 @@ export function normalizeTags(tags: readonly string[]): string[] {
   return out.includes(LAB_TAG) ? [LAB_TAG, ...out.filter((t) => t !== LAB_TAG)] : out;
 }
 
+/** True for the reserved lab tag, in any spelling (tags saved before it was reserved may be `Lab`). */
+export function isLabTag(tag: string): boolean {
+  return tag.trim().toLowerCase() === LAB_TAG;
+}
+
 /** True when a host carries the reserved lab tag (any spelling). */
 export function isLabHost(host: { tags?: readonly string[] }): boolean {
-  return (host.tags ?? []).some((t) => t.trim().toLowerCase() === LAB_TAG);
+  return (host.tags ?? []).some(isLabTag);
 }

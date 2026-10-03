@@ -6,7 +6,7 @@
 //   change     changes or saves config (configure, write memory, commit, no …, copy …)
 //   dangerous  can cause an outage or lose data (reload, shutdown, erase, delete interfaces …)
 
-import { AI_CONFIG_ENTER, AI_DESTRUCTIVE_CMD, AI_READ_ONLY_CMD, AI_WRITE_PIPE, COMMAND_CHAIN, LINE_BREAK } from './aiGating';
+import { AI_CONFIG_ENTER, AI_DESTRUCTIVE_CMD, AI_WRITE_PIPE, isReadLine, LINE_BREAK } from './aiGating';
 
 export type LineKind = 'read' | 'config' | 'change' | 'dangerous';
 
@@ -25,10 +25,16 @@ const DO = '^\\s*(?:do\\s+)?';
 const DANGER_RULES: Array<{ re: RegExp; reason: string }> = [
   // Software and state: installing or upgrading software, rolling back to an older config, clearing
   // live sessions, tables or counters. (`rollback 0` / a bare `rollback` only drop uncommitted edits.)
-  { re: new RegExp(`${DO}(?:install|upgrade)${E}`, 'i'), reason: 'installs or upgrades software' },
+  // (Not the Linux file-copy tool: `install -m 644 a b`.)
+  { re: new RegExp(`${DO}(?:install|upgrade)${E}(?!\\s+-)`, 'i'), reason: 'installs or upgrades software' },
   { re: /^\s*(?:do\s+)?request\s+system\s+software\s+(?:add|install|rollback)\b/i, reason: 'installs or rolls back software' },
   { re: /^\s*rollback\s+(?:[1-9]\d*|rescue)\b/i, reason: 'loads an older config' },
-  { re: new RegExp(`${DO}clear${E}`, 'i'), reason: 'clears live sessions, tables or counters' },
+  // (Not a bare `clear` or `clear screen`.)
+  { re: /^\s*(?:do\s+)?clear\s+(?!screen\b)\S/i, reason: 'clears live sessions, tables or counters' },
+  // Wiping storage, deleting files from a device filesystem (flash:, nvram:), factory resets.
+  { re: new RegExp(`${DO}format${E}`, 'i'), reason: 'formats storage' },
+  { re: /^\s*(?:do\s+)?delete\s+(?:\/\S+\s+)*[\w-]+:/i, reason: 'deletes files from the device' },
+  { re: new RegExp(`${T}factory-(?:reset|default)${E}`, 'i'), reason: 'resets the device to factory defaults' },
   // Wipe / factory-reset / reboot.
   { re: new RegExp(`${DO}erase${E}`, 'i'), reason: 'erases the config or storage' },
   { re: new RegExp(`${DO}write\\s+erase${E}`, 'i'), reason: 'erases the saved config' },
@@ -36,7 +42,7 @@ const DANGER_RULES: Array<{ re: RegExp; reason: string }> = [
   // `reload cancel` just cancels a scheduled reload.
   { re: new RegExp(`${DO}reload${E}(?!\\s+cancel)`, 'i'), reason: 'reboots the switch' },
   {
-    re: new RegExp(`${DO}(?:request\\s+system\\s+)?(?:reboot|halt|power-off)${E}`, 'i'),
+    re: new RegExp(`${DO}(?:sudo\\s+)?(?:systemctl\\s+)?(?:request\\s+system\\s+)?(?:reboot|halt|power-?off|poweroff)${E}`, 'i'),
     reason: 'reboots or powers off the device',
   },
   // AOS-CX reboots with `boot system`.
@@ -102,16 +108,18 @@ const EXTRA_CHANGE = /^\s*(do\s+)?(no\s+\S|shut(down)?\b|halt\b|power-?off\b)/i;
 /** What one line does, with the plain-words reason when it is dangerous. */
 export function classifyLine(line: string): { kind: LineKind; reason?: string } {
   const raw = line.trim();
-  if (!raw) return { kind: 'read' };
+  // A read first: a risky word in a read's filter (`show int | include shutdown`) is just text.
+  if (!raw || isReadLine(raw)) return { kind: 'read' };
   const reason = dangerReason(raw);
   if (reason) return { kind: 'dangerous', reason };
-  if (AI_READ_ONLY_CMD.test(raw) && !AI_WRITE_PIPE.test(raw) && !COMMAND_CHAIN.test(raw)) return { kind: 'read' };
   const cmd = blankFreeText(raw);
   if (AI_CONFIG_ENTER.test(cmd) || AI_DESTRUCTIVE_CMD.test(cmd) || AI_WRITE_PIPE.test(raw) || EXTRA_CHANGE.test(cmd)) return { kind: 'change' };
   return { kind: 'config' };
 }
 
-/** True when any line of a (possibly multi-line) command is dangerous. */
+/** True when any line of a (possibly multi-line) command is dangerous, each command of a chain
+ *  (`show ver; reload`, `a && b`, `a & b`) judged on its own. */
 export function commandIsDangerous(text: string): boolean {
-  return text.split(LINE_BREAK).some((line) => classifyLine(line).kind === 'dangerous');
+  return text.split(LINE_BREAK).flatMap((line) => line.split(/;|&&|\|\||&/))
+    .some((part) => classifyLine(part).kind === 'dangerous');
 }

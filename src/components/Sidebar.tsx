@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { LAB_TAG, normalizeTags } from '../utils/tags';
+import { isLabTag, normalizeTags } from '../utils/tags';
 import {
   ChevronRight,
   ChevronDown,
@@ -523,11 +523,11 @@ export default function Sidebar({ onConnect }: SidebarProps) {
                                     setQuery(t);
                                   }}
                                   className={`px-1 py-px rounded text-[9px] leading-none hover:text-[var(--accent)] hover:bg-[var(--accent-soft)] ${
-                                    t === LAB_TAG
+                                    isLabTag(t)
                                       ? 'bg-[var(--accent-soft)] text-[var(--accent)] font-semibold'
                                       : 'bg-[var(--bg-tertiary)] text-[var(--text-muted)]'
                                   }`}
-                                  title={t === LAB_TAG ? 'Lab device: filter by "lab"' : `Filter by "${t}"`}
+                                  title={isLabTag(t) ? 'Lab device: filter by "lab"' : `Filter by "${t}"`}
                                 >
                                   {t}
                                 </button>
