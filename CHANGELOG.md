@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Windows: an MCP login that GreenCLI 2.0.0 saved for a server with a capital letter (or a
+  character such as `/`) in its name is found again. It moves to its new Credential Manager name
+  the first time it is used. Servers whose names differ only in case keep their own logins.
+
 ## [2.0.0] - 2026-10-02
 
 ### Added

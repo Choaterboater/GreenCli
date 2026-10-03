@@ -4,7 +4,10 @@
 // Secret Service (the "OS store"), each under the service name of the app's
 // identifier and an account of `ai-key:<provider>` or `mcp-creds:<server>`.
 // Windows ignores case in an item's target name, so there the target spells
-// capitals and other characters as `%xx` (see windows_target).
+// capitals and other characters as `%xx` (see windows_target). 2.0.0 used
+// keyring's default target, `<account>.<service>`; an item it saved for an
+// account whose target has changed since still reads, and moves to the new
+// target as it is used (see CredTargets).
 //
 // Where they are kept is decided once per start:
 // - `secret_store.json` (the marker) exists: the OS store, with no probe. A
@@ -39,7 +42,7 @@
 // write alone switches to the new value: a save that stops partway leaves the
 // old value whole, and the new parts it wrote are deleted. Once the header is
 // written, the old slot's parts go, along with any a save that stopped
-// earlier left behind. Early 2.0 builds wrote `GCS1 N\n` with parts in
+// earlier left behind. 2.0.0 wrote `GCS1 N\n` with parts in
 // `part1:<account>` … `partN:<account>`; that still reads.
 
 use crate::private_fs;
@@ -85,9 +88,10 @@ const MAX_PARTS: usize = 999_999;
 pub const UNAVAILABLE: &str =
     "Can't reach the system password store. Keys saved on this computer are still there. Try again after you log in to the desktop.";
 
-/// Which store holds the keys.
+/// Which store holds the keys. A build only makes its own system's kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
+#[allow(dead_code)]
 pub enum StoreKind {
     Keychain,
     CredentialManager,
@@ -108,9 +112,19 @@ pub trait SecretBackend: Send + Sync {
 
 // ─── The OS store ───
 
+/// The system password store for `service`.
+fn os_backend(service: &str) -> Arc<dyn SecretBackend> {
+    #[cfg(windows)]
+    let backend = CredTargets::new(KeyringBackend::new(service), service);
+    #[cfg(not(windows))]
+    let backend = KeyringBackend::new(service);
+    Arc::new(backend)
+}
+
 /// macOS Keychain, Windows Credential Manager or the Secret Service, through
 /// the keyring crate. A new Entry for every call, so a read back after a save
-/// really asks the store again.
+/// really asks the store again. On Windows it holds the items CredTargets
+/// names.
 pub struct KeyringBackend {
     service: String,
 }
@@ -122,43 +136,13 @@ impl KeyringBackend {
         }
     }
 
+    #[cfg(not(windows))]
     fn entry(&self, account: &str) -> Result<keyring::Entry, String> {
-        #[cfg(windows)]
-        let entry = keyring::Entry::new_with_target(&windows_target(&self.service, account), &self.service, account);
-        #[cfg(not(windows))]
-        let entry = keyring::Entry::new(&self.service, account);
-        entry.map_err(|e| e.to_string())
+        keyring::Entry::new(&self.service, account).map_err(|e| e.to_string())
     }
 }
 
-/// The Credential Manager target name for `account`. Windows compares target
-/// names without regard to case, but server names that differ only in case
-/// are different servers, so keyring's default `<account>.<service>` would
-/// let "Central" and "central" share one item. The username field still
-/// holds the account as it is, which is what Credential Manager shows.
-#[cfg_attr(not(windows), allow(dead_code))]
-fn windows_target(service: &str, account: &str) -> String {
-    format!("{}.{}", win_target(account), service)
-}
-
-/// `account` with no capital letters, one to one: `a-z`, `0-9` and `-_.: `
-/// stay as they are (so `ai-key:anthropic` still reads), and every other
-/// UTF-8 byte, `%` and capitals included, becomes `%` and two lowercase hex
-/// digits. Two different accounts never match even when case is ignored.
-#[cfg_attr(not(windows), allow(dead_code))]
-fn win_target(account: &str) -> String {
-    use std::fmt::Write;
-    let mut out = String::with_capacity(account.len());
-    for b in account.bytes() {
-        if matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b':' | b' ') {
-            out.push(b as char);
-        } else {
-            let _ = write!(out, "%{:02x}", b);
-        }
-    }
-    out
-}
-
+#[cfg(not(windows))]
 impl SecretBackend for KeyringBackend {
     fn get(&self, account: &str) -> Result<Option<Zeroizing<Vec<u8>>>, String> {
         match self.entry(account)?.get_secret() {
@@ -182,23 +166,247 @@ impl SecretBackend for KeyringBackend {
     }
 
     fn max_blob(&self) -> usize {
-        // CRED_MAX_CREDENTIAL_BLOB_SIZE. Keychain and the Secret Service take
-        // much more; 32 KiB parts keep each item a sensible size.
-        if cfg!(windows) {
-            2560
-        } else {
-            32 * 1024
-        }
+        // Keychain and the Secret Service take much more; 32 KiB parts keep
+        // each item a sensible size.
+        32 * 1024
     }
 
     fn kind(&self) -> StoreKind {
         if cfg!(target_os = "macos") {
             StoreKind::Keychain
-        } else if cfg!(windows) {
-            StoreKind::CredentialManager
         } else {
             StoreKind::SecretService
         }
+    }
+}
+
+#[cfg(windows)]
+impl CredItems for KeyringBackend {
+    fn read(&self, target: &str) -> Result<Option<CredItem>, String> {
+        // A read finds the item by its target alone; the user name given to
+        // the Entry is only used by a save.
+        let entry = keyring::Entry::new_with_target(target, &self.service, "").map_err(|e| e.to_string())?;
+        let user = match entry.get_attributes() {
+            Ok(mut attrs) => attrs.remove("username").unwrap_or_default(),
+            Err(keyring::Error::NoEntry) => return Ok(None),
+            Err(e) => return Err(e.to_string()),
+        };
+        match entry.get_secret() {
+            Ok(v) => Ok(Some((user, Zeroizing::new(v)))),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    fn write(&self, target: &str, user: &str, value: &[u8]) -> Result<(), String> {
+        keyring::Entry::new_with_target(target, &self.service, user)
+            .and_then(|entry| entry.set_secret(value))
+            .map_err(|e| e.to_string())
+    }
+
+    fn remove(&self, target: &str) -> Result<(), String> {
+        let entry = keyring::Entry::new_with_target(target, &self.service, "").map_err(|e| e.to_string())?;
+        match entry.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+}
+
+/// The Credential Manager target name for `account`. Windows compares target
+/// names without regard to case, but server names that differ only in case
+/// are different servers, so keyring's default `<account>.<service>` would
+/// let "Central" and "central" share one item. The username field still
+/// holds the account as it is, which is what Credential Manager shows.
+#[cfg(any(windows, test))]
+fn windows_target(service: &str, account: &str) -> String {
+    format!("{}.{}", win_target(account), service)
+}
+
+/// `account` with no capital letters, one to one: `a-z`, `0-9` and `-_.: `
+/// stay as they are (so `ai-key:anthropic` still reads), and every other
+/// UTF-8 byte, `%` and capitals included, becomes `%` and two lowercase hex
+/// digits. Two different accounts never match even when case is ignored.
+#[cfg(any(windows, test))]
+fn win_target(account: &str) -> String {
+    use std::fmt::Write;
+    let mut out = String::with_capacity(account.len());
+    for b in account.bytes() {
+        if matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b':' | b' ') {
+            out.push(b as char);
+        } else {
+            let _ = write!(out, "%{:02x}", b);
+        }
+    }
+    out
+}
+
+/// A Credential Manager item's user name and secret.
+#[cfg(any(windows, test))]
+type CredItem = (String, Zeroizing<Vec<u8>>);
+
+/// Credential Manager items as CredTargets sees them: an item is found by
+/// its target name alone, with case ignored, and holds a user name and a
+/// secret.
+#[cfg(any(windows, test))]
+trait CredItems: Send + Sync {
+    /// The user name and secret of the item at `target`, or None.
+    fn read(&self, target: &str) -> Result<Option<CredItem>, String>;
+    /// Save `value` at `target` with the user name `user`, in place of any
+    /// item there.
+    fn write(&self, target: &str, user: &str, value: &[u8]) -> Result<(), String>;
+    /// Ok when there is no item at `target`.
+    fn remove(&self, target: &str) -> Result<(), String>;
+}
+
+/// Windows Credential Manager: each account in its own item at
+/// windows_target, with the account as the user name.
+///
+/// GreenCLI 2.0.0 used keyring's default target, `<account>.<service>`. An
+/// item it saved for an account whose target has changed since (a capital
+/// or another `%xx` character in the name) is still read from there, and
+/// moves to the new target when it is read, saved over or removed. Windows
+/// finds a target whatever its case, so the old target of "Central" also
+/// finds an item 2.0.0 saved for "central", and the target of "central" finds
+/// one it saved for "Central". An item is only ever taken as an account's
+/// when its user name is that account; one saved for another account is
+/// moved to that account's own target before a save or remove would replace
+/// it.
+#[cfg(any(windows, test))]
+struct CredTargets<I> {
+    items: I,
+    service: String,
+}
+
+#[cfg(any(windows, test))]
+impl<I: CredItems> CredTargets<I> {
+    fn new(items: I, service: &str) -> Self {
+        Self {
+            items,
+            service: service.to_string(),
+        }
+    }
+
+    fn target(&self, account: &str) -> String {
+        windows_target(&self.service, account)
+    }
+
+    /// The target 2.0.0 used for `account`, when it isn't the one used now.
+    fn old_target(&self, account: &str) -> Option<String> {
+        (win_target(account) != account).then(|| format!("{}.{}", account, self.service))
+    }
+
+    /// The secret at `target` when the item there is `account`'s.
+    fn read_own(&self, target: &str, account: &str) -> Result<Option<Zeroizing<Vec<u8>>>, String> {
+        Ok(self
+            .items
+            .read(target)?
+            .and_then(|(user, value)| (user == account).then_some(value)))
+    }
+
+    /// Save `value` for `account` at its target and check that it reads back
+    /// the same. One that doesn't is removed.
+    fn write_checked(&self, account: &str, value: &[u8]) -> Result<(), String> {
+        let target = self.target(account);
+        self.items.write(&target, account, value)?;
+        match self.read_own(&target, account) {
+            Ok(Some(back)) if back.as_slice() == value => Ok(()),
+            back => {
+                if let Err(e) = self.items.remove(&target) {
+                    log::warn!("Couldn't remove a copy of {} that didn't check out: {}", account, e);
+                }
+                back?;
+                Err("the copy didn't read back the same".into())
+            }
+        }
+    }
+
+    /// Before a save or remove at `target`: an item there that 2.0.0 saved
+    /// for another account moves to that account's own target first, unless
+    /// that account has a newer value there.
+    fn clear_way(&self, target: &str, account: &str) -> Result<(), String> {
+        let Some((user, value)) = self.items.read(target)? else {
+            return Ok(());
+        };
+        if user == account || user.is_empty() {
+            return Ok(());
+        }
+        if self.read_own(&self.target(&user), &user)?.is_none() {
+            self.write_checked(&user, &value)?;
+        }
+        Ok(())
+    }
+
+    /// Remove `account`'s item at `old`, when the item there is its own.
+    fn remove_old(&self, old: &str, account: &str) -> Result<(), String> {
+        if self.read_own(old, account)?.is_some() {
+            self.items.remove(old)?;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(any(windows, test))]
+impl<I: CredItems> SecretBackend for CredTargets<I> {
+    fn get(&self, account: &str) -> Result<Option<Zeroizing<Vec<u8>>>, String> {
+        let target = self.target(account);
+        if let Some(value) = self.read_own(&target, account)? {
+            return Ok(Some(value));
+        }
+        let Some(old) = self.old_target(account) else {
+            return Ok(None);
+        };
+        let Some(value) = self.read_own(&old, account)? else {
+            return Ok(None);
+        };
+        // Saved by 2.0.0: move it to its new target. Best effort; until it
+        // moves, it is read from the old one.
+        match self
+            .clear_way(&target, account)
+            .and_then(|()| self.write_checked(account, &value))
+        {
+            Ok(()) => {
+                if let Err(e) = self.items.remove(&old) {
+                    log::warn!("Couldn't remove the 2.0.0 item of {}: {}", account, e);
+                }
+            }
+            Err(e) => log::warn!("Couldn't move the 2.0.0 item of {}: {}", account, e),
+        }
+        Ok(Some(value))
+    }
+
+    fn set(&self, account: &str, value: &[u8]) -> Result<(), String> {
+        let target = self.target(account);
+        self.clear_way(&target, account)?;
+        self.items.write(&target, account, value)?;
+        // The 2.0.0 item is out of date now. Best effort: a remove clears it
+        // first, so it never comes back.
+        if let Some(old) = self.old_target(account) {
+            if let Err(e) = self.remove_old(&old, account) {
+                log::warn!("Couldn't remove the 2.0.0 item of {}: {}", account, e);
+            }
+        }
+        Ok(())
+    }
+
+    fn delete(&self, account: &str) -> Result<(), String> {
+        // The 2.0.0 item first: if the new one went first and this failed, a
+        // read would bring back the value just removed.
+        if let Some(old) = self.old_target(account) {
+            self.remove_old(&old, account)?;
+        }
+        let target = self.target(account);
+        self.clear_way(&target, account)?;
+        self.items.remove(&target)
+    }
+
+    fn max_blob(&self) -> usize {
+        // CRED_MAX_CREDENTIAL_BLOB_SIZE.
+        2560
+    }
+
+    fn kind(&self) -> StoreKind {
+        StoreKind::CredentialManager
     }
 }
 
@@ -287,7 +495,7 @@ impl SecretBackend for FileBackend {
 enum Slot {
     A,
     B,
-    /// `part<i>:<account>`, from early 2.0 builds: read and cleared, never written.
+    /// `part<i>:<account>`, from 2.0.0: read and cleared, never written.
     Legacy,
 }
 
@@ -514,7 +722,7 @@ impl SecretStore {
     /// Open the store for `app_dir`: the system password store under
     /// `service`, or the 1.9 files when there is none (see the top of this file).
     pub fn open(app_dir: &Path, service: &str) -> Self {
-        Self::open_with(app_dir, Arc::new(KeyringBackend::new(service)), PROBE_TIMEOUT)
+        Self::open_with(app_dir, os_backend(service), PROBE_TIMEOUT)
     }
 
     pub(crate) fn open_with(app_dir: &Path, os: Arc<dyn SecretBackend>, timeout: Duration) -> Self {
@@ -1864,6 +2072,187 @@ mod tests {
         assert_eq!(win_target("100%"), "100%25");
     }
 
+    /// Credential Manager in memory: a target finds an item whatever its case,
+    /// as on Windows, which compares target names in upper case.
+    #[derive(Default)]
+    struct CaseBlindItems {
+        /// (target, user name, secret)
+        items: Mutex<Vec<(String, String, Vec<u8>)>>,
+        /// Saves to targets that start with this fail.
+        fail_write: Mutex<Option<String>>,
+    }
+
+    const SERVICE: &str = "com.choatelabs.greencli";
+
+    impl CaseBlindItems {
+        fn find(items: &[(String, String, Vec<u8>)], target: &str) -> Option<usize> {
+            items.iter().position(|(t, _, _)| t.to_uppercase() == target.to_uppercase())
+        }
+
+        /// Save the way 2.0.0 did: keyring's default target.
+        fn put_200(&self, account: &str, value: &[u8]) {
+            let mut items = self.items.lock().unwrap();
+            let item = (format!("{}.{}", account, SERVICE), account.to_string(), value.to_vec());
+            match Self::find(&items, &item.0) {
+                Some(i) => items[i] = item,
+                None => items.push(item),
+            }
+        }
+
+        fn targets(&self) -> Vec<String> {
+            let mut v: Vec<String> = self.items.lock().unwrap().iter().map(|(t, _, _)| t.clone()).collect();
+            v.sort();
+            v
+        }
+    }
+
+    impl CredItems for Arc<CaseBlindItems> {
+        fn read(&self, target: &str) -> Result<Option<CredItem>, String> {
+            let items = self.items.lock().unwrap();
+            Ok(CaseBlindItems::find(&items, target).map(|i| (items[i].1.clone(), Zeroizing::new(items[i].2.clone()))))
+        }
+
+        fn write(&self, target: &str, user: &str, value: &[u8]) -> Result<(), String> {
+            if self.fail_write.lock().unwrap().as_deref().is_some_and(|f| target.starts_with(f)) {
+                return Err("write refused".into());
+            }
+            let mut items = self.items.lock().unwrap();
+            let item = (target.to_string(), user.to_string(), value.to_vec());
+            match CaseBlindItems::find(&items, target) {
+                Some(i) => items[i] = item,
+                None => items.push(item),
+            }
+            Ok(())
+        }
+
+        fn remove(&self, target: &str) -> Result<(), String> {
+            let mut items = self.items.lock().unwrap();
+            if let Some(i) = CaseBlindItems::find(&items, target) {
+                items.remove(i);
+            }
+            Ok(())
+        }
+    }
+
+    fn cred_store(items: &Arc<CaseBlindItems>) -> SecretStore {
+        SecretStore::os_for_tests(Arc::new(CredTargets::new(items.clone(), SERVICE)))
+    }
+
+    fn read_str(store: &SecretStore, account: &str) -> Option<String> {
+        store.get(account).unwrap().map(|v| v.to_string())
+    }
+
+    #[test]
+    fn windows_items_saved_by_200_still_read_and_move_to_their_new_targets() {
+        let items = Arc::new(CaseBlindItems::default());
+        items.put_200("mcp-creds:Central", b"login: C");
+        items.put_200("mcp-creds:aruba central", b"login: a");
+        items.put_200("ai-key:anthropic", ANTHROPIC.as_bytes());
+        // A long login, in 2.0.0's parts.
+        let long = long_value(6_000, 1);
+        items.put_200("mcp-creds:NetBox", b"GCS1 3\n");
+        for (i, part) in long.as_bytes().chunks(2560).enumerate() {
+            items.put_200(&format!("part{}:mcp-creds:NetBox", i + 1), part);
+        }
+
+        let store = cred_store(&items);
+        assert_eq!(read_str(&store, "mcp-creds:Central").as_deref(), Some("login: C"));
+        assert_eq!(read_str(&store, "mcp-creds:NetBox").as_deref(), Some(long.as_str()));
+        assert_eq!(read_str(&store, "mcp-creds:aruba central").as_deref(), Some("login: a"));
+        assert_eq!(read_str(&store, "ai-key:anthropic").as_deref(), Some(ANTHROPIC));
+        // Each one is under its new target now, and the old items are gone.
+        let mut want: Vec<String> = [
+            "mcp-creds:Central",
+            "mcp-creds:aruba central",
+            "ai-key:anthropic",
+            "mcp-creds:NetBox",
+            "part1:mcp-creds:NetBox",
+            "part2:mcp-creds:NetBox",
+            "part3:mcp-creds:NetBox",
+        ]
+        .iter()
+        .map(|a| windows_target(SERVICE, a))
+        .collect();
+        want.sort();
+        assert_eq!(items.targets(), want);
+        let fresh = cred_store(&items);
+        assert_eq!(read_str(&fresh, "mcp-creds:Central").as_deref(), Some("login: C"));
+        assert_eq!(read_str(&fresh, "mcp-creds:NetBox").as_deref(), Some(long.as_str()));
+
+        // A save moves the long login to a slot and clears 2.0.0's parts.
+        fresh.set("mcp-creds:NetBox", &long_value(3_000, 2)).unwrap();
+        assert_eq!(
+            items.targets(),
+            vec![
+                windows_target(SERVICE, "ai-key:anthropic"),
+                windows_target(SERVICE, "mcp-creds:Central"),
+                windows_target(SERVICE, "mcp-creds:NetBox"),
+                windows_target(SERVICE, "mcp-creds:aruba central"),
+                windows_target(SERVICE, "part1a:mcp-creds:NetBox"),
+                windows_target(SERVICE, "part2a:mcp-creds:NetBox"),
+            ]
+        );
+    }
+
+    #[test]
+    fn windows_a_save_or_remove_never_brings_back_the_200_item() {
+        let items = Arc::new(CaseBlindItems::default());
+        let b = CredTargets::new(items.clone(), SERVICE);
+        items.put_200("mcp-creds:Central", b"old");
+        b.set("mcp-creds:Central", b"new").unwrap();
+        assert_eq!(items.targets(), vec![windows_target(SERVICE, "mcp-creds:Central")]);
+        assert_eq!(b.get("mcp-creds:Central").unwrap().unwrap().as_slice(), b"new");
+
+        items.put_200("mcp-creds:Central", b"old");
+        b.delete("mcp-creds:Central").unwrap();
+        assert!(items.targets().is_empty());
+        assert!(b.get("mcp-creds:Central").unwrap().is_none());
+    }
+
+    #[test]
+    fn windows_a_move_that_fails_leaves_the_200_item_and_still_reads() {
+        let items = Arc::new(CaseBlindItems::default());
+        items.put_200("mcp-creds:Central", b"login: C");
+        *items.fail_write.lock().unwrap() = Some("mcp-creds:%43entral".into());
+        let store = cred_store(&items);
+        assert_eq!(read_str(&store, "mcp-creds:Central").as_deref(), Some("login: C"));
+        assert_eq!(items.targets(), vec![format!("mcp-creds:Central.{}", SERVICE)]);
+        *items.fail_write.lock().unwrap() = None;
+        assert_eq!(read_str(&cred_store(&items), "mcp-creds:Central").as_deref(), Some("login: C"));
+        assert_eq!(items.targets(), vec![windows_target(SERVICE, "mcp-creds:Central")]);
+    }
+
+    #[test]
+    fn windows_names_apart_only_by_case_never_take_each_others_200_item() {
+        // 2.0.0 saved "Central"; this build adds "central", whose target
+        // finds that item.
+        let items = Arc::new(CaseBlindItems::default());
+        items.put_200("mcp-creds:Central", b"login: C");
+        let store = cred_store(&items);
+        assert_eq!(read_str(&store, "mcp-creds:central"), None);
+        store.set("mcp-creds:central", "login: c").unwrap();
+        let fresh = cred_store(&items);
+        assert_eq!(read_str(&fresh, "mcp-creds:Central").as_deref(), Some("login: C"));
+        assert_eq!(read_str(&fresh, "mcp-creds:central").as_deref(), Some("login: c"));
+        fresh.delete("mcp-creds:central").unwrap();
+        let again = cred_store(&items);
+        assert_eq!(read_str(&again, "mcp-creds:Central").as_deref(), Some("login: C"));
+        assert_eq!(read_str(&again, "mcp-creds:central"), None);
+
+        // The other way round: 2.0.0 saved "central", and the old target of
+        // "Central" finds it.
+        let items = Arc::new(CaseBlindItems::default());
+        items.put_200("mcp-creds:central", b"login: c");
+        let store = cred_store(&items);
+        assert_eq!(read_str(&store, "mcp-creds:Central"), None);
+        store.set("mcp-creds:Central", "login: C").unwrap();
+        store.delete("mcp-creds:Central").unwrap();
+        let fresh = cred_store(&items);
+        assert_eq!(read_str(&fresh, "mcp-creds:central").as_deref(), Some("login: c"));
+        assert_eq!(read_str(&fresh, "mcp-creds:Central"), None);
+        assert_eq!(items.targets(), vec![windows_target(SERVICE, "mcp-creds:central")]);
+    }
+
     #[test]
     fn headers_parse_strictly() {
         let h = |s: &str| parse_head(s.as_bytes());
@@ -1936,7 +2325,7 @@ mod tests {
     #[test]
     #[ignore]
     fn keyring_smoke() {
-        let os: Arc<dyn SecretBackend> = Arc::new(KeyringBackend::new("com.choatelabs.greencli.test"));
+        let os = os_backend("com.choatelabs.greencli.test");
         probe(os.as_ref()).expect("probe");
         let store = SecretStore::os_for_tests(os.clone());
         let long = "k".repeat(10_000);
@@ -1944,7 +2333,7 @@ mod tests {
         let fresh = SecretStore::os_for_tests(os);
         assert_eq!(fresh.get("ai-key:smoke").unwrap().unwrap().as_str(), long);
         fresh.delete("ai-key:smoke").unwrap();
-        assert!(SecretStore::os_for_tests(Arc::new(KeyringBackend::new("com.choatelabs.greencli.test")))
+        assert!(SecretStore::os_for_tests(os_backend("com.choatelabs.greencli.test"))
             .get("ai-key:smoke")
             .unwrap()
             .is_none());
