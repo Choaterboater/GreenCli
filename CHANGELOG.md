@@ -7,41 +7,149 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **greencli-mcp** has a seventh read tool, `list_archive_devices`. It lists every name the config
+  archive has history under, with the snapshot count and the newest snapshot, so the history of a
+  device renamed or deleted in GreenCLI (or of a Quick Connect that was never saved) can be found.
+  `list_devices` gives only the names saved sessions have now.
+
 ### Changed
-- Release workflow: one run at a time. A run that starts while another is going waits for it, so
-  two runs for the same version can't upload into the same draft at once and replace each other's
-  update files and keys after update-files has checked them. Build-only runs (publish unticked)
-  upload nothing, so they don't wait, and they never cancel a run that is waiting.
+- **Restart to update** asks about more before GreenCLI closes. It says when an AI answer is still
+  running, warns when a password change is waiting for the vault to unlock (it would be lost) and,
+  on Windows, reminds you to close Claude Code and Casper. It says "Not now" while a Config Editor
+  send or an SFTP upload or download is going, as it does for a Change Job or bulk run. In 2.0.0 it
+  could close GreenCLI part-way through a send (a partial config on the device) or an upload (a
+  cut-short file on the device).
+- **Web links open in your browser**: Ctrl+click (Cmd+click on a Mac) a web address in a terminal,
+  the Config Editor, its compare views or the archive diff to open it in your default browser,
+  exactly as written. In 2.0.0 the click did nothing (1.9 opened terminal links in a small window,
+  and only on Windows). The Central docs links in API Explorer open too. Links a tool prints with a
+  hidden address (OSC 8 links, as gcc, gh and other tools print) open the same way: pointing at one
+  shows its address, and when the text on screen isn't that address, GreenCLI asks first and shows
+  the address in full.
+- MCP Servers copies `claude mcp add --scope user greencli …`, so Claude Code has greencli in
+  every folder. The 2.0.0 command added it only for the folder it ran in.
+- Settings search finds greencli-mcp, `claude mcp add`, hidden copies and where keys are kept
+  (Keychain, Credential Manager, password store, keyring).
+- Settings → Config archive and the hidden copy count in MCP Servers say that **Make hidden
+  copies** is in the Config Archive panel (shown while a snapshot has no hidden copy, or an old
+  one), and have an **Open Config Archive** button. greencli-mcp's errors and Help name the panel
+  too.
+- Settings' Casper warning also names `ai_keys.json` and `mcp_creds.json` when they are plain files
+  (no system password store, or an old 1.9 file left over).
+- With keys in private files, Settings says the system password store "couldn't be used when
+  GreenCLI started; it tries again at each start". 2.0.0 said none was found, also when one was
+  there but answered too slowly. When the store can't be reached, Settings says "Keys saved on this
+  computer are still there".
+- Settings → Updates on Linux says there is no release build for this system and to build new
+  versions from source, instead of pointing at the Releases page.
+- Help: the security notes say GreenCLI checks GitHub for updates once a day on macOS and Windows
+  (turn off **Check once a day** to stop it). The terminal topic says Ctrl/Cmd+click opens a web
+  address. The notes on going back to 1.9, left-over 1.9 key files and the Mac Keychain prompt say
+  what to do.
+- Release workflow: a release job finds or makes the `v<version>` draft once. The build jobs only
+  build, then put their files into that draft with one upload step, and update-files writes
+  `latest.json` once and checks the draft. So builds that finish together can't make two drafts or
+  drop each other's update entries. No run changes a published release: every step that uploads
+  or deletes a release file checks first that the release is still a draft, so a re-run works on a
+  draft only, and a published release needs a new version. The tag push that publishing makes
+  builds nothing. A `release/**` push or manual run points the draft (keeping its tag name) at the
+  commit it built, and stops when the version's tag is already on another commit.
+- Release workflow: one publishing run at a time. A run that starts while another is going waits
+  for it, so two runs can't upload into the same draft at once and replace each other's update
+  files and keys after update-files has checked them. Build-only runs (publish unticked) upload
+  nothing, so they don't wait, and they never cancel a run that is waiting.
+- Release workflow (Mac): stapling the notarized `.dmg` is tried up to five times (Apple's ticket
+  can lag), a notarized app with no stapled ticket is only a warning, and a build-only run's
+  artifact leaves out the raw `GreenCLI.app` (its programs lost their execute bit; use the `.dmg`).
 
 ### Fixed
-- Windows: an MCP login that GreenCLI 2.0.0 saved for a server with a capital letter (or a
-  character such as `/`) in its name is found again. It moves to its new Credential Manager name
-  the first time it is used. Servers whose names differ only in case keep their own logins.
+- Updates: a check that GitHub answered with an error (a rate limit or a server error) says
+  "Couldn't check for updates." 2.0.0 said "You have the latest version." while a newer one was out.
+- Every check asks GitHub, also with an update already downloaded. A newer release replaces the
+  waiting update once its download passes the signature check (until then, and offline, the waiting
+  one stays ready), and a waiting update whose release was withdrawn is dropped. In 2.0.0 a
+  downloaded update hid newer releases until GreenCLI restarted. **Restart to update** names the
+  update waiting at that moment, and says "Check for updates first." when none is.
+- The "GreenCLI X is ready." card is one card, for the update waiting now: a newer version replaces
+  it, and it closes when nothing is waiting. It comes back after **Not now**, **Cancel** or a failed
+  install. In 2.0.0 a second card could show next to the old one (or count up as x2), and after
+  **Not now** the card was gone until the next daily check. "Not now" says "when they end" when
+  two jobs hold the restart.
+- Mac: from the disk image (or straight from Downloads), **Check for updates** is off. 2.0.0
+  downloaded the update and said it was ready next to "Move GreenCLI to Applications first."
+- Update downloads no longer count against GitHub's API limit of 60 requests an hour per address:
+  `latest.json` gives each update file's download link, not its GitHub API address. Behind a busy
+  office address the limit could run out, and the update then failed. 2.0.0 reads these links.
+- Windows: MCP servers whose names differ only in case (such as "Central" and "central") now get
+  separate Credential Manager items. In 2.0.0 they shared one item, so saving one replaced the
+  other's login; if that happened, enter the lost login again. A login 2.0.0 saved for a server
+  with a capital letter (or another character outside `a-z`, `0-9` and `-_.: `) in its name moves
+  to its new item name the first time GreenCLI reads, saves or removes it.
+- A long login (over 2560 bytes on Windows, over 32 KiB elsewhere) whose save stops part-way keeps
+  the old login whole. Before, it could be left as a mix of old and new parts.
 - With two copies of GreenCLI open, an AI key or MCP login saved, changed or removed in one is
   used by the other at its next request, as in 1.9. Before, the other copy kept the old key until
   it restarted, and renaming a server there could bring back a login removed in the first copy.
+- While keys from 1.9 are still moving (a move that stopped part-way):
+  - a key or login that hasn't moved yet works from the old file. Before, it read as not saved:
+    auto-connect started a stdio server without its login, the export left out its variable, and
+    the AI panel asked for a key.
+  - renaming an MCP server takes its login along. Before, the next start moved the login in under
+    the old name, so the renamed server had none.
+  - a key you save or remove is noted in `secret_store.json` before it is changed, also when the
+    first try failed early. If GreenCLI can't write that file (for example, the disk is full), the
+    change is refused with "Nothing was changed. …". Before, the next start could put the old 1.9
+    key back over it.
+  - a key changed in 1.9 between two tries moves with its new value. Before, the retry kept the
+    older value and deleted the file, so the newer key was lost.
+  - Settings stops naming an old 1.9 key file it couldn't read once you delete it. Before, it kept
+    saying to delete the file until GreenCLI restarted.
+- The AI panel stops asking for an API key once a key typed in Settings is saved. Before, closing
+  Settings with Escape right after typing the key left "Add an API key" up until the next message.
+- Settings asks for the saved AI key each time it opens (and when you change the provider), not
+  once at launch. Before, one failed check (a denied Keychain prompt, a locked keyring) said "Can't
+  check for a saved key" until GreenCLI restarted, and a key saved as Settings closed showed as not
+  saved when it opened again. GreenCLI no longer asks the password store at launch, so there is one
+  Keychain prompt fewer at start.
+- The "old key file couldn't be read" and "keys not moved yet" lines show with every AI provider,
+  also Casper, Local CLI and Ollama. Before, they showed only under an API key field.
+- The MCP server form says "Can't check for a saved login. Type to replace it." and why, when the
+  check fails. Before, a server with a saved login looked as if it had none.
+- A link in an AI answer opens in your browser, with a click or a middle click. Before (also in
+  1.9), clicking one loaded the website in place of GreenCLI, and only quitting and starting again
+  (which closes your sessions) brought the app back.
 - greencli-mcp reads the same data folder as GreenCLI: the command MCP Servers copies and the
   export pass it as `--data-dir`. On Linux with `XDG_DATA_HOME` set, Casper started greencli-mcp
-  without that variable, so it read another folder and found no devices, configs or intents.
-  Export again to update a file made before. When the data folder isn't there, greencli-mcp's
-  tools now say so instead of answering with empty lists.
-- Settings stops naming an old 1.9 key file it couldn't read once you delete it. Before, it kept
-  saying to delete the file until GreenCLI restarted.
-- While keys from 1.9 are still moving, a key you save or remove is noted in `secret_store.json`
-  before it is changed. If GreenCLI can't write that file (for example, the disk is full), the
-  change is refused with "Nothing was changed. …". Before, the change was made, and the next start
-  could put the old 1.9 key back over it.
-- A terminal link whose text is not its address (an OSC 8 link, as gcc, gh and other tools print)
-  shows the address when you point at it, and Ctrl+click (Cmd+click on a Mac) asks before opening
-  it, with the address in full. Before, a link that read one address could open another without
-  showing it. A link that shows its own address still opens in one click.
+  without that variable, so it read another folder and found no devices, configs or intents. When
+  the data folder isn't there, greencli-mcp's tools now say so instead of answering with empty
+  lists.
+- greencli-mcp: a list page holds at most 50 items. Casper keeps only the first 50, so the rest of
+  a longer page was never seen. JSON-RPC batches get answers (2.0.0 refused every batch).
+- greencli-mcp: a hidden copy made by a newer GreenCLI (after a Mac update, while Claude Code or
+  Casper still runs the old greencli-mcp) asks you to restart Claude Code or Casper, instead of
+  pointing at **Make hidden copies**.
+- A hidden copy greencli-mcp can't read (cut short, empty, a link, or another snapshot's) counts as
+  missing, so **Make hidden copies** makes it again. Before, the app counted it as current.
+- Counting hidden copies no longer freezes the window at start, or when MCP Servers or the Config
+  Archive panel opens, with a full archive. It no longer holds up a capture, and each open counts
+  once.
 - Double-clicking GreenCLI's title bar (the bar with the command field) maximizes the window, or
   zooms it on a Mac, as in other apps. Before, it did nothing. On a Mac that bar is the only title
   bar.
-- Release workflow: a `release/**` push or manual run stops when the version's tag already exists
-  on another commit (for example, a tag push whose run failed). Before, it built and uploaded the
-  other commit, and publishing kept the tag where it was, so the tag and the source archives did
-  not match the installers.
+
+### Security
+- The app window's short list of Tauri's built-in functions has one more: maximize or restore on a
+  double-click in the title bar (Tauri's drag-region script calls it).
+
+### Upgrade notes
+- **The update from 2.0.0 uses 2.0.0's Restart to update box.** It doesn't wait for a Config
+  Editor send or an SFTP upload or download, and doesn't warn about an AI answer or a password
+  change waiting for the vault. Let those finish, and unlock the vault, before you tap it. On
+  Windows, close Claude Code and Casper first.
+- **greencli-mcp**: run **Export for Casper / Claude…** again, so the file passes `--data-dir`. In
+  Claude Code, remove the greencli that 2.0.0's command added (`claude mcp remove greencli`, in the
+  folder where you ran it), then run the command MCP Servers copies now.
 
 ## [2.0.0] - 2026-10-02
 
@@ -50,30 +158,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Settings → **Updates** shows the version, **Check for updates** and **Check once a day** (on by
   default). When a new version is downloaded and checked, you see "GreenCLI X is ready." with
   **Restart to update**. Nothing installs until you tap it and say yes. The box says how many open
-  sessions will close, warns about unsaved Config Editor edits, an AI answer still running or a
-  password change still waiting for the vault to unlock and, on Windows, reminds you to close Claude
-  Code and Casper. It won't restart while a Change Job, bulk run,
-  Config Editor send or SFTP upload or download is going.
+  sessions will close and warns about unsaved Config Editor edits. It won't restart while a Change
+  Job or bulk run is going.
 - Every update is checked against its signature before it can install. Each release build signs
   its own files, so there is no signing key to keep and no secret to set.
 - On Windows, MCP servers stop only when the installer starts. If the installer can't start, they
   come back. If it starts and then shows "Error opening file for writing" (Claude Code or Casper
   still runs greencli-mcp), close them and click **Retry**.
 - **greencli-mcp**: a read-only MCP server for Casper and Claude Code that ships next to the app.
-  It has seven read tools: `access_check`, `list_devices`, `list_archive_devices`,
-  `list_config_history`, `get_config`, `get_config_diff` and `list_intents`. `list_archive_devices`
-  finds config history kept under a device's old name, after a rename or delete in GreenCLI. It
-  only reads GreenCLI's data folder. It never writes a file, opens a network connection or starts a
-  program. The device list has no passwords, user names, notes or startup commands.
+  It has six read tools: `access_check`, `list_devices`, `list_config_history`, `get_config`,
+  `get_config_diff` and `list_intents`. It only reads GreenCLI's data folder. It never writes a
+  file, opens a network connection or starts a program. The device list has no passwords, user
+  names, notes or startup commands.
 - **Hidden copies**: when a config is captured, GreenCLI also saves a copy with secrets hidden (the
   same filter the AI uses). greencli-mcp serves configs and diffs only from these copies, and
-  refuses a snapshot without a current one instead of serving it raw. The Config Archive panel has a
-  new **Make hidden copies** button for older snapshots. After a secret filter change, GreenCLI makes
-  the old copies again at start.
+  refuses a snapshot without a current one instead of serving it raw. The Config Archive panel
+  has a new **Make hidden copies** button for older snapshots. After a secret filter change,
+  GreenCLI makes the old copies again at start.
 - **MCP Servers** shows where greencli-mcp is, with **Copy** buttons for its path and for the
-  `claude mcp add --scope user greencli` command (user scope, so Claude Code has it in every
-  folder). **Export for Casper / Claude…** adds it as `greencli`, and now works with no saved
-  servers.
+  `claude mcp add greencli` command. **Export for Casper / Claude…** adds it as `greencli`, and now
+  works with no saved servers.
 - **Apple signing, ready to turn on**: release builds sign the Mac app (with greencli-mcp inside)
   and have Apple notarize it and the `.dmg` once the five Apple secrets are set (see
   docs/SETUP.md). With only the certificate and its password, the app is signed but not notarized.
@@ -87,9 +191,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`ai_keys.json`, `mcp_creds.json`), reads each one back, and only then deletes the files. The AI
   key field and the MCP server form say where they are kept.
 - If an old key file can't be read as keys, it stays where it is and Settings shows its path. If
-  some keys didn't move, Settings says so, they keep working from the old file while GreenCLI can
-  read it, and GreenCLI tries again at the next start. Keys you change or remove in the meantime
-  stay as you set them.
+  some keys didn't move, Settings says so and GreenCLI tries again at the next start. Keys you
+  change or remove in the meantime stay as you set them.
 - Without a system password store (some Linux setups), keys stay in the 1.9 private files.
 - **MCP login files only while a server runs**: a stdio server's saved login is written to a new
   private file in `mcp_creds/` when it connects, and deleted when the server stops, exits or fails
@@ -97,33 +200,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the first one's files alone.
 - Removing an MCP server also removes its saved login. If the password store can't be reached,
   nothing is removed.
-- **Web links open in your browser**: Ctrl+click (Cmd+click on a Mac) a web address in a terminal
-  or in the Config Editor (and its compare views) to open it in your default browser, on every
-  system. In 1.9 a click opened it in a small window, and only on Windows. The Central docs links
-  in API Explorer open in the browser too (they did nothing in 1.9).
 - **The window shows as soon as it has drawn.** When the system holds back the first frame (Linux
   does), it shows after half a second instead of after 4 seconds.
 - **Linux builds need webkit2gtk-4.1 2.40 or newer** (Ubuntu 22.04 with updates, or newer; CI uses
   24.04) and Rust 1.90 or newer. See docs/SETUP.md for the packages.
 - Release workflow: manual runs have a **publish** box (untick it to only build), every release
-  starts as a draft, and only three kinds of job can write to the repo: the release job makes the
-  draft, the build jobs upload into it, and update-files writes `latest.json` and checks it. One
-  job makes the draft and one writes `latest.json`, so builds that finish together can't make two
-  drafts or drop each other's update entries. Re-running a job changes a draft only: once the
-  release is published, the build jobs and update-files stop with "already published". A later
-  `release/**` push or manual run that uploads into a draft also moves its future tag to the commit
-  it built. `latest.json` gives each update file's download link, not its GitHub API address, so
-  update downloads don't count against GitHub's API limit of 60 requests an hour per address (a
-  busy office network could hit it, and the update then failed).
+  starts as a draft, and only the build jobs and the update-files check can write to the repo (the
+  check only reads, but needs write to see the draft).
 
 ### Fixed
 - An AI key or MCP login that fails to save now shows a message. Before, it failed with no
   message. A failed login save keeps the server form open.
-- The AI panel stops asking for an API key once a key typed in Settings is saved. Before, closing
-  Settings with Escape right after typing the key left "Add an API key" up until the next message.
-- A link in an AI answer opens in your browser, with a click or a middle click. Before, clicking one
-  loaded the website in place of GreenCLI, and only quitting and starting again (which closes your
-  sessions) brought the app back.
 
 ### Security
 - AI keys and MCP logins are no longer plain files in the data folder (on macOS and Windows, and
@@ -158,9 +245,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Known limits
 - Casper's own file tools can read files outside its folder. AI keys and MCP logins in the
   password store are out of its reach as files, but session logs, archived configs and the login
-  file of a running MCP server can still be read. With no system password store (or an old 1.9
-  file left over), `ai_keys.json` and `mcp_creds.json` are plain files it can read too. Settings
-  says so.
+  file of a running MCP server can still be read. Settings says so. With no system password store
+  (or an old 1.9 file left over), `ai_keys.json` and `mcp_creds.json` are plain files it can read
+  too.
 - The update signature catches a broken, cut-short or swapped download, and a file from anywhere
   else. It does not protect against someone who can publish releases on the GitHub account: they
   could publish their own files and key. This is the same trust as downloading GreenCLI from the Releases page. Keep
@@ -171,8 +258,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   them before you update (Settings → Updates says so).
 - If the Mac app isn't signed (no Apple secrets), macOS may ask to allow Keychain access again
   after each update. Enter your login password and choose **Always Allow** (**Allow** alone asks
-  again later). If you chose **Deny**, GreenCLI says it can't reach the system password store:
-  open Settings or the AI panel again and allow it.
+  again later). If you chose **Deny**, GreenCLI says it can't reach the system password store, and
+  macOS asks again the next time GreenCLI reads a key.
 - On Windows, processes a CLI leaves behind after it ends by itself are not stopped.
 
 ## [1.9.0] - 2026-10-02
