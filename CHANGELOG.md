@@ -30,6 +30,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   before it is changed. If GreenCLI can't write that file (for example, the disk is full), the
   change is refused with "Nothing was changed. …". Before, the change was made, and the next start
   could put the old 1.9 key back over it.
+- A terminal link whose text is not its address (an OSC 8 link, as gcc, gh and other tools print)
+  shows the address when you point at it, and Ctrl+click (Cmd+click on a Mac) asks before opening
+  it, with the address in full. Before, a link that read one address could open another without
+  showing it. A link that shows its own address still opens in one click.
 
 ## [2.0.0] - 2026-10-02
 

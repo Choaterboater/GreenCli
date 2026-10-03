@@ -1,4 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
+import type { IBufferRange, ILinkHandler, Terminal } from 'xterm';
+import { askChoice } from '../store/dialogStore';
 import { notify } from '../store/toastStore';
 import { isTauri } from './tauri';
 
@@ -66,5 +68,65 @@ export function terminalWebLinkHandler(mac: boolean): (event: MouseEvent, uri: s
   return (event, uri) => {
     if (!isLinkClick(event, mac)) return;
     void openWebLink(uri);
+  };
+}
+
+/** The text a terminal link covers on screen (its range is 1-based, end inclusive). */
+export function linkTextOnScreen(term: Pick<Terminal, 'buffer'>, range: IBufferRange): string {
+  let text = '';
+  for (let y = range.start.y; y <= range.end.y; y++) {
+    const line = term.buffer.active.getLine(y - 1);
+    if (!line) return '';
+    const from = y === range.start.y ? range.start.x - 1 : 0;
+    const to = y === range.end.y ? range.end.x : line.length;
+    text += line.translateToString(false, from, to);
+  }
+  return text;
+}
+
+/**
+ * The handler for OSC 8 hyperlinks (gcc, gh, claude… print them). Unlike a
+ * plain URL, an OSC 8 link shows one text and opens a hidden address: a link
+ * that reads https://portal.corp.example can open https://evil.example.
+ * Hovering one puts its address (and how to open it) in the terminal's
+ * tooltip, and a Ctrl/Cmd+click on one whose text is not its address asks
+ * first, with the address in full. A link that shows its own address opens
+ * in one click, like a plain URL. xterm's own handler asked for every link,
+ * but with confirm() and window.open, which open nothing in Tauri 2.
+ * `terminal` returns the terminal the handler is set on.
+ */
+export function terminalOscLinkHandler(
+  mac: boolean,
+  terminal: () => Pick<Terminal, 'buffer' | 'element'> | undefined,
+): ILinkHandler {
+  const howToOpen = `${mac ? 'Cmd' : 'Ctrl'}+click to open`;
+  return {
+    activate: (event, uri, range) => {
+      if (!isLinkClick(event, mac)) return;
+      const term = terminal();
+      if (term && linkTextOnScreen(term, range) === uri) {
+        void openWebLink(uri);
+        return;
+      }
+      void askChoice({
+        title: 'Open this link?',
+        message: 'The text you clicked is not the address the link opens. It opens:',
+        details: uri,
+        // Cancel comes first and has focus: a stray Enter opens nothing.
+        choices: [
+          { value: 'cancel', label: 'Cancel' },
+          { value: 'open', label: 'Open in browser', tone: 'accent' },
+        ],
+      }).then((choice) => {
+        if (choice === 'open') void openWebLink(uri);
+      });
+    },
+    hover: (_event, uri) => {
+      const element = terminal()?.element;
+      if (element) element.title = `${uri}\n${howToOpen}`;
+    },
+    leave: () => {
+      terminal()?.element?.removeAttribute('title');
+    },
   };
 }

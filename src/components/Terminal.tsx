@@ -33,7 +33,7 @@ import { useEditorInbox } from '../store/editorInboxStore';
 import { isTauri, browserSave, tauriWriteText } from '../utils/fileSystem';
 import { save as saveDialog } from '@tauri-apps/plugin-dialog';
 import { currentWindowLabel } from '../utils/tauri';
-import { isLinkClick, terminalWebLinkHandler } from '../utils/openUrl';
+import { isLinkClick, terminalOscLinkHandler, terminalWebLinkHandler } from '../utils/openUrl';
 import 'xterm/css/xterm.css';
 
 // Pop-out windows render one session in a fresh store — the background-activity
@@ -263,7 +263,8 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
   useEffect(() => {
     if (!containerRef.current || terminalRef.current) return;
 
-    const term = new XTerm({
+    // Typed, so the link handler below can refer to the terminal it is on.
+    const term: XTerm = new XTerm({
       theme: terminalTheme,
       fontSize,
       fontFamily,
@@ -290,11 +291,13 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
       overviewRulerWidth: 15,
       wordSeparator: ' ()[]{}\'"`',
       // OSC 8 hyperlinks (gcc, gh, claude… print them) follow the same
-      // Ctrl/Cmd+click rule as plain URLs. xterm's own handler takes a plain
-      // click, then confirm() + window.open, which open nothing in Tauri 2,
-      // and its provider wins over the WebLinksAddon on the same text.
-      // allowNonHttpProtocols stays off: file:, man: … links are ignored.
-      linkHandler: { activate: terminalWebLinkHandler(isMac) },
+      // Ctrl/Cmd+click rule as plain URLs, but their address is hidden behind
+      // the text on screen: hovering one shows it, and one whose text is not
+      // its address asks before it opens (see openUrl.ts). xterm's own handler
+      // takes a plain click, then confirm() + window.open, which open nothing
+      // in Tauri 2, and its provider wins over the WebLinksAddon on the same
+      // text. allowNonHttpProtocols stays off: file:, man: … links are ignored.
+      linkHandler: terminalOscLinkHandler(isMac, () => term),
     });
 
     const fitAddon = new FitAddon();
