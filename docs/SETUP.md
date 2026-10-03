@@ -99,7 +99,9 @@ There is no Linux release build, so Linux gets no updates.
   closes. It won't start while a Change Job, bulk run, Config Editor send or
   SFTP upload or download is going.
 - Other messages: "You have the latest version.", "Couldn't check for updates. Check your internet
-  connection.", and in a build with no updates (a dev build, or Linux) "Updates are off …".
+  connection.", and in a build with no updates: a dev build shows "Updates are off in development
+  builds.", and a Linux build (or any system with no release build) shows "There is no release
+  build for this system, so updates are off. Build new versions from source."
 - **Mac**: run GreenCLI from Applications. From the disk image (or straight from Downloads) it says
   "Move GreenCLI to Applications first." and offers no update.
 - **Windows**: close Claude Code and Casper before you update, because a greencli-mcp they run can
