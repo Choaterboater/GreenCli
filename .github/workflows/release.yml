@@ -104,8 +104,9 @@ jobs:
   # - For a release/** push or a manual run, the tag doesn't exist until the
   #   draft is published, and GitHub then makes it at the draft's target.
   #   So such a run points a draft it uses again at its own commit (after a
-  #   fix pushed to the same release/** branch, say): the tag must be the
-  #   commit that was built. A tag push needs nothing: its tag is there.
+  #   fix pushed to the same release/** branch, say), keeping its tag name:
+  #   the tag must be the commit that was built. A tag push needs nothing:
+  #   its tag is there.
   # - Always a draft: no CI run can make a release "latest" by itself. The
   #   owner publishes the draft by hand.
   # Publishing is on for tag and release/** pushes, and for manual runs
@@ -153,10 +154,13 @@ jobs:
             # For a release/** push or a manual run the tag doesn't exist
             # yet: publishing makes it at the draft's target. Point that at
             # this run's commit, the one it builds, not the commit of the
-            # run that made the draft.
+            # run that made the draft. Name the tag in the same call: GitHub
+            # drops the tag of a draft edited without tag_name (it becomes
+            # untagged-...), and then neither the app nor the next run would
+            # find this draft.
             if [ "$REF_TYPE" != tag ]; then
               gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$id" \
-                -f target_commitish="$GITHUB_SHA" > /dev/null
+                -f tag_name="$tag" -f target_commitish="$GITHUB_SHA" > /dev/null
               echo "Pointed the $tag draft at $GITHUB_SHA."
             fi
           else

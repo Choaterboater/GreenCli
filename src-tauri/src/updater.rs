@@ -2347,15 +2347,20 @@ mod tests {
         // A release/** push or a manual run uses v<app version>. Its tag
         // is made when the draft is published, at the draft's target: a
         // draft it uses again (made by an earlier run, on an older commit)
-        // is pointed at this run's commit, the one it builds. A tag push
-        // (above) changes nothing: its tag is already there.
+        // is pointed at this run's commit, the one it builds. The same
+        // call names the tag again: a draft edited without tag_name loses
+        // its tag (GitHub renames it untagged-...), and then the app and
+        // the next run can't find it. A tag push (above) changes nothing:
+        // its tag is already there.
         let version = conf()["version"].as_str().unwrap().to_string();
         let pages = format!("[{{\"id\":8,\"tag_name\":\"v{version}\",\"draft\":true}}]");
         let (code, stdout, output, calls) = run("branch", "release/x", &pages, "");
         assert_eq!(code, Some(0), "{stdout}");
         assert_eq!(output, format!("id=8\ntag=v{version}\n"));
-        let retarget = "gh api -X PATCH repos/Choaterboater/GreenCli/releases/8 \
-                        -f target_commitish=abc123\n";
+        let retarget = format!(
+            "gh api -X PATCH repos/Choaterboater/GreenCli/releases/8 \
+             -f tag_name=v{version} -f target_commitish=abc123\n"
+        );
         assert_eq!(calls, format!("{list}{retarget}"));
         assert_eq!(
             stdout,
@@ -2378,7 +2383,9 @@ mod tests {
         assert_ne!(code, Some(0), "{stdout}");
         assert_eq!(output, "");
         assert!(
-            calls.ends_with("releases/9 -f target_commitish=abc123\n"),
+            calls.ends_with(&format!(
+                "releases/9 -f tag_name=v{version} -f target_commitish=abc123\n"
+            )),
             "{calls}"
         );
 
