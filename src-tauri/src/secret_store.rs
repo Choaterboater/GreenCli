@@ -34,6 +34,11 @@
 // to 1.9 between the two starts) is copied again, and one removed there is
 // removed. A file that is gone ends its move, and the marker forgets it.
 //
+// Values are cached per account, in both modes. Every change writes a new
+// random value to `secret_store.stamp`, and every call checks it first, so a
+// change made in another running copy of GreenCLI empties this copy's cache
+// and is seen at its next call.
+//
 // Windows Credential Manager holds at most 2560 bytes per item, so a longer
 // value is split: the item itself holds the header `GCS1 N S LEN\n` and the
 // parts are in `part1S:<account>` … `partNS:<account>`, where the slot S is
@@ -67,6 +72,9 @@ pub const AI_KEYS_FILE: &str = "ai_keys.json";
 pub const MCP_CREDS_FILE: &str = "mcp_creds.json";
 /// Written the first time the OS store works; from then on it is always used.
 const MARKER_FILE: &str = "secret_store.json";
+/// A random value that every change to the store replaces, so another
+/// running copy of GreenCLI knows its cache is out of date.
+const STAMP_FILE: &str = "secret_store.stamp";
 /// Marker fields: the 1.9 files a move has started on, the accounts the move
 /// copied from them, and the accounts the user saved or removed while a move
 /// was pending. Early 2.0 builds kept copied accounts in `done` too; a retry
@@ -703,13 +711,18 @@ pub enum MoveOutcome {
 
 pub struct SecretStore {
     mode: Mode,
-    /// Last known value per account (None: known to be absent).
+    /// Last known value per account (None: known to be absent). Emptied
+    /// when another running copy changes the store (see sync_cache_locked).
     cache: Mutex<HashMap<String, Option<Zeroizing<String>>>>,
     /// Held across every backend call that changes or fills the cache, so a
     /// read never puts back a value a save just replaced.
     ops: Mutex<()>,
     /// `secret_store.json` (OS store only; None in some tests).
     marker: Option<PathBuf>,
+    /// `secret_store.stamp` (None in some tests), and what it held when this
+    /// copy's cache was last known to be good (None: not known).
+    stamp: Option<PathBuf>,
+    cache_stamp: Mutex<Option<Vec<u8>>>,
     leftover: Mutex<Vec<PathBuf>>,
     move_pending: AtomicBool,
     /// The old files whose move is pending, with their account prefix.
@@ -729,8 +742,9 @@ impl SecretStore {
         let marker = app_dir.join(MARKER_FILE);
         // Any marker, even one that can't be read, means keys may be in the
         // OS store: never go back to the files.
+        let stamp = Some(app_dir.join(STAMP_FILE));
         if fs::symlink_metadata(&marker).is_ok() {
-            return Self::with_mode(Mode::Os(os), Some(marker));
+            return Self::with_mode(Mode::Os(os), Some(marker), stamp);
         }
         match probe_with_timeout(os.clone(), timeout) {
             Ok(()) => {
@@ -740,7 +754,7 @@ impl SecretStore {
                     .unwrap_or(0);
                 let body = serde_json::json!({ "store": "os", "since": since }).to_string();
                 match private_fs::write_private_atomic(&marker, body.as_bytes()) {
-                    Ok(()) => Self::with_mode(Mode::Os(os), Some(marker)),
+                    Ok(()) => Self::with_mode(Mode::Os(os), Some(marker), stamp),
                     Err(e) => {
                         log::warn!("Couldn't write {}: {}; keys stay in files this time", MARKER_FILE, e);
                         Self::files(app_dir)
@@ -762,15 +776,18 @@ impl SecretStore {
                 FileBackend::new(app_dir.join(MCP_CREDS_FILE), MCP_CREDS_PREFIX),
             ]),
             None,
+            Some(app_dir.join(STAMP_FILE)),
         )
     }
 
-    fn with_mode(mode: Mode, marker: Option<PathBuf>) -> Self {
+    fn with_mode(mode: Mode, marker: Option<PathBuf>, stamp: Option<PathBuf>) -> Self {
         Self {
             mode,
             cache: Mutex::new(HashMap::new()),
             ops: Mutex::new(()),
             marker,
+            stamp,
+            cache_stamp: Mutex::new(None),
             leftover: Mutex::new(Vec::new()),
             move_pending: AtomicBool::new(false),
             pending: Mutex::new(Vec::new()),
@@ -782,7 +799,7 @@ impl SecretStore {
     /// The OS store with no probe and no marker (tests).
     #[cfg(test)]
     pub(crate) fn os_for_tests(os: Arc<dyn SecretBackend>) -> Self {
-        Self::with_mode(Mode::Os(os), None)
+        Self::with_mode(Mode::Os(os), None, None)
     }
 
     pub fn kind(&self) -> StoreKind {
@@ -906,6 +923,57 @@ impl SecretStore {
         self.cache.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    fn cache_stamp(&self) -> std::sync::MutexGuard<'_, Option<Vec<u8>>> {
+        self.cache_stamp.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Empty the cache when another running copy of GreenCLI changed the
+    /// store since this copy last looked (see note_change_locked). At the
+    /// start of every call that uses or changes the cache, with `ops` held: a
+    /// change that lands after the stamp is read is seen at the next call.
+    fn sync_cache_locked(&self) {
+        let Some(path) = &self.stamp else {
+            return;
+        };
+        let now = match fs::read(path) {
+            Ok(b) => Some(b),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(Vec::new()),
+            // Locked by a copy that is writing it (Windows), or unreadable:
+            // read the store again, and the stamp next time.
+            Err(_) => None,
+        };
+        let mut seen = self.cache_stamp();
+        if now.is_none() || *seen != now {
+            self.cache().clear();
+            *seen = now;
+        }
+    }
+
+    /// After a change to the store, with `ops` held: a new stamp, so other
+    /// running copies empty their caches. This copy keeps its own unless
+    /// another copy changed the stamp since it last looked. Best effort: a
+    /// stamp that can't be written leaves other copies on their cache until
+    /// they restart, and empties this copy's.
+    fn note_change_locked(&self) {
+        let Some(path) = &self.stamp else {
+            return;
+        };
+        let mut seen = self.cache_stamp();
+        match replace_stamp(path) {
+            Ok((before, now)) => {
+                if seen.as_deref() != Some(before.as_slice()) {
+                    self.cache().clear();
+                }
+                *seen = Some(now);
+            }
+            Err(e) => {
+                log::warn!("Couldn't write {}: {}", STAMP_FILE, e);
+                self.cache().clear();
+                *seen = None;
+            }
+        }
+    }
+
     /// The backend error as the user sees it. OS store errors all read the
     /// same; the cause goes to the log.
     fn user_error(&self, account: &str, e: String) -> String {
@@ -943,10 +1011,8 @@ impl SecretStore {
     /// pending, a value still waiting in the old file counts as saved, so a
     /// key or login that didn't move yet keeps working until it does.
     pub fn get(&self, account: &str) -> Result<Option<Zeroizing<String>>, String> {
-        if let Some(hit) = self.cache().get(account) {
-            return Ok(hit.clone());
-        }
         let _ops = self.lock_ops();
+        self.sync_cache_locked();
         if let Some(hit) = self.cache().get(account) {
             return Ok(hit.clone());
         }
@@ -965,7 +1031,7 @@ impl SecretStore {
     }
 
     /// True when a non-empty value is saved. Answered from the cache after
-    /// the first read.
+    /// the first read, until another running copy changes the store.
     pub fn has(&self, account: &str) -> Result<bool, String> {
         Ok(self.get(account)?.is_some_and(|v| !v.is_empty()))
     }
@@ -976,33 +1042,42 @@ impl SecretStore {
             return self.delete(account);
         }
         let _ops = self.lock_ops();
-        match self.write_backend(account, value.as_bytes()) {
+        self.sync_cache_locked();
+        let result = self.write_backend(account, value.as_bytes());
+        if result.is_ok() {
+            self.cache()
+                .insert(account.to_string(), Some(Zeroizing::new(value.to_string())));
+        } else {
+            // Unknown now: read it again next time.
+            self.cache().remove(account);
+        }
+        // Even a save that failed may have changed something.
+        self.note_change_locked();
+        match result {
             Ok(()) => {
-                self.cache()
-                    .insert(account.to_string(), Some(Zeroizing::new(value.to_string())));
                 self.note_user_change(account);
                 Ok(())
             }
-            Err(e) => {
-                // Unknown now: read it again next time.
-                self.cache().remove(account);
-                Err(self.user_error(account, e))
-            }
+            Err(e) => Err(self.user_error(account, e)),
         }
     }
 
     pub fn delete(&self, account: &str) -> Result<(), String> {
         let _ops = self.lock_ops();
-        match self.delete_backend(account) {
+        self.sync_cache_locked();
+        let result = self.delete_backend(account);
+        if result.is_ok() {
+            self.cache().insert(account.to_string(), None);
+        } else {
+            self.cache().remove(account);
+        }
+        self.note_change_locked();
+        match result {
             Ok(()) => {
-                self.cache().insert(account.to_string(), None);
                 self.note_user_change(account);
                 Ok(())
             }
-            Err(e) => {
-                self.cache().remove(account);
-                Err(self.user_error(account, e))
-            }
+            Err(e) => Err(self.user_error(account, e)),
         }
     }
 
@@ -1041,6 +1116,18 @@ impl SecretStore {
         let Mode::Os(b) = &self.mode else {
             return MoveOutcome::Nothing;
         };
+        let _ops = self.lock_ops();
+        self.sync_cache_locked();
+        let mut changed = false;
+        let outcome = self.move_file_locked(b.as_ref(), path, prefix, &mut changed);
+        if changed {
+            self.note_change_locked();
+        }
+        outcome
+    }
+
+    /// move_file with `ops` held. Sets `changed` once it changes the store.
+    fn move_file_locked(&self, b: &dyn SecretBackend, path: &Path, prefix: &str, changed: &mut bool) -> MoveOutcome {
         let file = path
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
@@ -1050,7 +1137,6 @@ impl SecretStore {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 // Gone (deleted by hand, or a move whose last step failed):
                 // nothing is pending, and a 1.9 file written later is a first try.
-                let _ops = self.lock_ops();
                 let marker = self.marker.as_deref().map(read_marker).unwrap_or_default();
                 if list_of(&marker, MOVING).contains(&file) {
                     if let Err(e) = self.update_marker(|m| forget_move(m, &file, prefix)) {
@@ -1078,7 +1164,6 @@ impl SecretStore {
         };
         let map: BTreeMap<String, Zeroizing<String>> =
             map.into_iter().map(|(k, v)| (k, Zeroizing::new(v))).collect();
-        let _ops = self.lock_ops();
         let marker = self.marker.as_deref().map(read_marker).unwrap_or_default();
         let (moved, done): (HashSet<String>, HashSet<String>) = if list_of(&marker, MOVING).contains(&file) {
             let mine = |key| list_of(&marker, key).into_iter().filter(|a| a.starts_with(prefix)).collect();
@@ -1107,7 +1192,7 @@ impl SecretStore {
             // the file's value. Any other value was typed in 1.9 since (a
             // change in 2.0 would be in `done`), so it is copied again.
             if moved.contains(&account) {
-                match read_parts(b.as_ref(), &account) {
+                match read_parts(b, &account) {
                     Ok(Some(saved)) if saved.as_slice() == value.as_bytes() => continue,
                     Ok(_) => {}
                     Err(e) => {
@@ -1117,12 +1202,13 @@ impl SecretStore {
                 }
             }
             self.cache().remove(&account);
-            let checked = match write_parts(b.as_ref(), &account, value.as_bytes()) {
+            *changed = true;
+            let checked = match write_parts(b, &account, value.as_bytes()) {
                 Err(e) => {
                     log::warn!("Moving {} into the system password store failed: {}", account, e);
                     false
                 }
-                Ok(()) => match read_parts(b.as_ref(), &account) {
+                Ok(()) => match read_parts(b, &account) {
                     Ok(Some(back)) if back.as_slice() == value.as_bytes() => true,
                     Ok(_) => {
                         log::warn!("{} didn't read back the same; {} left in place", account, path.display());
@@ -1136,7 +1222,7 @@ impl SecretStore {
             };
             if !checked {
                 // Leave no half-written value; the next start writes it again.
-                if let Err(e) = delete_parts(b.as_ref(), &account) {
+                if let Err(e) = delete_parts(b, &account) {
                     log::warn!("Couldn't clear {} after a failed move: {}", account, e);
                 }
                 return self.move_failed(path, prefix);
@@ -1156,7 +1242,8 @@ impl SecretStore {
                 continue;
             }
             self.cache().remove(account);
-            if let Err(e) = delete_parts(b.as_ref(), account) {
+            *changed = true;
+            if let Err(e) = delete_parts(b, account) {
                 log::warn!("Removing {} failed: {}; {} left in place", account, e, path.display());
                 return self.move_failed(path, prefix);
             }
@@ -1175,6 +1262,35 @@ impl SecretStore {
         }
         MoveOutcome::Moved(map.values().filter(|v| !v.is_empty()).count())
     }
+}
+
+/// Replace the stamp with a new random value, holding a lock on the file so
+/// two copies saving at once can't each miss the other's change. Returns what
+/// it held before (empty for a new file) and the new value.
+fn replace_stamp(path: &Path) -> std::io::Result<(Vec<u8>, Vec<u8>)> {
+    use std::io::{Read, Seek, SeekFrom, Write};
+    // A plain file only: a link there is refused, never followed.
+    if let Ok(m) = fs::symlink_metadata(path) {
+        if !m.is_file() {
+            return Err(std::io::Error::other("not a plain file"));
+        }
+    }
+    let mut options = fs::OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut f = options.open(path)?;
+    f.lock()?;
+    let mut before = Vec::new();
+    f.read_to_end(&mut before)?;
+    let now = format!("{:032x}", rand::random::<u128>()).into_bytes();
+    f.seek(SeekFrom::Start(0))?;
+    f.write_all(&now)?;
+    f.set_len(now.len() as u64)?;
+    Ok((before, now))
 }
 
 /// The marker as an object; one that can't be read starts over (it still
@@ -2275,6 +2391,70 @@ mod tests {
         }
         // One read for the key never saved; none for the saved one.
         assert_eq!(mem.gets.load(Ordering::Relaxed) - before, 1);
+    }
+
+    #[test]
+    fn a_second_running_copy_sees_a_change_at_its_next_read() {
+        let dir = temp_dir();
+        let mem = MemBackend::new();
+        let a = os_store(&dir, &mem);
+        let b = os_store(&dir, &mem);
+        a.set("ai-key:anthropic", "OLD").unwrap();
+        a.set("mcp-creds:x", "login: x").unwrap();
+        assert_eq!(read_str(&b, "ai-key:anthropic").as_deref(), Some("OLD"));
+        assert!(!b.has("ai-key:moonshot").unwrap());
+        assert!(b.has("mcp-creds:x").unwrap());
+
+        a.set("ai-key:anthropic", "NEW").unwrap();
+        a.set("ai-key:moonshot", "M1").unwrap();
+        assert_eq!(read_str(&b, "ai-key:anthropic").as_deref(), Some("NEW"));
+        assert!(b.has("ai-key:moonshot").unwrap());
+        a.delete("ai-key:anthropic").unwrap();
+        assert_eq!(read_str(&b, "ai-key:anthropic"), None);
+
+        // A rename in the second copy of a login the first one removed
+        // doesn't bring it back.
+        a.delete("mcp-creds:x").unwrap();
+        assert!(!b.copy("mcp-creds:x", "mcp-creds:y").unwrap());
+        assert!(mem.raw("mcp-creds:y").is_none());
+
+        // And the other way round.
+        b.set("ai-key:moonshot", "M2").unwrap();
+        assert_eq!(read_str(&a, "ai-key:moonshot").as_deref(), Some("M2"));
+    }
+
+    #[test]
+    fn a_second_running_copy_sees_a_change_in_the_19_files_too() {
+        let dir = temp_dir();
+        let a = SecretStore::files(&dir);
+        let b = SecretStore::files(&dir);
+        a.set("ai-key:anthropic", "OLD").unwrap();
+        assert_eq!(read_str(&b, "ai-key:anthropic").as_deref(), Some("OLD"));
+        a.set("ai-key:anthropic", "NEW").unwrap();
+        assert_eq!(read_str(&b, "ai-key:anthropic").as_deref(), Some("NEW"));
+        a.delete("ai-key:anthropic").unwrap();
+        assert!(!b.has("ai-key:anthropic").unwrap());
+    }
+
+    #[test]
+    fn own_changes_keep_the_cache_of_other_keys() {
+        let dir = temp_dir();
+        let mem = MemBackend::new();
+        let store = os_store(&dir, &mem);
+        store.set("ai-key:anthropic", ANTHROPIC).unwrap();
+        let before = mem.gets.load(Ordering::Relaxed);
+        for _ in 0..5 {
+            assert!(store.has("ai-key:anthropic").unwrap());
+            assert!(!store.has("ai-key:moonshot").unwrap());
+        }
+        assert_eq!(mem.gets.load(Ordering::Relaxed) - before, 1);
+        // A save of another key in this copy keeps both answers cached.
+        store.set("ai-key:openai", "O1").unwrap();
+        let before = mem.gets.load(Ordering::Relaxed);
+        assert!(store.has("ai-key:anthropic").unwrap());
+        assert!(!store.has("ai-key:moonshot").unwrap());
+        assert!(store.has("ai-key:openai").unwrap());
+        assert_eq!(mem.gets.load(Ordering::Relaxed) - before, 0);
     }
 
     #[test]

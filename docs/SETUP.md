@@ -241,6 +241,7 @@ id `com.choatelabs.greencli`:
 | `sessions.json` | Saved sessions + folders | **No secrets** — passwords/keys are never written here |
 | `vault.enc` | Encrypted credential vault | AES-256-GCM; written `0600`, atomic |
 | `secret_store.json` | Says AI keys and MCP logins are in the system password store | No secrets. Also lists a move from 1.9 that isn't done yet |
+| `secret_store.stamp` | A random value replaced at each key change | No secrets. Tells a second running copy of GreenCLI to read the keys again |
 | `ai_keys.json` | AI provider API keys | Only when no system password store is found, or an old 1.9 file that couldn't be moved; `0600` |
 | `mcp_servers.json` | MCP server definitions | — |
 | `mcp_creds.json` | MCP server logins | Same as `ai_keys.json`; `0600` |
