@@ -8,8 +8,9 @@
 //!
 //! Config text is served only from the hidden copies GreenCLI writes at
 //! capture time (`<ts>.hidden.json`, made with the same secret filter the AI
-//! uses). When a hidden copy is missing or was made by an older filter, the
-//! tool fails closed: the raw snapshot is never read.
+//! uses). When a hidden copy is missing or was made by another filter (an
+//! older one, or a newer one when GreenCLI was updated while this server ran),
+//! the tool fails closed: the raw snapshot is never read.
 
 use std::ffi::OsString;
 use std::io::{BufRead, Write};

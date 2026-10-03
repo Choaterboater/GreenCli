@@ -103,7 +103,8 @@ There is no Linux release build, so Linux gets no updates.
   builds.", and a Linux build (or any system with no release build) shows "There is no release
   build for this system, so updates are off. Build new versions from source."
 - **Mac**: run GreenCLI from Applications. From the disk image (or straight from Downloads) it says
-  "Move GreenCLI to Applications first." and offers no update.
+  "Move GreenCLI to Applications first." and offers no update. After an update, restart Claude Code
+  and Casper so they use the new greencli-mcp: one they started before keeps running the old one.
 - **Windows**: close Claude Code and Casper before you update, because a greencli-mcp they run can
   block the installer. GreenCLI's MCP servers stop just before the installer starts, and come back
   only if the installer can't start. Once it starts, GreenCLI has closed: if the installer then
@@ -571,7 +572,9 @@ changes every time it starts; until then MCP Servers says so and the export leav
 **Hidden copies.** When a config is captured, GreenCLI also saves a copy with secrets hidden (the
 same filter the AI uses). greencli-mcp reads configs only from these copies. A snapshot without
 one, or with one from an older filter, is refused ("No hidden copy for this snapshot …" or "… is
-out of date …"), never served raw. Configs captured before 2.0 have no hidden copy: open the
+out of date …"), never served raw. A copy from a newer GreenCLI is refused too ("… made by a newer
+GreenCLI than this greencli-mcp …"): GreenCLI was updated while Claude Code or Casper kept the old
+greencli-mcp running, so restart them. Configs captured before 2.0 have no hidden copy: open the
 **Config Archive** panel (activity bar or command palette) and click **Make hidden copies**. MCP
 Servers and the Config Archive panel show how many snapshots still need one. After a secret filter change, GreenCLI makes the old copies again at start.
 
@@ -772,6 +775,7 @@ live compliance:
 | *"An old key file couldn't be read …"* | Enter your keys again, then delete the file Settings names. |
 | *"Nothing was changed. GreenCLI can't write secret_store.json …"* | Some keys from 1.9 are still moving, and each change to them must be noted in that file. Free some disk space (or make the data folder writable), then save or remove the key again. |
 | greencli-mcp: *"No hidden copy for this snapshot"* or *"out of date"* | Open the Config Archive panel (activity bar or command palette) and click **Make hidden copies**. |
+| greencli-mcp: *"made by a newer GreenCLI than this greencli-mcp"* | GreenCLI was updated while Claude Code or Casper kept running the old greencli-mcp. Restart Claude Code or Casper. After you update GreenCLI, restart them so they use the new greencli-mcp. |
 | Updates: *"Move GreenCLI to Applications first."* | Drag GreenCLI into Applications and open it from there. |
 | Updates: *"You have the latest version."* but GitHub has a newer one | That release is still a draft, or wasn't set as the latest release: publish it as the latest release. If it is already published as the latest, its update files are missing or wrong (update-files wasn't green for it): release a new version and publish it only after update-files is green. |
 

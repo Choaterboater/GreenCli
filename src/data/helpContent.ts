@@ -272,7 +272,7 @@ export const HELP_TOPICS: HelpTopic[] = [
         items: [
           'It shows your devices (no passwords, user names, notes or startup commands), config history, configs and diffs with secrets hidden, and intent results.',
           'Config history stays under the name a device had when it was captured. After you rename or delete a saved device, or for a Quick Connect you never saved, the AI finds that history with `list_archive_devices`.',
-          'Configs come only from **hidden copies** made when a config is captured. If a tool says a snapshot has no hidden copy, or that it is out of date, open **Config Archive** (activity bar or command palette) and click **Make hidden copies**.',
+          'Configs come only from **hidden copies** made when a config is captured. If a tool says a snapshot has no hidden copy, or that it is out of date, open **Config Archive** (activity bar or command palette) and click **Make hidden copies**. If it says the copy was made by a newer GreenCLI, restart Claude Code or Casper so they use the updated greencli-mcp.',
           'A diff can’t show a changed password: both sides show it hidden.',
         ],
       },
@@ -318,7 +318,7 @@ export const HELP_TOPICS: HelpTopic[] = [
           '**Restart to update** asks first, says how many open sessions will close, and warns about unsaved Config Editor edits. It says when an AI answer is still running, and won’t restart while a Change Job, bulk run, Config Editor send or SFTP upload or download is going.',
           'Updates come only from GreenCLI releases on GitHub. Each release build signs its own files, and the app checks the signature before it installs.',
           isMac
-            ? 'Run GreenCLI from **Applications**. From the disk image (or straight from Downloads) it offers no update.'
+            ? 'Run GreenCLI from **Applications**. From the disk image (or straight from Downloads) it offers no update. After an update, restart Claude Code and Casper so they use the new greencli-mcp.'
             : platform === 'windows'
               ? 'Close Claude Code and Casper before you update (the **Restart to update** box reminds you). GreenCLI closes when the installer starts. If the installer then shows “Error opening file for writing”, close Claude Code and Casper and click **Retry**. After **Abort**, open GreenCLI again.'
               : 'There is no Linux release build, so updates are off on Linux.',
@@ -509,6 +509,7 @@ export const HELP_TOPICS: HelpTopic[] = [
           'Connected tab but no shell — a restricted account/appliance refused a PTY/shell; this now surfaces as a connect error.',
           '“Can’t reach the system password store” — keys saved on this computer are still there. Log in to the desktop (on Linux, start a keyring such as GNOME Keyring), then try again. On a Mac after an update, macOS may ask to let GreenCLI use its Keychain items: enter your login password and choose **Always Allow** (**Allow** alone asks again later). If you chose **Deny**, open Settings or the AI panel again and allow it. If you copied the GreenCLI folder from another computer, the keys aren’t on this one: start a keyring, or quit GreenCLI and delete `secret_store.json` to keep keys in private files, then enter them again.',
           'greencli-mcp says a snapshot has no hidden copy, or it is out of date — open **Config Archive** (activity bar or command palette) and click **Make hidden copies**.',
+          'greencli-mcp says a hidden copy was made by a newer GreenCLI — GreenCLI was updated while Claude Code or Casper kept running the old greencli-mcp. Restart Claude Code or Casper. After you update GreenCLI, restart them so they use the new greencli-mcp.',
         ],
       },
     ],

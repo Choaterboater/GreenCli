@@ -158,6 +158,69 @@ fn an_out_of_date_copy_is_refused() {
     std::fs::remove_dir_all(dir).ok();
 }
 
+/// GreenCLI was updated while this server kept running (a Mac update replaces
+/// the app under it), and the new app made copies with a newer filter. The
+/// new app counts them as current, so it shows no Make hidden copies button:
+/// the error and the history say to restart what started this server.
+#[test]
+fn a_copy_from_a_newer_greencli_asks_for_a_restart() {
+    let dir = fixture("newer");
+    write_archive(
+        &dir,
+        "sw4",
+        &[
+            snap(80, RAW, Some(("NEWER-COPY-TEXT", Some(F + 1)))),
+            snap(70, RAW, Some((HIDDEN, Some(F)))),
+        ],
+    );
+    let restart = "Restart Claude Code or Casper so they start the updated greencli-mcp.";
+    let (is_error, body, text) = call(&dir, "get_config", json!({"device": "sw4"}));
+    assert!(is_error);
+    assert!(
+        error_text(&body).contains("made by a newer GreenCLI"),
+        "{text}"
+    );
+    assert!(error_text(&body).contains(restart), "{text}");
+    assert!(!error_text(&body).contains("Make hidden copies"), "{text}");
+    assert!(
+        !text.contains("COPY-TEXT") && !text.contains("RAW-SECRET"),
+        "{text}"
+    );
+    let (is_error, body, text) = call(&dir, "get_config_diff", json!({"device": "sw4"}));
+    assert!(is_error);
+    assert!(error_text(&body).contains(restart), "{text}");
+    // This filter's copy is still served.
+    let (is_error, body, text) = call(&dir, "get_config", json!({"device": "sw4", "ts": 70}));
+    assert!(!is_error, "{text}");
+    assert_eq!(body["text"], HIDDEN);
+    // History: the newer copy can't be read here, and a note says why.
+    let (is_error, body, text) = call(&dir, "list_config_history", json!({"device": "sw4"}));
+    assert!(!is_error, "{text}");
+    assert_eq!(body["snapshots"][0]["hasHiddenCopy"], false);
+    assert_eq!(body["snapshots"][1]["hasHiddenCopy"], true);
+    assert!(
+        body["note"].as_str().unwrap_or_default().contains(restart),
+        "{text}"
+    );
+    // The app makes the copy again only when this server can't use it.
+    let folder = dir.join("config_archive").join(dir_for("sw4"));
+    assert!(!greencli_mcp::hidden_copy_usable(
+        &folder.join("80.hidden.json"),
+        "sw4",
+        80
+    ));
+    // An older filter's copy still asks for Make hidden copies, with no note.
+    let (is_error, body, text) = call(&dir, "get_config", json!({"device": "sw2"}));
+    assert!(is_error);
+    assert!(error_text(&body).contains("out of date"), "{text}");
+    assert!(error_text(&body).contains("Make hidden copies"), "{text}");
+    let (_, body, _) = call(&dir, "list_config_history", json!({"device": "sw2"}));
+    assert_eq!(body["note"], Value::Null);
+    let (_, body, _) = call(&dir, "list_config_history", json!({"device": "sw1"}));
+    assert_eq!(body["note"], Value::Null);
+    std::fs::remove_dir_all(dir).ok();
+}
+
 #[test]
 fn a_copy_of_another_snapshot_is_refused() {
     let dir = fixture("swap");

@@ -32,6 +32,12 @@ pub const STALE_COPY: &str =
 Archive (activity bar or command palette) and click Make hidden copies.";
 const BAD_COPY: &str = "This snapshot's hidden copy couldn't be read. In GreenCLI, open Config \
 Archive (activity bar or command palette) and click Make hidden copies.";
+// A copy from a newer filter: GreenCLI was updated while this server kept
+// running (a Mac update replaces the app under it). Make hidden copies can't
+// help, and the new app shows no such button: only a restart of what started
+// this server does.
+pub const NEWER_COPY: &str = "This snapshot's hidden copy was made by a newer GreenCLI than this \
+greencli-mcp. Restart Claude Code or Casper so they start the updated greencli-mcp.";
 const NO_HISTORY: &str = "GreenCLI has no config history under this name. Use archiveKey from \
 list_devices or list_archive_devices (a device renamed or deleted in GreenCLI keeps its history \
 under its old name).";
@@ -129,7 +135,8 @@ fn find(entries: &[Entry], ts: u64) -> Result<&Entry, ToolFail> {
 }
 
 /// The hidden copy of a snapshot that is in the index. Refused when missing,
-/// unreadable, made by another filter version, or not this snapshot's.
+/// unreadable, made by another filter version (older or newer), or not this
+/// snapshot's.
 fn load_hidden(data_dir: &Path, device: &str, ts: u64) -> Result<String, ToolFail> {
     read_hidden(&hidden_path(data_dir, device, ts), device, ts)
 }
@@ -149,8 +156,10 @@ fn read_hidden(path: &Path, device: &str, ts: u64) -> Result<String, ToolFail> {
     };
     let copy: HiddenCopy =
         serde_json::from_slice(&bytes).map_err(|_| ToolFail::Error(BAD_COPY.into()))?;
-    if copy.filter != Some(HIDDEN_COPY_FILTER) {
-        return Err(ToolFail::Error(STALE_COPY.into()));
+    match copy.filter {
+        Some(f) if f == HIDDEN_COPY_FILTER => {}
+        Some(f) if f > HIDDEN_COPY_FILTER => return Err(ToolFail::Error(NEWER_COPY.into())),
+        _ => return Err(ToolFail::Error(STALE_COPY.into())),
     }
     if copy.device != device || copy.ts != ts {
         return Err(ToolFail::Error(BAD_COPY.into()));
@@ -238,12 +247,21 @@ pub fn list_config_history(
             && is_plain_file(&hidden_path(data_dir, device, entry.ts), MAX_COPY);
         row["hasHiddenCopy"] = json!(has_copy);
     }
-    Ok(json!({
+    let mut body = json!({
         "device": device,
         "total": entries.len(),
         "snapshots": rows,
         "nextCursor": next.map(|n| make_cursor(TOOL, &json!(device), n)),
-    }))
+    });
+    // Copies from a newer GreenCLI count as not there (this server can't
+    // read them), but Make hidden copies won't redo them: say what will.
+    if entries
+        .iter()
+        .any(|e| e.hidden_filter.is_some_and(|f| f > HIDDEN_COPY_FILTER))
+    {
+        body["note"] = json!(NEWER_COPY);
+    }
+    Ok(body)
 }
 
 pub fn get_config(
