@@ -18,6 +18,7 @@ import {
   Cloud,
   ArchiveRestore,
   RefreshCw,
+  History,
   type LucideIcon,
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
@@ -32,7 +33,7 @@ import McpServers from './McpServers';
 import AiAgents from './AiAgents';
 import CasperSettings from './CasperSettings';
 import SecretStoreNote from './SecretStoreNote';
-import { saveAiKey } from '../utils/secretStore';
+import { AI_KEY_CHANGED_EVENT, saveAiKey } from '../utils/secretStore';
 import HostsManager from './HostsManager';
 import LoginProfiles from './LoginProfiles';
 import TriggersSettings from './TriggersSettings';
@@ -52,6 +53,7 @@ import {
 import LargeModal, { ModalRail, RailItem } from './LargeModal';
 import { plainHttpWarning } from '../utils/urlSafety';
 import { isTauri } from '../utils/tauri';
+import { openConfigArchive } from '../utils/configArchive';
 
 // Curated best-practices the AI should apply, distilled from Juniper Validated
 // Designs (JVDs). Appended to the references field on request.
@@ -398,18 +400,53 @@ export default function SettingsPanel() {
   const aiProvider = settings.aiProvider;
   const providerMeta = AI_PROVIDERS.find((p) => p.value === aiProvider);
 
-  // When the selected provider changes, reflect whether a key is already stored
-  // (in the Rust key store) and reset the transient input.
+  // Each time the panel opens, and when the provider changes while it is open,
+  // ask the password store whether a key is saved and reset the transient
+  // input. Asking on every open lets a failed check (a denied Keychain prompt,
+  // a locked keyring) recover, and shows a key flushed on the last close. A
+  // reply that arrives after the panel closed or the provider changed is
+  // dropped.
   useEffect(() => {
+    if (!showSettings) return;
     setKeyInput('');
-    if (providerMeta?.needsKey) {
-      invoke<boolean>('ai_has_key', { provider: aiProvider })
-        .then(setKeySaved)
-        .catch(() => setKeySaved(null));
-    } else {
+    if (!providerMeta?.needsKey) {
       setKeySaved(false);
+      return;
     }
-  }, [aiProvider, providerMeta?.needsKey]);
+    let live = true;
+    invoke<boolean>('ai_has_key', { provider: aiProvider })
+      .then((has) => {
+        if (live) setKeySaved(has);
+      })
+      .catch(() => {
+        if (live) setKeySaved(null);
+      });
+    return () => {
+      live = false;
+    };
+  }, [showSettings, aiProvider, providerMeta?.needsKey]);
+
+  // While the panel is open, ask again when this provider's key is saved or
+  // removed: a save started on the last close may finish after it reopened.
+  useEffect(() => {
+    if (!showSettings || !providerMeta?.needsKey) return;
+    let live = true;
+    const onKeyChanged = (e: Event) => {
+      if ((e as CustomEvent<string>).detail !== aiProvider) return;
+      invoke<boolean>('ai_has_key', { provider: aiProvider })
+        .then((has) => {
+          if (live) setKeySaved(has);
+        })
+        .catch(() => {
+          if (live) setKeySaved(null);
+        });
+    };
+    window.addEventListener(AI_KEY_CHANGED_EVENT, onKeyChanged);
+    return () => {
+      live = false;
+      window.removeEventListener(AI_KEY_CHANGED_EVENT, onKeyChanged);
+    };
+  }, [showSettings, aiProvider, providerMeta?.needsKey]);
 
   const saveKey = () => {
     // Don't overwrite a stored key when the (always-empty-on-open) field is
@@ -1160,6 +1197,19 @@ export default function SettingsPanel() {
                   />
                 </div>
               </label>
+
+              <p className="text-[11px] text-[var(--text-secondary)] mt-3 mb-2">
+                greencli-mcp reads configs only from hidden copies (secrets
+                hidden), made when a config is captured. If some snapshots have
+                none or an old one, Config Archive shows a {'"'}Make hidden copies{'"'} button.
+              </p>
+              <button
+                onClick={openConfigArchive}
+                className="flex items-center gap-1.5 px-3 h-8 rounded bg-[var(--bg-tertiary)] hover:bg-[var(--border-strong)] text-xs text-[var(--text-primary)]"
+              >
+                <History size={13} />
+                Open Config Archive
+              </button>
             </section>
           </Section>
           <Section id="intent-schedule">
@@ -1260,6 +1310,10 @@ export default function SettingsPanel() {
                       (with the device name and your agent&apos;s instructions), not your SSH sessions, GreenCLI&apos;s
                       tools or GreenCLI&apos;s MCP servers. The Assistant tools switches below are not used.
                     </p>
+                  )}
+                  {/* A key provider shows these with its key field below. */}
+                  {!providerMeta?.needsKey && (
+                    <SecretStoreNote problemsOnly refreshKey={`${showSettings}:${aiProvider}`} />
                   )}
                 </div>
 

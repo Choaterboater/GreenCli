@@ -26,7 +26,10 @@ describe('SecretStoreNote', () => {
     ['keychain', 'Saved in macOS Keychain.'],
     ['credential-manager', 'Saved in Windows Credential Manager.'],
     ['secret-service', 'Saved in your system keyring.'],
-    ['file', 'Saved in a private file on this computer. No system password store was found.'],
+    [
+      'file',
+      "Saved in a private file on this computer. The system password store couldn't be used when GreenCLI started; it tries again at each start.",
+    ],
   ] as const)('shows where keys are kept: %s', async (kind, line) => {
     withStatus(ok({ kind }));
     render(<SecretStoreNote after="Sent only to the provider." />);
@@ -40,7 +43,7 @@ describe('SecretStoreNote', () => {
     render(<SecretStoreNote />);
     await waitFor(() =>
       expect(screen.getByTestId('secret-store-line').textContent).toBe(
-        "Can't reach the system password store. Your keys are still there. Try again after you log in to the desktop."
+        "Can't reach the system password store. Keys saved on this computer are still there. Try again after you log in to the desktop."
       )
     );
   });
@@ -73,5 +76,16 @@ describe('SecretStoreNote', () => {
     await act(async () => {});
     expect(rejected).toBe(true);
     expect(screen.getByTestId('secret-store-line').textContent).toBe(UNKNOWN_LINE);
+  });
+
+  it('shows only the warnings, or nothing, with problemsOnly', async () => {
+    withStatus(ok({ movePending: true }));
+    const { container, rerender } = render(<SecretStoreNote problemsOnly refreshKey={1} />);
+    expect(await screen.findByText(MOVE_PENDING_LINE)).toBeTruthy();
+    expect(screen.queryByTestId('secret-store-line')).toBeNull();
+    withStatus(ok());
+    rerender(<SecretStoreNote problemsOnly refreshKey={2} />);
+    await waitFor(() => expect(screen.queryByText(MOVE_PENDING_LINE)).toBeNull());
+    expect(container.innerHTML).toBe('');
   });
 });

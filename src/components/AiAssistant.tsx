@@ -81,7 +81,8 @@ import { loginChoiceFor } from '../utils/logins';
 import { backendVault } from '../utils/vaultAccess';
 import { useAiBridge, type AiEditTarget } from '../store/aiBridgeStore';
 import { isTauri } from '../utils/tauri';
-import { keyCheckError } from '../utils/secretStore';
+import { openWebLink } from '../utils/openUrl';
+import { AI_KEY_CHANGED_EVENT, keyCheckError } from '../utils/secretStore';
 
 // ─── Anthropic API types (local) ───
 
@@ -1019,8 +1020,8 @@ function buildDeviceContext(activeSession: Session | undefined): string {
 // replaced (updateLast), so every other bubble keeps its identity and React.memo
 // skips it — markdown is re-parsed (useMemo) only when this message's content
 // changes. Tool-expansion state is local, so toggling one message's tool output
-// never re-renders the rest of the conversation.
-const MessageItem = memo(function MessageItem({ msg, editTarget }: { msg: DisplayMessage; editTarget: AiEditTarget | null }) {
+// never re-renders the rest of the conversation. Exported for its tests.
+export const MessageItem = memo(function MessageItem({ msg, editTarget }: { msg: DisplayMessage; editTarget: AiEditTarget | null }) {
   const [openTools, setOpenTools] = useState<Set<number>>(new Set());
 
   if (msg.role === 'user') {
@@ -1117,6 +1118,33 @@ const MessageItem = memo(function MessageItem({ msg, editTarget }: { msg: Displa
             <ReactMarkdown
               remarkPlugins={[remarkGfm]}
               components={{
+                a({ node: _node, children, href, ...rest }) {
+                  // A footnote's link jumps within the answer.
+                  if (href?.startsWith('#')) return <a {...rest} href={href}>{children}</a>;
+                  // A plain click would load the site in place of GreenCLI,
+                  // so a web link opens in the browser. A middle click sends
+                  // auxclick, not click, and the webview follows the link on
+                  // that too, so it opens in the browser as well.
+                  return (
+                    <a
+                      {...rest}
+                      href={href}
+                      title={href}
+                      className="text-[var(--accent)] underline"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        if (href) void openWebLink(href);
+                      }}
+                      onAuxClick={(e) => {
+                        if (e.button !== 1) return;
+                        e.preventDefault();
+                        if (href) void openWebLink(href);
+                      }}
+                    >
+                      {children}
+                    </a>
+                  );
+                },
                 code(props) {
                   const { children, className, node, ...rest } = props;
                   const match = /language-([\w-]+)/.exec(className || '');
@@ -1247,23 +1275,39 @@ export default function AiAssistant() {
   }, [messages, isLoading]);
 
   // Track whether the selected provider has a key stored in the Rust key store.
-  // Re-check on provider change AND when the Settings modal closes (a key may
-  // have just been added there).
+  // Re-check on provider change, when the Settings modal closes, AND when a
+  // key save finishes: closing Settings with a typed key starts the save at
+  // the same moment as the close check, so that check can still see no key.
+  // Honour an agent's provider override so the header readiness reflects the
+  // key the next send will actually use.
   const showSettings = useSessionStore((s) => s.showSettings);
-  useEffect(() => {
-    // Honour an agent's provider override so the header readiness reflects the
-    // key the next send will actually use.
-    const provider = activeAgent?.provider || settings.aiProvider || 'ollama';
-    invoke<boolean>('ai_has_key', { provider })
+  const keyProvider = activeAgent?.provider || settings.aiProvider || 'ollama';
+  // Only the newest check's reply counts: an older one may answer last.
+  const keyCheckSeq = useRef(0);
+  const recheckKey = useCallback(() => {
+    const seq = ++keyCheckSeq.current;
+    invoke<boolean>('ai_has_key', { provider: keyProvider })
       .then((has) => {
+        if (seq !== keyCheckSeq.current) return;
         setHasKey(has);
         setKeyError(null);
       })
       .catch((e) => {
+        if (seq !== keyCheckSeq.current) return;
         setHasKey(false);
         setKeyError(keyCheckError(e));
       });
-  }, [settings.aiProvider, activeAgent?.provider, showSettings]);
+  }, [keyProvider]);
+  useEffect(() => {
+    recheckKey();
+  }, [recheckKey, showSettings]);
+  useEffect(() => {
+    const onKeyChanged = (e: Event) => {
+      if ((e as CustomEvent<string>).detail === keyProvider) recheckKey();
+    };
+    window.addEventListener(AI_KEY_CHANGED_EVENT, onKeyChanged);
+    return () => window.removeEventListener(AI_KEY_CHANGED_EVENT, onKeyChanged);
+  }, [keyProvider, recheckKey]);
 
   // Count tools from connected MCP servers (refresh when Settings closes, since
   // servers may have just been connected there).
@@ -1337,14 +1381,18 @@ export default function AiAssistant() {
       let keyPresent = hasKey;
       let checkError: string | null = null;
       if (!keyPresent) {
+        // Newer than any check still out, whose reply is then dropped.
+        const seq = ++keyCheckSeq.current;
         try {
           keyPresent = await invoke<boolean>('ai_has_key', { provider });
         } catch (e) {
           keyPresent = false;
           checkError = keyCheckError(e);
         }
-        setHasKey(keyPresent);
-        setKeyError(checkError);
+        if (seq === keyCheckSeq.current) {
+          setHasKey(keyPresent);
+          setKeyError(checkError);
+        }
       }
       if (!keyPresent) {
         setMessages((prev) => [

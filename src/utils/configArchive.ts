@@ -7,6 +7,7 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import { Session } from '../types';
+import { useSessionStore } from '../store/sessionStore';
 import { useSettingsStore } from '../store/settingsStore';
 import { notify } from '../store/toastStore';
 import { profileForSession } from './deviceProfiles';
@@ -20,16 +21,24 @@ import { isTauri } from './tauri';
  * greencli-mcp serves a snapshot's config only from its hidden copy
  * (`<ts>.hidden.json`), and only when the copy has this version. Keep it equal
  * to HIDDEN_COPY_FILTER in src-tauri/greencli-mcp/src/lib.rs (a Rust test
+ * checks) and to the length of HIDDEN_COPY_FILTER_SOURCES (a vitest test
  * checks). When the filter changes, bump both, so old copies are made again.
+ * Keep it a number literal: the Rust test reads this line.
  */
 export const HIDDEN_COPY_FILTER = 1;
 
 /**
  * sha256 of the filter's source files under src/utils/secrets (tests left
- * out; sorted by path, LF newlines). hiddenFilterVersion.test.ts fails when
- * the filter changes without a bump.
+ * out; sorted by path, LF newlines), one entry per filter version: entry N-1
+ * is the hash for version N, and the last one is the filter as it is now.
+ * hiddenFilterVersion.test.ts fails when the filter changes until its new hash
+ * is appended here and to RECORDED in that test, and then until
+ * HIDDEN_COPY_FILTER equals this list's length. Only ever append; never
+ * replace an entry.
  */
-export const HIDDEN_COPY_FILTER_SOURCE = '42f0b17bb9343b571edd878f15f0e713186fea8fce11f34f9dc75825822cc15f';
+export const HIDDEN_COPY_FILTER_SOURCES: readonly string[] = [
+  '42f0b17bb9343b571edd878f15f0e713186fea8fce11f34f9dc75825822cc15f',
+];
 
 /** One history row, mirroring `config_archive::ArchiveEntry` (camelCase). */
 export interface ArchiveEntry {
@@ -209,33 +218,59 @@ export async function makeHiddenCopies(opts: { limit?: number } = {}): Promise<H
   return { made, failed, left: todo.length - batch.length };
 }
 
+/**
+ * Open the Config Archive panel (it lives in the Config Editor), where the
+ * Make hidden copies button is. Settings closes first, since it covers it.
+ */
+export function openConfigArchive(): void {
+  const s = useSessionStore.getState();
+  s.setShowSettings(false);
+  s.setShowConfigEditor(true);
+  s.setShowArchive(true);
+}
+
 /** Most snapshots the background refresh redoes in one run. */
 export const BACKGROUND_REFRESH_LIMIT = 500;
 
-let refreshRun: Promise<void> | null = null;
+let refreshRun: Promise<boolean> | null = null;
+let refreshEnded = false;
 
 /**
  * Once per app run, in the background: after the secret filter changed (some
  * hidden copies are stale), make the copies again. Capped and logged; the
- * "Make hidden copies" button in Config archive does the rest. Every call
- * returns the same promise, which ends when the run is done (it never fails),
- * so a caller can read the hidden copy count again after it.
+ * "Make hidden copies" button in the Config Archive panel does the rest.
+ *
+ * It never fails. A call while the run is going gets the run's promise, which
+ * ends with it and says whether it made any copies. A call after the run
+ * ended gets false at once, since a count made after that call already sees
+ * every copy. So a caller calls this, counts the hidden copies, and counts
+ * again only when this says true: the count reads every copy, and a normal
+ * open of Settings or the Config Archive panel should read them once.
  */
-export function refreshStaleHiddenCopies(): Promise<void> {
+export function refreshStaleHiddenCopies(): Promise<boolean> {
+  if (refreshEnded) return Promise.resolve(false);
   refreshRun ??= (async () => {
     const status = await archiveHiddenStatus();
-    if (status.stale === 0) return;
+    if (status.stale === 0) return false;
     const result = await makeHiddenCopies({ limit: BACKGROUND_REFRESH_LIMIT });
     console.info(
       `[config-archive] hidden copies refreshed after a secret filter change: ${result.made} made, ${result.failed} failed, ${result.left} left`
     );
-  })().catch((e) => console.warn('[config-archive] hidden copy refresh failed', e));
+    return result.made > 0;
+  })()
+    .catch((e) => {
+      console.warn('[config-archive] hidden copy refresh failed', e);
+      return false;
+    })
+    .finally(() => {
+      refreshEnded = true;
+    });
   return refreshRun;
 }
 
 /**
  * App start: run the refresh above once, so greencli-mcp gets current hidden
- * copies even when Config archive is never opened and nothing is captured.
+ * copies even when the Config Archive panel is never opened and nothing is captured.
  * Does nothing outside the app.
  */
 export function refreshHiddenCopiesAtStart(): void {
@@ -246,4 +281,5 @@ export function refreshHiddenCopiesAtStart(): void {
 /** Tests only: let refreshStaleHiddenCopies run again. */
 export function resetHiddenRefreshForTests(): void {
   refreshRun = null;
+  refreshEnded = false;
 }

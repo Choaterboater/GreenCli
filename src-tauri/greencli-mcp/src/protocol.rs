@@ -1,5 +1,7 @@
 //! MCP over newline-delimited JSON-RPC 2.0: initialize, ping, tools/list and
-//! tools/call. Notifications get no answer. Batches are refused.
+//! tools/call. Notifications get no answer. Batches are taken, as protocol
+//! 2025-03-26 requires: the server keeps nothing between messages, so each
+//! one in a batch is answered as if it came on its own line.
 
 use crate::tools::{self, ToolFail};
 use crate::transport::{self, Line, MAX_LINE};
@@ -58,16 +60,26 @@ fn handle_bytes(data_dir: &Path, bytes: &[u8]) -> Option<Value> {
     }
 }
 
-/// Answer one message. None: nothing to send (a notification or a response).
+/// Answer one line: a message or a batch of them. None: nothing to send
+/// (only notifications or responses).
 pub fn handle(data_dir: &Path, message: Value) -> Option<Value> {
+    let Value::Array(items) = message else {
+        return handle_one(data_dir, message);
+    };
+    if items.is_empty() {
+        return Some(error(Value::Null, INVALID_REQUEST, "The batch is empty."));
+    }
+    // An array inside a batch is not a request: handle_one refuses it.
+    let replies: Vec<Value> = items
+        .into_iter()
+        .filter_map(|m| handle_one(data_dir, m))
+        .collect();
+    (!replies.is_empty()).then_some(Value::Array(replies))
+}
+
+/// Answer one message. None: nothing to send (a notification or a response).
+fn handle_one(data_dir: &Path, message: Value) -> Option<Value> {
     let Value::Object(message) = message else {
-        if message.is_array() {
-            return Some(error(
-                Value::Null,
-                INVALID_REQUEST,
-                "Batches are not supported.",
-            ));
-        }
         return Some(error(
             Value::Null,
             INVALID_REQUEST,

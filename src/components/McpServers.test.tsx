@@ -13,6 +13,7 @@ import { allowWritesMessage, writesOffHelp } from './McpServerSafety';
 import { askConfirm } from '../store/dialogStore';
 import { useMcpApprovalStore } from '../store/mcpApprovalStore';
 import { useToastStore } from '../store/toastStore';
+import { UNAVAILABLE_LINE } from '../utils/secretStore';
 import type { McpServerDef, McpStatus } from '../utils/mcpTypes';
 
 let defs: McpServerDef[] = [];
@@ -324,7 +325,7 @@ describe('McpServers login save', () => {
       if (cmd === 'mcp_status') return status;
       if (cmd === 'secret_store_status') return { kind: 'unavailable', leftoverFiles: [], movePending: false };
       if (cmd === 'mcp_set_credentials') {
-        throw "Can't reach the system password store. Your keys are still there. Try again after you log in to the desktop.";
+        throw "Can't reach the system password store. Keys saved on this computer are still there. Try again after you log in to the desktop.";
       }
       return null;
     });
@@ -389,6 +390,77 @@ describe('McpServers login save', () => {
     await waitFor(() =>
       expect(screen.getByTestId('secret-store-line').textContent).toMatch(/^Saved in macOS Keychain\. On connect/)
     );
+  });
+});
+
+describe('McpServers saved-login check', () => {
+  const storeOk = { kind: 'keychain', leftoverFiles: [], movePending: false };
+
+  it('shows a saved login', async () => {
+    defs = [plainDef()];
+    status = [st()];
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === 'mcp_list_servers') return defs;
+      if (cmd === 'mcp_status') return status;
+      if (cmd === 'secret_store_status') return storeOk;
+      if (cmd === 'mcp_has_credentials') return true;
+      return null;
+    });
+    render(<McpServers />);
+    fireEvent.click(await screen.findByTitle('Edit'));
+    expect(await screen.findByText('· saved')).toBeTruthy();
+    expect(screen.getByPlaceholderText(/saved — type to replace the credentials file/)).toBeTruthy();
+  });
+
+  it("says it can't check, not that there is no login, when the store can't be asked", async () => {
+    defs = [plainDef()];
+    status = [st()];
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === 'mcp_list_servers') return defs;
+      if (cmd === 'mcp_status') return status;
+      if (cmd === 'secret_store_status') return storeOk;
+      if (cmd === 'mcp_has_credentials') throw UNAVAILABLE_LINE;
+      return null;
+    });
+    render(<McpServers />);
+    fireEvent.click(await screen.findByTitle('Edit'));
+    expect(await screen.findByPlaceholderText(/Can't check for a saved login/)).toBeTruthy();
+    expect(screen.getByText(UNAVAILABLE_LINE)).toBeTruthy();
+    expect(screen.queryByText('· saved')).toBeNull();
+    expect(screen.queryByPlaceholderText(/Paste the server's credentials file/)).toBeNull();
+
+    // Cancel and Add server start clean.
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    fireEvent.click(screen.getByRole('button', { name: /Add server/ }));
+    expect(screen.getByPlaceholderText(/Paste the server's credentials file/)).toBeTruthy();
+    expect(screen.queryByText(UNAVAILABLE_LINE)).toBeNull();
+  });
+
+  it("ignores a slow check for a server whose form isn't open any more", async () => {
+    defs = [plainDef(), plainDef({ name: 'other' })];
+    status = [st(), st({ name: 'other' })];
+    let failCentral: (e: unknown) => void = () => {};
+    vi.mocked(invoke).mockImplementation(async (cmd: string, raw?: unknown) => {
+      if (cmd === 'mcp_list_servers') return defs;
+      if (cmd === 'mcp_status') return status;
+      if (cmd === 'secret_store_status') return storeOk;
+      if (cmd === 'mcp_has_credentials') {
+        const { name } = raw as { name: string };
+        if (name === 'central') return new Promise((_, reject) => (failCentral = reject));
+        return true;
+      }
+      return null;
+    });
+    render(<McpServers />);
+    await screen.findByText('other');
+    const [editCentral, editOther] = screen.getAllByTitle('Edit');
+    fireEvent.click(editCentral);
+    fireEvent.click(editOther);
+    expect(await screen.findByText('· saved')).toBeTruthy();
+    failCentral(UNAVAILABLE_LINE);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(screen.getByText('· saved')).toBeTruthy();
+    expect(screen.queryByText(UNAVAILABLE_LINE)).toBeNull();
   });
 });
 

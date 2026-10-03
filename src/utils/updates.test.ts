@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const invoke = vi.hoisted(() => vi.fn());
 vi.mock('@tauri-apps/api/core', () => ({ invoke }));
@@ -9,6 +9,7 @@ vi.mock('../store/dialogStore', () => ({ askConfirm }));
 import {
   DAY_MS,
   UPDATE_TEXT,
+  checkForUpdate,
   dailyCheckDue,
   dailyCheckOn,
   dailyUpdateCheck,
@@ -17,15 +18,19 @@ import {
   recordCheck,
   restartToUpdate,
   setDailyCheck,
+  showUpdateReady,
   updateErrorText,
   type UpdateStatus,
 } from './updates';
 import { holdExit, registerBeforeExit } from './beforeExit';
+import { flushDeferredVaultWrites, saveToVault } from './vaultAccess';
 import { useToastStore } from '../store/toastStore';
 import { useSessionStore } from '../store/sessionStore';
 import { useSidePanelStore } from '../store/sidePanelStore';
 
 const ON: UpdateStatus = { version: '2.0.0', enabled: true, reason: null, place: 'normal', ready: null };
+/** A check downloaded 2.0.1, waiting for Restart to update. */
+const READY: UpdateStatus = { ...ON, ready: '2.0.1' };
 const NOW = 1_800_000_000_000;
 
 /** invoke mock answering update_status / update_check / update_install. */
@@ -67,7 +72,7 @@ describe('update helpers', () => {
   it('says why updates are off', () => {
     expect(offText(ON)).toBeNull();
     expect(offText({ ...ON, enabled: false, reason: 'dev' })).toBe(UPDATE_TEXT.offDev);
-    expect(offText({ ...ON, enabled: false, reason: 'platform' })).toBe(UPDATE_TEXT.off);
+    expect(offText({ ...ON, enabled: false, reason: 'platform' })).toBe(UPDATE_TEXT.offPlatform);
     expect(offText({ ...ON, enabled: false, reason: 'setup' })).toBe(UPDATE_TEXT.off);
     expect(offText(null)).toBe(UPDATE_TEXT.off);
   });
@@ -142,6 +147,32 @@ describe('dailyUpdateCheck', () => {
     expect(toasts()).toEqual([]);
   });
 
+  /** The daily check on day `day`, answering update_check with `version`. */
+  async function checkOnDay(day: number, version: string | null) {
+    answer({ update_status: ON, update_check: version });
+    await dailyUpdateCheck(NOW + day * DAY_MS);
+  }
+  const cards = () => toasts().map((t) => `${t.title} x${t.count}`);
+
+  it('replaces the ready card when a newer version replaced the waiting one', async () => {
+    await checkOnDay(0, '2.0.1');
+    await checkOnDay(1, '2.0.2');
+    expect(cards()).toEqual(['GreenCLI 2.0.2 is ready. x1']);
+  });
+
+  it('closes the ready card when nothing is waiting any more (its release withdrawn)', async () => {
+    await checkOnDay(0, '2.0.1');
+    await checkOnDay(1, null);
+    expect(toasts()).toEqual([]);
+  });
+
+  it('shows the same waiting version again as one card, not counted up', async () => {
+    await checkOnDay(0, '2.0.1');
+    await checkOnDay(1, '2.0.1');
+    await checkOnDay(2, '2.0.1');
+    expect(cards()).toEqual(['GreenCLI 2.0.1 is ready. x1']);
+  });
+
   it('only logs errors, and waits a day before trying again', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     answer({ update_status: ON, update_check: new Error(UPDATE_TEXT.checkFailed) });
@@ -155,12 +186,46 @@ describe('dailyUpdateCheck', () => {
   });
 });
 
+describe('checkForUpdate (Settings)', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    invoke.mockReset();
+    useToastStore.getState().clear();
+  });
+
+  const cards = () => toasts().map((t) => `${t.title} x${t.count}`);
+
+  it('closes the ready card when it finds nothing waiting', async () => {
+    showUpdateReady('2.0.1');
+    answer({ update_check: null });
+    await expect(checkForUpdate()).resolves.toBeNull();
+    expect(toasts()).toEqual([]);
+  });
+
+  it('brings a ready card on screen up to the version now waiting', async () => {
+    showUpdateReady('2.0.1');
+    answer({ update_check: '2.0.2' });
+    await expect(checkForUpdate()).resolves.toBe('2.0.2');
+    expect(cards()).toEqual(['GreenCLI 2.0.2 is ready. x1']);
+    answer({ update_check: '2.0.2' });
+    await checkForUpdate();
+    expect(cards()).toEqual(['GreenCLI 2.0.2 is ready. x1']);
+  });
+
+  it('puts up no card itself: Settings shows the answer', async () => {
+    answer({ update_check: '2.0.1' });
+    await expect(checkForUpdate()).resolves.toBe('2.0.1');
+    expect(toasts()).toEqual([]);
+  });
+});
+
 describe('restartToUpdate', () => {
   beforeEach(() => {
     invoke.mockReset();
     askConfirm.mockReset();
     useToastStore.getState().clear();
     useSidePanelStore.getState().setStatus('editor', null);
+    useSidePanelStore.getState().setStatus('ai', null);
     useSessionStore.setState({ sessions: [] });
   });
 
@@ -176,7 +241,7 @@ describe('restartToUpdate', () => {
     });
     invoke.mockImplementation(async (cmd: string) => {
       order.push(cmd);
-      return cmd === 'update_status' ? ON : undefined;
+      return cmd === 'update_status' ? READY : undefined;
     });
     await expect(restartToUpdate('2.0.1')).resolves.toBe(true);
     off();
@@ -185,7 +250,17 @@ describe('restartToUpdate', () => {
     expect(opts.title).toBe('Restart now?');
     expect(opts.message).toContain('2 open sessions will close.');
     expect(opts.message).not.toContain(UPDATE_TEXT.dirtyEditor);
+    expect(opts.message).not.toContain(UPDATE_TEXT.aiBusy);
     expect(opts.confirmLabel).toBe('Restart to update');
+  });
+
+  it('says an AI answer still running will stop', async () => {
+    useSidePanelStore.getState().setStatus('ai', 'busy');
+    askConfirm.mockResolvedValue(false);
+    answer({ update_status: READY });
+    await expect(restartToUpdate('2.0.1')).resolves.toBe(false);
+    expect(askConfirm.mock.calls[0][0].message).toContain('The AI assistant is still answering. It will stop.');
+    expect(calls()).toEqual(['update_status']);
   });
 
   it('warns about unsaved editor edits, and does nothing on No', async () => {
@@ -194,7 +269,7 @@ describe('restartToUpdate', () => {
     const save = vi.fn();
     const off = registerBeforeExit(save);
     askConfirm.mockResolvedValue(false);
-    answer({ update_status: ON });
+    answer({ update_status: READY });
     await expect(restartToUpdate('2.0.1')).resolves.toBe(false);
     off();
     const opts = askConfirm.mock.calls[0][0];
@@ -205,13 +280,83 @@ describe('restartToUpdate', () => {
     expect(calls()).toEqual(['update_status']);
   });
 
-  it('refuses while a Change Job or bulk run is going', async () => {
+  it('warns that password changes waiting for a locked vault will be lost', async () => {
+    invoke.mockImplementation(async (cmd: string) => (cmd === 'vault_is_unlocked' ? false : undefined));
+    await expect(saveToVault('ssh:sw1', 'pw')).resolves.toBe('deferred');
+    await expect(saveToVault('login:core', null)).resolves.toBe('deferred');
+    askConfirm.mockResolvedValue(false);
+    answer({ update_status: READY });
+    await expect(restartToUpdate('2.0.1')).resolves.toBe(false);
+    const opts = askConfirm.mock.calls[0][0];
+    expect(opts.message).toContain(UPDATE_TEXT.vaultWaiting(2));
+    expect(opts.message).toContain(
+      '2 password changes are waiting for the vault to unlock. Unlock it first, or they will be lost.',
+    );
+    expect(opts.danger).toBe(true);
+    // After an unlock they are written, and the warning goes.
+    await flushDeferredVaultWrites();
+    askConfirm.mockClear();
+    await expect(restartToUpdate('2.0.1')).resolves.toBe(false);
+    expect(askConfirm.mock.calls[0][0].message).not.toContain('waiting for the vault');
+    expect(askConfirm.mock.calls[0][0].danger).toBe(false);
+  });
+
+  describe('on each system', () => {
+    let agent: ReturnType<typeof vi.spyOn> | undefined;
+    afterEach(() => {
+      agent?.mockRestore();
+      agent = undefined;
+    });
+
+    it('reminds Windows users to close Claude Code and Casper', async () => {
+      agent = vi
+        .spyOn(navigator, 'userAgent', 'get')
+        .mockReturnValue('Mozilla/5.0 (Windows NT 10.0; Win64; x64)');
+      askConfirm.mockResolvedValue(false);
+      answer({ update_status: READY });
+      await expect(restartToUpdate('2.0.1')).resolves.toBe(false);
+      expect(askConfirm.mock.calls[0][0].message).toContain(UPDATE_TEXT.windows);
+    });
+
+    it('leaves the reminder out on a Mac', async () => {
+      agent = vi
+        .spyOn(navigator, 'userAgent', 'get')
+        .mockReturnValue('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)');
+      askConfirm.mockResolvedValue(false);
+      answer({ update_status: READY });
+      await expect(restartToUpdate('2.0.1')).resolves.toBe(false);
+      expect(askConfirm.mock.calls[0][0].message).not.toContain(UPDATE_TEXT.windows);
+    });
+  });
+
+  it('refuses while a Change Job, bulk run or config send is going', async () => {
+    for (const what of ['A Change Job is running.', 'A bulk run is running.', 'A config send is running.']) {
+      useToastStore.getState().clear();
+      const release = holdExit(what);
+      await expect(restartToUpdate('2.0.1')).resolves.toBe(false);
+      release();
+      expect(toasts()[0].title).toBe('Not now');
+      expect(toasts()[0].message).toContain(what);
+    }
+    expect(askConfirm).not.toHaveBeenCalled();
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it('says "when they end" while two kinds of job are going', async () => {
+    const releaseJob = holdExit('A Change Job is running.');
+    const releaseSend = holdExit('A config send is running.');
+    await expect(restartToUpdate('2.0.1')).resolves.toBe(false);
+    releaseJob();
+    releaseSend();
+    expect(toasts()[0].message).toBe(
+      'A Change Job is running. A config send is running. Restart to update when they end.',
+    );
+    useToastStore.getState().clear();
     const release = holdExit('A Change Job is running.');
     await expect(restartToUpdate('2.0.1')).resolves.toBe(false);
     release();
+    expect(toasts()[0].message).toBe('A Change Job is running. Restart to update when it ends.');
     expect(askConfirm).not.toHaveBeenCalled();
-    expect(invoke).not.toHaveBeenCalled();
-    expect(toasts()[0].message).toContain('A Change Job is running.');
   });
 
   it('shows the error when installing fails', async () => {
@@ -219,6 +364,26 @@ describe('restartToUpdate', () => {
     invoke.mockRejectedValue('Move GreenCLI to Applications, then try again.');
     await expect(restartToUpdate('2.0.1')).resolves.toBe(false);
     expect(toasts()[0].message).toBe('Move GreenCLI to Applications, then try again.');
+  });
+
+  it('names the update waiting now, which a later check may have replaced', async () => {
+    askConfirm.mockResolvedValue(false);
+    answer({ update_status: { ...ON, ready: '2.0.2' } });
+    await expect(restartToUpdate('2.0.1')).resolves.toBe(false);
+    expect(askConfirm.mock.calls[0][0].message).toContain('GreenCLI 2.0.2 installs, then opens again.');
+  });
+
+  it('says to check first, before asking or saving, when nothing is waiting any more', async () => {
+    // The toast said 2.0.1, then a check found its release withdrawn.
+    const save = vi.fn();
+    const off = registerBeforeExit(save);
+    answer({ update_status: ON });
+    await expect(restartToUpdate('2.0.1')).resolves.toBe(false);
+    off();
+    expect(askConfirm).not.toHaveBeenCalled();
+    expect(save).not.toHaveBeenCalled();
+    expect(calls()).toEqual(['update_status']);
+    expect(toasts()[0].message).toBe(UPDATE_TEXT.notReady);
   });
 
   it('says to move the app first, before asking or saving, when run from the disk image', async () => {
@@ -231,5 +396,96 @@ describe('restartToUpdate', () => {
     expect(save).not.toHaveBeenCalled();
     expect(calls()).toEqual(['update_status']);
     expect(toasts()[0].message).toBe(UPDATE_TEXT.moveFirst);
+  });
+});
+
+describe('the ready toast', () => {
+  beforeEach(() => {
+    invoke.mockReset();
+    askConfirm.mockReset();
+    useToastStore.getState().clear();
+    useSidePanelStore.getState().setStatus('editor', null);
+    useSidePanelStore.getState().setStatus('ai', null);
+    useSessionStore.setState({ sessions: [] });
+  });
+
+  /** Tap the card's Restart to update as the Toaster does: close it, then run. */
+  function tapRestart() {
+    const card = toasts().find((t) => t.title === 'GreenCLI 2.0.1 is ready.');
+    expect(card?.action?.label).toBe(UPDATE_TEXT.restart);
+    useToastStore.getState().dismiss(card!.id);
+    card!.action!.run();
+  }
+
+  const readyCards = () => toasts().filter((t) => t.title.endsWith(' is ready.'));
+
+  /** Once the tap has settled: the ready card is back, with its button. */
+  async function expectCardBack(version = '2.0.1') {
+    await vi.waitFor(() => expect(readyCards()).toHaveLength(1));
+    const [card] = readyCards();
+    expect(card.title).toBe(`GreenCLI ${version} is ready.`);
+    expect(card.duration).toBe(0);
+    expect(card.action?.label).toBe(UPDATE_TEXT.restart);
+  }
+
+  it('comes back after "Not now", so Restart to update is still there when the job ends', async () => {
+    answer({ update_status: READY });
+    showUpdateReady('2.0.1');
+    const release = holdExit('A Change Job is running.');
+    // The hold is checked as the tap runs, so it can go right after.
+    tapRestart();
+    release();
+    await expectCardBack();
+    const notNow = toasts().find((t) => t.title === 'Not now');
+    expect(notNow?.message).toContain('A Change Job is running.');
+    expect(askConfirm).not.toHaveBeenCalled();
+  });
+
+  it('comes back after Cancel', async () => {
+    askConfirm.mockResolvedValue(false);
+    answer({ update_status: READY });
+    showUpdateReady('2.0.1');
+    tapRestart();
+    await expectCardBack();
+    expect(askConfirm).toHaveBeenCalledTimes(1);
+    expect(calls()).not.toContain('update_install');
+  });
+
+  it('comes back after a failed install, which keeps the update', async () => {
+    askConfirm.mockResolvedValue(true);
+    answer({ update_status: READY, update_install: new Error("Couldn't install the update.") });
+    showUpdateReady('2.0.1');
+    tapRestart();
+    await expectCardBack();
+    expect(toasts().find((t) => t.title === "Couldn't update")).toBeDefined();
+  });
+
+  it('comes back with the update waiting now, and not when none is', async () => {
+    askConfirm.mockResolvedValue(false);
+    answer({ update_status: { ...ON, ready: '2.0.2' } });
+    showUpdateReady('2.0.1');
+    tapRestart();
+    await expectCardBack('2.0.2');
+
+    useToastStore.getState().clear();
+    invoke.mockReset();
+    answer({ update_status: ON });
+    showUpdateReady('2.0.1');
+    tapRestart();
+    await vi.waitFor(() => expect(toasts().map((t) => t.message)).toContain(UPDATE_TEXT.notReady));
+    // Settled: restartToUpdate and the second status read both ran.
+    await vi.waitFor(() => expect(calls()).toEqual(['update_status', 'update_status']));
+    expect(readyCards()).toEqual([]);
+  });
+
+  it('stays closed once the install starts', async () => {
+    askConfirm.mockResolvedValue(true);
+    answer({ update_status: READY, update_install: undefined });
+    showUpdateReady('2.0.1');
+    tapRestart();
+    await vi.waitFor(() => expect(calls()).toContain('update_install'));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(readyCards()).toEqual([]);
+    expect(calls()).toEqual(['update_status', 'update_install']);
   });
 });

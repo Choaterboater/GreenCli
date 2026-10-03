@@ -39,6 +39,11 @@ export async function saveToVault(key: string, value: string | null): Promise<'s
   return 'deferred';
 }
 
+/** How many vault writes are waiting for an unlock. */
+export function deferredVaultWrites(): number {
+  return deferred.size;
+}
+
 /** Write everything that was waiting for the vault. Call after an unlock. */
 export async function flushDeferredVaultWrites(): Promise<void> {
   const pending = [...deferred.entries()];

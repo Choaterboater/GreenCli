@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "What the GreenCLI windows may call: the same short list Tauri 1 allowed, plus show (setFocus no longer reveals a hidden window) and the window list (needed to find a window by label).",
+  "description": "What the GreenCLI windows may call: the same short list Tauri 1 allowed, plus show (setFocus no longer reveals a hidden window), the window list (needed to find a window by label), and maximize on a double-click in the title bar (Tauri's drag-region script calls it).",
   "local": true,
   "windows": ["main", "popout-*"],
   "permissions": [
@@ -9,6 +9,7 @@
     "core:event:allow-unlisten",
     "core:event:allow-emit",
     "core:window:allow-start-dragging",
+    "core:window:allow-internal-toggle-maximize",
     "core:window:allow-set-focus",
     "core:window:allow-close",
     "core:window:allow-get-all-windows",

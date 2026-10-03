@@ -24,6 +24,7 @@ mod ssh;
 mod telnet;
 mod updater;
 mod vault;
+mod web_link;
 
 #[cfg(test)]
 mod tauri_conf_tests;
@@ -109,7 +110,7 @@ struct AppState {
     /// Durable network-intent / desired-state store.
     intents: intent::IntentStore,
     /// Per-device versioned config snapshot history + golden baseline.
-    config_archive: config_archive::ConfigArchiveStore,
+    config_archive: Arc<config_archive::ConfigArchiveStore>,
     /// Recent terminal output per session, so the AI assistant can read back
     /// command results (bounded tail, plain bytes lossily decoded).
     terminal_buffers: Arc<AsyncMutex<HashMap<String, String>>>,
@@ -165,7 +166,7 @@ impl AppState {
             ai_keys: AiKeyStore::new(secrets.clone()),
             secrets,
             intents: intent::IntentStore::new(app_dir.clone()),
-            config_archive: config_archive::ConfigArchiveStore::new(app_dir.clone()),
+            config_archive: Arc::new(config_archive::ConfigArchiveStore::new(app_dir.clone())),
             terminal_buffers: Arc::new(AsyncMutex::new(HashMap::new())),
             terminal_sizes: Arc::new(AsyncMutex::new(HashMap::new())),
             last_input: Arc::new(AsyncMutex::new(HashMap::new())),
@@ -1583,6 +1584,15 @@ async fn session_log_path(
         .map(|open| open.path.to_string_lossy().into_owned()))
 }
 
+/// The system's "open this" program: Finder / Explorer / the desktop file
+/// manager for a folder, the default browser for a web link.
+#[cfg(target_os = "macos")]
+const SYSTEM_OPENER: &str = "open";
+#[cfg(windows)]
+const SYSTEM_OPENER: &str = "explorer";
+#[cfg(all(unix, not(target_os = "macos")))]
+const SYSTEM_OPENER: &str = "xdg-open";
+
 /// Show a log folder in Finder / Explorer / the desktop file manager. `dir`
 /// is the folder to show (empty = the default log folder). Returns the folder.
 #[tauri::command]
@@ -1598,21 +1608,36 @@ async fn reveal_log_folder(
     if !dir.is_dir() {
         return Err(format!("Not a folder: {}", dir.display()));
     }
-    #[cfg(target_os = "macos")]
-    let opener = "open";
-    #[cfg(windows)]
-    let opener = "explorer";
-    #[cfg(all(unix, not(target_os = "macos")))]
-    let opener = "xdg-open";
-    let mut child = tokio::process::Command::new(opener)
+    let mut child = tokio::process::Command::new(SYSTEM_OPENER)
         .arg(&dir)
         .spawn()
-        .map_err(|e| format!("Could not open the folder with {opener}: {e}"))?;
+        .map_err(|e| format!("Could not open the folder with {SYSTEM_OPENER}: {e}"))?;
     // Reap the opener in the background so it can't linger as a zombie.
     tokio::spawn(async move {
         let _ = child.wait().await;
     });
     Ok(dir.to_string_lossy().into_owned())
+}
+
+/// Open an http(s) link in the system browser (see web_link.rs). Only the
+/// opener runs, with the link as its one argument: never a shell, which would
+/// read `&` and `^` in a URL as commands.
+#[tauri::command]
+async fn open_url(url: String) -> Result<(), String> {
+    let url = web_link::checked_web_url(&url)?;
+    let mut command = tokio::process::Command::new(SYSTEM_OPENER);
+    #[cfg(windows)]
+    command.raw_arg(web_link::explorer_arg(&url));
+    #[cfg(not(windows))]
+    command.arg(&url);
+    let mut child = command
+        .spawn()
+        .map_err(|e| format!("Could not open the link with {SYSTEM_OPENER}: {e}"))?;
+    // Reap the opener in the background so it can't linger as a zombie.
+    tokio::spawn(async move {
+        let _ = child.wait().await;
+    });
+    Ok(())
 }
 
 #[tauri::command]
@@ -1938,10 +1963,25 @@ async fn intent_webhook_notify(url: String, payload: serde_json::Value) -> Resul
 
 // ─── Config archive (NW-16): per-device versioned config history + golden diff ───
 
+/// Run config archive work on the blocking pool. The archive reads and parses
+/// files under one lock (the hidden copy count reads every hidden copy), and
+/// as sync commands this ran on the main thread and froze every window.
+async fn archive_task<T, F>(state: &AppState, work: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce(&config_archive::ConfigArchiveStore) -> Result<T, AppError> + Send + 'static,
+{
+    let archive = state.config_archive.clone();
+    tauri::async_runtime::spawn_blocking(move || work(&archive))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
 /// `hidden`: the same config with secrets hidden by the frontend's secret
 /// filter, and `filter` the version of that filter (see HIDDEN_COPY_FILTER).
 #[tauri::command]
-fn config_archive_capture(
+async fn config_archive_capture(
     device: String,
     source: String,
     content: String,
@@ -1949,11 +1989,11 @@ fn config_archive_capture(
     filter: Option<u32>,
     state: State<'_, AppState>,
 ) -> Result<config_archive::Captured, String> {
-    let hidden = hidden.as_deref().map(|text| (text, filter.unwrap_or(0)));
-    let got = state
-        .config_archive
-        .capture(&device, &source, &content, hidden)
-        .map_err(|e| e.to_string())?;
+    let got = archive_task(&state, move |archive| {
+        let hidden = hidden.as_deref().map(|text| (text, filter.unwrap_or(0)));
+        archive.capture(&device, &source, &content, hidden)
+    })
+    .await?;
     if let Some(warning) = &got.warning {
         log::warn!("config archive: {warning}");
     }
@@ -1961,65 +2001,58 @@ fn config_archive_capture(
 }
 
 #[tauri::command]
-fn config_archive_list(
+async fn config_archive_list(
     device: String,
     state: State<'_, AppState>,
 ) -> Result<Vec<config_archive::ArchiveEntry>, String> {
-    state
-        .config_archive
-        .list(&device)
-        .map_err(|e| e.to_string())
+    archive_task(&state, move |archive| archive.list(&device)).await
 }
 
 #[tauri::command]
-fn config_archive_get(
+async fn config_archive_get(
     device: String,
     ts: u64,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
-    state
-        .config_archive
-        .get(&device, ts)
-        .map_err(|e| e.to_string())
+    archive_task(&state, move |archive| archive.get(&device, ts)).await
 }
 
 #[tauri::command]
-fn config_archive_devices(state: State<'_, AppState>) -> Result<Vec<String>, String> {
-    state.config_archive.devices().map_err(|e| e.to_string())
+async fn config_archive_devices(state: State<'_, AppState>) -> Result<Vec<String>, String> {
+    archive_task(&state, |archive| archive.devices()).await
 }
 
 #[tauri::command]
-fn config_archive_set_golden(
+async fn config_archive_set_golden(
     device: String,
     ts: u64,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    state
-        .config_archive
-        .set_golden(&device, ts)
-        .map_err(|e| e.to_string())
+    archive_task(&state, move |archive| archive.set_golden(&device, ts)).await
 }
 
 /// How many snapshots have no hidden copy, or one from an older secret
 /// filter, and which ones (for the "Make hidden copies" loop).
 #[tauri::command]
-fn config_archive_missing_hidden(state: State<'_, AppState>) -> config_archive::HiddenStatus {
-    state.config_archive.hidden_status()
+async fn config_archive_missing_hidden(
+    state: State<'_, AppState>,
+) -> Result<config_archive::HiddenStatus, String> {
+    archive_task(&state, |archive| Ok(archive.hidden_status())).await
 }
 
 /// Save a hidden copy made later for a snapshot already in the archive.
 #[tauri::command]
-fn config_archive_set_hidden(
+async fn config_archive_set_hidden(
     device: String,
     ts: u64,
     hidden: String,
     filter: u32,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    state
-        .config_archive
-        .set_hidden(&device, ts, &hidden, filter)
-        .map_err(|e| e.to_string())
+    archive_task(&state, move |archive| {
+        archive.set_hidden(&device, ts, &hidden, filter)
+    })
+    .await
 }
 
 // ─── SSH port forwarding ───
@@ -3013,6 +3046,7 @@ fn main() {
             is_session_logging,
             session_log_path,
             reveal_log_folder,
+            open_url,
             read_file_text,
             write_file_text,
             list_folder,
@@ -3176,9 +3210,9 @@ mod shutdown_tests {
     }
 
     /// Windows update: the servers stop right before the installer starts,
-    /// and their login files go too. If the install then fails, the servers
-    /// that were stopped come back, each with its login read from the store
-    /// again (not an old file).
+    /// and their login files go too. If the installer then can't start, the
+    /// servers that were stopped come back, each with its login read from
+    /// the store again (not an old file).
     #[tokio::test]
     async fn an_update_stop_deletes_the_login_files_and_a_reconnect_reads_the_store() {
         let _serial = ai::CLI_RUNS_TEST_LOCK.lock().await;

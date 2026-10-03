@@ -1,0 +1,120 @@
+<!-- The landing page (index.html). Two braces hold text, three braces hold
+     HTML the build made (download cards, photos, icons). Keep the words
+     short and plain. -->
+<section class="hero">
+  <div class="wrap hero-in">
+    <div class="hero-text">
+      <p class="eyebrow">For network engineers</p>
+      <h1>One app for Aruba, Juniper and Mist</h1>
+      <p class="lead">GreenCLI is a desktop app for your network work: a terminal for SSH, Telnet and serial, a config editor that checks your changes, an AI helper that never sees your passwords, and safe changes with a rollback timer.</p>
+      <div class="hero-actions">
+        <a class="btn btn-primary" href="#download">{{{icon:Download}}}Download</a>
+        <a class="btn" href="guide/">{{{icon:BookOpen}}}Read the guide</a>
+      </div>
+      <p class="hero-meta">Version {{version}} · {{dateText}} · macOS and Windows · Free (MIT)</p>
+    </div>
+    <div class="hero-shot">{{{heroImage}}}</div>
+  </div>
+</section>
+
+<section class="band" id="features" aria-labelledby="features-title">
+  <div class="wrap">
+    <h2 id="features-title">What it does</h2>
+    <div class="features">
+      <div class="feature">
+        <span class="feature-icon">{{{icon:TerminalSquare}}}</span>
+        <h3>Terminal</h3>
+        <p>SSH, Telnet, serial and a local shell, in tabs. Jump hosts, split view and logging. Aruba and Junos output in color.</p>
+      </div>
+      <div class="feature">
+        <span class="feature-icon">{{{icon:FileCode2}}}</span>
+        <h3>Config Editor</h3>
+        <p>Risky lines get a squiggle. A Problems list, quick fixes and a diff before you send. Open a whole folder of configs.</p>
+      </div>
+      <div class="feature">
+        <span class="feature-icon">{{{icon:ListChecks}}}</span>
+        <h3>Change Jobs</h3>
+        <p>Send one change to many switches. A dry run first, then the switch's own rollback timer until you confirm.</p>
+      </div>
+      <div class="feature">
+        <span class="feature-icon">{{{icon:Bot}}}</span>
+        <h3>AI helper</h3>
+        <p>Use Claude, OpenRouter, Kimi, Ollama, a local CLI or Casper. Passwords and keys show as &lt;secret hidden&gt; before the AI sees the output.</p>
+      </div>
+      <div class="feature">
+        <span class="feature-icon">{{{icon:PlugZap}}}</span>
+        <h3>MCP client</h3>
+        <p>Give the AI tools from MCP servers. Anything that can change a device asks you first, and writes are off by default.</p>
+      </div>
+      <div class="feature">
+        <span class="feature-icon">{{{icon:Lock}}}</span>
+        <h3>Encrypted vault</h3>
+        <p>SSH passwords stay in a vault (AES-256). AI keys stay in macOS Keychain or Windows Credential Manager.</p>
+      </div>
+      <div class="feature">
+        <span class="feature-icon">{{{icon:Target}}}</span>
+        <h3>Network Intent</h3>
+        <p>Write down what should be true, like "VLAN 50 is on every access switch", and check all your devices at once.</p>
+      </div>
+      <div class="feature">
+        <span class="feature-icon">{{{icon:Database}}}</span>
+        <h3>greencli-mcp</h3>
+        <p>Let Casper or Claude Code read your saved devices and configs, with secrets hidden. It can't change anything.</p>
+      </div>
+      <div class="feature">
+        <span class="feature-icon">{{{icon:RefreshCw}}}</span>
+        <h3>Updates itself</h3>
+        <p>From 2.0 on, GreenCLI updates itself from its GitHub releases. Each update is checked against its signature first.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="band band-alt" id="download" aria-labelledby="download-title">
+  <div class="wrap">
+    <h2 id="download-title">Download</h2>
+    <p class="section-lead">GreenCLI {{version}}, released {{dateText}}. <a href="{{whatsNewHref}}">What's new in {{version}}</a></p>
+    {{{downloads}}}
+    <p class="all-downloads"><a class="btn btn-small" href="{{allReleases}}">{{{icon:Download}}}All downloads and older versions</a></p>
+    <ul class="tips">
+      <li><strong>Needs:</strong> macOS 13.3 (Ventura) or newer, or Windows 10 or 11 (64-bit).</li>
+      <li><strong>Mac:</strong> open the .dmg and drag GreenCLI to Applications. Always open it from there, or it can't update itself.</li>
+      <li><strong>Which Mac do I have?</strong> Apple menu → About This Mac. "Chip: Apple M…" is Apple Silicon. "Processor: Intel" is Intel.</li>
+      <li><strong>First start:</strong> if macOS won't open it, go to System Settings → Privacy &amp; Security and click Open Anyway. If Windows says "Windows protected your PC", click More info, then Run anyway.</li>
+      <li><strong>Windows:</strong> either file works. Close Claude Code and Casper before you update.</li>
+      <li><strong>Updates:</strong> from 2.0 on, GreenCLI updates itself (Settings → Updates). Coming from 1.9 or older? Install 2.0 by hand once.</li>
+      <li><strong>Linux:</strong> there is no download. You can build it yourself: see <a href="guide/#1-prerequisites">the guide</a>.</li>
+    </ul>
+  </div>
+</section>
+
+<section class="band" id="photos" aria-labelledby="photos-title">
+  <div class="wrap">
+    <h2 id="photos-title">Photos</h2>
+    <p class="section-lead">Click a photo to see it full size. All of them use made-up demo data: no real devices, addresses or keys.</p>
+    {{{gallery}}}
+  </div>
+</section>
+
+<section class="band band-alt" id="docs" aria-labelledby="docs-title">
+  <div class="wrap">
+    <h2 id="docs-title">Learn more</h2>
+    <div class="cards">
+      <a class="card" href="guide/">
+        <span class="feature-icon">{{{icon:BookOpen}}}</span>
+        <h3>Guide</h3>
+        <p>Install, set up and use every part of GreenCLI.</p>
+      </a>
+      <a class="card" href="help/">
+        <span class="feature-icon">{{{icon:LifeBuoy}}}</span>
+        <h3>Help topics</h3>
+        <p>The same help as F1 in the app, with the keys for Mac or Windows.</p>
+      </a>
+      <a class="card" href="whats-new/">
+        <span class="feature-icon">{{{icon:Sparkles}}}</span>
+        <h3>What's new</h3>
+        <p>Every change, version by version.</p>
+      </a>
+    </div>
+  </div>
+</section>

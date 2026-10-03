@@ -83,3 +83,24 @@ fn many_intents_and_devices_page_under_the_cap() {
     assert_eq!(seen, 60);
     std::fs::remove_dir_all(dir).ok();
 }
+
+// Casper cuts every list to 50 items and keeps the cursor, so a page with
+// more than 50 would skip intents.
+#[test]
+fn a_page_holds_at_most_fifty_intents() {
+    let dir = temp_dir("intents-fifty");
+    let intents: Vec<Value> = (0..120)
+        .map(|i| json!({"id": format!("i{i}"), "name": format!("intent {i}"), "kind": "config-contains", "severity": "warning"}))
+        .collect();
+    std::fs::write(dir.join("intents.json"), Value::Array(intents).to_string()).unwrap();
+    let pages = list_pages(&dir, "list_intents", json!({}), "intents");
+    assert_eq!(page_sizes(&pages), [50, 50, 20]);
+    let seen: Vec<String> = pages
+        .iter()
+        .flatten()
+        .map(|i| i["id"].as_str().unwrap().to_string())
+        .collect();
+    let want: Vec<String> = (0..120).map(|i| format!("i{i}")).collect();
+    assert_eq!(seen, want);
+    std::fs::remove_dir_all(dir).ok();
+}
