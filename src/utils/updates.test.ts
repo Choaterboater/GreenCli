@@ -23,6 +23,7 @@ import {
   type UpdateStatus,
 } from './updates';
 import { holdExit, registerBeforeExit } from './beforeExit';
+import { flushDeferredVaultWrites, saveToVault } from './vaultAccess';
 import { useToastStore } from '../store/toastStore';
 import { useSessionStore } from '../store/sessionStore';
 import { useSidePanelStore } from '../store/sidePanelStore';
@@ -277,6 +278,25 @@ describe('restartToUpdate', () => {
     expect(opts.danger).toBe(true);
     expect(save).not.toHaveBeenCalled();
     expect(calls()).toEqual(['update_status']);
+  });
+
+  it('warns that password changes waiting for a locked vault will be lost', async () => {
+    invoke.mockImplementation(async (cmd: string) => (cmd === 'vault_is_unlocked' ? false : undefined));
+    await expect(saveToVault('ssh:sw1', 'pw')).resolves.toBe('deferred');
+    await expect(saveToVault('login:core', null)).resolves.toBe('deferred');
+    askConfirm.mockResolvedValue(false);
+    answer({ update_status: READY });
+    await expect(restartToUpdate('2.0.1')).resolves.toBe(false);
+    const opts = askConfirm.mock.calls[0][0];
+    expect(opts.message).toContain(UPDATE_TEXT.vaultWaiting(2));
+    expect(opts.message).toContain('2 password changes are waiting for the vault to unlock. They will be lost.');
+    expect(opts.danger).toBe(true);
+    // After an unlock they are written, and the warning goes.
+    await flushDeferredVaultWrites();
+    askConfirm.mockClear();
+    await expect(restartToUpdate('2.0.1')).resolves.toBe(false);
+    expect(askConfirm.mock.calls[0][0].message).not.toContain('waiting for the vault');
+    expect(askConfirm.mock.calls[0][0].danger).toBe(false);
   });
 
   describe('on each system', () => {

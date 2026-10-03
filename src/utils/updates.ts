@@ -11,6 +11,7 @@ import { notify, useToastStore } from '../store/toastStore';
 import { useSessionStore } from '../store/sessionStore';
 import { useSidePanelStore } from '../store/sidePanelStore';
 import { exitHolds, runBeforeExit } from './beforeExit';
+import { deferredVaultWrites } from './vaultAccess';
 
 /** Why updates are off: a dev build, a system with no release build, or the
  * updater didn't start. */
@@ -40,6 +41,11 @@ export const UPDATE_TEXT = {
   notReady: 'Check for updates first.',
   windows: 'Close Claude Code and Casper before updating.',
   dirtyEditor: 'The config editor has unsaved edits. They will be lost.',
+  // Saved (or deleted) while the vault was locked; they go in at the next unlock.
+  vaultWaiting: (n: number) =>
+    n === 1
+      ? 'A password change is waiting for the vault to unlock. It will be lost.'
+      : `${n} password changes are waiting for the vault to unlock. They will be lost.`,
   aiBusy: 'The AI assistant is still answering. It will stop.',
 } as const;
 
@@ -223,6 +229,8 @@ export async function restartToUpdate(version: string): Promise<boolean> {
   const open = useSessionStore.getState().sessions.length;
   const panel = useSidePanelStore.getState().status;
   const dirty = panel.editor === 'dirty';
+  // The save before closing can't write these: the vault is locked.
+  const waiting = deferredVaultWrites();
   const lines = [
     `GreenCLI ${ready} installs, then opens again.`,
     open > 0 ? `${open} open session${open === 1 ? '' : 's'} will close.` : '',
@@ -230,6 +238,7 @@ export async function restartToUpdate(version: string): Promise<boolean> {
     // installer, which only checks for GreenCLI.exe itself.
     onWindows() ? UPDATE_TEXT.windows : '',
     dirty ? UPDATE_TEXT.dirtyEditor : '',
+    waiting > 0 ? UPDATE_TEXT.vaultWaiting(waiting) : '',
     // An answer cut off is only lost, so it is a warning, not a hold.
     panel.ai === 'busy' ? UPDATE_TEXT.aiBusy : '',
   ].filter(Boolean);
@@ -237,7 +246,7 @@ export async function restartToUpdate(version: string): Promise<boolean> {
     title: 'Restart now?',
     message: lines.join(' '),
     confirmLabel: UPDATE_TEXT.restart,
-    danger: dirty,
+    danger: dirty || waiting > 0,
   });
   if (!ok || busy()) return false;
 
