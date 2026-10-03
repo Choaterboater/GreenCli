@@ -150,6 +150,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **greencli-mcp**: run **Export for Casper / Claude…** again, so the file passes `--data-dir`. In
   Claude Code, remove the greencli that 2.0.0's command added (`claude mcp remove greencli`, in the
   folder where you ran it), then run the command MCP Servers copies now.
+- **Going back to 2.0.0**: 2.0.0 can't read some MCP logins this version saved or moved. A login
+  this version saved that is longer than 2560 bytes on Windows (32 KiB on macOS and Linux) reaches
+  the server in 2.0.0 as a short line like `GCS1 2 a 3001`. On Windows, a login for a server whose
+  name has a capital letter or a character other than `a-z`, `0-9` and `-_.: ` (for example
+  "Central") moves to a new item name once this version uses it, and 2.0.0 then shows no saved
+  login. Enter those logins again in 2.0.0. When you update again, enter the Windows ones once
+  more: this version uses the copy it moved before the one typed in 2.0.0.
 
 ## [2.0.0] - 2026-10-02
 

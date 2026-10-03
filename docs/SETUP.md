@@ -328,6 +328,14 @@ GreenCLI 2.0 keeps AI keys and MCP logins in the system password store, not in f
   `ai_keys.json` and `mcp_creds.json` in again. Each key or login in them (typed in 1.9, or copied
   back from a backup) replaces the one in the password store, and the files are deleted. The others
   stay as they were. (While a move is still pending, see **Left-over files** above.)
+- **Back to 2.0.0 after a later version**: 2.0.0 can't read some MCP logins a later version saved
+  or moved. A login a later version saved that is longer than 2560 bytes on Windows (32 KiB on
+  macOS and Linux) reaches the server in 2.0.0 as a short line like `GCS1 2 a 3001`. On Windows, a
+  login for a server whose name has a capital letter or a character other than `a-z`, `0-9` and
+  `-_.: ` (for example "Central") moves to its new item name once a later version uses it, and
+  2.0.0 then shows no saved login. Enter those logins again in 2.0.0. When you update again, enter
+  the Windows ones once more: the later version uses the copy it moved before the one typed in
+  2.0.0.
 - **MCP login files**: when a stdio server connects, its login is written to a new owner-only file
   in `mcp_creds/run-<id>/`, and the server's credentials env var points at it. The file is deleted
   when the server stops, exits by itself or fails to connect. Files a crash left behind are deleted
