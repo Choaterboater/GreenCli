@@ -243,6 +243,16 @@ pub fn call(data_dir: &Path, name: &str, args: &Map<String, Value>) -> Result<Va
         return Err(ToolFail::BadParams(format!("Unknown tool: {shown}")));
     };
     check_args(tool, args)?;
+    // A missing folder would read as no devices, configs or intents: say so
+    // instead. GreenCLI never ran for this user, or the server looks in
+    // another folder than the app (started without --data-dir).
+    if tool.name != "access_check" && !data_dir.is_dir() {
+        return Err(ToolFail::Error(format!(
+            "GreenCLI's data folder {} wasn't found. Open GreenCLI once, or add greencli again \
+from GreenCLI's MCP settings.",
+            data_dir.display()
+        )));
+    }
     match tool.name {
         "access_check" => Ok(access_check()),
         "list_intents" => crate::intents::list_intents(data_dir, text_arg(args, "cursor")),

@@ -44,10 +44,13 @@ const SERVERS: McpServerDef[] = [
   },
 ];
 
+/** GreenCLI's data folder, as greencli_mcp_info gives it. */
+const DATA_DIR = '/Users/me/Library/Application Support/com.choatelabs.greencli';
+
 function backend(
   servers: McpServerDef[],
   writeError?: string,
-  greencli?: { path: string; exists: boolean; place: string },
+  greencli?: { path: string; exists: boolean; place: string; dataDir: string },
   hidden?: { missing: number; stale: number },
 ) {
   vi.mocked(invoke).mockImplementation(async (cmd: string, raw?: unknown) => {
@@ -83,7 +86,7 @@ describe('McpServers export', () => {
 
   it('with no saved servers, exports GreenCLI\'s own read-only server', async () => {
     const path = '/Applications/GreenCLI.app/Contents/MacOS/greencli-mcp';
-    backend([], undefined, { path, exists: true, place: 'normal' });
+    backend([], undefined, { path, exists: true, place: 'normal', dataDir: DATA_DIR });
     vi.mocked(tauriSave).mockResolvedValue('/Users/me/proj/.mcp.json');
     render(<McpServers />);
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('mcp_list_servers'));
@@ -91,12 +94,12 @@ describe('McpServers export', () => {
     fireEvent.click(exportButton());
     await waitFor(() => expect(writes()).toHaveLength(1));
     expect(JSON.parse(writes()[0].contents)).toEqual({
-      mcpServers: { greencli: { type: 'stdio', command: path, args: [] } },
+      mcpServers: { greencli: { type: 'stdio', command: path, args: ['--data-dir', DATA_DIR] } },
     });
   });
 
   it('says so when greencli-mcp is missing, and saves nothing without servers', async () => {
-    backend([], undefined, { path: '/opt/GreenCLI/greencli-mcp', exists: false, place: 'normal' });
+    backend([], undefined, { path: '/opt/GreenCLI/greencli-mcp', exists: false, place: 'normal', dataDir: DATA_DIR });
     render(<McpServers />);
     expect(await screen.findByText(/isn't next to GreenCLI in this build/)).toBeTruthy();
     fireEvent.click(exportButton());
@@ -108,11 +111,12 @@ describe('McpServers export', () => {
 
   it('shows the greencli-mcp path, the claude command and the hidden copy count', async () => {
     const path = '/Applications/GreenCLI.app/Contents/MacOS/greencli-mcp';
-    backend([], undefined, { path, exists: true, place: 'normal' }, { missing: 2, stale: 1 });
+    backend([], undefined, { path, exists: true, place: 'normal', dataDir: DATA_DIR }, { missing: 2, stale: 1 });
     render(<McpServers />);
     expect(await screen.findByText(path)).toBeTruthy();
     // User scope: Claude Code's default (local) would add it only for the folder the command runs in.
-    const command = `claude mcp add --scope user greencli -- "${path}"`;
+    // --data-dir: the server may not find GreenCLI's data folder from its own environment.
+    const command = `claude mcp add --scope user greencli -- "${path}" --data-dir "${DATA_DIR}"`;
     expect(screen.getByText(command)).toBeTruthy();
     fireEvent.click(screen.getByTitle('Copy the command'));
     await waitFor(() => expect(copyText).toHaveBeenCalledWith(command));
@@ -136,7 +140,7 @@ describe('McpServers export', () => {
     vi.mocked(invoke).mockImplementation(async (cmd: string, raw?: unknown) => {
       const args = raw as { ts: number } | undefined;
       if (cmd === 'mcp_list_servers') return [];
-      if (cmd === 'greencli_mcp_info') return { path, exists: true, place: 'normal' };
+      if (cmd === 'greencli_mcp_info') return { path, exists: true, place: 'normal', dataDir: DATA_DIR };
       if (cmd === 'config_archive_missing_hidden') return { missing: 0, stale: todo.length, current: 0, todo };
       if (cmd === 'config_archive_get') return 'raw';
       if (cmd === 'config_archive_set_hidden') {
@@ -157,7 +161,7 @@ describe('McpServers export', () => {
 
   it('asks to move a translocated app, and leaves greencli out of the export', async () => {
     const path = '/private/var/folders/x/AppTranslocation/1/d/GreenCLI.app/Contents/MacOS/greencli-mcp';
-    backend(SERVERS, undefined, { path, exists: true, place: 'translocated' });
+    backend(SERVERS, undefined, { path, exists: true, place: 'translocated', dataDir: DATA_DIR });
     vi.mocked(tauriSave).mockResolvedValue('/Users/me/proj/.mcp.json');
     render(<McpServers />);
     expect(await screen.findByText('Move GreenCLI to Applications first.')).toBeTruthy();

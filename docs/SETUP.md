@@ -233,7 +233,7 @@ id `com.choatelabs.greencli`:
 | OS | Path |
 |----|------|
 | macOS | `~/Library/Application Support/com.choatelabs.greencli/` |
-| Linux | `~/.local/share/com.choatelabs.greencli/` |
+| Linux | `$XDG_DATA_HOME/com.choatelabs.greencli/` when `XDG_DATA_HOME` is set, else `~/.local/share/com.choatelabs.greencli/` |
 | Windows | `%APPDATA%\com.choatelabs.greencli\` |
 
 | File | Contents | Notes |
@@ -522,14 +522,19 @@ GreenCLI's data folder, and never writes a file, opens a network connection or s
 (a source-scan test checks this).
 
 **Add it.** Settings → **AI & MCP → MCP Servers** shows its full path, with **Copy** buttons for
-the path and for the command below. Run the command in a terminal:
+the path and for the command below (with your own folders filled in). Run the command in a
+terminal:
 
 ```bash
-claude mcp add --scope user greencli -- "/Applications/GreenCLI.app/Contents/MacOS/greencli-mcp"
+claude mcp add --scope user greencli -- "/Applications/GreenCLI.app/Contents/MacOS/greencli-mcp" \
+  --data-dir "$HOME/Library/Application Support/com.choatelabs.greencli"
 ```
 
 `--scope user` makes it available in every folder; without it Claude Code only adds it for the
-folder you run the command in.
+folder you run the command in. `--data-dir` is GreenCLI's data folder (§3). Without it,
+greencli-mcp works the folder out from its own environment, which can differ from the app's: on
+Linux, Casper starts servers without `XDG_DATA_HOME`. If the folder isn't there, its tools say so
+("GreenCLI's data folder … wasn't found") instead of showing no devices.
 
 Or use **Export for Casper / Claude…**: it adds it as `greencli` (renamed, with a note, if you
 already have a server by that name). On a Mac, move GreenCLI to Applications first, or the path

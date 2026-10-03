@@ -43,6 +43,14 @@ interface GreencliMcpInfo {
   path: string;
   exists: boolean;
   place: 'normal' | 'translocated' | 'diskImage';
+  /** GreenCLI's data folder, for greencli-mcp's `--data-dir`. */
+  dataDir: string;
+}
+
+/** greencli_mcp_info, or null when it can't be read. */
+async function readGreencliInfo(): Promise<GreencliMcpInfo | null> {
+  const info = await invoke<GreencliMcpInfo | null>('greencli_mcp_info').catch(() => null);
+  return info && typeof info.path === 'string' && typeof info.dataDir === 'string' ? info : null;
 }
 
 /** How the export should treat greencli-mcp. */
@@ -50,7 +58,7 @@ function greencliForExport(info: GreencliMcpInfo | null): GreencliExport | undef
   if (!info) return undefined;
   if (!info.exists) return { leftOut: 'missing' };
   if (info.place !== 'normal') return { leftOut: 'not-installed' };
-  return { command: info.path };
+  return { command: info.path, dataDir: info.dataDir };
 }
 
 const blankForm = {
@@ -126,9 +134,10 @@ function parseMcpConfigPaste(text: string): Partial<typeof blankForm> | null {
 /** The Claude Code command that adds greencli-mcp. `--scope user` makes it
  *  work in every folder: Claude Code's default scope (local) adds a server
  *  only for the folder the command is run in, and greencli-mcp reads
- *  GreenCLI's own data, not a project's. */
-function claudeAddCommand(path: string): string {
-  return `claude mcp add --scope user greencli -- "${path}"`;
+ *  GreenCLI's own data, not a project's. `--data-dir` names that data's
+ *  folder, which greencli-mcp can't always find from its own environment. */
+function claudeAddCommand(info: GreencliMcpInfo): string {
+  return `claude mcp add --scope user greencli -- "${info.path}" --data-dir "${info.dataDir}"`;
 }
 
 export default function McpServers() {
@@ -172,10 +181,10 @@ export default function McpServers() {
       return hidden ? (hidden.missing ?? 0) + (hidden.stale ?? 0) : 0;
     };
     void (async () => {
-      const info = await invoke<GreencliMcpInfo | null>('greencli_mcp_info').catch(() => null);
+      const info = await readGreencliInfo();
       const need = await readNeedHidden();
       if (cancelled) return;
-      setGreencli(info && typeof info.path === 'string' ? info : null);
+      setGreencli(info);
       setNeedHidden(need);
       // The background refresh may fix stale copies: count again when it ends.
       await refreshStaleHiddenCopies();
@@ -484,8 +493,7 @@ export default function McpServers() {
       const pins = new Map(Object.entries(pinList ?? {}));
       const { buildMcpExport, exportSummary, refusedExportPath, EXPORT_FILE_NAME } = await import('../utils/mcpExport');
       // GreenCLI's own read-only server goes in too, even with no saved servers.
-      const info = await invoke<GreencliMcpInfo | null>('greencli_mcp_info').catch(() => null);
-      const greencliEntry = greencliForExport(info && typeof info.path === 'string' ? info : null);
+      const greencliEntry = greencliForExport(await readGreencliInfo());
       const result = buildMcpExport(defs, { withCredentials, pins, greencli: greencliEntry });
       if (result.count === 0) {
         notify.warning(
@@ -574,9 +582,9 @@ export default function McpServers() {
                 </button>
               </div>
               <div className="flex items-start gap-2">
-                <code className="flex-1 min-w-0 break-all text-[var(--accent)]">{claudeAddCommand(greencli.path)}</code>
+                <code className="flex-1 min-w-0 break-all text-[var(--accent)]">{claudeAddCommand(greencli)}</code>
                 <button
-                  onClick={() => void copy(claudeAddCommand(greencli.path))}
+                  onClick={() => void copy(claudeAddCommand(greencli))}
                   title="Copy the command"
                   className="flex-shrink-0 flex items-center gap-1 px-1.5 py-0.5 text-[10px] rounded bg-[var(--bg-tertiary)] hover:bg-[var(--border-strong)] text-[var(--text-secondary)]"
                 >

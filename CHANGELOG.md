@@ -14,6 +14,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - With two copies of GreenCLI open, an AI key or MCP login saved, changed or removed in one is
   used by the other at its next request, as in 1.9. Before, the other copy kept the old key until
   it restarted, and renaming a server there could bring back a login removed in the first copy.
+- greencli-mcp reads the same data folder as GreenCLI: the command MCP Servers copies and the
+  export pass it as `--data-dir`. On Linux with `XDG_DATA_HOME` set, Casper started greencli-mcp
+  without that variable, so it read another folder and found no devices, configs or intents.
+  Export again to update a file made before. When the data folder isn't there, greencli-mcp's
+  tools now say so instead of answering with empty lists.
 
 ## [2.0.0] - 2026-10-02
 

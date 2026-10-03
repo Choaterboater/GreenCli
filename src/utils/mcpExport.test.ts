@@ -1269,22 +1269,25 @@ describe('exportSummary', () => {
 
 describe('buildMcpExport: greencli-mcp', () => {
   const path = '/Applications/GreenCLI.app/Contents/MacOS/greencli-mcp';
+  const dataDir = '/Users/me/Library/Application Support/com.choatelabs.greencli';
+  const args = ['--data-dir', dataDir];
 
   it('adds GreenCLI\'s own server, even with no saved servers', () => {
-    const result = buildMcpExport([], { greencli: { command: path } });
+    const result = buildMcpExport([], { greencli: { command: path, dataDir } });
     expect(result.count).toBe(1);
-    expect(result.file.mcpServers).toEqual({ greencli: { type: 'stdio', command: path, args: [] } });
+    // The app's data folder: Casper starts servers without the app's environment.
+    expect(result.file.mcpServers).toEqual({ greencli: { type: 'stdio', command: path, args } });
     expect(result.variables).toEqual([]);
     expect(result.notes).toEqual([]);
   });
 
   it('keeps a saved server named greencli, and renames GreenCLI\'s own with a note', () => {
     const result = buildMcpExport([def({ name: 'greencli', command: 'uvx', args: ['something'] }), def({ name: 'greencli-2' })], {
-      greencli: { command: path },
+      greencli: { command: path, dataDir },
     });
     expect(result.count).toBe(3);
     expect(result.file.mcpServers.greencli).toMatchObject({ command: 'uvx' });
-    expect(result.file.mcpServers['greencli-3']).toEqual({ type: 'stdio', command: path, args: [] });
+    expect(result.file.mcpServers['greencli-3']).toEqual({ type: 'stdio', command: path, args });
     expect(result.notes).toContain('GreenCLI\'s read-only server is saved as "greencli-3", because another server already uses "greencli".');
   });
 
@@ -1301,7 +1304,7 @@ describe('buildMcpExport: greencli-mcp', () => {
   it('counts it toward Casper\'s limit', () => {
     const many = Array.from({ length: CASPER_MAX_SERVERS }, (_, i) => def({ name: `s${i}` }));
     expect(buildMcpExport(many).notes.join(' ')).not.toContain('at most');
-    const result = buildMcpExport(many, { greencli: { command: path } });
+    const result = buildMcpExport(many, { greencli: { command: path, dataDir } });
     expect(result.count).toBe(CASPER_MAX_SERVERS + 1);
     expect(result.notes.join(' ')).toContain(`at most ${CASPER_MAX_SERVERS} servers`);
   });

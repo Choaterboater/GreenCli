@@ -11,6 +11,7 @@
 //! uses). When a hidden copy is missing or was made by an older filter, the
 //! tool fails closed: the raw snapshot is never read.
 
+use std::ffi::OsString;
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 
@@ -41,9 +42,41 @@ pub const APP_IDENTIFIER: &str = "com.choatelabs.greencli";
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// GreenCLI's data folder: `<data dir>/com.choatelabs.greencli`, the folder
-/// Tauri's `app_data_dir` gives the app.
+/// Tauri's `app_data_dir` gives the app. It can differ when this server runs
+/// with a smaller environment than the app (on Linux, Casper starts servers
+/// without `XDG_DATA_HOME`), so GreenCLI passes its own with `--data-dir`.
 pub fn data_dir() -> Option<PathBuf> {
     dirs::data_dir().map(|d| d.join(APP_IDENTIFIER))
+}
+
+/// The folder given by `--data-dir <full path>` (the arguments after the
+/// program name), or None with no arguments. Anything else is an error.
+pub fn data_dir_arg<I: IntoIterator<Item = OsString>>(args: I) -> Result<Option<PathBuf>, String> {
+    let mut args = args.into_iter();
+    let mut dir = None;
+    while let Some(arg) = args.next() {
+        if arg != "--data-dir" {
+            let shown: String = arg.to_string_lossy().chars().take(64).collect();
+            return Err(format!(
+                "unknown option {shown:?}; the only option is --data-dir <folder>"
+            ));
+        }
+        if dir.is_some() {
+            return Err("--data-dir is given twice".into());
+        }
+        let Some(value) = args.next() else {
+            return Err("--data-dir needs GreenCLI's data folder after it".into());
+        };
+        let path = PathBuf::from(value);
+        if !path.is_absolute() {
+            return Err(format!(
+                "--data-dir needs a full path, not {:?}",
+                path.to_string_lossy()
+            ));
+        }
+        dir = Some(path);
+    }
+    Ok(dir)
 }
 
 /// Serve MCP on `reader`/`writer` until the reader ends.
@@ -53,9 +86,19 @@ pub fn serve<R: BufRead, W: Write>(data_dir: &Path, reader: R, writer: W) -> std
 
 /// The binary's entry point: serve on stdin/stdout. Returns the exit code.
 pub fn run() -> i32 {
-    let Some(dir) = data_dir() else {
-        eprintln!("greencli-mcp: can't find this user's data folder");
-        return 2;
+    let dir = match data_dir_arg(std::env::args_os().skip(1)) {
+        Ok(Some(dir)) => dir,
+        Ok(None) => match data_dir() {
+            Some(dir) => dir,
+            None => {
+                eprintln!("greencli-mcp: can't find this user's data folder");
+                return 2;
+            }
+        },
+        Err(text) => {
+            eprintln!("greencli-mcp: {text}");
+            return 2;
+        }
     };
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
