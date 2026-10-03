@@ -181,14 +181,16 @@ export default function McpServers() {
       return hidden ? (hidden.missing ?? 0) + (hidden.stale ?? 0) : 0;
     };
     void (async () => {
+      // Asked before the count: it says whether copies were made after it.
+      const refresh = refreshStaleHiddenCopies();
       const info = await readGreencliInfo();
       const need = await readNeedHidden();
       if (cancelled) return;
       setGreencli(info);
       setNeedHidden(need);
-      // The background refresh may fix stale copies: count again when it ends.
-      await refreshStaleHiddenCopies();
-      if (cancelled) return;
+      // The background refresh may fix stale copies: count again only if it
+      // made some (the count reads every copy).
+      if (!(await refresh) || cancelled) return;
       const after = await readNeedHidden();
       if (!cancelled) setNeedHidden(after);
     })();

@@ -1,11 +1,11 @@
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
 import McpServers from './McpServers';
 import { tauriSave } from '../utils/fileSystem';
 import { notify } from '../store/toastStore';
 import type { McpServerDef } from '../utils/mcpTypes';
-import { resetHiddenRefreshForTests } from '../utils/configArchive';
+import { refreshStaleHiddenCopies, resetHiddenRefreshForTests } from '../utils/configArchive';
 import { copyText } from '../utils/clipboard';
 import { useSessionStore } from '../store/sessionStore';
 
@@ -157,6 +157,20 @@ describe('McpServers export', () => {
     await waitFor(() => expect(screen.queryByText(/need(s)? a new hidden copy/)).toBeNull());
     expect(todo).toEqual([]);
     info.mockRestore();
+  });
+
+  it('counts the hidden copies once when the background refresh already ended', async () => {
+    const path = '/Applications/GreenCLI.app/Contents/MacOS/greencli-mcp';
+    backend([], undefined, { path, exists: true, place: 'normal', dataDir: DATA_DIR }, { missing: 2, stale: 0 });
+    // App start ran the refresh; this is a later Settings open. The count
+    // reads every hidden copy, so it runs once.
+    await refreshStaleHiddenCopies();
+    vi.mocked(invoke).mockClear();
+    render(<McpServers />);
+    expect(await screen.findByText(/2 snapshots need a new hidden copy/)).toBeTruthy();
+    await act(() => new Promise((r) => setTimeout(r, 20)));
+    const counts = vi.mocked(invoke).mock.calls.filter(([cmd]) => cmd === 'config_archive_missing_hidden');
+    expect(counts).toHaveLength(1);
   });
 
   it('asks to move a translocated app, and leaves greencli out of the export', async () => {

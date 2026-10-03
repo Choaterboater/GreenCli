@@ -232,24 +232,39 @@ export function openConfigArchive(): void {
 /** Most snapshots the background refresh redoes in one run. */
 export const BACKGROUND_REFRESH_LIMIT = 500;
 
-let refreshRun: Promise<void> | null = null;
+let refreshRun: Promise<boolean> | null = null;
+let refreshEnded = false;
 
 /**
  * Once per app run, in the background: after the secret filter changed (some
  * hidden copies are stale), make the copies again. Capped and logged; the
- * "Make hidden copies" button in the Config Archive panel does the rest. Every
- * call returns the same promise, which ends when the run is done (it never
- * fails), so a caller can read the hidden copy count again after it.
+ * "Make hidden copies" button in the Config Archive panel does the rest.
+ *
+ * It never fails. A call while the run is going gets the run's promise, which
+ * ends with it and says whether it made any copies. A call after the run
+ * ended gets false at once, since a count made after that call already sees
+ * every copy. So a caller calls this, counts the hidden copies, and counts
+ * again only when this says true: the count reads every copy, and a normal
+ * open of Settings or the Config Archive panel should read them once.
  */
-export function refreshStaleHiddenCopies(): Promise<void> {
+export function refreshStaleHiddenCopies(): Promise<boolean> {
+  if (refreshEnded) return Promise.resolve(false);
   refreshRun ??= (async () => {
     const status = await archiveHiddenStatus();
-    if (status.stale === 0) return;
+    if (status.stale === 0) return false;
     const result = await makeHiddenCopies({ limit: BACKGROUND_REFRESH_LIMIT });
     console.info(
       `[config-archive] hidden copies refreshed after a secret filter change: ${result.made} made, ${result.failed} failed, ${result.left} left`
     );
-  })().catch((e) => console.warn('[config-archive] hidden copy refresh failed', e));
+    return result.made > 0;
+  })()
+    .catch((e) => {
+      console.warn('[config-archive] hidden copy refresh failed', e);
+      return false;
+    })
+    .finally(() => {
+      refreshEnded = true;
+    });
   return refreshRun;
 }
 
@@ -266,4 +281,5 @@ export function refreshHiddenCopiesAtStart(): void {
 /** Tests only: let refreshStaleHiddenCopies run again. */
 export function resetHiddenRefreshForTests(): void {
   refreshRun = null;
+  refreshEnded = false;
 }

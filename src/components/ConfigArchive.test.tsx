@@ -1,9 +1,9 @@
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
 import ConfigArchive from './ConfigArchive';
 import { notify } from '../store/toastStore';
-import { resetHiddenRefreshForTests } from '../utils/configArchive';
+import { refreshStaleHiddenCopies, resetHiddenRefreshForTests } from '../utils/configArchive';
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 vi.mock('@monaco-editor/react', () => ({ DiffEditor: () => null }));
@@ -85,6 +85,18 @@ describe('ConfigArchive hidden copies', () => {
       filter: 1,
     });
     info.mockRestore();
+  });
+
+  it('counts the hidden copies once when the background refresh already ended', async () => {
+    // App start ran the refresh; this is a later open of the panel. The
+    // count reads every hidden copy, so it runs once.
+    await refreshStaleHiddenCopies();
+    vi.mocked(invoke).mockClear();
+    render(<ConfigArchive onOpenSnapshot={vi.fn()} onClose={vi.fn()} />);
+    expect(await screen.findByText('2 snapshots need a new hidden copy.')).toBeTruthy();
+    await act(() => new Promise((r) => setTimeout(r, 20)));
+    const counts = vi.mocked(invoke).mock.calls.filter(([cmd]) => cmd === 'config_archive_missing_hidden');
+    expect(counts).toHaveLength(1);
   });
 
   it('shows nothing when every snapshot has a current copy', async () => {
