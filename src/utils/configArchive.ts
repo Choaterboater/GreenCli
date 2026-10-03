@@ -32,8 +32,9 @@ export const HIDDEN_COPY_FILTER = 1;
  * out; sorted by path, LF newlines), one entry per filter version: entry N-1
  * is the hash for version N, and the last one is the filter as it is now.
  * hiddenFilterVersion.test.ts fails when the filter changes until its new hash
- * is appended here, and then until HIDDEN_COPY_FILTER equals this list's
- * length. Only ever append; never replace an entry.
+ * is appended here and to RECORDED in that test, and then until
+ * HIDDEN_COPY_FILTER equals this list's length. Only ever append; never
+ * replace an entry.
  */
 export const HIDDEN_COPY_FILTER_SOURCES: readonly string[] = [
   '42f0b17bb9343b571edd878f15f0e713186fea8fce11f34f9dc75825822cc15f',

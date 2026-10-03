@@ -5,7 +5,7 @@
 // the new hash is recorded AND the version is bumped:
 //
 //   1. Append the hash this test prints to HIDDEN_COPY_FILTER_SOURCES in
-//      configArchive.ts (never replace an entry).
+//      configArchive.ts, and to RECORDED below (never replace an entry).
 //   2. Set HIDDEN_COPY_FILTER in configArchive.ts to that list's length.
 //   3. Set HIDDEN_COPY_FILTER in src-tauri/greencli-mcp/src/lib.rs to the same
 //      number (tests/identity.rs fails until they match).
@@ -43,9 +43,10 @@ function secretFilterHash(): string {
   return hash.digest('hex');
 }
 
-/** The filter version 1 hidden copies were made with (GreenCLI 2.0). Copies
- *  on users' disks carry that version, so its hash never changes. */
-const FILTER_1 = '42f0b17bb9343b571edd878f15f0e713186fea8fce11f34f9dc75825822cc15f';
+/** Hashes of every filter version already shipped (entry N-1 = version N;
+ *  version 1 came with GreenCLI 2.0). Hidden copies on users' disks carry
+ *  these versions: only ever append. */
+const RECORDED = ['42f0b17bb9343b571edd878f15f0e713186fea8fce11f34f9dc75825822cc15f'] as const;
 
 describe('hidden copy filter version', () => {
   it('the secret filter has not changed since its hash was recorded', () => {
@@ -53,8 +54,9 @@ describe('hidden copy filter version', () => {
     expect(now).toMatch(/^[0-9a-f]{64}$/);
     if (HIDDEN_COPY_FILTER_SOURCES.at(-1) !== now) {
       throw new Error(
-        `The secret filter changed. Append New hash: ${now} to HIDDEN_COPY_FILTER_SOURCES (never replace an entry), ` +
-          'set HIDDEN_COPY_FILTER to its length, and bump HIDDEN_COPY_FILTER in greencli-mcp/src/lib.rs.'
+        `The secret filter changed. Append New hash: ${now} to HIDDEN_COPY_FILTER_SOURCES and to RECORDED in ` +
+          'hiddenFilterVersion.test.ts (never replace an entry), set HIDDEN_COPY_FILTER to its length, and bump ' +
+          'HIDDEN_COPY_FILTER in greencli-mcp/src/lib.rs.'
       );
     }
   });
@@ -72,9 +74,13 @@ describe('hidden copy filter version', () => {
 
   it('keeps the recorded hashes: new ones are appended, never swapped in', () => {
     expect(
-      HIDDEN_COPY_FILTER_SOURCES[0],
-      'HIDDEN_COPY_FILTER_SOURCES[0] is the filter 1 hash and must stay: append new hashes, never replace one'
-    ).toBe(FILTER_1);
+      HIDDEN_COPY_FILTER_SOURCES.slice(0, RECORDED.length),
+      'HIDDEN_COPY_FILTER_SOURCES must start with every recorded hash: append new hashes, never replace one'
+    ).toEqual(RECORDED);
+    expect(
+      HIDDEN_COPY_FILTER_SOURCES.length,
+      'add the new hash to RECORDED in this test in the same commit as the version bump'
+    ).toBe(RECORDED.length);
   });
 
   it('leaves the filter tests out of the hash', () => {
