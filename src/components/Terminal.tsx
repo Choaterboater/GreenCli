@@ -289,6 +289,12 @@ export default function Terminal({ sessionId, deviceType, onSend, seedFromBuffer
       convertEol: false,
       overviewRulerWidth: 15,
       wordSeparator: ' ()[]{}\'"`',
+      // OSC 8 hyperlinks (gcc, gh, claude… print them) follow the same
+      // Ctrl/Cmd+click rule as plain URLs. xterm's own handler takes a plain
+      // click, then confirm() + window.open, which open nothing in Tauri 2,
+      // and its provider wins over the WebLinksAddon on the same text.
+      // allowNonHttpProtocols stays off: file:, man: … links are ignored.
+      linkHandler: { activate: terminalWebLinkHandler(isMac) },
     });
 
     const fitAddon = new FitAddon();

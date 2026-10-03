@@ -11,6 +11,7 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 vi.mock('./tauri', () => ({ isTauri: true }));
 
 import { invoke } from '@tauri-apps/api/core';
+import { Terminal } from 'xterm';
 import { useToastStore } from '../store/toastStore';
 import { isLinkClick, openWebLink, terminalWebLinkHandler } from './openUrl';
 
@@ -69,6 +70,67 @@ describe('terminal web links', () => {
   });
 });
 
+describe('terminal OSC 8 hyperlinks', () => {
+  // gcc, gh, claude… print links as OSC 8: text on screen, the address hidden.
+  // xterm's own handler for them takes a plain click, then confirm() and
+  // window.open, which open nothing in Tauri 2. Terminal.tsx passes the same
+  // handler as for plain URLs (checked below).
+  type Link = { text: string; activate(event: MouseEvent, text: string): void };
+  type Provider = { provideLinks(y: number, callback: (links: Link[] | undefined) => void): void };
+  const ADDRESS = 'https://gcc.gnu.org/onlinedocs/gcc/Warning-Options.html#index-Wunused%2Ba';
+
+  async function oscLink(mac: boolean): Promise<Link> {
+    const term = new Terminal({ linkHandler: { activate: terminalWebLinkHandler(mac) } });
+    await new Promise<void>((done) =>
+      term.write(`warning: unused [\x1b]8;;${ADDRESS}\x1b\\-Wunused\x1b]8;;\x1b\\]`, done),
+    );
+    // xterm registers its OSC 8 provider first, ahead of every addon, and a
+    // link from it hides any addon link on the same text.
+    const core = (term as unknown as { _core: { linkifier2: { _linkProviders: Provider[] } } })._core;
+    const links = await new Promise<Link[] | undefined>((done) =>
+      core.linkifier2._linkProviders[0].provideLinks(1, done),
+    );
+    term.dispose();
+    expect(links).toHaveLength(1);
+    expect(links![0].text).toBe(ADDRESS);
+    return links![0];
+  }
+
+  it.each([
+    ['Ctrl+click on Windows/Linux', false, click({ ctrlKey: true })],
+    ['Cmd+click on macOS', true, click({ metaKey: true })],
+  ])('%s opens the address', async (_name, mac, event) => {
+    const confirm = vi.spyOn(window, 'confirm');
+    const open = vi.spyOn(window, 'open');
+    const link = await oscLink(mac);
+    link.activate(event, link.text);
+    await Promise.resolve();
+    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(invoke).toHaveBeenCalledWith('open_url', { url: ADDRESS });
+    expect(confirm).not.toHaveBeenCalled();
+    expect(open).not.toHaveBeenCalled();
+    confirm.mockRestore();
+    open.mockRestore();
+  });
+
+  it.each([
+    ['a plain click', false, click()],
+    ['a plain click on macOS', true, click()],
+    ['a right-click with Ctrl', false, click({ button: 2, ctrlKey: true })],
+  ])('%s does not', async (_name, mac, event) => {
+    const confirm = vi.spyOn(window, 'confirm');
+    const open = vi.spyOn(window, 'open');
+    const link = await oscLink(mac);
+    link.activate(event, link.text);
+    await Promise.resolve();
+    expect(invoke).not.toHaveBeenCalled();
+    expect(confirm).not.toHaveBeenCalled();
+    expect(open).not.toHaveBeenCalled();
+    confirm.mockRestore();
+    open.mockRestore();
+  });
+});
+
 describe('the app sends its web links here', () => {
   const dir = resolve(process.cwd(), 'src/components');
   const sources = readdirSync(dir)
@@ -81,6 +143,23 @@ describe('the app sends its web links here', () => {
     for (const [file, text] of sources) {
       expect(/new WebLinksAddon\(\s*\)/.test(text), `${file}: WebLinksAddon with no handler`).toBe(false);
     }
+  });
+
+  it('every terminal sends OSC 8 hyperlinks to the same handler (its default uses window.open)', () => {
+    let seen = 0;
+    for (const [file, text] of sources) {
+      let at = text.indexOf('new XTerm(');
+      while (at !== -1) {
+        const options = text.slice(at, text.indexOf('\n    });', at));
+        expect(options, `${file}: an XTerm without linkHandler`).toContain(
+          'linkHandler: { activate: terminalWebLinkHandler(isMac) },',
+        );
+        expect(/allowNonHttpProtocols\s*:/.test(options), `${file}: OSC 8 links other than http(s)`).toBe(false);
+        seen += 1;
+        at = text.indexOf('new XTerm(', at + 1);
+      }
+    }
+    expect(seen).toBeGreaterThan(0);
   });
 
   it('every target="_blank" link opens through openWebLink', () => {
