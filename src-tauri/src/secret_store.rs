@@ -630,14 +630,28 @@ impl SecretStore {
     }
 
     /// While an old file waits to move, a key the user saves or removes is
-    /// marked done, so the next try never puts the old value back.
+    /// marked done, so the next try never puts the old value back. Its file
+    /// is noted as moving in the same write: a move that failed before it
+    /// could note the file (a read error, or a marker write that failed)
+    /// would otherwise make the next start a first try, which forgets `done`.
     fn note_user_change(&self, account: &str) {
         if !matches!(self.mode, Mode::Os(_)) || !self.move_pending.load(Ordering::Relaxed) {
             return;
         }
+        let files: Vec<String> = self
+            .pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter(|(_, prefix)| account.starts_with(prefix.as_str()))
+            .filter_map(|(path, _)| path.file_name().map(|n| n.to_string_lossy().to_string()))
+            .collect();
         if let Err(e) = self.update_marker(|m| {
             remove_from_list(m, MOVED, |a| a == account);
             add_to_list(m, DONE, account);
+            for file in &files {
+                add_to_list(m, MOVING, file);
+            }
         }) {
             log::warn!("Couldn't note {} in {}: {}", account, MARKER_FILE, e);
         }
@@ -1538,6 +1552,44 @@ mod tests {
         assert_eq!(mem.raw("ai-key:anthropic").unwrap(), b"A9");
         assert_eq!(mem.raw("ai-key:moonshot").unwrap(), b"M9");
         assert_eq!(mem.raw("ai-key:openai").unwrap(), b"O9");
+    }
+
+    #[test]
+    fn a_change_made_when_the_move_failed_before_its_first_note_is_kept() {
+        // This start's move fails before the marker names the file: the file
+        // can't be read, or the marker can't be written.
+        let cases: [fn(&Path); 2] = [
+            |dir| fs::create_dir(dir.join(AI_KEYS_FILE)).unwrap(),
+            |dir| {
+                fs::write(dir.join(AI_KEYS_FILE), r#"{"anthropic":"OLD","openai":"O1"}"#).unwrap();
+                fs::create_dir(dir.join("secret_store.json.tmp")).unwrap();
+            },
+        ];
+        for (i, break_it) in cases.into_iter().enumerate() {
+            let dir = temp_dir();
+            let mem = MemBackend::new();
+            drop(os_store(&dir, &mem));
+            let path = dir.join(AI_KEYS_FILE);
+            break_it(&dir);
+            let first = os_store(&dir, &mem);
+            assert_eq!(first.move_file(&path, AI_KEY_PREFIX), MoveOutcome::Failed, "case {}", i);
+            assert!(first.status().move_pending);
+            // The cause goes away, and the user saves a new key.
+            let _ = fs::remove_dir(dir.join(AI_KEYS_FILE));
+            let _ = fs::remove_dir(dir.join("secret_store.json.tmp"));
+            first.set("ai-key:anthropic", "NEW").unwrap();
+            drop(first);
+
+            // Next start: the old file is read, and the user's key stays.
+            fs::write(&path, r#"{"anthropic":"OLD","openai":"O1"}"#).unwrap();
+            let next = os_store(&dir, &mem);
+            assert_eq!(next.move_file(&path, AI_KEY_PREFIX), MoveOutcome::Moved(2), "case {}", i);
+            assert_eq!(mem.raw("ai-key:anthropic").unwrap(), b"NEW", "case {}", i);
+            assert_eq!(mem.raw("ai-key:openai").unwrap(), b"O1", "case {}", i);
+            assert!(!path.exists());
+            let marker = read_marker(&dir.join(MARKER_FILE));
+            assert!(marker.get(MOVING).is_none() && marker.get(MOVED).is_none() && marker.get(DONE).is_none());
+        }
     }
 
     #[test]
