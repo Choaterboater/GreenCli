@@ -108,8 +108,8 @@ fn stale_filter_text(filter: u32) -> String {
 }
 
 /// Durable per-device config history. All mutations are read-modify-write of
-/// the index under a mutex (Tauri dispatches synchronous commands on its
-/// worker pool, so two invokes can run concurrently); payload files are
+/// the index under a mutex (the commands run on the blocking pool, so two
+/// invokes can run at once); payload files are
 /// written atomically (tmp sibling + rename) like `IntentStore`.
 pub struct ConfigArchiveStore {
     root: PathBuf,
@@ -386,14 +386,26 @@ impl ConfigArchiveStore {
     /// Count snapshots by hidden copy: current, stale (an older filter) or
     /// missing (none, or one greencli-mcp can't use), and list the ones that
     /// need a new copy. Reads each copy, as greencli-mcp would.
+    ///
+    /// Only the index read holds the lock. Reading every copy of a full
+    /// archive takes a while, and capture, list and get would wait all that
+    /// time. The counts are only a guide: capture and set_hidden check the
+    /// copy again under the lock, and copies are replaced by rename, so a
+    /// read here sees a whole file or none.
     pub fn hidden_status(&self) -> HiddenStatus {
-        let _g = self.lock.lock().unwrap_or_else(|e| e.into_inner());
-        let index = self.read_index();
+        let index = {
+            let _g = self.lock.lock().unwrap_or_else(|e| e.into_inner());
+            self.read_index()
+        };
         let mut status = HiddenStatus::default();
         let mut devices: Vec<_> = index.devices.iter().collect();
         devices.sort_by(|a, b| a.0.cmp(b.0));
         for (device, entries) in devices {
             for e in entries {
+                #[cfg(test)]
+                if let Some(check) = WHILE_COUNTING.with(|hook| hook.get()) {
+                    check(self);
+                }
                 if self.hidden_ok(device, e) {
                     status.current += 1;
                     continue;
@@ -461,6 +473,13 @@ impl ConfigArchiveStore {
             &serde_json::to_vec_pretty(&index).map_err(AppError::from)?,
         )
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Tests only: runs before hidden_status checks each copy.
+    static WHILE_COUNTING: std::cell::Cell<Option<fn(&ConfigArchiveStore)>> =
+        const { std::cell::Cell::new(None) };
 }
 
 fn now_millis() -> u64 {
@@ -788,6 +807,42 @@ mod tests {
         // A current copy whose file is gone counts as missing.
         fs::remove_file(store.hidden_path("sw-1", t2)).unwrap();
         assert_eq!(store.hidden_status().missing, 2);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Counting reads every hidden copy, which takes a while on a full
+    /// archive. It holds the lock only to read the index, so a capture or a
+    /// snapshot read doesn't wait for the whole count.
+    #[test]
+    fn hidden_status_reads_the_copies_without_the_lock() {
+        let dir = temp_dir();
+        let store = ConfigArchiveStore::new(dir.clone());
+        for (device, content) in [("sw-1", "a"), ("sw-1", "b"), ("sw-2", "c")] {
+            store
+                .capture(
+                    device,
+                    "connect",
+                    content,
+                    Some((content, HIDDEN_COPY_FILTER)),
+                )
+                .unwrap();
+        }
+        thread_local! {
+            static CHECKED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+        }
+        WHILE_COUNTING.with(|hook| {
+            hook.set(Some(|store: &ConfigArchiveStore| {
+                assert!(
+                    store.lock.try_lock().is_ok(),
+                    "the lock is held while the copies are read"
+                );
+                CHECKED.with(|n| n.set(n.get() + 1));
+            }))
+        });
+        let status = store.hidden_status();
+        WHILE_COUNTING.with(|hook| hook.set(None));
+        assert_eq!(CHECKED.with(|n| n.get()), 3);
+        assert_eq!((status.missing, status.stale, status.current), (0, 0, 3));
         std::fs::remove_dir_all(&dir).ok();
     }
 
