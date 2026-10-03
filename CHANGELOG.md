@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.1] - 2026-10-03
+
 ### Added
 - **A website**: <https://choaterboater.github.io/GreenCli/> has download buttons for the latest
   release, photos of the main screens, the full guide, the help topics and this list. It is
