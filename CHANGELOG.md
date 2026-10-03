@@ -34,6 +34,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shows the address when you point at it, and Ctrl+click (Cmd+click on a Mac) asks before opening
   it, with the address in full. Before, a link that read one address could open another without
   showing it. A link that shows its own address still opens in one click.
+- Double-clicking GreenCLI's title bar (the bar with the command field) maximizes the window, or
+  zooms it on a Mac, as in other apps. Before, it did nothing. On a Mac that bar is the only title
+  bar.
 
 ## [2.0.0] - 2026-10-02
 

@@ -10,6 +10,7 @@ use std::collections::BTreeSet;
 const CONF: &str = include_str!("../tauri.conf.json");
 const CAPS: &str = include_str!("../capabilities/default.json");
 const MAIN_RS: &str = include_str!("main.rs");
+const APP_TSX: &str = include_str!("../../src/App.tsx");
 
 /// The WiX upgrade code 1.x installers used (uuid5 of "GreenCLI.exe.app.x64").
 /// A different code would install 2.x next to 1.x instead of over it.
@@ -17,11 +18,13 @@ const UPGRADE_CODE: &str = "718138b6-2db8-5ffd-9235-e853b5bba5b8";
 
 /// Exactly what the windows may call. Adding a permission is a decision:
 /// change this list in the same commit, and say why.
-const PERMISSIONS: [&str; 12] = [
+const PERMISSIONS: [&str; 13] = [
     "core:event:allow-listen",
     "core:event:allow-unlisten",
     "core:event:allow-emit",
     "core:window:allow-start-dragging",
+    // A double-click in the title bar maximizes (see drag_regions_drag_and_maximize).
+    "core:window:allow-internal-toggle-maximize",
     "core:window:allow-set-focus",
     "core:window:allow-close",
     "core:window:allow-get-all-windows",
@@ -124,6 +127,31 @@ fn capability_is_the_short_list() {
     assert_eq!(got.len(), got_set.len(), "no duplicates");
     let want: BTreeSet<&str> = PERMISSIONS.into_iter().collect();
     assert_eq!(got_set, want);
+}
+
+/// Tauri's drag-region script (tauri's src/window/scripts/drag.js) calls
+/// `plugin:window|start_dragging` on a press in a `data-tauri-drag-region`
+/// element and `plugin:window|internal_toggle_maximize` on a double-click.
+/// Without the second, the double-click is refused, and on macOS (Overlay
+/// title bar) App.tsx's bar is the only one, so double-click to zoom did
+/// nothing. If the title bar stops being a drag region, drop both.
+#[test]
+fn drag_regions_drag_and_maximize() {
+    assert!(
+        APP_TSX.contains("data-tauri-drag-region"),
+        "the title bar is a drag region"
+    );
+    let c = caps();
+    let perms = c["permissions"].as_array().expect("permissions");
+    for needed in [
+        "core:window:allow-start-dragging",
+        "core:window:allow-internal-toggle-maximize",
+    ] {
+        assert!(
+            perms.iter().any(|p| p == needed),
+            "a drag region needs {needed}"
+        );
+    }
 }
 
 #[test]
