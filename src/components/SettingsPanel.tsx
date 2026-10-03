@@ -33,7 +33,7 @@ import McpServers from './McpServers';
 import AiAgents from './AiAgents';
 import CasperSettings from './CasperSettings';
 import SecretStoreNote from './SecretStoreNote';
-import { saveAiKey } from '../utils/secretStore';
+import { AI_KEY_CHANGED_EVENT, saveAiKey } from '../utils/secretStore';
 import HostsManager from './HostsManager';
 import LoginProfiles from './LoginProfiles';
 import TriggersSettings from './TriggersSettings';
@@ -423,6 +423,28 @@ export default function SettingsPanel() {
       });
     return () => {
       live = false;
+    };
+  }, [showSettings, aiProvider, providerMeta?.needsKey]);
+
+  // While the panel is open, ask again when this provider's key is saved or
+  // removed: a save started on the last close may finish after it reopened.
+  useEffect(() => {
+    if (!showSettings || !providerMeta?.needsKey) return;
+    let live = true;
+    const onKeyChanged = (e: Event) => {
+      if ((e as CustomEvent<string>).detail !== aiProvider) return;
+      invoke<boolean>('ai_has_key', { provider: aiProvider })
+        .then((has) => {
+          if (live) setKeySaved(has);
+        })
+        .catch(() => {
+          if (live) setKeySaved(null);
+        });
+    };
+    window.addEventListener(AI_KEY_CHANGED_EVENT, onKeyChanged);
+    return () => {
+      live = false;
+      window.removeEventListener(AI_KEY_CHANGED_EVENT, onKeyChanged);
     };
   }, [showSettings, aiProvider, providerMeta?.needsKey]);
 
@@ -1288,6 +1310,10 @@ export default function SettingsPanel() {
                       (with the device name and your agent&apos;s instructions), not your SSH sessions, GreenCLI&apos;s
                       tools or GreenCLI&apos;s MCP servers. The Assistant tools switches below are not used.
                     </p>
+                  )}
+                  {/* A key provider shows these with its key field below. */}
+                  {!providerMeta?.needsKey && (
+                    <SecretStoreNote problemsOnly refreshKey={`${showSettings}:${aiProvider}`} />
                   )}
                 </div>
 

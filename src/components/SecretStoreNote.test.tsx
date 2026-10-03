@@ -77,4 +77,15 @@ describe('SecretStoreNote', () => {
     expect(rejected).toBe(true);
     expect(screen.getByTestId('secret-store-line').textContent).toBe(UNKNOWN_LINE);
   });
+
+  it('shows only the warnings, or nothing, with problemsOnly', async () => {
+    withStatus(ok({ movePending: true }));
+    const { container, rerender } = render(<SecretStoreNote problemsOnly refreshKey={1} />);
+    expect(await screen.findByText(MOVE_PENDING_LINE)).toBeTruthy();
+    expect(screen.queryByTestId('secret-store-line')).toBeNull();
+    withStatus(ok());
+    rerender(<SecretStoreNote problemsOnly refreshKey={2} />);
+    await waitFor(() => expect(screen.queryByText(MOVE_PENDING_LINE)).toBeNull());
+    expect(container.innerHTML).toBe('');
+  });
 });

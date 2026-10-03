@@ -7,7 +7,7 @@ import { invoke } from '@tauri-apps/api/core';
 import SettingsPanel from './SettingsPanel';
 import { useSettingsStore } from '../store/settingsStore';
 import { useSessionStore } from '../store/sessionStore';
-import { UNAVAILABLE_LINE } from '../utils/secretStore';
+import { leftoverLine, MOVE_PENDING_LINE, UNAVAILABLE_LINE } from '../utils/secretStore';
 
 const CANT_CHECK = "Can't check for a saved key";
 const SAVED = '•••••••• (saved — type to replace)';
@@ -77,5 +77,57 @@ describe('SettingsPanel saved-key check', () => {
     await act(async () => first(true));
     expect(await screen.findByPlaceholderText('Enter API key')).toBeTruthy();
     expect(screen.queryByText('saved')).toBeNull();
+  });
+
+  it('shows a key saved on close once the save finishes, while the panel is open again', async () => {
+    let saved = false;
+    let finishSave: () => void = () => {};
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === 'ai_has_key') return saved;
+      if (cmd === 'ai_set_key') {
+        return new Promise<null>((resolve) => {
+          finishSave = () => {
+            saved = true;
+            resolve(null);
+          };
+        });
+      }
+      if (cmd === 'secret_store_status') return { kind: 'keychain', leftoverFiles: [], movePending: false };
+      if (cmd.startsWith('mcp_')) return [];
+      return null;
+    });
+    render(<SettingsPanel />);
+    setOpen(true);
+    fireEvent.click(await screen.findByRole('button', { name: /AI & MCP/ }));
+    fireEvent.change(await screen.findByPlaceholderText('Enter API key'), { target: { value: 'sk-ant-typed' } });
+    // Closing saves the typed key; the save is still going when it opens again.
+    setOpen(false);
+    setOpen(true);
+    await waitFor(() => expect(keyChecks()).toBe(2));
+    expect(await screen.findByPlaceholderText('Enter API key')).toBeTruthy();
+
+    await act(async () => finishSave());
+    expect(await screen.findByPlaceholderText(SAVED)).toBeTruthy();
+    expect(screen.getByText('saved')).toBeTruthy();
+  });
+});
+
+describe('SettingsPanel key warnings', () => {
+  it('shows a left-over 1.9 file and a pending move whatever the provider', async () => {
+    const path = '/x/ai_keys.json';
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === 'secret_store_status') return { kind: 'keychain', leftoverFiles: [path], movePending: true };
+      if (cmd.startsWith('mcp_')) return [];
+      return null;
+    });
+    useSettingsStore.setState({ aiProvider: 'casper' });
+    render(<SettingsPanel />);
+    setOpen(true);
+    fireEvent.click(await screen.findByRole('button', { name: /AI & MCP/ }));
+    expect(await screen.findByText(leftoverLine(path))).toBeTruthy();
+    expect(screen.getAllByText(MOVE_PENDING_LINE)).toHaveLength(1);
+    // Only the warnings: no key is kept for this provider.
+    expect(screen.queryByTestId('secret-store-line')).toBeNull();
+    expect(keyChecks()).toBe(0);
   });
 });
