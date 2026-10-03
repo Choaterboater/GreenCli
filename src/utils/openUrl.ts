@@ -23,6 +23,32 @@ export async function openWebLink(url: string): Promise<void> {
   }
 }
 
+let windowOpenRouted = false;
+
+/**
+ * Monaco opens a Ctrl/Cmd+clicked link (in an editor or a hover) with
+ * window.open and the link text as written, which opens nothing in Tauri 2.
+ * Under Tauri, an http(s) window.open goes to openWebLink instead, unchanged.
+ * Monaco's registerLinkOpener is no use here: it hands over a parsed Uri,
+ * which has decoded %2B, %2F, %3D, %26 …, so a presigned download link lost
+ * its signature. Anything else goes to the webview's own window.open.
+ * Safe to call more than once.
+ */
+export function routeWindowOpenToBrowser(): void {
+  // In a plain browser window.open works, and openWebLink calls it.
+  if (!isTauri || windowOpenRouted) return;
+  windowOpenRouted = true;
+  const nativeOpen = window.open.bind(window);
+  window.open = (url?: string | URL, target?: string, features?: string) => {
+    const href = url == null ? '' : String(url);
+    if (/^https?:/i.test(href)) {
+      void openWebLink(href);
+      return null;
+    }
+    return nativeOpen(url, target, features);
+  };
+}
+
 /**
  * xterm activates a link on ANY mouseup over it: a plain click to focus the
  * pane or clear a selection, or a right-click. Only a left click with Ctrl
