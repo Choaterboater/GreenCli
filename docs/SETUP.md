@@ -739,8 +739,9 @@ live compliance:
 
 - Credentials vault: **AES-256-GCM** + **Argon2id**; `vault.enc` is owner-only (`0600`) and
   written atomically.
-- AI keys and MCP logins are in the system password store (§3). An MCP login is on disk only while
-  its server runs, in an owner-only file.
+- AI keys and MCP logins are in the system password store (§3). With it, an MCP login is on disk
+  only while its server runs, in an owner-only file; without one (some Linux setups), logins stay in
+  the owner-only `mcp_creds.json` (§3).
 - Updates come only from GreenCLI's GitHub releases over HTTPS, and each download is checked
   against its signature before it can install (§2, *How update signing works*).
 - greencli-mcp is read-only and shows configs only with secrets hidden (§6).

@@ -248,7 +248,7 @@ signature does and doesn't protect against.
 ## Security Features
 
 - **AES-256-GCM encryption** for stored credentials
-- **AI keys and MCP logins in the system password store**; an MCP login is on disk only while its server runs
+- **AI keys and MCP logins in the system password store**; with one, an MCP login is on disk only while its server runs
 - **Signed updates**, checked before they install, from GreenCLI's GitHub releases only
 - **Argon2id** password hashing for master password
 - Password-protected credential vault

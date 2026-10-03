@@ -110,7 +110,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 - AI keys and MCP logins are no longer plain files in the data folder (on macOS and Windows, and
   on Linux with a Secret Service), so reading or copying that folder doesn't give them away.
-- An MCP login is on disk only while its server runs, in a private folder.
+- With a system password store, an MCP login is on disk only while its server runs, in a private
+  folder.
 - Update checks use HTTPS to GitHub only (github.com, api.github.com and GitHub's download hosts),
   and the update file must be a file of a GreenCLI release. The app takes the update list and the
   key from the same release, and checks the download's signature before it shows **Restart to
