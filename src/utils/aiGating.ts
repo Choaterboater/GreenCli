@@ -53,7 +53,20 @@ export function isReadLine(line: string): boolean {
   // On a Linux host `sh` runs a shell: only a network-style `sh <word>` (no option, no path) reads.
   const words = first.replace(/^do\s+/i, '').split(/\s+/);
   if (/^sh$/i.test(words[0] ?? '') && (!words[1] || /^-|[./]/.test(words[1]))) return false;
+  if (/^monitor$/i.test(words[0] ?? '') && !monitorLiveView(words.slice(1))) return false;
   return filters.every((stage) => AUDITOR_PIPES.has((stage.split(/\s+/)[0] ?? '').toLowerCase()));
+}
+
+/**
+ * `monitor` is a read only in its live-view forms: Junos `monitor traffic` and `monitor interface`
+ * (also Aruba/Cisco `monitor interface`). Other forms change state: Cisco `monitor capture X start`
+ * / `export`, `monitor session` (SPAN config), Junos `monitor start` / `stop` (log to a file). A
+ * Junos capture with `write-file` saves a file. Those go to the Cancel / Run box.
+ */
+const MONITOR_LIVE_VIEWS: ReadonlySet<string> = new Set(['traffic', 'interface']);
+function monitorLiveView(args: string[]): boolean {
+  if (!MONITOR_LIVE_VIEWS.has((args[0] ?? '').toLowerCase())) return false;
+  return !args.some((w) => /^write-file$/i.test(w));
 }
 
 /** Heuristic: does this (possibly multi-line) command modify device state? Anything that is not
