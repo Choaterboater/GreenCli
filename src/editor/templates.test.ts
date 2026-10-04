@@ -192,6 +192,14 @@ describe('config templates', () => {
       }
     });
 
+    it('an EVPN template without an IRB is called a bridged overlay and has no gateway lines', () => {
+      for (const t of junos.filter((x) => x.body.includes('vtep-source-interface') && !/interfaces irb /.test(x.body))) {
+        expect([t.label, /ERB|edge-routed/i.test(t.label + t.body)]).toEqual([t.label, false]);
+        expect([t.label, t.body.includes('default-gateway')]).toEqual([t.label, false]);
+      }
+      expect(templateByLabel('JVD: EVPN-VXLAN leaf (bridged overlay)')).toBeTruthy();
+    });
+
     it('a BGP template has an AS for its groups', () => {
       for (const t of junos.filter((x) => x.body.includes('protocols bgp'))) {
         expect([t.label, /set routing-options autonomous-system|local-as/.test(t.body)]).toEqual([t.label, true]);

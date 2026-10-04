@@ -368,10 +368,19 @@ describe('casperCheckStatus', () => {
   it('says plainly when nothing usable came back, or turns ran out', () => {
     expect(casperCheckStatus({ ok: false, usage: null, warnings: [], turnLimit: false }).head).toBe("Casper didn't send a list of mistakes. Ask again.");
     expect(casperCheckStatus({ ok: false, usage: 'Casper used 9 tokens.', warnings: [], turnLimit: true })).toEqual({
-      head: 'Casper ran out of turns before it finished. Ask again.',
+      head: 'Casper ran out of turns before it finished. Select fewer lines and ask again.',
       usage: 'Casper used 9 tokens.',
       warning: false,
     });
+    expect(casperCheckStatus(ok([], null, { turnLimit: true })).head).toBe(
+      'Casper ran out of turns before it finished. Select fewer lines and ask again.'
+    );
+  });
+
+  it('says a list may be short when Casper ran out of turns', () => {
+    expect(casperCheckStatus(ok([p('error'), p('error')], null, { turnLimit: true })).head).toBe(
+      'Casper marked 2 errors. Casper ran out of turns, so there may be more.'
+    );
   });
 
   it("shows Casper's safety notes on every path, as a warning", () => {

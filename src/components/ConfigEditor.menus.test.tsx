@@ -3,11 +3,16 @@ import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vites
 import ConfigEditor from './ConfigEditor';
 import { useSessionStore } from '../store/sessionStore';
 import { useEditorInbox } from '../store/editorInboxStore';
+import { templateByLabel } from '../editor/templates';
 import type { Session } from '../types';
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn().mockResolvedValue('') }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn().mockResolvedValue(() => undefined) }));
-vi.mock('@monaco-editor/react', () => ({ default: () => null, DiffEditor: () => null }));
+// A read-only text box stands in for Monaco, so a test can see what the tab holds.
+vi.mock('@monaco-editor/react', () => ({
+  default: (p: { value?: string }) => <textarea aria-label="Editor text" readOnly value={p.value ?? ''} />,
+  DiffEditor: () => null,
+}));
 vi.mock('../editor/setup', () => ({ setupMonaco: vi.fn() }));
 
 const session: Session = {
@@ -188,6 +193,16 @@ describe('ConfigEditor toolbar menus', () => {
     expect(screen.queryByRole('menuitem', { name: /^Aruba:/ })).toBeNull();
     fireEvent.click(screen.getByRole('menuitem', { name: 'AOS-S: VLAN + tagged uplink' }));
     await waitFor(() => expect(triggers.language().textContent).toContain('AOS-S'));
+  });
+
+  it('opens a template into a blank tab with its blanks left as ${name}', async () => {
+    render(<ConfigEditor />);
+    fireEvent.click(triggers.templates());
+    fireEvent.click(screen.getByRole('menuitem', { name: 'AOS-S: VLAN + tagged uplink' }));
+    const body = templateByLabel('AOS-S: VLAN + tagged uplink')!.body;
+    expect(body).toMatch(/\$\{\w+\}/);
+    await waitFor(() => expect((screen.getByLabelText('Editor text') as HTMLTextAreaElement).value).toBe(body));
+    expect(screen.getAllByRole('button', { name: 'Close tab' })).toHaveLength(1);
   });
 
   it('lists the tab\'s vendor first in the Snippets menu', async () => {

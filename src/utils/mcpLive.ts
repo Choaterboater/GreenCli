@@ -20,8 +20,10 @@
 //   The box names the caller only as "a program on this computer (pid N)",
 //   and shows the exact line typed (with any | no-more GreenCLI adds).
 // - Time: GreenCLI's channel waits 60 s (LIVE_WAIT). The box closes on its own
-//   at 40 s as a No, and a line is never typed after 45 s, so a Yes always
-//   has time to run and answer before the wait ends.
+//   as a No 40 s after it shows (not while it waits behind another box), but
+//   never later than 44 s after the request came in: a box still waiting then
+//   is dropped before it shows. A line is never typed after 45 s, so a Yes
+//   always has time to run and answer before the wait ends.
 // - Turning the switch off forgets every per-device answer, and any request
 //   already handed over, or handed over later until it is back on, is refused
 //   before its box or its line.
@@ -30,7 +32,10 @@
 // - Paging is turned off around the line (AOS-CX/AOS-S `no page`, AOS-8
 //   `no paging`, then back on), and Junos gets `| no-more`, the same as intent
 //   checks. If the output still stops at a pager, GreenCLI sends the key that
-//   pager names (q, or Ctrl+C on AOS-S) and marks the output cut short.
+//   pager names (q, or Ctrl+C on AOS-S) and marks the output cut short. A
+//   --More-- in the text with the prompt back after it is not a pager. Output
+//   that ends before the prompt is back (the device paused, then kept
+//   printing) is marked cut short too.
 // - Secrets are hidden with the AI's secret filter (as prepareToolResult does
 //   for terminal output), then the output is cut to 16 KB keeping the start
 //   (prepareToolResult would keep the last 12,000 characters), and returned
@@ -38,7 +43,7 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { askChoice, cancelDialogs, type DialogChoice } from '../store/dialogStore';
+import { askChoice, cancelDialogs, useDialogStore, type DialogChoice } from '../store/dialogStore';
 import { useMcpApprovalStore } from '../store/mcpApprovalStore';
 import { useSessionStore } from '../store/sessionStore';
 import { useSettingsStore } from '../store/settingsStore';
@@ -64,6 +69,8 @@ export const LIVE_WAIT_MS = 60_000;
 export const LIVE_BOX_WAIT_MS = 40_000;
 /** A line is never typed later than this after the request came in. */
 export const LIVE_TYPE_BY_MS = 45_000;
+/** No box stays up (or waits to show) past this, counted from the request, so a Yes can still be typed. */
+export const LIVE_ASK_BY_MS = LIVE_TYPE_BY_MS - 1_000;
 /** Paging off and back on (withPagingDisabled's waits). */
 const PAGING_MS = 300 + 150;
 /** backAtPrompt: this many looks, this far apart. */
@@ -174,6 +181,13 @@ async function backAtPrompt(sessionId: string): Promise<void> {
 /** Room kept under MAX_LIVE_OUTPUT for the notes and greencli-mcp's JSON escapes. */
 const LIVE_ROOM = 2 * 1024;
 const CUT_NOTE = '[cut at 16 KB: this is the start of the output]';
+const STILL_PRINTING = '[the device was still printing when GreenCLI read this: the rest is missing]';
+
+/** The output stopped at a pager: a pager prompt at the end, and the device
+ *  prompt not back after it (a --More-- in a description line doesn't count). */
+function stoppedAtPager(output: string): boolean {
+  return endsAtPager(output) && !parseDevicePrompt(trailingLine(output));
+}
 
 /** The device echoes the line first; output without the echo may start inside
  *  a config block, so the filter is told its head may be cut. */
@@ -263,27 +277,52 @@ function choices(name: string): DialogChoice[] {
   ];
 }
 
-/** The answer, or 'late' when the box closed on its own at LIVE_BOX_WAIT_MS. */
+/** Calls `fn` once the dialog in `group` is the one on screen. Returns stop. */
+function whenShown(group: string, fn: () => void): () => void {
+  let done = false;
+  const check = (current: { group?: string } | null) => {
+    if (done || current?.group !== group) return;
+    done = true;
+    fn();
+  };
+  const stop = useDialogStore.subscribe((s) => check(s.current));
+  check(useDialogStore.getState().current);
+  return stop;
+}
+
+/** The answer, or 'late' when the box closed on its own: LIVE_BOX_WAIT_MS after it showed, or at
+ *  LIVE_ASK_BY_MS after `started`, whichever comes first (shown or still waiting behind another box). */
 async function ask(
   req: LiveRequest,
+  started: number,
   name: string,
   command: string,
   paging: { disable?: string; restore?: string },
+  quitKey: string,
 ): Promise<'once' | 'device' | 'late' | null> {
   const who = req.pid != null ? `a program on this computer (pid ${req.pid})` : 'a program on this computer';
   const parts = [
     paging.disable && `\`${paging.disable}\` before it`,
     paging.restore && `\`${paging.restore}\` after`,
   ].filter(Boolean);
-  const around = parts.length ? ` It also types ${parts.join(' and ')}.` : '';
+  const pager = `${quitKey} if the output stops at a pager`;
+  const around = parts.length ? ` It also types ${parts.join(' and ')}, and ${pager}.` : ` It also types ${pager}.`;
+  const group = boxGroup(req.id);
   let late = false;
-  const timer = setTimeout(() => {
+  const closeLate = () => {
     late = true;
-    cancelDialogs(boxGroup(req.id));
-  }, LIVE_BOX_WAIT_MS);
+    cancelDialogs(group);
+  };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  // Past the ask-by mark a Yes could not be typed in time: close the box, or drop it before it shows.
+  const deadline = setTimeout(closeLate, Math.max(0, started + LIVE_ASK_BY_MS - Date.now()));
+  // The 40 s counts from when the box shows, not while it waits behind another box.
+  const stopWatching = whenShown(group, () => {
+    timer = setTimeout(closeLate, LIVE_BOX_WAIT_MS);
+  });
   try {
     const value = await askChoice({
-      group: boxGroup(req.id),
+      group,
       title: `Run a show command on ${name}?`,
       message: `Asked by ${who}. GreenCLI types this line in your open tab and sends the output back with secrets hidden.${around}`,
       details: command,
@@ -293,7 +332,9 @@ async function ask(
     if (late) return 'late';
     return value === 'once' || value === 'device' ? value : null;
   } finally {
+    stopWatching();
     clearTimeout(timer);
+    clearTimeout(deadline);
   }
 }
 
@@ -318,7 +359,8 @@ async function runShow(req: LiveRequest, started: number): Promise<LiveReply> {
 
   const approvals = useMcpApprovalStore.getState();
   if (!approvals.isDeviceAllowed(LIVE_SERVER, LIVE_TOOL, name)) {
-    const answer = await ask(req, name, command, pagingCommands(profile));
+    const quitKey = session.config.deviceType === 'aruba-aos-s' ? 'Ctrl+C' : 'q';
+    const answer = await ask(req, started, name, command, pagingCommands(profile), quitKey);
     if (answer === 'late') return no(BOX_TIMED_OUT);
     if (cancelled.has(req.id)) return no(STOPPED);
     if (!answer) return no(SAID_NO);
@@ -341,7 +383,7 @@ async function runShow(req: LiveRequest, started: number): Promise<LiveReply> {
     const capture = await withPagingDisabled(now.sessionId, profile, async () => {
       const c = await captureInTurn(now.sessionId, command);
       // Leave a pager so the next key isn't eaten by it.
-      if (endsAtPager(c.output)) {
+      if (stoppedAtPager(c.output)) {
         await invoke('send_data', { sessionId: now.sessionId, data: pagerQuitKey(c.output) }).catch(() => undefined);
       }
       return c;
@@ -352,11 +394,15 @@ async function runShow(req: LiveRequest, started: number): Promise<LiveReply> {
   if (typeof ran === 'string') return no(ran);
 
   const { capture } = ran;
-  const pager = endsAtPager(capture.output);
+  const pager = stoppedAtPager(capture.output);
+  // The capture settles when output pauses; without the prompt at the end the
+  // device was still printing (Building Configuration..., show tech sections).
+  const unfinished = !pager && !!capture.output && !parseDevicePrompt(trailingLine(capture.output));
   const hidden = await hideAndCut(capture.output, command);
   if (!hidden) return no(WITHHELD_TEXT);
-  const [output, cut] = capBytes(hidden.text, MAX_LIVE_OUTPUT);
-  return { ok: true, output, truncated: capture.truncated || pager || hidden.cut || cut };
+  const text = unfinished ? `${hidden.text}\n${STILL_PRINTING}` : hidden.text;
+  const [output, cut] = capBytes(text, MAX_LIVE_OUTPUT);
+  return { ok: true, output, truncated: capture.truncated || pager || unfinished || hidden.cut || cut };
 }
 
 /** Answer one request from greencli-mcp. Never throws. */

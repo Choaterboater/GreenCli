@@ -77,6 +77,13 @@ describe('sidePanelStore', () => {
     expect(fresh.useSidePanelStore.getState().preferred).toBe(1500);
   });
 
+  it('an upgrade keeps the width dragged before the panels became tabs', async () => {
+    localStorage.setItem('atp-panel-width-editor', '1200');
+    vi.resetModules();
+    const fresh = await import('./sidePanelStore');
+    expect(fresh.useSidePanelStore.getState().preferred).toBe(1200);
+  });
+
   it('remembers the last tab across restarts', () => {
     store().setTab('editor');
     expect(store().tab).toBe('editor');

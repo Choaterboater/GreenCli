@@ -20,6 +20,8 @@ static WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// MITM alarm; only a changed fingerprint under the SAME algorithm is rejected.
 pub struct KnownHosts {
     path: PathBuf,
+    /// Where a damaged file is moved: `known_hosts.json.corrupt[.N]`.
+    backup: PathBuf,
 }
 
 /// Inner value for one host: normalized key algorithm ("ssh-rsa",
@@ -78,7 +80,7 @@ fn migrate(raw: HashMap<String, StoredEntry>) -> HashMap<String, HostKeys> {
 
 /// Keep what can be kept from a damaged store: every host entry of the right
 /// shape in a valid JSON object, or, when the JSON itself is cut off or broken,
-/// the longest leading part that closes into a valid object.
+/// every complete entry before the break.
 fn salvage(text: &str) -> HashMap<String, HostKeys> {
     fn entries(obj: serde_json::Map<String, serde_json::Value>) -> HashMap<String, HostKeys> {
         migrate(
@@ -91,20 +93,38 @@ fn salvage(text: &str) -> HashMap<String, HostKeys> {
                 .collect(),
         )
     }
-    if let Ok(serde_json::Value::Object(obj)) = serde_json::from_str(text) {
-        return entries(obj);
+    // Read the top-level object one entry at a time and keep every entry
+    // before the first one that doesn't read (all of them in a valid object).
+    // One pass, however big the file.
+    let mut obj = serde_json::Map::new();
+    let mut de = serde_json::Deserializer::from_str(text);
+    let _ = serde::de::DeserializeSeed::deserialize(LeadingEntries(&mut obj), &mut de);
+    entries(obj)
+}
+
+/// Collects a JSON object's entries into the map as they are read, so the
+/// ones before a parse error are kept even though the whole read fails.
+struct LeadingEntries<'a>(&'a mut serde_json::Map<String, serde_json::Value>);
+
+impl<'de> serde::de::DeserializeSeed<'de> for LeadingEntries<'_> {
+    type Value = ();
+    fn deserialize<D: serde::Deserializer<'de>>(self, d: D) -> Result<(), D::Error> {
+        d.deserialize_map(self)
     }
-    // Try each cut point (after a complete value, i.e. at a comma), last first.
-    let cuts: Vec<usize> = text.match_indices(',').map(|(i, _)| i).collect();
-    for &cut in cuts.iter().rev().take(10_000) {
-        for close in ["}", "}}"] {
-            let candidate = format!("{}{close}", &text[..cut]);
-            if let Ok(serde_json::Value::Object(obj)) = serde_json::from_str(&candidate) {
-                return entries(obj);
-            }
+}
+
+impl<'de> serde::de::Visitor<'de> for LeadingEntries<'_> {
+    type Value = ();
+    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str("a JSON object")
+    }
+    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<(), A::Error> {
+        while let Some(host) = map.next_key::<String>()? {
+            let value = map.next_value::<serde_json::Value>()?;
+            self.0.insert(host, value);
         }
+        Ok(())
     }
-    HashMap::new()
 }
 
 /// Fold russh's per-signature-hash RSA algorithm names (`rsa-sha2-256`,
@@ -174,7 +194,13 @@ fn fold<'a>(
 
 impl KnownHosts {
     pub fn new(path: PathBuf) -> Self {
-        Self { path }
+        let backup = path.with_extension("json.corrupt");
+        Self { path, backup }
+    }
+
+    #[cfg(test)]
+    fn with_backup(path: PathBuf, backup: PathBuf) -> Self {
+        Self { path, backup }
     }
 
     /// Read the store without changing anything on disk. A missing file is the
@@ -260,7 +286,7 @@ impl KnownHosts {
     /// Rename the store to the first free `known_hosts.json.corrupt[.N]` name,
     /// so an earlier backup is never overwritten.
     fn move_aside(&self) -> Option<PathBuf> {
-        let base = self.path.with_extension("json.corrupt");
+        let base = self.backup.clone();
         let mut target = base.clone();
         let mut n = 1;
         while target.exists() {
@@ -300,10 +326,11 @@ impl KnownHosts {
     }
 
     /// Remove a trusted entry so the host is re-trusted (TOFU) on next connect.
-    /// A damaged file that couldn't be moved aside is written over with the
-    /// entries that still parse (the user asked to drop this host). A failed
-    /// save comes back as a plain error.
-    pub fn remove(&self, host_port: &str) -> Result<(), String> {
+    /// A damaged file is moved aside first; its plain notice comes back so
+    /// the user learns where the old file went. A damaged file that couldn't
+    /// be moved aside is written over with the entries that still parse (the
+    /// user asked to drop this host). A failed save comes back as a plain error.
+    pub fn remove(&self, host_port: &str) -> Result<Option<String>, String> {
         let _guard = WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (mut map, notice, can_save) = self.load_for_write();
         let key = normalize_host_port(host_port);
@@ -322,7 +349,7 @@ impl KnownHosts {
                 }
             })?;
         }
-        Ok(())
+        Ok(notice)
     }
 
     /// Verify a fingerprint for `host:port` presented under key algorithm
@@ -409,7 +436,8 @@ impl KnownHosts {
             let mut reason = format!(
                 "Host key mismatch for {name} ({key_type}): stored {stored}, got \
                  {fingerprint}. Possible MITM. If the device was replaced or re-keyed, \
-                 click Forget next to {name} in Settings > Host keys and connect again."
+                 in Settings > Host Import & SSH Host Keys > Trusted host keys, click the \
+                 trash (Forget) button next to {name}, then connect again."
             );
             if let Some(n) = notice.borrow().as_ref() {
                 reason.push(' ');
@@ -535,6 +563,8 @@ mod tests {
         let err =
             verify_or_record(&dir.store(), "good:22", "ssh-ed25519", "SHA256:evil").unwrap_err();
         assert!(err.contains("mismatch"), "{err}");
+        // The mismatch also says where the damaged file went.
+        assert!(err.contains("known_hosts.json.corrupt"), "{err}");
         assert!(dir.corrupt().exists());
         let hosts: Vec<String> = KnownHosts::new(dir.store())
             .list()
@@ -704,6 +734,62 @@ mod tests {
     }
 
     #[test]
+    fn forgetting_in_a_damaged_file_says_where_the_old_file_went() {
+        let dir = TempDir::new("forgetnotice");
+        fs::write(
+            dir.store(),
+            br#"{"r1:22":{"ssh-ed25519":"SHA256:aaa"},"bad:22":42}"#,
+        )
+        .unwrap();
+        let notice = KnownHosts::new(dir.store()).remove("r1:22").unwrap();
+        let notice = notice.expect("a notice when the file was moved aside");
+        assert!(notice.contains("known_hosts.json.corrupt"), "{notice}");
+        // A healthy file says nothing.
+        verify_or_record(&dir.store(), "r2:22", "ssh-ed25519", "SHA256:bbb").unwrap();
+        assert_eq!(KnownHosts::new(dir.store()).remove("r2:22").unwrap(), None);
+    }
+
+    #[test]
+    fn salvage_keeps_good_entries_after_a_bad_one() {
+        let dir = TempDir::new("badfirst");
+        fs::write(
+            dir.store(),
+            br#"{"bad:22":42,"good:22":{"ssh-ed25519":"SHA256:good"}}"#,
+        )
+        .unwrap();
+        let err =
+            verify_or_record(&dir.store(), "good:22", "ssh-ed25519", "SHA256:evil").unwrap_err();
+        assert!(err.contains("mismatch"), "{err}");
+    }
+
+    #[test]
+    fn a_big_store_broken_near_the_top_is_read_quickly() {
+        let mut text = String::from("{\"a:22\":{\"ssh-ed25519\":\"SHA256:a\"},\"b:22\":{oops},");
+        for i in 0..20_000 {
+            text.push_str(&format!("\"h{i}:22\":{{\"ssh-ed25519\":\"SHA256:{i:040}\"}},"));
+        }
+        text.push_str("\"z:22\":{\"ssh-ed25519\":\"SHA256:z\"}}");
+        let started = std::time::Instant::now();
+        let kept = salvage(&text);
+        assert!(started.elapsed() < std::time::Duration::from_secs(1), "{:?}", started.elapsed());
+        assert_eq!(kept.keys().collect::<Vec<_>>(), vec!["a:22"]);
+    }
+
+    #[test]
+    fn a_damaged_file_that_cannot_be_moved_is_never_written_over() {
+        let dir = TempDir::new("nomove");
+        let damaged = br#"{"good:22":{"ssh-ed25519":"SHA256:good"},"bad:22":42}"#;
+        fs::write(dir.store(), damaged).unwrap();
+        // The backup goes into a folder that isn't there, so moving aside fails.
+        let kh = KnownHosts::with_backup(dir.store(), dir.0.join("missing").join("backup"));
+        let v = kh.verify_or_record("new:22", "ssh-ed25519", "SHA256:new").unwrap();
+        assert_eq!(v.outcome, KeyVerifyResult::FirstSeen);
+        let notice = v.notice.expect("a notice");
+        assert!(notice.contains("aren't being saved"), "{notice}");
+        assert_eq!(fs::read(dir.store()).unwrap(), damaged);
+    }
+
+    #[test]
     fn host_names_match_without_regard_to_case_or_a_trailing_dot() {
         let dir = TempDir::new("case");
         verify_or_record(&dir.store(), "Router1:22", "ssh-ed25519", "SHA256:aaa").unwrap();
@@ -764,7 +850,11 @@ mod tests {
         // to the Forget button, never to editing a file.
         assert!(err.contains("Router1:22"), "{err}");
         assert!(err.contains("Forget"), "{err}");
-        assert!(err.contains("Settings > Host keys"), "{err}");
+        assert!(
+            err.contains("Settings > Host Import & SSH Host Keys > Trusted host keys"),
+            "{err}"
+        );
+        assert!(err.contains("trash (Forget) button next to Router1:22"), "{err}");
         assert!(!err.contains("known_hosts.json"), "{err}");
         // The right key is trusted, and the pin moves to the lowercase name.
         let v = verify_or_record(&dir.store(), "router1:22", "ssh-ed25519", "SHA256:aaa").unwrap();

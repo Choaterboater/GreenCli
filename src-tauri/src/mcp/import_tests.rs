@@ -337,14 +337,14 @@ fn runs_line_shows_the_program_and_masks_secrets() {
         "/usr/local/bin/uvx",
         &["centralmcp", "--token=abcDEF1234567890xyzQRS"],
     );
-    assert_eq!(runs_line(&d), "uvx centralmcp --token=…");
+    assert_eq!(runs_line(&d), "/usr/local/bin/uvx centralmcp --token=…");
     d.args = vec![
         "--password".into(),
         "hunter2".into(),
         "--port".into(),
         "8080".into(),
     ];
-    assert_eq!(runs_line(&d), "uvx --password … --port 8080");
+    assert_eq!(runs_line(&d), "/usr/local/bin/uvx --password … --port 8080");
     let mut h = stdio("h", "", &[]);
     h.transport = McpTransport::Http;
     h.url = Some("https://user:pw@mcp.example.com:8443/path?key=x".into());
@@ -706,4 +706,56 @@ fn the_book_imports_exactly_what_was_shown() {
             .unwrap_err(),
         STALE
     );
+}
+
+#[test]
+fn a_file_saved_with_a_bom_still_reads() {
+    let s = scan_one("\u{feff}{\"mcpServers\": {\"s\": {\"command\": \"uvx\"}}}");
+    assert!(s.problems.is_empty(), "{:?}", s.problems);
+    assert_eq!(names(&s), vec!["s"]);
+    let dir = temp_dir();
+    let path = write(
+        &dir,
+        "mcp.json",
+        "\u{feff}{\n  // a comment\n  \"servers\": {\"v\": {\"command\": \"uvx\"},},\n}",
+    );
+    let s = scan(
+        &[source("VS Code", "VS Code mcp.json", path, Shape::VsCodeMcp)],
+        Path::new(HOME),
+        &[],
+    );
+    assert!(s.problems.is_empty(), "{:?}", s.problems);
+    assert_eq!(names(&s), vec!["v"]);
+}
+
+#[test]
+fn servers_keep_their_file_order() {
+    let s = scan_one(
+        r#"{"mcpServers": {
+            "b": {"command": "b"},
+            "a": {"command": "a"},
+            "c": {"command": "c"}
+        }}"#,
+    );
+    assert_eq!(names(&s), vec!["b", "a", "c"]);
+}
+
+#[test]
+fn user_home_becomes_the_home_folder() {
+    let s = scan_one(
+        r#"{"mcpServers": {"s": {"command": "${userHome}/bin/tool", "args": ["--dir", "${userHome}/data"]}}}"#,
+    );
+    let c = candidate(&s, "s");
+    assert_eq!(c.def.command, format!("{HOME}/bin/tool"));
+    assert_eq!(c.def.args, vec!["--dir".to_string(), format!("{HOME}/data")]);
+}
+
+#[test]
+fn runs_line_shows_a_program_path_as_written_and_the_folder() {
+    let mut d = stdio("s", "/opt/downloads/npx", &["mcp-remote"]);
+    assert_eq!(runs_line(&d), "/opt/downloads/npx mcp-remote");
+    d.cwd = Some("/srv/mcp".into());
+    assert_eq!(runs_line(&d), "/opt/downloads/npx mcp-remote (in /srv/mcp)");
+    let d = stdio("s", r"C:\tools\uvx.exe", &[]);
+    assert_eq!(runs_line(&d), r"C:\tools\uvx.exe");
 }

@@ -48,8 +48,10 @@ export default function HostsManager() {
 
   const forget = async (hostPort: string) => {
     try {
-      await invoke('remove_known_host', { hostPort });
+      // A damaged host keys file is moved aside first: say where it went.
+      const notice = await invoke<string | null>('remove_known_host', { hostPort });
       notify.info('Host key forgotten', `${hostPort} will be re-trusted on next connect.`);
+      if (notice) notify.warning('Host keys file was damaged', notice);
     } catch (e) {
       notify.warning("Couldn't forget host key", String(e));
     } finally {
@@ -76,7 +78,7 @@ export default function HostsManager() {
       const path = await tauriSave(LAB_EXPORT_FILE_NAME, 'Export lab hosts for Casper');
       if (!path) return;
       const { refusedExportPath } = await import('../utils/mcpExport');
-      const refused = refusedExportPath(path);
+      const refused = refusedExportPath(path, 'your Documents folder');
       if (refused) {
         notify.error('Not saved', refused);
         return;

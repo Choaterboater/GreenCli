@@ -10,13 +10,42 @@ import { cancelActiveAiStreams } from '../utils/aiRuns';
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn().mockResolvedValue(() => undefined) }));
+/** A stand-in editor: its selection and its right-click actions, for the tests to drive. */
+const fakeEditor = vi.hoisted(() => {
+  const state = {
+    selection: null as null | { startLineNumber: number; startColumn: number; endLineNumber: number; endColumn: number },
+    actions: new Map<string, () => void>(),
+  };
+  const ed = {
+    getModel: () => null,
+    getSelection: () => state.selection,
+    addAction: (a: { id: string; run: () => void }) => state.actions.set(a.id, a.run),
+    onDidChangeCursorSelection: () => ({ dispose() {} }),
+    onDidChangeModel: () => ({ dispose() {} }),
+    pushUndoStop: () => {},
+    executeEdits: () => {},
+    focus: () => {},
+    layout: () => {},
+  };
+  const monaco = {
+    KeyMod: { CtrlCmd: 0, Shift: 0 },
+    KeyCode: { KeyS: 0, KeyO: 0, KeyM: 0 },
+    editor: { getModel: () => null, getModels: () => [] },
+    Uri: { parse: (s: string) => s },
+  };
+  return { state, ed, monaco };
+});
+
 // A plain text box stands in for Monaco, so a test can edit the tab.
-vi.mock('@monaco-editor/react', () => ({
-  default: (p: { value?: string; onChange?: (v: string) => void }) => (
-    <textarea aria-label="Editor text" value={p.value ?? ''} onChange={(e) => p.onChange?.(e.target.value)} />
-  ),
-  DiffEditor: () => null,
-}));
+vi.mock('@monaco-editor/react', async () => {
+  const { useEffect } = await import('react');
+  function FakeMonaco(p: { value?: string; onChange?: (v: string) => void; onMount?: (ed: unknown, monaco: unknown) => void }) {
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    useEffect(() => p.onMount?.(fakeEditor.ed, fakeEditor.monaco), []);
+    return <textarea aria-label="Editor text" value={p.value ?? ''} onChange={(e) => p.onChange?.(e.target.value)} />;
+  }
+  return { default: FakeMonaco, DiffEditor: () => null };
+});
 vi.mock('../editor/setup', () => ({ setupMonaco: vi.fn() }));
 // jsdom can't run the secret filter; the real one is tested on its own.
 vi.mock('../utils/secrets/forCopy', () => ({
@@ -43,12 +72,13 @@ const reply = (problems: unknown[], tail = USAGE) => `Done.\n\n\`\`\`json\n${JSO
 /** Each ai_cli call waits until the test answers it. */
 let runs: Array<{ args: Record<string, unknown>; resolve: (v: string) => void; reject: (e: unknown) => void }> = [];
 
-async function openTab() {
-  render(<ConfigEditor />);
+async function openTab(content = CONFIG) {
+  const view = render(<ConfigEditor />);
   act(() => {
-    useEditorInbox.getState().send({ name: 'core-sw1', content: CONFIG, language: 'aruba-cx' });
+    useEditorInbox.getState().send({ name: 'core-sw1', content, language: 'aruba-cx' });
   });
   await screen.findByText('core-sw1');
+  return view;
 }
 
 function askMenuItems() {
@@ -89,6 +119,8 @@ describe('ConfigEditor: Mark mistakes with Casper', () => {
     useSessionStore.setState({ showConfigEditor: true, sessions: [], activeSessionId: null });
     useSettingsStore.setState({ casperCommand: '', sessionLogDir: '' });
     useEditorInbox.setState({ pending: [] });
+    fakeEditor.state.selection = null;
+    fakeEditor.state.actions.clear();
   });
 
   it('sits next to "Check them for mistakes" and says what it does', async () => {
@@ -177,6 +209,8 @@ describe('ConfigEditor: Mark mistakes with Casper', () => {
       run.reject("Casper isn't installed, or GreenCLI can't find it. Install Casper, then try again.");
     });
     expect(casperLine().textContent).toContain("Casper isn't installed");
+    // What to do is the end of the message: it wraps, never cut off.
+    expect(within(casperLine()).getByText(/Casper isn't installed/).className).not.toMatch(/truncate/);
 
     run = await markWithCasper();
     await act(async () => {
@@ -282,5 +316,59 @@ describe('ConfigEditor: Mark mistakes with Casper', () => {
     fireEvent.click(askMenuItems().find((b) => b.textContent?.startsWith('Mark mistakes with Casper')) as HTMLElement);
     await screen.findByText(/Not sent to Casper/);
     expect(mockInvoke.mock.calls.some(([cmd]) => cmd === 'ai_cli')).toBe(false);
+  });
+
+  it('closing the tab mid-run cancels it, and the late answer is ignored', async () => {
+    await openTab();
+    const run = await markWithCasper();
+    askConfirm.mockResolvedValueOnce(true);
+    const tab = screen.getByText('core-sw1').parentElement as HTMLElement;
+    fireEvent.click(within(tab).getByRole('button', { name: 'Close tab' }));
+    await waitFor(() => expect(cancels()).toEqual([run.args.runId]));
+    await act(async () => {
+      run.resolve(reply([{ line: 1, severity: 'error', message: 'Too late.' }]));
+    });
+    expect(screen.queryByRole('status', { name: 'Casper' })).toBeNull();
+    expect(screen.queryByText(/Too late/)).toBeNull();
+  });
+
+  it('closing the editor mid-run cancels it', async () => {
+    const view = await openTab();
+    const run = await markWithCasper();
+    view.unmount();
+    expect(cancels()).toEqual([run.args.runId]);
+  });
+
+  it('sends nothing when hiding the secrets would move lines', async () => {
+    vi.mocked(hideSecretsInText).mockResolvedValueOnce({ ok: true, text: CONFIG + '\nextra', hidden: 1, words: [] });
+    await openTab();
+    fireEvent.click(askMenuItems().find((b) => b.textContent?.startsWith('Mark mistakes with Casper')) as HTMLElement);
+    await screen.findByText('Not sent to Casper: hiding the secrets moved lines');
+    expect(mockInvoke.mock.calls.some(([cmd]) => cmd === 'ai_cli')).toBe(false);
+  });
+
+  it('refuses a tab too big for Casper', async () => {
+    await openTab('vlan 10\n'.repeat(10_000));
+    fireEvent.click(askMenuItems().find((b) => b.textContent?.startsWith('Mark mistakes with Casper')) as HTMLElement);
+    await screen.findByText('Too big for Casper: select fewer lines');
+    expect(mockInvoke.mock.calls.some(([cmd]) => cmd === 'ai_cli')).toBe(false);
+  });
+
+  it('sends only the selected lines, numbered as in the tab', async () => {
+    await openTab();
+    fakeEditor.state.selection = { startLineNumber: 3, startColumn: 1, endLineNumber: 4, endColumn: 5 };
+    const run = await markWithCasper();
+    const prompt = String(run.args.prompt);
+    expect(prompt).toContain('3| interface 1/1/5');
+    expect(prompt).toContain('4|     vlan access 30');
+    expect(prompt).not.toContain('name users');
+    expect(prompt).not.toContain('<secret hidden>');
+  });
+
+  it('runs from the right-click menu', async () => {
+    await openTab();
+    act(() => fakeEditor.state.actions.get('greencli-ask-casper')?.());
+    await waitFor(() => expect(runs.length).toBe(1));
+    expect(String(runs[0].args.prompt)).toContain('4|     vlan access 30');
   });
 });

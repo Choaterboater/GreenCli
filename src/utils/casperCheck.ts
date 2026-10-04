@@ -269,6 +269,8 @@ export function casperErrorStatus(message: string): CasperStatus {
 /** Casper's notes that something outside the check happened (a device or file changed, a secret, no sandbox). */
 const SAFETY_NOTE = /Casper changed |A secret showed up|Casper's sandbox was off|Casper may have changed files/;
 
+const OUT_OF_TURNS = 'Casper ran out of turns before it finished. Select fewer lines and ask again.';
+
 /** The editor's status line after a check. `left`: findings left out because their lines changed. */
 export function casperCheckStatus(
   result:
@@ -278,11 +280,11 @@ export function casperCheckStatus(
 ): CasperStatus {
   let head: string;
   if (!result.ok) {
-    head = result.turnLimit ? 'Casper ran out of turns before it finished. Ask again.' : "Casper didn't send a list of mistakes. Ask again.";
+    head = result.turnLimit ? OUT_OF_TURNS : "Casper didn't send a list of mistakes. Ask again.";
   } else if (!result.problems.length && left) {
     head = `${left} ${left === 1 ? 'finding' : 'findings'} left out: ${left === 1 ? 'its line' : 'their lines'} changed while Casper checked. Ask again.`;
   } else if (!result.problems.length) {
-    head = result.turnLimit ? 'Casper ran out of turns before it finished. Ask again.' : 'Casper found no mistakes.';
+    head = result.turnLimit ? OUT_OF_TURNS : 'Casper found no mistakes.';
   } else {
     const count = (s: ProblemSeverity) => result.problems.filter((p) => p.severity === s).length;
     const parts = (
@@ -297,6 +299,7 @@ export function casperCheckStatus(
       .map(([n, one, many]) => `${n} ${n === 1 ? one : many}`);
     head = `Casper marked ${parts.join(', ')}.`;
     if (left) head += ` ${left} more left out: ${left === 1 ? 'its line' : 'their lines'} changed while Casper checked.`;
+    if (result.turnLimit) head += ' Casper ran out of turns, so there may be more.';
   }
   if (result.warnings.length) head = `${head} ${result.warnings.join(' ')}`;
   return { head, usage: result.usage, warning: result.warnings.length > 0 };

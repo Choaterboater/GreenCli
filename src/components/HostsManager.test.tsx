@@ -13,12 +13,12 @@ vi.mock('../store/toastStore', () => ({ notify: { success: vi.fn(), error: vi.fn
 vi.mock('../utils/fileSystem', () => ({ isTauri: true, tauriSave: vi.fn() }));
 vi.mock('../utils/clipboard', () => ({ copyText: vi.fn(async () => true) }));
 
-function backend(forgetError?: string) {
+function backend(forgetError?: string, forgetNotice: string | null = null) {
   vi.mocked(invoke).mockImplementation(async (cmd: string) => {
     if (cmd === 'list_known_hosts') return [{ hostPort: 'r1:22', fingerprint: 'SHA256:aaa' }];
     if (cmd === 'remove_known_host') {
       if (forgetError) throw forgetError;
-      return undefined;
+      return forgetNotice;
     }
     return undefined;
   });
@@ -33,6 +33,15 @@ describe('Forget a host key', () => {
     fireEvent.click(await screen.findByTitle('Forget (re-trust on next connect)'));
     await waitFor(() => expect(notify.info).toHaveBeenCalledWith('Host key forgotten', expect.any(String)));
     expect(notify.warning).not.toHaveBeenCalled();
+  });
+
+  it('says where a damaged host keys file went when Forget moved it aside', async () => {
+    const notice = 'Your saved host keys file was damaged. Kept 1 host; the old file was saved as known_hosts.json.corrupt.';
+    backend(undefined, notice);
+    render(<HostsManager />);
+    fireEvent.click(await screen.findByTitle('Forget (re-trust on next connect)'));
+    await waitFor(() => expect(notify.warning).toHaveBeenCalledWith('Host keys file was damaged', notice));
+    expect(notify.info).toHaveBeenCalledWith('Host key forgotten', expect.any(String));
   });
 
   it('shows the error, and no success, when the save failed', async () => {
@@ -109,7 +118,12 @@ describe('Export lab hosts for Casper', () => {
     vi.mocked(tauriSave).mockResolvedValue('/Users/me/.casper/casper-lab.json');
     render(<HostsManager />);
     fireEvent.click(exportButton());
-    await waitFor(() => expect(notify.error).toHaveBeenCalledWith('Not saved', expect.any(String)));
+    await waitFor(() =>
+      expect(notify.error).toHaveBeenCalledWith(
+        'Not saved',
+        "GreenCLI does not write other apps' own settings files. Pick another place, for example your Documents folder."
+      )
+    );
     expect(writes()).toEqual([]);
   });
 

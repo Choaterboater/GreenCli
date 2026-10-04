@@ -152,6 +152,20 @@ fn connect_warning(
     (!notes.is_empty()).then(|| notes.join(" "))
 }
 
+/// Add a warning line to the connect's one slot. On a ProxyJump connect the
+/// jump host and the target share the slot, so a second line is added after
+/// the first instead of replacing it (the jump host's line may name the
+/// backup file).
+fn add_warning(slot: &std::sync::Mutex<Option<String>>, w: String) {
+    if let Ok(mut g) = slot.lock() {
+        *g = Some(match g.take() {
+            Some(prev) if prev.contains(&w) => prev,
+            Some(prev) => format!("{prev} {w}"),
+            None => w,
+        });
+    }
+}
+
 impl Handler for ClientHandler {
     type Error = russh::Error;
 
@@ -178,9 +192,7 @@ impl Handler for ClientHandler {
                             connect_warning(&verified, &self.host_port, &key_type, &fingerprint)
                         {
                             log::warn!("{}", w);
-                            if let Ok(mut g) = self.warning.lock() {
-                                *g = Some(w);
-                            }
+                            add_warning(&self.warning, w);
                         }
                         Ok(true)
                     }
@@ -873,6 +885,18 @@ mod tests {
     use tokio::sync::oneshot;
     use tokio::task::JoinHandle;
     use tokio::time::timeout;
+
+    #[test]
+    fn the_jump_host_and_the_target_both_keep_their_warning() {
+        let slot = std::sync::Mutex::new(None);
+        add_warning(&slot, "Jump: the old file was saved as known_hosts.json.corrupt.".into());
+        add_warning(&slot, "Target: new key algorithm.".into());
+        add_warning(&slot, "Target: new key algorithm.".into());
+        assert_eq!(
+            slot.lock().unwrap().as_deref(),
+            Some("Jump: the old file was saved as known_hosts.json.corrupt. Target: new key algorithm.")
+        );
+    }
 
     #[test]
     fn connect_warning_carries_the_store_notice() {
