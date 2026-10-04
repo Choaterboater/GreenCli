@@ -119,6 +119,59 @@ fn normalize_key_type(key_type: &str) -> &str {
     }
 }
 
+/// The name a pin is stored under. Like OpenSSH, a host name is matched
+/// without regard to letter case (and a trailing dot is dropped), so
+/// `Router1` and `router1.` share one pin. IP addresses are kept as typed.
+fn normalize_host_port(host_port: &str) -> String {
+    let (host, port) = match host_port.rsplit_once(':') {
+        Some((h, p)) if !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()) => (h, Some(p)),
+        _ => (host_port, None),
+    };
+    let bare = host.trim_start_matches('[').trim_end_matches(']');
+    if bare.parse::<std::net::IpAddr>().is_ok() {
+        return host_port.to_string();
+    }
+    let host = host.strip_suffix('.').unwrap_or(host).to_ascii_lowercase();
+    match port {
+        Some(p) => format!("{host}:{p}"),
+        None => host,
+    }
+}
+
+/// Every stored name that is the same host as `key` (case variants written
+/// before names were lowercased), with `key` itself first.
+fn variants_of(map: &HashMap<String, HostKeys>, key: &str) -> Vec<String> {
+    let mut v: Vec<String> = map
+        .keys()
+        .filter(|k| normalize_host_port(k) == key)
+        .cloned()
+        .collect();
+    v.sort_by(|a, b| {
+        (b.as_str() == key)
+            .cmp(&(a.as_str() == key))
+            .then_with(|| a.cmp(b))
+    });
+    v
+}
+
+/// Move every case variant of `key` into the one `key` entry. A key type
+/// already under `key` wins; otherwise the first variant's is kept.
+fn fold<'a>(
+    map: &'a mut HashMap<String, HostKeys>,
+    key: &str,
+    variants: &[String],
+) -> &'a mut HostKeys {
+    let mut merged = map.remove(key).unwrap_or_default();
+    for v in variants.iter().filter(|v| v.as_str() != key) {
+        if let Some(keys) = map.remove(v) {
+            for (alg, fp) in keys {
+                merged.entry(alg).or_insert(fp);
+            }
+        }
+    }
+    map.entry(key.to_string()).or_insert(merged)
+}
+
 impl KnownHosts {
     pub fn new(path: PathBuf) -> Self {
         Self { path }
@@ -251,7 +304,12 @@ impl KnownHosts {
     pub fn remove(&self, host_port: &str) -> Result<(), String> {
         let _guard = WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (mut map, _notice, can_save) = self.load_for_write();
-        if map.remove(host_port).is_some() && can_save {
+        let key = normalize_host_port(host_port);
+        let mut removed = false;
+        for v in variants_of(&map, &key) {
+            removed |= map.remove(&v).is_some();
+        }
+        if removed && can_save {
             self.save(&map).map_err(|e| {
                 log::warn!("Couldn't save host keys after forgetting {host_port}: {e}");
                 format!("Couldn't forget {host_port}: the host keys file couldn't be saved.")
@@ -306,16 +364,20 @@ impl KnownHosts {
         };
 
         // Snapshot the read-only decisions about this host's current record so the
-        // borrow ends before we mutate `map`.
-        let (known_host, matches_any, same_type_stored, legacy_matches) = match map.get(host_port) {
-            Some(keys) => (
-                true,
-                keys.values().any(|fp| fp == fingerprint),
-                keys.get(key_type).cloned(),
-                keys.get(LEGACY_SLOT).map(String::as_str) == Some(fingerprint),
-            ),
-            None => (false, false, None, false),
-        };
+        // borrow ends before we mutate `map`. Case variants of the name are the
+        // same host.
+        let key = normalize_host_port(host_port);
+        let variants = variants_of(&map, &key);
+        let known_host = !variants.is_empty();
+        let matches_any = variants
+            .iter()
+            .any(|v| map[v].values().any(|fp| fp == fingerprint));
+        let already_filed = variants.len() == 1
+            && variants[0] == key
+            && map[&key].get(key_type).map(String::as_str) == Some(fingerprint);
+        let same_type_stored = variants
+            .iter()
+            .find_map(|v| map[v].get(key_type).map(|fp| (v.clone(), fp.clone())));
 
         // Already trusted under some algorithm — covers extra key types, RSA
         // signature-hash variance, and migrated legacy records → accept.
@@ -323,9 +385,9 @@ impl KnownHosts {
             // File it under its real algorithm if it isn't already, upgrading a
             // resolved legacy placeholder so a later same-type change stays
             // detectable. Never drop an unrelated stored key.
-            if same_type_stored.as_deref() != Some(fingerprint) {
-                let keys = map.entry(host_port.to_string()).or_default();
-                if legacy_matches {
+            if !already_filed {
+                let keys = fold(&mut map, &key, &variants);
+                if keys.get(LEGACY_SLOT).map(String::as_str) == Some(fingerprint) {
                     keys.remove(LEGACY_SLOT);
                 }
                 keys.insert(key_type.to_string(), fingerprint.to_string());
@@ -336,11 +398,11 @@ impl KnownHosts {
 
         // Same algorithm on record but a different fingerprint (matches_any was
         // false, so it cannot equal this one) → genuine key change / MITM.
-        if let Some(stored) = same_type_stored {
+        if let Some((name, stored)) = same_type_stored {
             let mut reason = format!(
-                "Host key mismatch for {host_port} ({key_type}): stored {stored}, got \
-                 {fingerprint}. Possible MITM — remove the entry from known_hosts.json to \
-                 re-trust."
+                "Host key mismatch for {name} ({key_type}): stored {stored}, got \
+                 {fingerprint}. Possible MITM. If the device was replaced or re-keyed, \
+                 click Forget next to {name} in Settings > Host keys and connect again."
             );
             if let Some(n) = notice.borrow().as_ref() {
                 reason.push(' ');
@@ -350,9 +412,7 @@ impl KnownHosts {
         }
 
         // Unknown host, or a new key algorithm for a known host → record (TOFU).
-        map.entry(host_port.to_string())
-            .or_default()
-            .insert(key_type.to_string(), fingerprint.to_string());
+        fold(&mut map, &key, &variants).insert(key_type.to_string(), fingerprint.to_string());
         save(&map);
         // A NEW algorithm on an already-known host is accepted but worth
         // surfacing: an unexpected algorithm can indicate a downgrade attempt.
@@ -597,6 +657,127 @@ mod tests {
         let r = KnownHosts::new(dir.store()).remove("r1:22");
         unlock_dir(&dir.0);
         assert!(r.is_err());
+    }
+
+    #[test]
+    fn host_names_match_without_regard_to_case_or_a_trailing_dot() {
+        let dir = TempDir::new("case");
+        verify_or_record(&dir.store(), "Router1:22", "ssh-ed25519", "SHA256:aaa").unwrap();
+        for name in ["router1:22", "ROUTER1:22", "router1.:22"] {
+            let v = verify_or_record(&dir.store(), name, "ssh-ed25519", "SHA256:aaa").unwrap();
+            assert_eq!(v.outcome, KeyVerifyResult::Trusted, "{name}");
+        }
+        let err =
+            verify_or_record(&dir.store(), "ROUTER1:22", "ssh-ed25519", "SHA256:evil").unwrap_err();
+        assert!(err.contains("mismatch"), "{err}");
+        // One pin, stored under the lowercase name.
+        let list = KnownHosts::new(dir.store()).list();
+        assert_eq!(
+            list,
+            vec![(
+                "router1:22".into(),
+                "ssh-ed25519".into(),
+                "SHA256:aaa".into()
+            )]
+        );
+    }
+
+    #[test]
+    fn ip_addresses_are_kept_as_typed() {
+        let dir = TempDir::new("ip");
+        verify_or_record(&dir.store(), "FE80::1:22", "ssh-ed25519", "SHA256:aaa").unwrap();
+        verify_or_record(&dir.store(), "10.0.0.1:22", "ssh-ed25519", "SHA256:bbb").unwrap();
+        let hosts: Vec<String> = KnownHosts::new(dir.store())
+            .list()
+            .into_iter()
+            .map(|r| r.0)
+            .collect();
+        assert_eq!(
+            hosts,
+            vec!["10.0.0.1:22".to_string(), "FE80::1:22".to_string()]
+        );
+        assert_eq!(normalize_host_port("FE80::1:22"), "FE80::1:22");
+        assert_eq!(normalize_host_port("[FE80::1]:22"), "[FE80::1]:22");
+        assert_eq!(
+            normalize_host_port("Core-SW.Example.COM.:2222"),
+            "core-sw.example.com:2222"
+        );
+    }
+
+    #[test]
+    fn an_old_mixed_case_pin_is_still_honoured() {
+        let dir = TempDir::new("oldcase");
+        // Written by an earlier version, before names were lowercased.
+        fs::write(
+            dir.store(),
+            br#"{"Router1:22":{"ssh-ed25519":"SHA256:aaa"}}"#,
+        )
+        .unwrap();
+        let err =
+            verify_or_record(&dir.store(), "router1:22", "ssh-ed25519", "SHA256:evil").unwrap_err();
+        assert!(err.contains("mismatch"), "{err}");
+        // The normal key-changed message names the pin as listed and points
+        // to the Forget button, never to editing a file.
+        assert!(err.contains("Router1:22"), "{err}");
+        assert!(err.contains("Forget"), "{err}");
+        assert!(err.contains("Settings > Host keys"), "{err}");
+        assert!(!err.contains("known_hosts.json"), "{err}");
+        // The right key is trusted, and the pin moves to the lowercase name.
+        let v = verify_or_record(&dir.store(), "router1:22", "ssh-ed25519", "SHA256:aaa").unwrap();
+        assert_eq!(v.outcome, KeyVerifyResult::Trusted);
+        let list = KnownHosts::new(dir.store()).list();
+        assert_eq!(
+            list,
+            vec![(
+                "router1:22".into(),
+                "ssh-ed25519".into(),
+                "SHA256:aaa".into()
+            )]
+        );
+    }
+
+    #[test]
+    fn a_new_key_type_folds_old_case_variants_into_one_pin() {
+        let dir = TempDir::new("fold");
+        fs::write(
+            dir.store(),
+            br#"{"Router1:22":{"ssh-ed25519":"SHA256:aaa"}}"#,
+        )
+        .unwrap();
+        let v = verify_or_record(&dir.store(), "router1:22", "ssh-rsa", "SHA256:rsa").unwrap();
+        assert_eq!(v.outcome, KeyVerifyResult::NewAlgorithm);
+        let list = KnownHosts::new(dir.store()).list();
+        assert_eq!(
+            list,
+            vec![
+                (
+                    "router1:22".into(),
+                    "ssh-ed25519".into(),
+                    "SHA256:aaa".into()
+                ),
+                ("router1:22".into(), "ssh-rsa".into(), "SHA256:rsa".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn forget_removes_every_case_variant() {
+        let dir = TempDir::new("forgetcase");
+        fs::write(
+            dir.store(),
+            br#"{"Router1:22":{"ssh-ed25519":"SHA256:aaa"},"router1:22":{"ssh-rsa":"SHA256:b"},"other:22":{"ssh-rsa":"SHA256:c"}}"#,
+        )
+        .unwrap();
+        KnownHosts::new(dir.store()).remove("Router1:22").unwrap();
+        let hosts: Vec<String> = KnownHosts::new(dir.store())
+            .list()
+            .into_iter()
+            .map(|r| r.0)
+            .collect();
+        assert_eq!(hosts, vec!["other:22".to_string()]);
+        // Re-trusted on next connect.
+        let v = verify_or_record(&dir.store(), "router1:22", "ssh-ed25519", "SHA256:new").unwrap();
+        assert_eq!(v.outcome, KeyVerifyResult::FirstSeen);
     }
 
     #[cfg(unix)]
