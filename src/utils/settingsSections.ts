@@ -76,7 +76,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     title: 'Host Import & SSH Host Keys',
     keywords: [
       'known hosts', 'host keys', 'trusted', 'fingerprint', 'forget', 'import hosts', 'csv', 'securecrt',
-      'ssh config', 'central', 'mist', 'inventory',
+      'ssh config', 'central', 'mist', 'inventory', 'lab', 'casper', 'export lab',
     ],
   },
   {
@@ -146,6 +146,8 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
       'run plain show commands',
       'show commands',
       'export',
+      'import',
+      'vs code',
       '.mcp.json',
       'casper',
       'claude code',

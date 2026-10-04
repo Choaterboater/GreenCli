@@ -3,6 +3,9 @@ pub mod cancel;
 pub mod client;
 pub mod env;
 #[cfg(test)]
+mod import_tests;
+pub mod import;
+#[cfg(test)]
 mod greencli_mcp_tests;
 pub mod labels;
 pub mod policy;

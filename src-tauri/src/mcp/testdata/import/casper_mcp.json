@@ -1,0 +1,22 @@
+{
+  "mcpServers": {
+    "central": {
+      "command": "uvx",
+      "args": ["centralmcp"],
+      "env": { "CENTRAL_CLIENT_SECRET": "fake-casper-secret-0001" }
+    },
+    "lab-netbox": {
+      "type": "stdio",
+      "command": "netbox-mcp",
+      "args": [],
+      "cwd": "~/servers/netbox",
+      "disabled": true,
+      "connectTimeout": 30000
+    },
+    "project-tool": {
+      "command": "node",
+      "args": ["server.js"],
+      "cwd": "${PROJECT_ROOT}"
+    }
+  }
+}

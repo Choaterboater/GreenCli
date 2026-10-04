@@ -21,6 +21,8 @@ pub enum PresetId {
     CentralMcpServer,
     JunosMcpServer,
     MistHosted,
+    GreencliMcp,
+    MistMcp,
     Netbox,
     NetmikoMcp,
     OxidizedLibrenms,
@@ -29,12 +31,14 @@ pub enum PresetId {
 }
 
 /// Casper's table order: the first match wins.
-const ORDER: [PresetId; 10] = [
+const ORDER: [PresetId; 12] = [
     PresetId::HpeNetworkingMcp,
     PresetId::Centralmcp,
     PresetId::CentralMcpServer,
     PresetId::JunosMcpServer,
     PresetId::MistHosted,
+    PresetId::GreencliMcp,
+    PresetId::MistMcp,
     PresetId::Netbox,
     PresetId::NetmikoMcp,
     PresetId::OxidizedLibrenms,
@@ -50,6 +54,8 @@ pub fn preset_label(id: PresetId) -> &'static str {
         PresetId::CentralMcpServer => "Central",
         PresetId::JunosMcpServer => "Junos",
         PresetId::MistHosted => "Mist",
+        PresetId::GreencliMcp => "GreenCLI",
+        PresetId::MistMcp => "Mist",
         PresetId::Netbox => "NetBox",
         PresetId::NetmikoMcp => "Netmiko",
         PresetId::OxidizedLibrenms => "Oxidized/LibreNMS",
@@ -169,6 +175,17 @@ fn matches_definition(id: PresetId, f: &Facts) -> bool {
             .host
             .as_deref()
             .is_some_and(|h| h == "mist.com" || h.ends_with(".mist.com")),
+        // GreenCLI's own server, by the program's file name from any folder.
+        PresetId::GreencliMcp => f
+            .words
+            .first()
+            .and_then(|command| command.rsplit(['/', '\\']).next())
+            .is_some_and(is_greencli_mcp_file),
+        // A local Mist API server (mist_mcp) with a MIST_READ_ONLY switch.
+        PresetId::MistMcp => {
+            f.word(|w| w.contains("mist-mcp") || w.contains("mist_mcp"))
+                || f.env_keys.iter().any(|k| k == "MIST_READ_ONLY")
+        }
         PresetId::Netbox => {
             f.word_contains("netbox") || f.env_starts("NETBOX_") || f.host_contains("netbox")
         }
@@ -185,6 +202,15 @@ fn matches_definition(id: PresetId, f: &Facts) -> bool {
         PresetId::Grafana => f.word(|w| w.contains("mcp-grafana") || w.starts_with("mcp/grafana")),
         PresetId::ClearpassMcp => f.word_contains("clearpass") || f.env_starts("CLEARPASS_"),
     }
+}
+
+/// greencli-mcp or greencli-mcp.exe (any case): GreenCLI's own read-only
+/// server. Casper presets.ts matches the same file names.
+pub fn is_greencli_mcp_file(file_name: &str) -> bool {
+    matches!(
+        file_name.to_lowercase().as_str(),
+        "greencli-mcp" | "greencli-mcp.exe"
+    )
 }
 
 fn tools_match(id: PresetId, tool_names: &[&str]) -> bool {
@@ -273,6 +299,10 @@ pub fn pins(id: PresetId) -> Option<Pins> {
             env: &[("CLEARPASS_READ_ONLY", "true")],
             append_args: &[],
         }),
+        PresetId::MistMcp => Some(Pins {
+            env: &[("MIST_READ_ONLY", "1")],
+            append_args: &[],
+        }),
         _ => None,
     }
 }
@@ -288,6 +318,7 @@ pub fn no_pin_reason(id: PresetId) -> Option<&'static str> {
         | PresetId::OxidizedLibrenms => Some("it has no read-only setting"),
         PresetId::NetmikoMcp => Some("GreenCLI can't set its allowlist"),
         PresetId::MistHosted => Some(CANT_PIN_REMOTE),
+        PresetId::GreencliMcp => Some("it has no read-only setting; GreenCLI ships no write tools"),
         _ => None,
     }
 }
@@ -683,6 +714,7 @@ mod tests {
             enabled: true,
             writes: None,
             show_opt_in: false,
+            wait_for_connect: false,
         }
     }
 
@@ -816,6 +848,58 @@ mod tests {
         );
         assert_eq!(serde_json::to_value(MatchBy::Tools).unwrap(), "tools");
         assert_eq!(preset_label(PresetId::JunosMcpServer), "Junos");
+    }
+
+    #[test]
+    fn mist_mcp_and_greencli_mcp_are_known() {
+        // Casper's order: mist-hosted, greencli-mcp, mist-mcp, then netbox.
+        let mist = stdio("uvx", &["mist-mcp"], &[]);
+        assert_eq!(id_of(&mist), Some(PresetId::MistMcp));
+        assert_eq!(
+            id_of(&stdio("python", &["/opt/mist_mcp/server.py"], &[])),
+            Some(PresetId::MistMcp)
+        );
+        assert_eq!(
+            id_of(&stdio("uv", &["run", "server.py"], &["MIST_READ_ONLY"])),
+            Some(PresetId::MistMcp)
+        );
+        let plan = plan_pins(&mist, PresetId::MistMcp);
+        let (_, env, shown) = pinned(&plan);
+        assert_eq!(env, &vec![("MIST_READ_ONLY".to_string(), "1".to_string())]);
+        assert_eq!(shown, &vec!["MIST_READ_ONLY=1".to_string()]);
+        assert_eq!(preset_label(PresetId::MistMcp), "Mist");
+
+        let own = stdio(
+            "/Applications/GreenCLI.app/Contents/MacOS/greencli-mcp",
+            &[],
+            &[],
+        );
+        assert_eq!(id_of(&own), Some(PresetId::GreencliMcp));
+        assert_eq!(
+            id_of(&stdio(
+                "C:\\Program Files\\GreenCLI\\GREENCLI-MCP.EXE",
+                &[],
+                &[]
+            )),
+            Some(PresetId::GreencliMcp)
+        );
+        assert_eq!(id_of(&stdio("greencli-mcp-old", &[], &[])), None);
+        assert_eq!(preset_label(PresetId::GreencliMcp), "GreenCLI");
+        assert_eq!(
+            reason(&plan_pins(&own, PresetId::GreencliMcp)),
+            "it has no read-only setting; GreenCLI ships no write tools"
+        );
+        assert_eq!(serde_json::to_value(PresetId::MistMcp).unwrap(), "mist-mcp");
+        assert_eq!(
+            serde_json::to_value(PresetId::GreencliMcp).unwrap(),
+            "greencli-mcp"
+        );
+        // Every id is in the table once.
+        assert_eq!(ORDER.len(), 12);
+        for id in ORDER {
+            assert_eq!(ORDER.iter().filter(|x| **x == id).count(), 1);
+            assert!(!preset_label(id).is_empty());
+        }
     }
 
     // ─── pins ───

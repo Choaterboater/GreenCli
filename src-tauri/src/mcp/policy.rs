@@ -205,6 +205,7 @@ mod tests {
             enabled: true,
             writes,
             show_opt_in: false,
+            wait_for_connect: false,
         }
     }
 

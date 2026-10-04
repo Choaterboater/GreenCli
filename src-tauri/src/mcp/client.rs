@@ -180,6 +180,15 @@ pub struct McpServerDef {
         skip_serializing_if = "std::ops::Not::not"
     )]
     pub show_opt_in: bool,
+    /// Imported and not connected yet: it waits for the person's first
+    /// Connect, which then turns on Connect at start (see
+    /// `McpConfigStore::first_connect_done`). A save from the form clears it.
+    #[serde(
+        default,
+        deserialize_with = "lenient_bool",
+        skip_serializing_if = "std::ops::Not::not"
+    )]
+    pub wait_for_connect: bool,
 }
 
 impl McpServerDef {
@@ -193,7 +202,7 @@ impl McpServerDef {
 /// saves only those, so a field left over from the other transport in an
 /// older save must not turn writes off. Env and headers are left out, so a
 /// rotated token keeps the server's settings.
-fn same_program(a: &McpServerDef, b: &McpServerDef) -> bool {
+pub(crate) fn same_program(a: &McpServerDef, b: &McpServerDef) -> bool {
     fn trimmed(v: &Option<String>) -> &str {
         v.as_deref().map(str::trim).unwrap_or("")
     }
@@ -205,6 +214,18 @@ fn same_program(a: &McpServerDef, b: &McpServerDef) -> bool {
                     && trimmed(&a.cwd) == trimmed(&b.cwd)
             }
             McpTransport::Http => trimmed(&a.url) == trimmed(&b.url),
+        }
+}
+
+/// For import: the same program with the same env (stdio) or headers (http).
+/// Two tenants of one program (prod and lab Central, two Mist orgs) differ
+/// only in these values and are two servers. Values are compared here and
+/// never leave Rust.
+pub(crate) fn same_setup(a: &McpServerDef, b: &McpServerDef) -> bool {
+    same_program(a, b)
+        && match a.transport {
+            McpTransport::Stdio => a.env == b.env,
+            McpTransport::Http => a.headers == b.headers,
         }
 }
 
@@ -311,6 +332,13 @@ pub(crate) fn dedupe_tools(server: &str, tools: Vec<McpToolInfo>) -> Vec<McpTool
 
 // ─── On-disk config store ───
 
+/// What `import_many` did: the names added, and (name, reason) for each skipped.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct ImportOutcome {
+    pub added: Vec<String>,
+    pub skipped: Vec<(String, String)>,
+}
+
 pub struct McpConfigStore {
     path: PathBuf,
 }
@@ -366,6 +394,8 @@ impl McpConfigStore {
     /// only while it runs the same program (otherwise writes go off and the
     /// opt-in is cleared), and a new server starts with both off.
     pub fn upsert(&self, mut def: McpServerDef) -> Result<(), AppError> {
+        // A save from the form is the person's own choice of Connect at start.
+        def.wait_for_connect = false;
         let mut all = self.load_checked()?;
         if let Some(existing) = all.iter_mut().find(|d| d.name == def.name) {
             let same = same_program(existing, &def);
@@ -384,6 +414,40 @@ impl McpConfigStore {
         self.save(&all)
     }
 
+    /// Add imported servers in one save: each comes in not started at launch
+    /// (enabled false, waiting for the first Connect) with writes off and no
+    /// opt-in. Names and setups are checked again here, since the list may
+    /// have changed since the scan.
+    /// Callers hold the MCP manager lock, like every other save.
+    pub fn import_many(&self, defs: Vec<McpServerDef>) -> Result<ImportOutcome, AppError> {
+        let mut all = self.load_checked()?;
+        let mut outcome = ImportOutcome::default();
+        for mut def in defs {
+            if all.iter().any(|d| d.name == def.name) {
+                outcome.skipped.push((
+                    def.name,
+                    "a server with this name is already in GreenCLI".into(),
+                ));
+                continue;
+            }
+            if let Some(same) = all.iter().find(|d| same_setup(d, &def)) {
+                let reason = format!("already in GreenCLI as {}", same.name);
+                outcome.skipped.push((def.name, reason));
+                continue;
+            }
+            def.enabled = false;
+            def.wait_for_connect = true;
+            def.writes = Some(McpWrites::Off);
+            def.show_opt_in = false;
+            outcome.added.push(def.name.clone());
+            all.push(def);
+        }
+        if !outcome.added.is_empty() {
+            self.save(&all)?;
+        }
+        Ok(outcome)
+    }
+
     /// Change one saved server in place and save. Returns the updated definition.
     pub fn update(
         &self,
@@ -399,6 +463,20 @@ impl McpConfigStore {
         let updated = def.clone();
         self.save(&all)?;
         Ok(updated)
+    }
+
+    /// After a Connect worked: an imported server that was waiting for its
+    /// first Connect now connects at start too, like one added by hand.
+    /// Anything else is left alone. True when it changed.
+    pub fn first_connect_done(&self, name: &str) -> Result<bool, AppError> {
+        let mut all = self.load_checked()?;
+        let Some(def) = all.iter_mut().find(|d| d.name == name && d.wait_for_connect) else {
+            return Ok(false);
+        };
+        def.wait_for_connect = false;
+        def.enabled = true;
+        self.save(&all)?;
+        Ok(true)
     }
 
     pub fn remove(&self, name: &str) -> Result<(), AppError> {
@@ -2058,6 +2136,11 @@ impl McpManager {
             .collect()
     }
 
+    /// See McpConfigStore::import_many. Call it with the manager lock held.
+    pub fn import_many(&self, defs: Vec<McpServerDef>) -> Result<ImportOutcome, AppError> {
+        self.store.import_many(defs)
+    }
+
     pub fn save_config(&self, def: McpServerDef) -> Result<(), AppError> {
         self.store.upsert(def)
     }
@@ -2428,6 +2511,9 @@ pub async fn connect_server(
             Some(why) => Err((why, client)),
             None => {
                 let old = mgr.install_client(name.to_string(), client);
+                if let Err(e) = mgr.store.first_connect_done(name) {
+                    log::warn!("MCP: could not turn on Connect at start for '{}': {}", name, e);
+                }
                 Ok((old, mgr.visible_tool_count(name)))
             }
         }
@@ -2560,6 +2646,7 @@ pub(crate) mod tests {
             enabled: true,
             writes: None,
             show_opt_in: false,
+            wait_for_connect: false,
         }
     }
 
@@ -2942,6 +3029,129 @@ while (<STDIN>) {
     }
 
     // ─── config store ───
+
+    #[test]
+    fn import_many_adds_servers_off_and_keeps_the_rest() {
+        let dir = temp_dir();
+        let store = McpConfigStore::new(dir.clone());
+        store.upsert(def("kept", "uvx", &["kept"])).unwrap();
+        // Saved after the scan: a clash by name and one by program.
+        store.upsert(def("late", "uvx", &["late"])).unwrap();
+        let mut on = def("new", "uvx", &["new"]);
+        on.writes = Some(McpWrites::On);
+        on.show_opt_in = true;
+        let outcome = store
+            .import_many(vec![
+                on,
+                def("late", "other", &[]),
+                def("late-copy", "uvx", &["late"]),
+            ])
+            .unwrap();
+        assert_eq!(outcome.added, vec!["new".to_string()]);
+        let reasons: Vec<(&str, &str)> = outcome
+            .skipped
+            .iter()
+            .map(|(n, r)| (n.as_str(), r.as_str()))
+            .collect();
+        assert_eq!(
+            reasons,
+            vec![
+                ("late", "a server with this name is already in GreenCLI"),
+                ("late-copy", "already in GreenCLI as late"),
+            ]
+        );
+        let all = store.load();
+        assert_eq!(
+            all.iter().map(|d| d.name.as_str()).collect::<Vec<_>>(),
+            vec!["kept", "late", "new"]
+        );
+        let added = &all[2];
+        assert!(!added.enabled);
+        assert_eq!(added.writes, Some(McpWrites::Off));
+        assert!(!added.show_opt_in);
+        // Two with the same name in one call: only the first.
+        let outcome = store
+            .import_many(vec![def("twin", "a", &[]), def("twin", "b", &[])])
+            .unwrap();
+        assert_eq!(outcome.added, vec!["twin".to_string()]);
+        assert_eq!(outcome.skipped.len(), 1);
+    }
+
+    #[test]
+    fn import_many_keeps_a_second_tenant_of_the_same_program() {
+        let store = McpConfigStore::new(temp_dir());
+        let mut prod = def("central-prod", "uvx", &["central-mcp-server"]);
+        prod.env.insert("CLIENT_ID".into(), "prod-id".into());
+        store.upsert(prod.clone()).unwrap();
+        let mut lab = def("central-lab", "uvx", &["central-mcp-server"]);
+        lab.env.insert("CLIENT_ID".into(), "lab-id".into());
+        // The same program and the same values is the same server.
+        let mut copy = prod.clone();
+        copy.name = "central-copy".into();
+        let outcome = store.import_many(vec![lab, copy]).unwrap();
+        assert_eq!(outcome.added, vec!["central-lab".to_string()]);
+        assert_eq!(
+            outcome.skipped,
+            vec![("central-copy".to_string(), "already in GreenCLI as central-prod".to_string())]
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_first_connect_of_an_imported_server_turns_on_connect_at_start() {
+        use crate::secret_store::mem::MemBackend;
+        let mem = MemBackend::new();
+        let mgr = mem_manager(&mem);
+        mgr.import_many(vec![fake_mcp_server_def("imported")]).unwrap();
+        let saved = &mgr.list_configs()[0];
+        assert!(!saved.enabled);
+        assert!(saved.wait_for_connect);
+        let manager = Mutex::new(mgr);
+        let none = || None;
+        connect_server(&manager, "imported", &none).await.unwrap();
+        let saved = manager.lock().await.list_configs()[0].clone();
+        assert!(saved.enabled, "the first Connect is the go-ahead");
+        assert!(!saved.wait_for_connect);
+        // A server the person turned off with Edit stays off after Connect.
+        manager
+            .lock()
+            .await
+            .save_config({
+                let mut d = saved.clone();
+                d.enabled = false;
+                d
+            })
+            .unwrap();
+        connect_server(&manager, "imported", &none).await.unwrap();
+        assert!(!manager.lock().await.list_configs()[0].enabled);
+        let client = manager.lock().await.take_client("imported");
+        if let Some(c) = client {
+            c.shutdown().await;
+        }
+    }
+
+    #[test]
+    fn a_save_from_the_form_ends_the_wait_for_connect() {
+        let store = McpConfigStore::new(temp_dir());
+        store.import_many(vec![def("imported", "uvx", &["x"])]).unwrap();
+        let mut edited = store.load()[0].clone();
+        assert!(edited.wait_for_connect);
+        edited.wait_for_connect = true;
+        store.upsert(edited).unwrap();
+        assert!(!store.load()[0].wait_for_connect);
+    }
+
+    #[test]
+    fn import_many_refuses_an_unreadable_file() {
+        let dir = temp_dir();
+        std::fs::write(dir.join("mcp_servers.json"), "{ broken").unwrap();
+        let store = McpConfigStore::new(dir.clone());
+        assert!(store.import_many(vec![def("new", "uvx", &[])]).is_err());
+        assert_eq!(
+            std::fs::read_to_string(dir.join("mcp_servers.json")).unwrap(),
+            "{ broken"
+        );
+    }
 
     #[test]
     fn upsert_keeps_the_opt_in_for_the_same_program() {

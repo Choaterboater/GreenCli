@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": { "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}", "LOG_LEVEL": "${LOG_LEVEL:-info}" }
+    },
+    "renamed-own": { "command": "/opt/greencli/GreenCLI-MCP.exe" },
+    "bad name!": { "command": "x" }
+  }
+}

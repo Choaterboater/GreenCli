@@ -21,6 +21,8 @@ export type McpPresetId =
   | 'central-mcp-server'
   | 'junos-mcp-server'
   | 'mist-hosted'
+  | 'greencli-mcp'
+  | 'mist-mcp'
   | 'netbox'
   | 'netmiko-mcp'
   | 'oxidized-librenms'
@@ -67,6 +69,8 @@ export interface McpServerDef {
   writes?: McpWrites;
   /** Junos only: plain show commands run without asking. Set by mcp_set_show_opt_in only. */
   showOptIn?: boolean;
+  /** Imported and not connected yet; the first Connect turns on Connect at start. Set by Rust only. */
+  waitForConnect?: boolean;
 }
 
 /** [A3] */
@@ -103,4 +107,35 @@ export interface McpStatus {
   access?: McpAccess;
   /** [A3] */
   restartNeeded?: boolean;
+}
+
+/** One server mcp_import_scan found (Rust mcp/import.rs PreviewItem). No values. */
+export interface McpImportItem {
+  id: string;
+  name: string;
+  /** Where it came from: "Casper", "Claude Code", "~/.mcp.json", "VS Code". */
+  source: string;
+  transport: 'stdio' | 'http';
+  /** Product name when GreenCLI knows the server. */
+  preset: string | null;
+  /** What Connect adds while writes are off (confirmed is always false here). */
+  pins: McpPins;
+  /** ${NAME}s that came in empty, to fill in with Edit. */
+  needs: string[];
+  notes: string[];
+  /** The program and its args (secrets hidden), or the web address's host. */
+  runs: string;
+}
+
+export interface McpImportPreview {
+  token: string;
+  items: McpImportItem[];
+  skipped: { name: string; source: string; reason: string }[];
+  problems: string[];
+}
+
+/** What mcp_import_apply did: names added, and [name, reason] for each skipped. */
+export interface McpImportOutcome {
+  added: string[];
+  skipped: [string, string][];
 }

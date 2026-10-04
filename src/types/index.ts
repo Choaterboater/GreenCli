@@ -242,6 +242,8 @@ export interface TerminalSettings {
   sessionAgents: Record<string, string>;
   /** Shared logins (names + usernames only; passwords live in the vault). */
   loginProfiles: LoginProfile[];
+  /** The one-time offer to import MCP servers from Casper, Claude Code and VS Code was shown. */
+  mcpImportOffered: boolean;
 }
 
 export interface CentralAccount {
@@ -413,6 +415,7 @@ export const DEFAULT_SETTINGS: TerminalSettings = {
   localCliCommand: 'claude -p',
   casperCommand: 'casper',
   casperWorkFolder: '',
+  mcpImportOffered: false,
   aiUseTerminal: true,
   aiUseCxRest: false,
   aiUseMcp: false,
