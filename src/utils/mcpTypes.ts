@@ -21,6 +21,8 @@ export type McpPresetId =
   | 'central-mcp-server'
   | 'junos-mcp-server'
   | 'mist-hosted'
+  | 'greencli-mcp'
+  | 'mist-mcp'
   | 'netbox'
   | 'netmiko-mcp'
   | 'oxidized-librenms'
