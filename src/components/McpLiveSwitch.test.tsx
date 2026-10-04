@@ -4,6 +4,7 @@ import { invoke } from '@tauri-apps/api/core';
 import McpLiveSwitch, { readLiveStatus, type LiveStatus } from './McpLiveSwitch';
 import { notify } from '../store/toastStore';
 import { useMcpApprovalStore } from '../store/mcpApprovalStore';
+import { liveRequestsStopped, resumeLiveRequests } from '../utils/mcpLive';
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 vi.mock('../utils/fileSystem', () => ({ isTauri: true }));
@@ -66,6 +67,35 @@ describe('McpLiveSwitch', () => {
     fireEvent.click(box);
     await waitFor(() => expect(box).not.toBeChecked());
     expect(useMcpApprovalStore.getState().devices).toEqual({});
+  });
+
+  it('turning it off refuses requests from then on, and turning it back on takes them again', async () => {
+    resumeLiveRequests();
+    backend(status());
+    render(<McpLiveSwitch />);
+    const box = await screen.findByRole('checkbox', { name: LABEL });
+    fireEvent.click(box);
+    await waitFor(() => expect(box).not.toBeChecked());
+    expect(liveRequestsStopped()).toBe(true);
+    fireEvent.click(box);
+    await waitFor(() => expect(box).toBeChecked());
+    expect(liveRequestsStopped()).toBe(false);
+  });
+
+  it('stays refusing when turning it back on fails', async () => {
+    resumeLiveRequests();
+    backend(status());
+    const { unmount } = render(<McpLiveSwitch />);
+    const box = await screen.findByRole('checkbox', { name: LABEL });
+    fireEvent.click(box);
+    await waitFor(() => expect(box).not.toBeChecked());
+    unmount();
+    backend(status({ on: false, listening: false }), 'no');
+    render(<McpLiveSwitch />);
+    const again = await screen.findByRole('checkbox', { name: LABEL });
+    fireEvent.click(again);
+    await waitFor(() => expect(notify.error).toHaveBeenCalled());
+    expect(liveRequestsStopped()).toBe(true);
   });
 
   it('describes the three buttons, with no number keys', async () => {

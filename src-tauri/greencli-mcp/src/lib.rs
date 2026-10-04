@@ -55,6 +55,11 @@ pub use show_only::{is_plain_show, MAX_SHOW_LEN};
 /// below that: a late Yes must never type into a tab no one waits on.
 pub const LIVE_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
 
+/// How long the live tools wait for GreenCLI's answer: a little longer than
+/// GreenCLI's own LIVE_WAIT, so its answer when that runs out is the one the
+/// AI gets.
+pub const LIVE_CLIENT_WAIT: std::time::Duration = std::time::Duration::from_secs(65);
+
 /// The longest request sent to GreenCLI's live channel, in bytes.
 pub const MAX_LIVE_REQUEST: usize = 4 * 1024;
 

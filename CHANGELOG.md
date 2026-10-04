@@ -13,7 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   have connected. GreenCLI asks you first, showing the exact line it will type (No · Yes, this
   once · Yes, show commands on <device> until GreenCLI closes), closes the box as a No after 40
   seconds, and hides secrets in the output. A filter's text may be a pattern (`^ $ * . ( ) [ ] +`);
-  `?` never runs. Turning the switch off forgets every device Yes. They talk only to the
+  `?` never runs. A show line waits its turn behind anything else reading that tab, and GreenCLI
+  keeps its timers on time while its window is hidden. Turning the switch off forgets every device
+  Yes and refuses what comes in after. They talk only to the
   GreenCLI app on this computer, through its own channel in the data folder. On Windows they say
   "not on Windows yet".
 

@@ -4,7 +4,7 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn() }));
 vi.mock('./terminal', async (importOriginal) => {
   const real = await importOriginal<typeof import('./terminal')>();
-  return { ...real, sendAndCapture: vi.fn() };
+  return { ...real, captureInTurn: vi.fn() };
 });
 
 import { invoke } from '@tauri-apps/api/core';
@@ -23,14 +23,15 @@ import {
   LIVE_TYPE_BY_MS,
   LIVE_WAIT_MS,
   liveDevices,
+  resumeLiveRequests,
   startMcpLive,
   stopLiveRequests,
   type LiveRequest,
 } from './mcpLive';
-import { CAPTURE_MAX_MS, sendAndCapture } from './terminal';
+import { CAPTURE_MAX_MS, captureInTurn, withCaptureTurn } from './terminal';
 
 const invokeMock = vi.mocked(invoke);
-const captureMock = vi.mocked(sendAndCapture);
+const captureMock = vi.mocked(captureInTurn);
 
 function tab(
   id: string,
@@ -70,6 +71,7 @@ beforeEach(() => {
   }));
   useDialogStore.setState({ current: null, queue: [] });
   useMcpApprovalStore.getState().clearAll();
+  resumeLiveRequests();
   useSessionStore.setState({
     sessions: [
       tab('t1', 'sw-a'),
@@ -324,6 +326,39 @@ describe('device_show: time', () => {
     expect(captureMock).toHaveBeenCalledTimes(1);
   });
 
+  it('waits its turn behind other captures on the tab, and the 45 s check counts that wait', async () => {
+    vi.useFakeTimers();
+    useMcpApprovalStore.getState().allowDevice('greencli-mcp', 'device_show', 'sw-a');
+    // The in-app AI (or a config snapshot) is capturing on the same tab.
+    let release: () => void = () => {};
+    const other = withCaptureTurn('t1', () => new Promise<void>((r) => (release = r)));
+    const run = handleLiveRequest(show({ tab: 't1' }));
+    await vi.advanceTimersByTimeAsync(1_000);
+    // Nothing typed into the other capture's output, not even paging off.
+    expect(sent()).toEqual([]);
+    await vi.advanceTimersByTimeAsync(LIVE_TYPE_BY_MS);
+    release();
+    await other;
+    const late = (await run) as { ok: boolean; error: string };
+    expect(late.ok).toBe(false);
+    expect(late.error).toMatch(/nothing ran/i);
+    expect(captureMock).not.toHaveBeenCalled();
+    expect(sent()).toEqual([]);
+  });
+
+  it('runs after the other capture on the tab ends, when there is time', async () => {
+    useMcpApprovalStore.getState().allowDevice('greencli-mcp', 'device_show', 'sw-a');
+    let release: () => void = () => {};
+    const other = withCaptureTurn('t1', () => new Promise<void>((r) => (release = r)));
+    const run = handleLiveRequest(show({ tab: 't1' }));
+    await new Promise((r) => setTimeout(r, 30));
+    expect(sent()).toEqual([]);
+    release();
+    await other;
+    expect(await run).toMatchObject({ ok: true });
+    expect(captureMock).toHaveBeenCalledTimes(1);
+  });
+
   it('a line that was typed is never reported as nothing ran', async () => {
     useMcpApprovalStore.getState().allowDevice('greencli-mcp', 'device_show', 'sw-a');
     let finish: (v: { output: string; truncated: boolean }) => void = () => {};
@@ -381,8 +416,21 @@ describe('device_show: the switch goes off', () => {
     expect(captureMock).toHaveBeenCalledTimes(1);
   });
 
+  it('refuses a request that comes in after it, with no box, until it is turned back on', async () => {
+    useMcpApprovalStore.getState().allowDevice('greencli-mcp', 'device_show', 'sw-a');
+    stopLiveRequests();
+    expect(await handleLiveRequest(show({ id: 'live-5', tab: 't1' }))).toEqual({
+      ok: false,
+      error: 'Show commands were turned off in GreenCLI.',
+    });
+    expect(useDialogStore.getState().current).toBeNull();
+    expect(captureMock).not.toHaveBeenCalled();
+    expect(sent()).toEqual([]);
+  });
+
   it('a request that comes after it is turned back on runs as usual', async () => {
     stopLiveRequests();
+    resumeLiveRequests();
     const run = handleLiveRequest(show({ id: 'live-4', tab: 't1' }));
     await answer('once');
     expect(await run).toMatchObject({ ok: true });

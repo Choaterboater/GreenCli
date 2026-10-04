@@ -16,7 +16,7 @@
 use crate::protocol::MAX_RESULT_BYTES;
 use crate::tools::ToolFail;
 use crate::transport::{self, Line};
-use crate::{LIVE_WAIT, MAX_LIVE_REQUEST};
+use crate::{LIVE_CLIENT_WAIT, MAX_LIVE_REQUEST};
 use serde_json::{json, Map, Value};
 use std::io::{BufReader, ErrorKind, Write};
 use std::os::unix::net::UnixStream;
@@ -116,7 +116,7 @@ fn bad_answer() -> ToolFail {
 
 /// Send one request to GreenCLI and read its answer.
 fn ask(data_dir: &Path, request: &Value) -> Result<Value, ToolFail> {
-    ask_live_with_wait(data_dir, request, LIVE_WAIT).map_err(ToolFail::Error)
+    ask_live_with_wait(data_dir, request, LIVE_CLIENT_WAIT).map_err(ToolFail::Error)
 }
 
 /// One call to GreenCLI, waiting at most `wait` for its answer. `Ok` holds
@@ -143,8 +143,8 @@ pub fn ask_live_with_wait(
     };
     let didnt_answer = || {
         format!(
-            "GreenCLI didn't answer within {} seconds. If its box is still open, answer it \
-and ask again.",
+            "GreenCLI didn't answer within {} seconds. The line may have run; check in \
+GreenCLI before asking again.",
             wait.as_secs().max(1)
         )
     };

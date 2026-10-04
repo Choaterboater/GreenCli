@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { isTauri } from '../utils/fileSystem';
 import { notify } from '../store/toastStore';
-import { stopLiveRequests } from '../utils/mcpLive';
+import { resumeLiveRequests, stopLiveRequests } from '../utils/mcpLive';
 
 /** mcp_live_status: show commands from AI tools outside GreenCLI (greencli-mcp's device_show). */
 export interface LiveStatus {
@@ -71,11 +71,15 @@ export default function McpLiveSwitch() {
     try {
       const next = asStatus(await invoke('mcp_live_set', { on }));
       if (next) setStatus(next);
+      // On again: take requests again (Rust opened the channel).
+      if (on) resumeLiveRequests();
     } catch (e) {
       notify.error('Show commands', String(e));
       // Rust keeps the choice even when it can't open: show what it has now.
       const now = await readLiveStatus();
       if (now) setStatus(now);
+      // Still on (turning it off failed, or it is on but couldn't open): take requests again.
+      if (now?.on) resumeLiveRequests();
     } finally {
       setBusy(false);
     }

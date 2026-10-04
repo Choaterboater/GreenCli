@@ -313,6 +313,54 @@ async fn turning_off_ends_waiting_requests() {
     );
 }
 
+/// A program that connected just before the switch went off, and sends its
+/// line after, is refused: no box, nothing handed to the webview.
+#[tokio::test]
+async fn a_request_sent_after_turning_off_never_reaches_the_webview() {
+    let dir = temp_dir();
+    let (ch, web) = channel(&dir, Duration::from_secs(5));
+    ch.start_if_on().unwrap();
+    let (connected_tx, connected_rx) = std::sync::mpsc::channel::<()>();
+    let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
+    let dir2 = dir.clone();
+    let client = tokio::task::spawn_blocking(move || {
+        let mut s = StdStream::connect(dir2.join(SOCKET_NAME)).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        connected_tx.send(()).unwrap();
+        go_rx.recv().unwrap();
+        s.write_all(b"{\"v\":1,\"op\":\"show\",\"tab\":\"t1\",\"show\":\"show vlan\"}\n")
+            .unwrap();
+        let mut out = String::new();
+        let _ = s.read_to_string(&mut out);
+        out
+    });
+    tokio::task::spawn_blocking(move || connected_rx.recv().unwrap())
+        .await
+        .unwrap();
+    // Let GreenCLI take the connection before the switch goes off.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    ch.set_on(false).unwrap();
+    go_tx.send(()).unwrap();
+    let reply = client.await.unwrap();
+    let v: Value = serde_json::from_str(reply.trim()).unwrap();
+    assert_eq!(v["error"], TURNED_OFF);
+    assert!(web.asks.lock().unwrap().is_empty(), "never handed on");
+}
+
+/// Back on, requests go through again.
+#[tokio::test]
+async fn back_on_after_off_hands_requests_on_again() {
+    let dir = temp_dir();
+    let (ch, web) = channel(&dir, Duration::from_secs(5));
+    ch.set_on(false).unwrap();
+    ch.set_on(true).unwrap();
+    let client = ask_in_background(&dir, json!({"v":1,"op":"sessions"}));
+    let ask = until(|| first_ask(&web)).await;
+    assert!(ch.answer(ask["id"].as_str().unwrap(), json!({"ok":true,"devices":[]})));
+    assert!(client.await.unwrap().is_ok());
+    ch.stop();
+}
+
 #[tokio::test]
 async fn a_fifth_request_at_once_is_told_greencli_is_busy() {
     let dir = temp_dir();
@@ -435,6 +483,7 @@ fn the_wait_running_out_never_says_nothing_ran() {
         "{NO_ANSWER}"
     );
     assert!(NO_ANSWER.contains("in time"), "{NO_ANSWER}");
+    assert!(NO_ANSWER.contains("may have run"), "{NO_ANSWER}");
 }
 
 #[test]
@@ -449,6 +498,9 @@ fn only_the_same_user_gets_in() {
 fn the_wait_matches_the_mcp_server_and_stays_under_casper_limit() {
     assert_eq!(LIVE_WAIT, greencli_mcp::LIVE_WAIT);
     assert!(LIVE_WAIT < Duration::from_secs(90));
+    // greencli-mcp waits a little longer, so GreenCLI's own answer (NO_ANSWER) is what arrives.
+    assert!(greencli_mcp::LIVE_CLIENT_WAIT >= LIVE_WAIT + Duration::from_secs(2));
+    assert!(greencli_mcp::LIVE_CLIENT_WAIT < Duration::from_secs(90));
 }
 
 #[test]

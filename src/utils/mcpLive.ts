@@ -11,8 +11,10 @@
 // - The tab must sit at its normal prompt with nothing typed after it: not in
 //   config mode, not at a pager, nothing half-typed. Checked before the box
 //   and again right before the line is typed.
-// - One request per tab at a time: from that last check until the tab is back
-//   at its prompt, no other live request can type in it.
+// - It waits its turn behind every other capture on that tab (the in-app AI,
+//   config snapshots, bulk runs): from that last check until the tab is back
+//   at its prompt, nothing else that captures can type in it, and the 45 s
+//   check below counts the wait.
 // - GreenCLI asks in a box with three buttons: No, Yes this once, and Yes,
 //   show commands on <device> until GreenCLI closes (in memory, per device).
 //   The box names the caller only as "a program on this computer (pid N)",
@@ -21,7 +23,8 @@
 //   at 40 s as a No, and a line is never typed after 45 s, so a Yes always
 //   has time to run and answer before the wait ends.
 // - Turning the switch off forgets every per-device answer, and any request
-//   already handed over is refused before its box or its line.
+//   already handed over, or handed over later until it is back on, is refused
+//   before its box or its line.
 // - Each box has its own dialog group, so `mcp_live_cancel` (the program hung
 //   up, the wait ran out, or the switch went off) closes just that one.
 // - Paging is turned off around the line (AOS-CX/AOS-S `no page`, AOS-8
@@ -47,7 +50,7 @@ import { isPlainShow } from './mcpPresets';
 import { endsAtPager, pagedCommand, pagerQuitKey, pagingCommands, withPagingDisabled } from './paging';
 import { MAX_SCRUB_CHARS, WITHHELD_TEXT } from './secrets/forAi';
 import { secretFilterSupported } from './secrets/support';
-import { CAPTURE_MAX_MS, sendAndCapture, sleep } from './terminal';
+import { CAPTURE_MAX_MS, captureInTurn, sleep, withCaptureTurn } from './terminal';
 
 /** The approval store key for answer 3 (with the device). */
 export const LIVE_SERVER = 'greencli-mcp';
@@ -114,6 +117,7 @@ const SAID_NO = 'You said no in GreenCLI. Nothing ran.';
 const STOPPED = 'The request ended before it ran. Nothing ran.';
 const BOX_TIMED_OUT = 'No answer in GreenCLI in time; nothing ran.';
 const TOO_LATE = 'Too late to run it before the AI tool stops waiting. Nothing ran. Try again.';
+const TURNED_OFF = 'Show commands were turned off in GreenCLI.';
 
 /** Connected network device tabs. */
 function liveTabs(sessions: Session[]): Session[] {
@@ -165,23 +169,6 @@ async function backAtPrompt(sessionId: string): Promise<void> {
     if (parseDevicePrompt(trailingLine(buffer ?? ''))) return;
     await sleep(PROMPT_LOOK_MS);
   }
-}
-
-// One live request per tab: each waits for the one before it on that tab.
-const tabChains = new Map<string, Promise<void>>();
-
-function oneAtATime<T>(sessionId: string, fn: () => Promise<T>): Promise<T> {
-  const prev = tabChains.get(sessionId) ?? Promise.resolve();
-  const run = prev.then(fn);
-  const tail = run.then(
-    () => undefined,
-    () => undefined,
-  );
-  tabChains.set(sessionId, tail);
-  void tail.then(() => {
-    if (tabChains.get(sessionId) === tail) tabChains.delete(sessionId);
-  });
-  return run;
 }
 
 /** Room kept under MAX_LIVE_OUTPUT for the notes and greencli-mcp's JSON escapes. */
@@ -241,11 +228,26 @@ export function cancelLiveRequest(id: string): void {
   cancelDialogs(boxGroup(id));
 }
 
+// The switch went off: requests are refused until it is turned back on.
+let switchedOff = false;
+
 /** The switch went off: forget every "Yes, show commands on <device>" answer, and refuse every
- *  request already handed over (its box closes; a line not typed yet never is). */
+ *  request already handed over (its box closes; a line not typed yet never is) or handed over
+ *  later, until resumeLiveRequests. */
 export function stopLiveRequests(): void {
+  switchedOff = true;
   useMcpApprovalStore.getState().clearDevices();
   for (const id of [...active]) cancelLiveRequest(id);
+}
+
+/** The switch is on again: take requests as usual. */
+export function resumeLiveRequests(): void {
+  switchedOff = false;
+}
+
+/** True while requests are refused because the switch went off. */
+export function liveRequestsStopped(): boolean {
+  return switchedOff;
 }
 
 function choices(name: string): DialogChoice[] {
@@ -323,8 +325,10 @@ async function runShow(req: LiveRequest, started: number): Promise<LiveReply> {
     if (answer === 'device') useMcpApprovalStore.getState().allowDevice(LIVE_SERVER, LIVE_TOOL, name);
   }
 
-  const ran = await oneAtATime(session.sessionId, async () => {
-    // The box may have been open a while, and another request may just have
+  // Behind every other capture on this tab (the in-app AI, config snapshots,
+  // other live requests), so nothing is typed into their output.
+  const ran = await withCaptureTurn(session.sessionId, async () => {
+    // The box may have been open a while, and another capture may just have
     // used this tab: it must still be idle and connected right before typing.
     const now = useSessionStore.getState().sessions.find((s) => s.sessionId === session.sessionId);
     if (!now?.connected) return `That tab isn't connected any more. Nothing ran.`;
@@ -335,7 +339,7 @@ async function runShow(req: LiveRequest, started: number): Promise<LiveReply> {
     if (Date.now() - started > LIVE_TYPE_BY_MS) return TOO_LATE;
 
     const capture = await withPagingDisabled(now.sessionId, profile, async () => {
-      const c = await sendAndCapture(now.sessionId, command);
+      const c = await captureInTurn(now.sessionId, command);
       // Leave a pager so the next key isn't eaten by it.
       if (endsAtPager(c.output)) {
         await invoke('send_data', { sessionId: now.sessionId, data: pagerQuitKey(c.output) }).catch(() => undefined);
@@ -361,7 +365,7 @@ export async function handleLiveRequest(req: LiveRequest): Promise<LiveReply> {
   active.add(req.id);
   try {
     if (req.op === 'sessions') return { ok: true, devices: liveDevices(useSessionStore.getState().sessions) };
-    if (req.op === 'show') return await runShow(req, started);
+    if (req.op === 'show') return switchedOff ? no(TURNED_OFF) : await runShow(req, started);
     return no(UNKNOWN);
   } catch (e) {
     return no(`GreenCLI couldn't run it: ${e instanceof Error ? e.message : String(e)}`);

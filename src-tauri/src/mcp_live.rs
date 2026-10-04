@@ -79,8 +79,10 @@ const BAD_ANSWER: &str = "GreenCLI's answer didn't make sense. Restart GreenCLI 
 const TURNED_OFF: &str = "Show commands were turned off in GreenCLI.";
 /// The webview closes its box at 40 s and says nothing ran then; this 60 s
 /// wait can only run out while a line is being typed, so it never says
-/// nothing ran.
-const NO_ANSWER: &str = "GreenCLI didn't answer in time. Ask again when you're at GreenCLI.";
+/// nothing ran. greencli-mcp waits a little longer (LIVE_CLIENT_WAIT), so
+/// this is the text the AI gets.
+const NO_ANSWER: &str =
+    "GreenCLI didn't answer in time. The line may have run; check in GreenCLI before asking again.";
 const BUSY: &str = "GreenCLI is busy with other show commands. Try again in a moment.";
 const TOO_LONG: &str = "The request is too long.";
 
@@ -122,6 +124,9 @@ pub struct Status {
 struct Pending {
     next: u64,
     waiting: HashMap<String, oneshot::Sender<Value>>,
+    /// False once the switch goes off: a connection taken before that, whose
+    /// line comes after, is refused instead of handed to the webview.
+    on: bool,
 }
 
 struct Shared {
@@ -137,13 +142,17 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl Shared {
-    fn register(&self) -> (String, oneshot::Receiver<Value>) {
+    /// None when the switch is off.
+    fn register(&self) -> Option<(String, oneshot::Receiver<Value>)> {
         let mut p = lock(&self.pending);
+        if !p.on {
+            return None;
+        }
         p.next += 1;
         let id = format!("live-{}", p.next);
         let (tx, rx) = oneshot::channel();
         p.waiting.insert(id.clone(), tx);
-        (id, rx)
+        Some((id, rx))
     }
 
     fn forget(&self, id: &str) {
@@ -256,6 +265,7 @@ impl LiveChannel {
         match self.bind() {
             Ok(r) => {
                 *running = Some(r);
+                lock(&self.shared.pending).on = true;
                 *lock(&self.problem) = None;
                 Ok(())
             }
@@ -273,8 +283,13 @@ impl LiveChannel {
             r.task.abort();
             let _ = std::fs::remove_file(self.path());
         }
-        // Dropping the senders wakes each waiting request.
-        let waiting: Vec<_> = lock(&self.shared.pending).waiting.drain().collect();
+        // Dropping the senders wakes each waiting request; connections already
+        // taken but not yet registered are refused by register().
+        let waiting: Vec<_> = {
+            let mut p = lock(&self.shared.pending);
+            p.on = false;
+            p.waiting.drain().collect()
+        };
         drop(waiting);
     }
 
@@ -548,7 +563,9 @@ where
     R: tokio::io::AsyncRead + Unpin,
 {
     use tokio::io::AsyncReadExt;
-    let (id, rx) = shared.register();
+    let Some((id, rx)) = shared.register() else {
+        return Some(refuse(TURNED_OFF));
+    };
     let mut ask = json!({ "id": id, "pid": pid });
     match &request {
         Request::Sessions => ask["op"] = json!("sessions"),

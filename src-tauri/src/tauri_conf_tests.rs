@@ -92,6 +92,21 @@ fn same_origin_and_data_folder() {
     }
 }
 
+/// Live show commands (mcp_live.rs) and terminal captures time their steps
+/// with timers in the main window, which is often hidden while you work in
+/// an AI tool. A throttled hidden webview would stretch those timers past
+/// the AI tool's wait.
+#[test]
+fn main_window_keeps_its_timers_when_hidden() {
+    let c = conf();
+    let windows = c["app"]["windows"].as_array().expect("app.windows");
+    let main = windows
+        .iter()
+        .find(|w| w["label"] == "main")
+        .expect("main window");
+    assert_eq!(main["backgroundThrottling"], "disabled");
+}
+
 #[test]
 fn updater_files_off_by_default() {
     let c = conf();

@@ -15,6 +15,12 @@ fn the_wait_is_shorter_than_casper_gives_a_call() {
     assert!(greencli_mcp::LIVE_WAIT < std::time::Duration::from_secs(90));
     assert!(greencli_mcp::LIVE_WAIT >= std::time::Duration::from_secs(30));
     assert_eq!(greencli_mcp::MAX_LIVE_REQUEST, 4 * 1024);
+    // The tools wait a little longer than GreenCLI, so GreenCLI's own answer arrives first.
+    assert!(
+        greencli_mcp::LIVE_CLIENT_WAIT
+            >= greencli_mcp::LIVE_WAIT + std::time::Duration::from_secs(2)
+    );
+    assert!(greencli_mcp::LIVE_CLIENT_WAIT < std::time::Duration::from_secs(90));
 }
 
 #[cfg(not(unix))]
@@ -305,6 +311,10 @@ mod unix {
         assert!(started.elapsed() < Duration::from_millis(1200));
         let error = answer.unwrap_err();
         assert!(error.contains("didn't answer"), "{error}");
+        // By then GreenCLI's box has closed, so only a running line can be late:
+        // never send the AI back to a box, and never promise nothing ran.
+        assert!(!error.contains("box"), "{error}");
+        assert!(error.contains("may have run"), "{error}");
         hold.join().unwrap();
         std::fs::remove_dir_all(dir).ok();
     }
