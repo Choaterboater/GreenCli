@@ -167,7 +167,7 @@ fn build_request(
             .header("x-api-key", key),
         "openrouter" => client
             .post("https://openrouter.ai/api/v1/chat/completions")
-            .header("HTTP-Referer", "https://hpe.com")
+            .header("HTTP-Referer", "https://github.com/Choaterboater/GreenCli")
             .header("X-Title", "GreenCLI")
             .bearer_auth(key),
         "moonshot" => client
@@ -374,5 +374,22 @@ mod key_store_tests {
         assert!(keys.key_for("ollama").await.unwrap().is_empty());
         let err = keys.key_for("openrouter").await.unwrap_err().to_string();
         assert!(err.contains(secret_store::UNAVAILABLE), "{err}");
+    }
+}
+
+#[cfg(test)]
+mod request_header_tests {
+    use super::*;
+
+    #[test]
+    fn openrouter_names_the_app_by_its_own_site() {
+        let client = reqwest::Client::new();
+        let req = build_request(&client, "openrouter", "k", &None)
+            .unwrap()
+            .build()
+            .unwrap();
+        let h = req.headers();
+        assert_eq!(h["HTTP-Referer"], "https://github.com/Choaterboater/GreenCli");
+        assert_eq!(h["X-Title"], "GreenCLI");
     }
 }

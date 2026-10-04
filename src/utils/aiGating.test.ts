@@ -61,6 +61,32 @@ describe('aiIsWriteCommand', () => {
     expect(aiIsWriteCommand('sh\tconf')).toBe(true);
     expect(aiIsWriteCommand('show \x1b[A')).toBe(true);
   });
+
+  it('passes only live-view monitor forms; every other monitor asks', () => {
+    // Live views: they only show traffic or counters.
+    expect(aiIsWriteCommand('monitor traffic interface ge-0/0/0')).toBe(false);
+    expect(aiIsWriteCommand('monitor interface ge-0/0/0')).toBe(false);
+    expect(aiIsWriteCommand('monitor interface traffic')).toBe(false);
+    expect(aiIsWriteCommand('do monitor interface 1/1/1')).toBe(false);
+    // Cisco packet capture: start, stop, export and clear change state or write a file.
+    expect(aiIsWriteCommand('monitor capture CAP start')).toBe(true);
+    expect(aiIsWriteCommand('monitor capture CAP export flash:cap.pcap')).toBe(true);
+    expect(aiIsWriteCommand('monitor capture CAP interface Gi1/0/1 both')).toBe(true);
+    // SPAN sessions are config.
+    expect(aiIsWriteCommand('monitor session 1 source interface Gi1/0/1')).toBe(true);
+    expect(aiIsWriteCommand('monitor session 1 destination interface Gi1/0/2')).toBe(true);
+    // Junos: start or stop logging to a file, and a capture saved to a file.
+    expect(aiIsWriteCommand('monitor start messages')).toBe(true);
+    expect(aiIsWriteCommand('monitor stop')).toBe(true);
+    expect(aiIsWriteCommand('monitor traffic interface ge-0/0/0 write-file /var/tmp/x.pcap')).toBe(true);
+    // Junos takes any unambiguous start of an option: w, wr, wri ... all mean write-file.
+    for (const w of ['w', 'wr', 'wri', 'write-f', 'WR']) {
+      expect(aiIsWriteCommand(`monitor traffic interface ge-0/0/0 ${w} /var/tmp/x.pcap`)).toBe(true);
+    }
+    // Bare or unknown forms.
+    expect(aiIsWriteCommand('monitor')).toBe(true);
+    expect(aiIsWriteCommand('monitor something-new')).toBe(true);
+  });
 });
 
 describe('file-writing pipes and redirects', () => {

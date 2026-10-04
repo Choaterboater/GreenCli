@@ -40,9 +40,14 @@ export default function HostsManager() {
   };
 
   const forget = async (hostPort: string) => {
-    await invoke('remove_known_host', { hostPort }).catch(() => {});
-    notify.info('Host key forgotten', `${hostPort} will be re-trusted on next connect.`);
-    loadKnown();
+    try {
+      await invoke('remove_known_host', { hostPort });
+      notify.info('Host key forgotten', `${hostPort} will be re-trusted on next connect.`);
+    } catch (e) {
+      notify.warning("Couldn't forget host key", String(e));
+    } finally {
+      loadKnown();
+    }
   };
 
   return (

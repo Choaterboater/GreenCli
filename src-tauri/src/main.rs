@@ -22,6 +22,7 @@ mod session_log;
 mod sftp;
 mod ssh;
 mod telnet;
+mod terminal_buffer;
 mod updater;
 mod vault;
 mod web_link;
@@ -112,8 +113,8 @@ struct AppState {
     /// Per-device versioned config snapshot history + golden baseline.
     config_archive: Arc<config_archive::ConfigArchiveStore>,
     /// Recent terminal output per session, so the AI assistant can read back
-    /// command results (bounded tail, plain bytes lossily decoded).
-    terminal_buffers: Arc<AsyncMutex<HashMap<String, String>>>,
+    /// command results (bounded tail; split UTF-8 characters are carried over).
+    terminal_buffers: Arc<AsyncMutex<HashMap<String, terminal_buffer::TerminalBuffer>>>,
     /// Last-known terminal geometry per session, so an auto-reconnect can request
     /// the PTY at the size the user actually has rather than resetting to 80x24.
     terminal_sizes: Arc<AsyncMutex<HashMap<String, (u16, u16)>>>,
@@ -272,7 +273,7 @@ pub struct ApiLoginRequest {
 /// to the frontend. Shared by the plain forwarder and the SSH supervisor.
 async fn write_and_emit(
     app: &AppHandle,
-    buffers: &Arc<AsyncMutex<HashMap<String, String>>>,
+    buffers: &Arc<AsyncMutex<HashMap<String, terminal_buffer::TerminalBuffer>>>,
     logs: &SessionLogs,
     session_id: &str,
     data: Vec<u8>,
@@ -284,15 +285,7 @@ async fn write_and_emit(
         // or_default) means a chunk that drains AFTER disconnect can't resurrect
         // a buffer entry that was just cleaned up (which would leak forever).
         if let Some(buf) = map.get_mut(session_id) {
-            buf.push_str(&String::from_utf8_lossy(&data));
-            // Keep a bounded tail (~150KB) on a char boundary.
-            if buf.len() > 200_000 {
-                let mut cut = buf.len() - 150_000;
-                while cut < buf.len() && !buf.is_char_boundary(cut) {
-                    cut += 1;
-                }
-                *buf = buf[cut..].to_string();
-            }
+            buf.push(&data);
         }
     }
     // Clone this session's log handle and release the shared map lock before
@@ -346,7 +339,7 @@ async fn close_session_forwards(forwards: &ForwardsMap, session_id: &str) {
 #[allow(clippy::too_many_arguments)]
 fn spawn_forwarder(
     app: AppHandle,
-    buffers: Arc<AsyncMutex<HashMap<String, String>>>,
+    buffers: Arc<AsyncMutex<HashMap<String, terminal_buffer::TerminalBuffer>>>,
     logs: SessionLogs,
     session_manager: Arc<SessionManager>,
     session_id: String,
@@ -436,7 +429,7 @@ async fn ssh_transport_alive(session_manager: &SessionManager, session_id: &str)
 #[allow(clippy::too_many_arguments)]
 fn spawn_ssh_supervisor(
     app: AppHandle,
-    buffers: Arc<AsyncMutex<HashMap<String, String>>>,
+    buffers: Arc<AsyncMutex<HashMap<String, terminal_buffer::TerminalBuffer>>>,
     logs: SessionLogs,
     session_manager: Arc<SessionManager>,
     forwards: ForwardsMap,
@@ -1503,7 +1496,7 @@ async fn get_terminal_output(
     state: State<'_, AppState>,
 ) -> Result<String, String> {
     let map = state.terminal_buffers.lock().await;
-    Ok(map.get(&session_id).cloned().unwrap_or_default())
+    Ok(map.get(&session_id).map(|b| b.text().to_string()).unwrap_or_default())
 }
 
 /// Start logging a session's output as plain text (see session_log.rs) to
@@ -1853,8 +1846,7 @@ fn list_known_hosts(state: State<'_, AppState>) -> Result<Vec<KnownHostEntry>, S
 #[tauri::command]
 fn remove_known_host(host_port: String, state: State<'_, AppState>) -> Result<(), String> {
     let kh = crate::ssh::known_hosts::KnownHosts::new(state.app_dir.join("known_hosts.json"));
-    kh.remove(&host_port);
-    Ok(())
+    kh.remove(&host_port)
 }
 
 /// Parse ~/.ssh/config (or a supplied path) into importable host entries.
