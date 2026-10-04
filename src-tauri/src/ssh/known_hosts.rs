@@ -300,19 +300,26 @@ impl KnownHosts {
     }
 
     /// Remove a trusted entry so the host is re-trusted (TOFU) on next connect.
-    /// A failed save comes back as a plain error.
+    /// A damaged file that couldn't be moved aside is written over with the
+    /// entries that still parse (the user asked to drop this host). A failed
+    /// save comes back as a plain error.
     pub fn remove(&self, host_port: &str) -> Result<(), String> {
         let _guard = WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let (mut map, _notice, can_save) = self.load_for_write();
+        let (mut map, notice, can_save) = self.load_for_write();
         let key = normalize_host_port(host_port);
         let mut removed = false;
         for v in variants_of(&map, &key) {
             removed |= map.remove(&v).is_some();
         }
-        if removed && can_save {
+        if removed {
             self.save(&map).map_err(|e| {
                 log::warn!("Couldn't save host keys after forgetting {host_port}: {e}");
-                format!("Couldn't forget {host_port}: the host keys file couldn't be saved.")
+                match notice.as_deref().filter(|_| !can_save) {
+                    Some(n) => format!("Couldn't forget {host_port}: {n}"),
+                    None => format!(
+                        "Couldn't forget {host_port}: the host keys file couldn't be saved."
+                    ),
+                }
             })?;
         }
         Ok(())
@@ -643,6 +650,43 @@ mod tests {
         let r = KnownHosts::new(dir.store()).save(&HashMap::new());
         unlock_dir(&dir.0);
         assert!(r.is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn forgetting_in_a_damaged_file_that_cannot_move_says_so() {
+        let dir = TempDir::new("forgetdamaged");
+        fs::write(
+            dir.store(),
+            br#"{"r1:22":{"ssh-ed25519":"SHA256:aaa"},"bad:22":42}"#,
+        )
+        .unwrap();
+        if !lock_dir(&dir.0) {
+            unlock_dir(&dir.0);
+            return;
+        }
+        let r = KnownHosts::new(dir.store()).remove("r1:22");
+        unlock_dir(&dir.0);
+        let err = r.expect_err("a forget that changed nothing must not report success");
+        assert!(err.contains("Couldn't forget r1:22"), "{err}");
+        assert!(err.contains("damaged"), "{err}");
+    }
+
+    #[test]
+    fn forgetting_in_a_damaged_file_drops_the_host() {
+        let dir = TempDir::new("forgetdamaged2");
+        fs::write(
+            dir.store(),
+            br#"{"r1:22":{"ssh-ed25519":"SHA256:aaa"},"r2:22":{"ssh-ed25519":"SHA256:bbb"},"bad:22":42}"#,
+        )
+        .unwrap();
+        KnownHosts::new(dir.store()).remove("r1:22").unwrap();
+        let hosts: Vec<String> = KnownHosts::new(dir.store())
+            .list()
+            .into_iter()
+            .map(|e| e.0)
+            .collect();
+        assert_eq!(hosts, vec!["r2:22".to_string()]);
     }
 
     #[cfg(unix)]

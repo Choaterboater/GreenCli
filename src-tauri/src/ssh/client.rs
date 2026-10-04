@@ -130,6 +130,28 @@ pub struct ClientHandler {
     warning: Arc<std::sync::Mutex<Option<String>>>,
 }
 
+/// The one warning line shown on connect for an accepted host key: the host
+/// keys file notice (damaged file moved aside, or a key that couldn't be
+/// saved) and, for a known host presenting a NEW key algorithm, a downgrade
+/// warning (accepted under TOFU, but it can signal a downgrade attempt).
+fn connect_warning(
+    verified: &crate::ssh::known_hosts::Verified,
+    host_port: &str,
+    key_type: &str,
+    fingerprint: &str,
+) -> Option<String> {
+    let mut notes: Vec<String> = verified.notice.iter().cloned().collect();
+    if verified.outcome == crate::ssh::known_hosts::KeyVerifyResult::NewAlgorithm {
+        notes.push(format!(
+            "Host {host_port} presented a new host key algorithm ({key_type}) with fingerprint \
+             {fingerprint}. It was recorded alongside the existing trusted key(s) — verify \
+             this change was expected (firmware upgrade / new key); otherwise \
+             this could be a downgrade attempt."
+        ));
+    }
+    (!notes.is_empty()).then(|| notes.join(" "))
+}
+
 impl Handler for ClientHandler {
     type Error = russh::Error;
 
@@ -149,30 +171,15 @@ impl Handler for ClientHandler {
                     &fingerprint,
                 ) {
                     Ok(verified) => {
-                        let mut notes: Vec<String> = verified.notice.into_iter().collect();
-                        // A previously-known host presenting a NEW key algorithm
-                        // is accepted (TOFU), but an unexpected algorithm can
-                        // signal a downgrade attempt — flag it so connect() can
-                        // surface a warning to the user.
-                        if verified.outcome
-                            == crate::ssh::known_hosts::KeyVerifyResult::NewAlgorithm
+                        // A damaged host keys file was moved aside, the key
+                        // couldn't be saved, or a new key algorithm showed up:
+                        // say so in one line (connecting still goes ahead).
+                        if let Some(w) =
+                            connect_warning(&verified, &self.host_port, &key_type, &fingerprint)
                         {
-                            let msg = format!(
-                                "Host {} presented a new host key algorithm ({}) with fingerprint \
-                                 {}. It was recorded alongside the existing trusted key(s) — verify \
-                                 this change was expected (firmware upgrade / new key); otherwise \
-                                 this could be a downgrade attempt.",
-                                self.host_port, key_type, fingerprint
-                            );
-                            log::warn!("{}", msg);
-                            notes.push(msg);
-                        }
-                        // A damaged host keys file was moved aside, or the key
-                        // couldn't be saved: say so
-                        // (connecting still goes ahead).
-                        if !notes.is_empty() {
+                            log::warn!("{}", w);
                             if let Ok(mut g) = self.warning.lock() {
-                                *g = Some(notes.join(" "));
+                                *g = Some(w);
                             }
                         }
                         Ok(true)
@@ -866,6 +873,53 @@ mod tests {
     use tokio::sync::oneshot;
     use tokio::task::JoinHandle;
     use tokio::time::timeout;
+
+    #[test]
+    fn connect_warning_carries_the_store_notice() {
+        use crate::ssh::known_hosts::{KeyVerifyResult, Verified};
+        let v = Verified {
+            outcome: KeyVerifyResult::Trusted,
+            notice: Some("File damaged.".into()),
+        };
+        assert_eq!(
+            connect_warning(&v, "r1:22", "ssh-ed25519", "SHA256:a").as_deref(),
+            Some("File damaged.")
+        );
+        let v = Verified {
+            outcome: KeyVerifyResult::FirstSeen,
+            notice: None,
+        };
+        assert_eq!(
+            connect_warning(&v, "r1:22", "ssh-ed25519", "SHA256:a"),
+            None
+        );
+    }
+
+    #[test]
+    fn connect_warning_flags_a_new_algorithm() {
+        use crate::ssh::known_hosts::{KeyVerifyResult, Verified};
+        let v = Verified {
+            outcome: KeyVerifyResult::NewAlgorithm,
+            notice: None,
+        };
+        let w = connect_warning(&v, "r1:22", "ssh-rsa", "SHA256:b").expect("a warning");
+        assert!(
+            w.contains("r1:22") && w.contains("ssh-rsa") && w.contains("SHA256:b"),
+            "{w}"
+        );
+    }
+
+    #[test]
+    fn connect_warning_joins_both_into_one_line() {
+        use crate::ssh::known_hosts::{KeyVerifyResult, Verified};
+        let v = Verified {
+            outcome: KeyVerifyResult::NewAlgorithm,
+            notice: Some("Couldn't save.".into()),
+        };
+        let w = connect_warning(&v, "r1:22", "ssh-rsa", "SHA256:b").expect("a warning");
+        assert!(w.starts_with("Couldn't save. Host r1:22"), "{w}");
+        assert!(!w.contains('\n'));
+    }
 
     const BURST_MESSAGE_COUNT: usize = 256;
     const AWAIT_TIMEOUT: Duration = Duration::from_secs(10);

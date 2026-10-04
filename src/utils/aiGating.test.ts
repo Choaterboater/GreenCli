@@ -79,6 +79,10 @@ describe('aiIsWriteCommand', () => {
     expect(aiIsWriteCommand('monitor start messages')).toBe(true);
     expect(aiIsWriteCommand('monitor stop')).toBe(true);
     expect(aiIsWriteCommand('monitor traffic interface ge-0/0/0 write-file /var/tmp/x.pcap')).toBe(true);
+    // Junos takes any unambiguous start of an option: w, wr, wri ... all mean write-file.
+    for (const w of ['w', 'wr', 'wri', 'write-f', 'WR']) {
+      expect(aiIsWriteCommand(`monitor traffic interface ge-0/0/0 ${w} /var/tmp/x.pcap`)).toBe(true);
+    }
     // Bare or unknown forms.
     expect(aiIsWriteCommand('monitor')).toBe(true);
     expect(aiIsWriteCommand('monitor something-new')).toBe(true);
