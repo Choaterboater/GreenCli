@@ -880,6 +880,7 @@ mod tests {
     use russh::keys::{Algorithm, PrivateKey};
     use russh::server::{self, Session};
     use russh::{Channel, ChannelId};
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
     use tokio::net::TcpListener;
     use tokio::sync::oneshot;
@@ -1061,18 +1062,36 @@ mod tests {
     }
 
     impl TempTofuDir {
+        /// A fresh folder per call. The name carries pid, clock and a
+        /// process-wide counter, so parallel tests never share a name; a
+        /// leftover folder from an old run just gets the next name.
         fn create() -> Result<Self, String> {
-            let nonce = SystemTime::now()
+            static COUNTER: AtomicU64 = AtomicU64::new(0);
+            let nanos = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map_err(|error| format!("system clock before Unix epoch: {error}"))?
                 .as_nanos();
-            let path = std::env::temp_dir().join(format!(
-                "greencli-channel-drain-{}-{nonce}",
-                std::process::id()
-            ));
-            std::fs::create_dir(&path)
-                .map_err(|error| format!("create temporary TOFU directory: {error}"))?;
-            Ok(Self { path })
+            let mut last_error = None;
+            for _ in 0..16 {
+                let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+                let path = std::env::temp_dir().join(format!(
+                    "greencli-channel-drain-{}-{nanos}-{n}",
+                    std::process::id()
+                ));
+                match std::fs::create_dir(&path) {
+                    Ok(()) => return Ok(Self { path }),
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                        last_error = Some(error);
+                    }
+                    Err(error) => {
+                        return Err(format!("create temporary TOFU directory: {error}"));
+                    }
+                }
+            }
+            Err(format!(
+                "create temporary TOFU directory: {}",
+                last_error.map_or_else(|| "no free name".to_string(), |e| e.to_string())
+            ))
         }
 
         fn known_hosts_path(&self) -> PathBuf {
@@ -1084,6 +1103,28 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.path);
         }
+    }
+
+    #[test]
+    fn temp_tofu_dirs_never_collide_when_made_in_parallel() {
+        let start = Arc::new(std::sync::Barrier::new(64));
+        let handles: Vec<_> = (0..64)
+            .map(|_| {
+                let start = Arc::clone(&start);
+                std::thread::spawn(move || {
+                    start.wait();
+                    TempTofuDir::create()
+                })
+            })
+            .collect();
+        let dirs: Vec<TempTofuDir> = handles
+            .into_iter()
+            .map(|handle| handle.join().expect("thread panicked"))
+            .collect::<Result<_, _>>()
+            .expect("every temp dir is created");
+        let unique: std::collections::HashSet<_> = dirs.iter().map(|dir| &dir.path).collect();
+        assert_eq!(unique.len(), dirs.len());
+        assert!(dirs.iter().all(|dir| dir.path.is_dir()));
     }
 
     async fn start_loopback_server() -> Result<
