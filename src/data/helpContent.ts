@@ -256,9 +256,9 @@ export const HELP_TOPICS: HelpTopic[] = [
     title: 'greencli-mcp (for Casper / Claude Code)',
     icon: Database,
     summary: 'A read-only MCP server that lets Casper or Claude Code read your GreenCLI data.',
-    keywords: ['greencli-mcp', 'greencli', 'mcp', 'claude code', 'casper', 'claude mcp add', 'read-only', 'hidden copy', 'make hidden copies', 'config archive', 'diff', 'devices', 'intents', 'list_archive_devices', 'renamed device'],
+    keywords: ['greencli-mcp', 'greencli', 'mcp', 'claude code', 'casper', 'claude mcp add', 'read-only', 'hidden copy', 'make hidden copies', 'config archive', 'diff', 'devices', 'intents', 'list_archive_devices', 'renamed device', 'show commands', 'device_show', 'list_connected_devices', 'live'],
     blocks: [
-      { kind: 'p', text: 'greencli-mcp lets Casper or Claude Code read your GreenCLI data. It can’t change anything: it only reads GreenCLI’s data folder, and never writes a file, opens a network connection or starts a program. It sits next to the app.' },
+      { kind: 'p', text: 'greencli-mcp lets Casper or Claude Code read your GreenCLI data. It can’t change anything: it only reads GreenCLI’s data folder, and never writes a file, opens a network connection or starts a program. It sits next to the app. The one exception is its show commands (below): on macOS and Linux they ask the GreenCLI app on this computer, and nothing else.' },
       {
         kind: 'steps',
         items: [
@@ -274,6 +274,16 @@ export const HELP_TOPICS: HelpTopic[] = [
           'Config history stays under the name a device had when it was captured. After you rename or delete a saved device, or for a Quick Connect you never saved, the AI finds that history with `list_archive_devices`.',
           'Configs come only from **hidden copies** made when a config is captured. If a tool says a snapshot has no hidden copy, or that it is out of date, open **Config Archive** (activity bar or command palette) and click **Make hidden copies**. If it says the copy was made by a newer GreenCLI, restart Claude Code or Casper so they use the updated greencli-mcp.',
           'A diff can’t show a changed password: both sides show it hidden.',
+        ],
+      },
+      {
+        kind: 'bullets',
+        items: [
+          '**Show commands** (macOS and Linux; on Windows they say not on Windows yet): `list_connected_devices` lists the device tabs connected in GreenCLI now, and `device_show` runs one `show` line on one of them. GreenCLI must be open with the device connected.',
+          'GreenCLI asks you each time: **No**, **Yes, this once**, or **Yes, show commands on this device until GreenCLI closes**. The box names the asker as a program on this computer, with its process number.',
+          'Casper asks first too (it treats `device_show` as a check on a device), so you answer two boxes: Casper’s, then GreenCLI’s.',
+          'Only plain `show` lines run, with filters after `|` (include, exclude, begin, section, match, count …). Never config mode, never on Linux or Windows host tabs, and never while something is half-typed in the tab. `show running-config` and `show tech` work; secrets are hidden and the output stops at 16 KB.',
+          'GreenCLI waits 60 seconds for your answer. To turn this off, clear **Let AI tools outside GreenCLI ask to run show commands** in **MCP Servers**.',
         ],
       },
     ],
