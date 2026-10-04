@@ -1076,9 +1076,9 @@ pub fn bridge_problem(forwards: &[(String, u16)], loopback_mcp: &[String]) -> Op
 }
 
 /// Shown when a port forward is opened while Casper answers.
-pub const BUSY_FORWARD: &str = "Casper is answering a question in the AI panel, and its commands can reach this computer's local ports. Open the port forward when it's done, or press Stop first.";
+pub const BUSY_FORWARD: &str = "Casper is answering (AI panel or editor), and its commands can reach this computer's local ports. Open the port forward when it's done, or press Stop first.";
 /// Shown when a web MCP server is connected while Casper answers.
-pub const BUSY_MCP: &str = "Casper is answering a question in the AI panel, and its commands can reach this computer's local ports. Connect this MCP server when it's done, or press Stop first.";
+pub const BUSY_MCP: &str = "Casper is answering (AI panel or editor), and its commands can reach this computer's local ports. Connect this MCP server when it's done, or press Stop first.";
 
 /// Counts the Casper questions in progress. While one runs, GreenCLI opens
 /// no port forward and connects no web MCP server: Casper checked for those
@@ -2730,6 +2730,19 @@ mod tests {
         let long = "é".repeat(400);
         let hint = stderr_hint(&long);
         assert!(hint.len() <= 300 && hint.chars().all(|c| c == 'é'));
+    }
+
+    // ─── Busy ───
+
+    #[test]
+    fn busy_texts_fit_an_editor_check_too() {
+        for text in [BUSY_FORWARD, BUSY_MCP] {
+            // An editor check counts as a Casper run too: the text can't say only the AI panel.
+            assert!(!text.contains("a question in the AI panel"), "{text}");
+            assert!(text.contains("editor"), "{text}");
+            assert!(text.starts_with("Casper is answering"), "{text}");
+            assert!(text.contains("Stop"), "{text}");
+        }
     }
 
     // ─── Usage ───
