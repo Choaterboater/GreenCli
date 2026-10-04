@@ -188,7 +188,7 @@ export function buildProblems(text: string, language: string): ConfigProblem[] {
           endColumn: raw.trimEnd().length + 1,
           severity: 'info',
           message:
-            'Junos changes do nothing until a commit. Add "commit confirmed 5" so the box rolls back if you lose access.',
+            'Junos changes do nothing until a commit. Use Send safely (arrow next to Send): it commits with a rollback timer and confirms for you. Or add "commit confirmed 5": it rolls back in 5 minutes unless you commit again.',
           code: 'junos-commit',
         });
       }
@@ -257,4 +257,18 @@ export function problemSummary(problems: readonly ConfigProblem[]): string {
   if (warnings) parts.push(`${warnings} ${warnings === 1 ? 'warning' : 'warnings'}`);
   if (tips) parts.push(`${tips} ${tips === 1 ? 'tip' : 'tips'}`);
   return parts.join(', ');
+}
+
+/** What the toolbar shows: the counts, a "No problems" tick, or nothing. */
+export type ProblemBadge = 'counts' | 'clean' | 'none';
+
+/**
+ * Counts whenever something was found. The tick only on a device config
+ * with text in it: code files and plain text get lighter checks, so a tick
+ * there would promise more than was checked.
+ */
+export function problemBadge(problems: readonly ConfigProblem[], language: string, text: string): ProblemBadge {
+  if (problems.length > 0) return 'counts';
+  if (!text.trim()) return 'none';
+  return NETWORK_LANGUAGES.has(language) ? 'clean' : 'none';
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { SIDE_PANEL, useSidePanelStore } from './sidePanelStore';
+import { SIDE_PANEL, sidePanelDragMax, useSidePanelStore } from './sidePanelStore';
 import { useSessionStore } from './sessionStore';
 import { PANEL_FIT_MIN_WIDTH, TERMINAL_MIN_WIDTH } from '../utils/panelFit';
 
@@ -35,22 +35,46 @@ describe('sidePanelStore', () => {
     expect(store().fitted).toBe(480);
   });
 
-  it('saves a dragged width and restores it clamped to the limits', () => {
-    store().setRowWidth(1600);
+  it('saves a dragged width with no fixed upper limit', () => {
+    store().setRowWidth(1600); // 1120 px beside the terminal's minimum
     store().commitWidth(610);
     expect(localStorage.getItem('greencli-side-panel-width')).toBe('610');
     expect(store().fitted).toBe(610);
+    // Wider than the old 1000 px limit sticks.
+    store().commitWidth(1100);
+    expect(localStorage.getItem('greencli-side-panel-width')).toBe('1100');
+    expect(store().preferred).toBe(1100);
+    expect(store().fitted).toBe(1100);
+    // Too wide for the row: kept as preferred, shown so the terminal keeps its minimum.
     store().commitWidth(5000);
-    expect(store().preferred).toBe(SIDE_PANEL.max);
+    expect(store().preferred).toBe(5000);
+    expect(store().fitted).toBe(1600 - TERMINAL_MIN_WIDTH);
     store().commitWidth(10);
     expect(store().preferred).toBe(SIDE_PANEL.min);
   });
 
-  it('seeds its width from a panel width saved before the panels became tabs', async () => {
-    localStorage.setItem('atp-panel-width-ai', '640');
+  it('a wide width shrinks in a small window and comes back when it grows', () => {
+    store().commitWidth(1400);
+    store().setRowWidth(1200);
+    expect(store().fitted).toBe(720);
+    store().setRowWidth(2400);
+    expect(store().fitted).toBe(1400);
+  });
+
+  it('an unmeasured row (width 0) leaves the panel at its preferred width', () => {
+    store().commitWidth(900);
+    store().setRowWidth(1600);
+    store().setRowWidth(0);
+    expect(store().space).toBe(Infinity);
+    expect(store().fitted).toBe(900);
+    expect(sidePanelDragMax(store().fitted, store().space)).toBe(Infinity);
+  });
+
+  it('restores a saved wide width without cutting it down', async () => {
+    localStorage.setItem('greencli-side-panel-width', '1500');
     vi.resetModules();
     const fresh = await import('./sidePanelStore');
-    expect(fresh.useSidePanelStore.getState().preferred).toBe(640);
+    expect(fresh.useSidePanelStore.getState().preferred).toBe(1500);
   });
 
   it('remembers the last tab across restarts', () => {
@@ -65,6 +89,20 @@ describe('sidePanelStore', () => {
     expect(store().status).toEqual({ ai: 'busy', editor: 'dirty' });
     store().setStatus('ai', null);
     expect(store().status).toEqual({ editor: 'dirty' });
+  });
+});
+
+describe('sidePanelDragMax', () => {
+  it('lets the panel grow until the terminal is at its minimum', () => {
+    expect(sidePanelDragMax(480, 1520)).toBe(1520);
+  });
+
+  it('never goes below the fitted width in a tiny window', () => {
+    expect(sidePanelDragMax(320, 100)).toBe(320);
+  });
+
+  it('has no limit before the row is measured', () => {
+    expect(sidePanelDragMax(480, Infinity)).toBe(Infinity);
   });
 });
 

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { Zap, Plus, X, Send } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { useSnippetsStore, Snippet } from '../store/snippetsStore';
@@ -9,6 +9,7 @@ import { countPasteLines } from '../store/terminalToolsStore';
 import { notify } from '../store/toastStore';
 import { getTerminalActionAdapter } from '../utils/terminalActions';
 import { fillPlaceholders, snippetPlaceholders } from '../utils/snippetTemplate';
+import ToolbarMenu from './ToolbarMenu';
 
 const isMac = navigator.platform.toUpperCase().includes('MAC');
 
@@ -21,6 +22,7 @@ export default function SnippetsMenu() {
   const activeSession = sessions.find((s) => s.sessionId === activeSessionId);
 
   const [open, setOpen] = useState(false);
+  const buttonRef = useRef<HTMLButtonElement>(null);
   const [adding, setAdding] = useState(false);
   const [label, setLabel] = useState('');
   const [command, setCommand] = useState('');
@@ -106,6 +108,7 @@ export default function SnippetsMenu() {
   return (
     <div className="relative">
       <button
+        ref={buttonRef}
         onClick={() => setOpen(!open)}
         className={`flex items-center justify-center w-7 h-7 rounded-md transition-colors ${
           open
@@ -120,100 +123,96 @@ export default function SnippetsMenu() {
         <Zap size={15} />
       </button>
 
-      {open && (
-        <>
-          <div className="fixed inset-0 z-20" onClick={() => setOpen(false)} />
-          <div className="absolute top-full right-0 mt-1 z-30 w-72 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg shadow-xl flex flex-col">
-            <div className="px-3 py-2 border-b border-[var(--bg-tertiary)]">
-              <div className="flex items-center justify-between">
-                <span className="text-[10px] font-semibold text-[var(--text-secondary)] uppercase tracking-wider">
-                  Snippets
-                </span>
-                {!connected && <span className="text-[9px] text-[var(--text-muted)]">no active session</span>}
-              </div>
-              <p className="mt-0.5 text-[10px] text-[var(--text-muted)]">Click to insert · Shift+click to run</p>
-            </div>
-
-            <div className="max-h-72 overflow-y-auto py-1">
-              {snippets.length === 0 && (
-                <p className="px-3 py-2 text-xs text-[var(--text-muted)]">No snippets yet.</p>
-              )}
-              {snippets.map((s) => {
-                const [first, ...rest] = s.command.split('\n');
-                return (
-                  <div key={s.id} className="group flex items-center gap-1 px-2 hover:bg-[var(--bg-tertiary)]">
-                    <button
-                      onClick={(e) => void applySnippet(s, e.shiftKey)}
-                      disabled={!connected}
-                      className="flex-1 min-w-0 flex items-center gap-2 px-1 py-1.5 text-left disabled:opacity-40"
-                      title={connected ? `${s.command}\n\nClick to insert · Shift+click to run` : 'Connect a session first'}
-                    >
-                      <Send size={10} className="text-[var(--accent-success)] flex-shrink-0" />
-                      <span className="text-xs text-[var(--text-primary)] truncate flex-shrink-0 max-w-[90px]">{s.label}</span>
-                      <code className="text-[10px] text-[var(--text-muted)] font-mono truncate">{first}</code>
-                      {rest.length > 0 && (
-                        <span className="text-[9px] text-[var(--text-muted)] flex-shrink-0">+{rest.length} lines</span>
-                      )}
-                    </button>
-                    <button
-                      onClick={() => void deleteSnippet(s)}
-                      className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-[var(--border)] text-[var(--text-secondary)] hover:text-[var(--accent-danger)] flex-shrink-0"
-                      title="Delete snippet"
-                    >
-                      <X size={11} />
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-
-            <div className="border-t border-[var(--bg-tertiary)] p-2">
-              {adding ? (
-                <div className="space-y-1.5">
-                  <input
-                    autoFocus
-                    value={label}
-                    onChange={(e) => setLabel(e.target.value)}
-                    onKeyDown={(e) => e.key === 'Enter' && saveNew()}
-                    placeholder="Label (e.g. PoE status)"
-                    className="w-full text-xs bg-[var(--bg-primary)] border border-[var(--border)] rounded px-2 py-1 text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)]"
-                  />
-                  <textarea
-                    value={command}
-                    onChange={(e) => setCommand(e.target.value)}
-                    onKeyDown={(e) => {
-                      // Enter adds a line (multi-line snippets); Ctrl/Cmd+Enter saves.
-                      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-                        e.preventDefault();
-                        saveNew();
-                      }
-                    }}
-                    rows={2}
-                    spellCheck={false}
-                    placeholder={'Command (e.g. show interface {{port}})'}
-                    className="w-full text-xs bg-[var(--bg-primary)] border border-[var(--border)] rounded px-2 py-1 text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)] font-mono resize-y"
-                  />
-                  <p className="text-[10px] text-[var(--text-muted)] leading-snug">
-                    One command per line. {'{{name}}'} asks for a value each time. {isMac ? '⌘' : 'Ctrl'}+Enter saves.
-                  </p>
-                  <div className="flex gap-1.5">
-                    <button onClick={saveNew} className="flex-1 px-2 py-1 text-xs bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-[var(--accent-fg)] rounded">Save</button>
-                    <button onClick={() => setAdding(false)} className="px-2 py-1 text-xs bg-[var(--bg-tertiary)] hover:bg-[var(--border)] text-[var(--text-secondary)] rounded">Cancel</button>
-                  </div>
-                </div>
-              ) : (
-                <button
-                  onClick={() => setAdding(true)}
-                  className="flex items-center gap-1.5 w-full px-2 py-1 text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] rounded transition-colors"
-                >
-                  <Plus size={12} />
-                  New snippet
-                </button>
-              )}
-            </div>
+      <ToolbarMenu open={open} anchorRef={buttonRef} onClose={() => setOpen(false)} align="end" label="Saved commands" className="w-72 flex flex-col">
+        <div className="px-3 py-2 border-b border-[var(--bg-tertiary)]">
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-semibold text-[var(--text-secondary)] uppercase tracking-wider">
+              Snippets
+            </span>
+            {!connected && <span className="text-[9px] text-[var(--text-muted)]">no active session</span>}
           </div>
-        </>
-      )}
+          <p className="mt-0.5 text-[10px] text-[var(--text-muted)]">Click to insert · Shift+click to run</p>
+        </div>
+
+        <div className="max-h-72 overflow-y-auto py-1">
+          {snippets.length === 0 && (
+            <p className="px-3 py-2 text-xs text-[var(--text-muted)]">No snippets yet.</p>
+          )}
+          {snippets.map((s) => {
+            const [first, ...rest] = s.command.split('\n');
+            return (
+              <div key={s.id} className="group flex items-center gap-1 px-2 hover:bg-[var(--bg-tertiary)]">
+                <button
+                  role="menuitem"
+                  onClick={(e) => void applySnippet(s, e.shiftKey)}
+                  disabled={!connected}
+                  className="flex-1 min-w-0 flex items-center gap-2 px-1 py-1.5 text-left disabled:opacity-40"
+                  title={connected ? `${s.command}\n\nClick to insert · Shift+click to run` : 'Connect a session first'}
+                >
+                  <Send size={10} className="text-[var(--accent-success)] flex-shrink-0" />
+                  <span className="text-xs text-[var(--text-primary)] truncate flex-shrink-0 max-w-[90px]">{s.label}</span>
+                  <code className="text-[10px] text-[var(--text-muted)] font-mono truncate">{first}</code>
+                  {rest.length > 0 && (
+                    <span className="text-[9px] text-[var(--text-muted)] flex-shrink-0">+{rest.length} lines</span>
+                  )}
+                </button>
+                <button
+                  onClick={() => void deleteSnippet(s)}
+                  className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-[var(--border)] text-[var(--text-secondary)] hover:text-[var(--accent-danger)] flex-shrink-0"
+                  title="Delete snippet"
+                >
+                  <X size={11} />
+                </button>
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="border-t border-[var(--bg-tertiary)] p-2">
+          {adding ? (
+            <div className="space-y-1.5">
+              <input
+                autoFocus
+                value={label}
+                onChange={(e) => setLabel(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && saveNew()}
+                placeholder="Label (e.g. PoE status)"
+                className="w-full text-xs bg-[var(--bg-primary)] border border-[var(--border)] rounded px-2 py-1 text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)]"
+              />
+              <textarea
+                value={command}
+                onChange={(e) => setCommand(e.target.value)}
+                onKeyDown={(e) => {
+                  // Enter adds a line (multi-line snippets); Ctrl/Cmd+Enter saves.
+                  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                    e.preventDefault();
+                    saveNew();
+                  }
+                }}
+                rows={2}
+                spellCheck={false}
+                placeholder={'Command (e.g. show interface {{port}})'}
+                className="w-full text-xs bg-[var(--bg-primary)] border border-[var(--border)] rounded px-2 py-1 text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)] font-mono resize-y"
+              />
+              <p className="text-[10px] text-[var(--text-muted)] leading-snug">
+                One command per line. {'{{name}}'} asks for a value each time. {isMac ? '⌘' : 'Ctrl'}+Enter saves.
+              </p>
+              <div className="flex gap-1.5">
+                <button onClick={saveNew} className="flex-1 px-2 py-1 text-xs bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-[var(--accent-fg)] rounded">Save</button>
+                <button onClick={() => setAdding(false)} className="px-2 py-1 text-xs bg-[var(--bg-tertiary)] hover:bg-[var(--border)] text-[var(--text-secondary)] rounded">Cancel</button>
+              </div>
+            </div>
+          ) : (
+            <button
+              onClick={() => setAdding(true)}
+              className="flex items-center gap-1.5 w-full px-2 py-1 text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] rounded transition-colors"
+            >
+              <Plus size={12} />
+              New snippet
+            </button>
+          )}
+        </div>
+      </ToolbarMenu>
     </div>
   );
 }

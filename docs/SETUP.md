@@ -680,7 +680,7 @@ live compliance:
   *Send to terminal*. It prompts before discarding unsaved edits.
   - **Problems**: risky lines ("reboots the switch"), blanks still to fill in (`${vlan_id}`,
     `<replace-me>`, a hidden-secret marker), terminal junk from a captured log, and a Junos edit
-    with no commit are underlined, marked in the scrollbar, and counted in the toolbar. Click
+    with no commit are underlined, marked in the scrollbar, and counted in the toolbar (a clean device config shows ✓ No problems). Click
     the count (or press **Ctrl+Shift+M**, **Cmd+Shift+M** on a Mac) for the **Problems panel**
     under the editor: every problem with its line, filterable by kind; a click selects it.
     **F8** / **Shift+F8** steps through them. A line the switch rejected on Send shows in red

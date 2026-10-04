@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { MAX_PROBLEMS, buildProblems, problemSummary, rejectedLineProblem, sendProblemNote } from './configProblems';
+import { MAX_PROBLEMS, buildProblems, problemBadge, problemSummary, rejectedLineProblem, sendProblemNote } from './configProblems';
 
 describe('buildProblems', () => {
   it('underlines a risky line with what it does, from its first word to its end', () => {
@@ -66,6 +66,13 @@ describe('buildProblems', () => {
     expect(buildProblems(`${text}/* commit confirmed 5 */\n`, 'mist')).toHaveLength(1);
   });
 
+  it('names Send safely first in the Junos commit tip, then commit confirmed', () => {
+    const [tip] = buildProblems('set vlans users vlan-id 10\n', 'juniper-junos');
+    expect(tip.message.indexOf('Send safely')).toBeGreaterThan(-1);
+    expect(tip.message.indexOf('Send safely')).toBeLessThan(tip.message.indexOf('commit confirmed 5'));
+    expect(tip.message).toMatch(/rolls back .* unless you commit again/);
+  });
+
   it('stops at the cap', () => {
     const text = Array.from({ length: MAX_PROBLEMS + 50 }, () => 'reload').join('\n');
     expect(buildProblems(text, 'aruba-cx')).toHaveLength(MAX_PROBLEMS);
@@ -108,7 +115,7 @@ describe('sendProblemNote', () => {
         '1 error, 1 warning, 1 tip:',
         'Error, line 2: Fill in ${id} before sending: the switch would get this text as it is.',
         'Warning, line 1: Risky: this reboots the switch. Check it before you send.',
-        'Tip, line 3: Junos changes do nothing until a commit. Add "commit confirmed 5" so the box rolls back if you lose access.',
+        'Tip, line 3: Junos changes do nothing until a commit. Use Send safely (arrow next to Send): it commits with a rollback timer and confirms for you. Or add "commit confirmed 5": it rolls back in 5 minutes unless you commit again.',
       ].join('\n')
     );
   });
@@ -208,5 +215,38 @@ describe('secrets written into code and data files', () => {
   it('only checks code and data files', () => {
     expect(values('password: Hunter22', 'markdown')).toEqual([]);
     expect(buildProblems('password: Hunter22', 'aruba-cx').some((p) => p.code === 'code-secret')).toBe(false);
+  });
+});
+
+describe('problemBadge', () => {
+  const badge = (text: string, language: string) => problemBadge(buildProblems(text, language), language, text);
+
+  it('says clean for a device config with nothing found', () => {
+    expect(badge('vlan 10\n  name users\n', 'aruba-cx')).toBe('clean');
+    expect(badge('set vlans users vlan-id 10\ncommit\n', 'juniper-junos')).toBe('clean');
+    expect(badge('hostname sw1\n', 'generic')).toBe('clean');
+  });
+
+  it('shows counts when there is a problem, in any language', () => {
+    expect(badge('reload\n', 'aruba-cx')).toBe('counts');
+    expect(badge('api_key = "abc123def456"\n', 'python')).toBe('counts');
+  });
+
+  it('shows nothing for an empty tab', () => {
+    expect(badge('', 'aruba-cx')).toBe('none');
+    expect(badge('  \n', 'aruba-cx')).toBe('none');
+  });
+
+  it('shows nothing for clean code, data and plain text', () => {
+    expect(badge('print("hi")\n', 'python')).toBe('none');
+    expect(badge('name: users\n', 'yaml')).toBe('none');
+    expect(badge('notes from the call\n', 'plaintext')).toBe('none');
+  });
+
+  it('shows counts for a line the switch rejected, even on clean text', () => {
+    const text = 'vlan 10\n  name users\n';
+    const rejected = rejectedLineProblem(text, 2, '% Invalid input');
+    expect(rejected).toBeDefined();
+    expect(problemBadge([rejected!], 'aruba-cx', text)).toBe('counts');
   });
 });

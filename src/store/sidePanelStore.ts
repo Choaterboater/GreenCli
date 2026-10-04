@@ -11,9 +11,11 @@ export const SIDE_PANEL_TABS: { key: SidePanelKey; label: string; title: string 
   { key: 'ai', label: 'AI', title: 'AI Assistant' },
 ];
 
-/** Default width and drag limits of the side panel (shared by every tab, so
- *  switching tabs never makes the terminal jump). */
-export const SIDE_PANEL = { width: 480, min: 300, max: 1000 };
+/** Default and minimum width of the side panel (shared by every tab, so
+ *  switching tabs never makes the terminal jump). There is no fixed maximum:
+ *  the panel can be as wide as the window allows while the terminal keeps
+ *  TERMINAL_MIN_WIDTH. */
+export const SIDE_PANEL = { width: 480, min: 300 };
 
 const WIDTH_KEY = 'greencli-side-panel-width';
 const TAB_KEY = 'greencli-side-panel-tab';
@@ -21,7 +23,7 @@ const TAB_KEY = 'greencli-side-panel-tab';
 // first one found seeds the shared width, so an upgrade keeps a dragged size.
 const LEGACY_WIDTH_KEYS = ['atp-panel-width-ai', 'atp-panel-width-editor', 'atp-panel-width-api'];
 
-const clampWidth = (w: number) => Math.round(Math.max(SIDE_PANEL.min, Math.min(SIDE_PANEL.max, w)));
+const clampWidth = (w: number) => Math.round(Math.max(SIDE_PANEL.min, w));
 
 function readNumber(key: string): number | null {
   try {
@@ -132,15 +134,24 @@ export const useSidePanelStore = create<SidePanelState>()((set, get) => {
 });
 
 /**
+ * How wide the panel can be dragged: until the terminal is at its minimum
+ * (`space`), but never narrower than the width it shows now (tiny windows,
+ * where the fitted floor is wider than `space`). `space` is Infinity only
+ * before the row is measured, which a layout effect does before the first
+ * paint (useSidePanelFit), so no drag can happen with no limit.
+ */
+export function sidePanelDragMax(fitted: number, space: number): number {
+  return Number.isFinite(space) ? Math.max(fitted, space) : Infinity;
+}
+
+/**
  * What the side panel needs to render and resize itself: its fitted width,
- * drag limits (the max leaves the terminal its minimum), and the commit
- * callback that saves a dragged width.
+ * drag limits (see sidePanelDragMax), and the commit callback that saves a
+ * dragged width.
  */
 export function useSidePanelWidth() {
   const width = useSidePanelStore((s) => s.fitted);
-  const max = useSidePanelStore((s) =>
-    Math.max(s.fitted, Math.min(SIDE_PANEL.max, Number.isFinite(s.space) ? s.space : SIDE_PANEL.max)),
-  );
+  const max = useSidePanelStore((s) => sidePanelDragMax(s.fitted, s.space));
   const commitWidth = useSidePanelStore((s) => s.commitWidth);
   const commit = useCallback((w: number) => commitWidth(w), [commitWidth]);
   return { width, min: SIDE_PANEL.min, max, commit };
