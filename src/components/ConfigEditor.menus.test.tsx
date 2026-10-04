@@ -134,6 +134,15 @@ describe('ConfigEditor toolbar menus', () => {
     await waitFor(() => expect(triggers.language().textContent).toContain('AOS-S'));
   });
 
+  it('lists the tab\'s vendor first in the Snippets menu', async () => {
+    await renderEditor();
+    fireEvent.click(triggers.snippets());
+    const items = screen.getAllByRole('menuitem');
+    expect(items[0].textContent).toMatch(/^AOS-CX:/);
+    expect(items.some((b) => /^Junos:/.test(b.textContent ?? ''))).toBe(true);
+    expect(screen.getByRole('separator')).toBeTruthy();
+  });
+
   it('removes an open menu when the editor is hidden', async () => {
     await renderEditor();
     fireEvent.click(triggers.snippets());

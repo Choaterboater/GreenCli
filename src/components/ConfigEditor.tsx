@@ -45,7 +45,7 @@ import { generateId } from '../utils';
 import { profileForSession } from '../utils/deviceProfiles';
 import { setupMonaco } from '../editor/setup';
 import { detectConfigLanguage, wordSeparatorsFor } from '../editor/networkLanguages';
-import { CONFIG_SNIPPETS, toMonacoSnippet } from '../editor/snippets';
+import { CONFIG_SNIPPETS, snippetMenuGroups, toMonacoSnippet } from '../editor/snippets';
 import { CONFIG_TEMPLATES, templateByLabel } from '../editor/templates';
 import {
   MAX_PROBLEMS,
@@ -1778,17 +1778,26 @@ export default function ConfigEditor() {
             <ChevronDown size={10} />
           </button>
           <ToolbarMenu open={menuShown('snippets')} anchorRef={snippetsButtonRef} onClose={closeMenu} label="Snippets" className="min-w-[260px] py-1">
-            {CONFIG_SNIPPETS.map((snippet) => (
-              <button
-                key={snippet.label}
-                role="menuitem"
-                onClick={() => insertSnippet(snippet.label)}
-                className="grid grid-cols-[1fr_auto] gap-3 w-full px-3 py-1.5 text-xs text-left hover:bg-[var(--bg-tertiary)]"
-                title={snippet.description}
-              >
-                <span className="text-[var(--text-primary)]">{snippet.label}</span>
-                <code className="text-[10px] text-[var(--text-muted)]">{snippet.prefix}</code>
-              </button>
+            {snippetMenuGroups(language).map((group, index, groups) => (
+              <div key={group.vendor} role="group" aria-label={group.vendor}>
+                {/* A line between this tab's vendor and the others. */}
+                {index > 0 && groups[index - 1].current && !group.current && (
+                  <div role="separator" className="my-1 border-t border-[var(--border)]" />
+                )}
+                <p className="px-3 pt-1.5 pb-0.5 text-[10px] uppercase tracking-wide text-[var(--text-muted)]">{group.vendor}</p>
+                {group.snippets.map((snippet) => (
+                  <button
+                    key={snippet.label}
+                    role="menuitem"
+                    onClick={() => insertSnippet(snippet.label)}
+                    className="grid grid-cols-[1fr_auto] gap-3 w-full px-3 py-1.5 text-xs text-left hover:bg-[var(--bg-tertiary)]"
+                    title={snippet.description}
+                  >
+                    <span className="text-[var(--text-primary)]">{snippet.label}</span>
+                    <code className="text-[10px] text-[var(--text-muted)]">{snippet.prefix}</code>
+                  </button>
+                ))}
+              </div>
             ))}
             <p className="px-3 pt-1.5 mt-1 border-t border-[var(--border)] text-[10px] text-[var(--text-muted)]">
               Or type the word on the right at the start of a line. Tab moves to the next blank.

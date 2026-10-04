@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { CONFIG_SNIPPETS, registerSnippetCompletions, snippetsFor, toMonacoSnippet } from './snippets';
+import { CONFIG_SNIPPETS, registerSnippetCompletions, snippetMenuGroups, snippetsFor, toMonacoSnippet } from './snippets';
 import { buildProblems } from '../utils/configProblems';
 import { prepareSendLines } from '../utils/configSafety';
 
@@ -70,9 +70,9 @@ describe('built-in snippets', () => {
   });
 
   it('holds no secret: every key, secret or password is a blank', () => {
-    const secretValue = /\b(?:key|secret|passphrase|psk|-password|-pass)(?:\s+plaintext)?\s+(?!\$\{)([^\s\]]+)/i;
+    const secretValue = /\b(?:key|secret|passphrase|psk|-password|-pass)(?:\s+plaintext)?\s+(?!\$\{|plaintext\b)([^\s\]]+)/i;
     for (const snippet of CONFIG_SNIPPETS) {
-      for (const line of snippet.body.split('\n')) expect([snippet.label, line.match(secretValue)?.[1]]).toEqual([snippet.label, undefined]);
+      for (const line of sendLines(snippet.body)) expect([snippet.label, line.match(secretValue)?.[1]]).toEqual([snippet.label, undefined]);
       const codes = buildProblems(snippet.body, snippet.languages[0]).map((p) => p.code);
       expect([snippet.label, codes.includes('plaintext-secret')]).toEqual([snippet.label, false]);
     }
@@ -113,6 +113,85 @@ describe('built-in snippets', () => {
     const description = CONFIG_SNIPPETS.find((s) => s.prefix === 'commit-confirmed')!.description;
     expect(description).toMatch(/Send safely/);
     expect(description).toMatch(/commit again/);
+  });
+});
+
+describe('the everyday set', () => {
+  const byPrefix = (prefix: string) => CONFIG_SNIPPETS.find((s) => s.prefix === prefix);
+
+  it('covers VLANs, routing, ACLs, 802.1X, SNMPv3, LAGs, edge ports and NTP/syslog on each platform', () => {
+    const wanted: Record<string, string[]> = {
+      'aruba-cx': ['cx-vlan', 'cx-routed', 'cx-ospf', 'cx-bgp', 'cx-static', 'cx-helper', 'cx-acl', 'cx-radius', 'cx-dot1x', 'cx-snmpv3', 'cx-edge', 'cx-qos-trust', 'cx-ntp-syslog'],
+      'aruba-aos-s': ['aoss-trunk', 'aoss-lacp', 'aoss-radius', 'aoss-dot1x', 'aoss-edge', 'aoss-ntp-syslog'],
+      'juniper-junos': ['junos-lag', 'junos-irb', 'junos-ospf', 'junos-bgp', 'junos-ntp-syslog', 'junos-radius', 'junos-snmpv3', 'junos-dot1x', 'junos-edge', 'commit-keep', 'commit-check'],
+      mist: ['junos-ospf', 'commit-keep'],
+      'aruba-ap': ['iap-wlan', 'iap-ntp-syslog'],
+    };
+    for (const [language, prefixes] of Object.entries(wanted)) {
+      const offered = snippetsFor(language).map((s) => s.prefix);
+      for (const prefix of prefixes) expect([language, offered.includes(prefix)]).toEqual([language, true]);
+    }
+  });
+
+  it('leaves the rollback timer to Send safely (no cx-safe wrapper to confirm by hand)', () => {
+    expect(byPrefix('cx-safe')).toBeUndefined();
+    for (const snippet of CONFIG_SNIPPETS) expect([snippet.label, /checkpoint\s+auto/.test(snippet.body)]).toEqual([snippet.label, false]);
+  });
+
+  it('warns on every login and 802.1X RADIUS snippet that a wrong key can lock you out', () => {
+    for (const prefix of ['cx-radius', 'aoss-radius', 'junos-radius']) {
+      expect([prefix, byPrefix(prefix)!.body]).toEqual([prefix, expect.stringMatching(/Send safely: a wrong key can lock you out of SSH\./)]);
+    }
+  });
+
+  it('AOS-S 802.1X uses RADIUS and says it needs a RADIUS server', () => {
+    const dot1x = byPrefix('aoss-dot1x')!;
+    expect(dot1x.body).toContain('aaa authentication port-access eap-radius');
+    expect(dot1x.description).toMatch(/aoss-radius/);
+  });
+
+  it('Junos RADIUS login keeps local passwords as a fallback', () => {
+    expect(byPrefix('junos-radius')!.body).toContain('set system authentication-order [ radius password ]');
+  });
+
+  it('the Instant AP WLAN leaves commit apply to the person or to Send safely', () => {
+    const body = byPrefix('iap-wlan')!.body;
+    expect(prepareSendLines(body).some((l) => /^commit\s+apply/i.test(l.text))).toBe(false);
+    expect(body).toContain('! Plain Send: finish with commit apply');
+    expect(body).toContain('wpa-passphrase ${passphrase}');
+  });
+
+  it('commit-keep confirms a commit confirmed; commit-check only checks', () => {
+    expect(byPrefix('commit-keep')!.body).toBe('commit comment "${comment}"\n');
+    expect(byPrefix('commit-check')!.body).toBe('commit check\n');
+  });
+});
+
+describe('snippetMenuGroups', () => {
+  const flat = (language: string) => snippetMenuGroups(language).flatMap((g) => g.snippets);
+
+  it('puts the open tab\'s vendor first, then every other vendor', () => {
+    const groups = snippetMenuGroups('aruba-cx');
+    expect(groups[0]).toMatchObject({ vendor: 'AOS-CX', current: true });
+    expect(groups[0].snippets.every((s) => s.label.startsWith('AOS-CX:'))).toBe(true);
+    const current = groups.filter((g) => g.current);
+    expect(groups.slice(0, current.length)).toEqual(current);
+    expect(current.flatMap((g) => g.snippets.map((s) => s.prefix)).sort()).toEqual(snippetsFor('aruba-cx').map((s) => s.prefix).sort());
+    expect(groups.slice(1).map((g) => g.vendor)).toContain('Junos');
+    expect(snippetMenuGroups('juniper-junos')[0]).toMatchObject({ vendor: 'Junos', current: true });
+    expect(snippetMenuGroups('aruba-ap')[0]).toMatchObject({ vendor: 'Instant AP', current: true });
+  });
+
+  it('hides nothing and repeats nothing', () => {
+    for (const language of ['aruba-cx', 'mist', 'aruba-ap', 'python']) {
+      const prefixes = flat(language).map((s) => s.prefix);
+      expect(new Set(prefixes).size).toBe(prefixes.length);
+      expect(prefixes.length).toBe(CONFIG_SNIPPETS.length);
+    }
+  });
+
+  it('has no current group on a tab that is not device config', () => {
+    expect(snippetMenuGroups('python').some((g) => g.current)).toBe(false);
   });
 });
 
