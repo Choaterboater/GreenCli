@@ -123,6 +123,17 @@ describe('ConfigEditor toolbar menus', () => {
     expect(screen.queryByRole('menu')).toBeNull();
   });
 
+  it('opens a template in its own tab, in the template\'s language', async () => {
+    await renderEditor();
+    fireEvent.click(triggers.templates());
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Mist/Junos: access switch baseline' }));
+    await waitFor(() => expect(triggers.language().textContent).toContain('Juniper Mist / Junos'));
+    fireEvent.click(triggers.templates());
+    expect(screen.queryByRole('menuitem', { name: /^Aruba:/ })).toBeNull();
+    fireEvent.click(screen.getByRole('menuitem', { name: 'AOS-S: VLAN + tagged uplink' }));
+    await waitFor(() => expect(triggers.language().textContent).toContain('AOS-S'));
+  });
+
   it('removes an open menu when the editor is hidden', async () => {
     await renderEditor();
     fireEvent.click(triggers.snippets());

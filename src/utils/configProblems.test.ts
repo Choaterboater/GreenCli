@@ -66,6 +66,13 @@ describe('buildProblems', () => {
     expect(buildProblems(`${text}/* commit confirmed 5 */\n`, 'mist')).toHaveLength(1);
   });
 
+  it('names Send safely first in the Junos commit tip, then commit confirmed', () => {
+    const [tip] = buildProblems('set vlans users vlan-id 10\n', 'juniper-junos');
+    expect(tip.message.indexOf('Send safely')).toBeGreaterThan(-1);
+    expect(tip.message.indexOf('Send safely')).toBeLessThan(tip.message.indexOf('commit confirmed 5'));
+    expect(tip.message).toMatch(/rolls back .* unless you commit again/);
+  });
+
   it('stops at the cap', () => {
     const text = Array.from({ length: MAX_PROBLEMS + 50 }, () => 'reload').join('\n');
     expect(buildProblems(text, 'aruba-cx')).toHaveLength(MAX_PROBLEMS);
@@ -108,7 +115,7 @@ describe('sendProblemNote', () => {
         '1 error, 1 warning, 1 tip:',
         'Error, line 2: Fill in ${id} before sending: the switch would get this text as it is.',
         'Warning, line 1: Risky: this reboots the switch. Check it before you send.',
-        'Tip, line 3: Junos changes do nothing until a commit. Add "commit confirmed 5" so the box rolls back if you lose access.',
+        'Tip, line 3: Junos changes do nothing until a commit. Use Send safely (arrow next to Send): it commits with a rollback timer and confirms for you. Or add "commit confirmed 5": it rolls back in 5 minutes unless you commit again.',
       ].join('\n')
     );
   });

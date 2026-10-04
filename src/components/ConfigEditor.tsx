@@ -46,6 +46,7 @@ import { profileForSession } from '../utils/deviceProfiles';
 import { setupMonaco } from '../editor/setup';
 import { detectConfigLanguage, wordSeparatorsFor } from '../editor/networkLanguages';
 import { CONFIG_SNIPPETS, toMonacoSnippet } from '../editor/snippets';
+import { CONFIG_TEMPLATES, templateByLabel } from '../editor/templates';
 import {
   MAX_PROBLEMS,
   NETWORK_LANGUAGES,
@@ -228,224 +229,6 @@ const LANGUAGE_LIST = [
   { id: 'ini',              label: 'INI / TOML / .env' },
   { id: 'proto',            label: 'Protobuf' },
 ];
-
-// ─── Config templates (multi-vendor: Aruba AOS-CX + Juniper Junos) ───
-
-const TEMPLATES: Record<string, string> = {
-  'Aruba: VLANs': `! VLAN Configuration
-configure terminal
-vlan 10
-  name MGMT
-vlan 20
-  name USERS
-vlan 30
-  name GUEST
-vlan 100
-  name VOICE
-end
-! Save once it looks right: write memory
-`,
-  'Aruba: Trunk port': `! Uplink trunk port
-configure terminal
-interface 1/1/1
-  no shutdown
-  description Uplink-Core
-  vlan trunk native 10
-  vlan trunk allowed 10,20,30,100
-end
-! Save once it looks right: write memory
-`,
-  'Aruba: Access port': `! Access port (users)
-configure terminal
-interface 1/1/3-1/1/48
-  no shutdown
-  vlan access 20
-end
-! Save once it looks right: write memory
-`,
-  'Aruba: BGP peer': `! BGP configuration
-configure terminal
-router bgp 65001
-  bgp router-id 10.0.0.1
-  neighbor 10.0.0.2 remote-as 65002
-  neighbor 10.0.0.2 description Core-Peer
-  address-family ipv4 unicast
-    neighbor 10.0.0.2 activate
-end
-! Save once it looks right: write memory
-`,
-  'Aruba: OSPF': `! OSPF configuration
-configure terminal
-router ospf 1
-  router-id 10.0.0.1
-  area 0.0.0.0
-interface vlan 10
-  ip ospf 1 area 0.0.0.0
-  ip ospf network point-to-point
-end
-! Save once it looks right: write memory
-`,
-  'Aruba: AAA / RADIUS': `! RADIUS / AAA
-configure terminal
-radius-server host 10.0.0.100
-  key plaintext MySecret123
-  authentication port 1812
-  accounting port 1813
-aaa authentication login default group radius local
-aaa authorization commands default group radius local
-end
-! Save once it looks right: write memory
-`,
-  'AOS-S: VLAN + tagged uplink': `! Aruba AOS-S / ProVision
-configure terminal
-vlan 10
-   name "MGMT"
-   tagged 1
-   ip address 10.0.10.2 255.255.255.0
-   exit
-vlan 20
-   name "USERS"
-   tagged 1
-   untagged 3-48
-   exit
-write memory
-`,
-  'Aruba AP: WLAN basics': `! Aruba Instant AP / VC
-configure terminal
-wlan ssid-profile Example-SSID
-  enable
-  essid Example-SSID
-  opmode wpa2-psk-aes
-  wpa-passphrase <replace-me>
-exit
-commit apply
-`,
-  'AOS8: AP group WLAN': `! ArubaOS 8 Controller / Conductor
-configure terminal
-wlan ssid-profile Example-SSID
-  essid Example-SSID
-  opmode wpa2-psk-aes
-exit
-wlan virtual-ap Example-VAP
-  ssid-profile Example-SSID
-exit
-write memory
-`,
-  'Junos: VLANs': `/* Juniper Junos — VLANs (set-style) */
-configure
-set vlans MGMT vlan-id 10
-set vlans USERS vlan-id 20
-set vlans GUEST vlan-id 30
-set vlans VOICE vlan-id 100
-/* Review with: show | compare — then apply with: commit confirmed 5 */
-`,
-  'Junos: Trunk port': `/* Junos — trunk uplink */
-configure
-set interfaces ge-0/0/0 description Uplink-Core
-set interfaces ge-0/0/0 unit 0 family ethernet-switching interface-mode trunk
-set interfaces ge-0/0/0 unit 0 family ethernet-switching vlan members [ MGMT USERS GUEST VOICE ]
-set interfaces ge-0/0/0 native-vlan-id 10
-/* Review with: show | compare — then apply with: commit confirmed 5 */
-`,
-  'Junos: Access port': `/* Junos — access port */
-configure
-set interfaces ge-0/0/3 unit 0 family ethernet-switching interface-mode access
-set interfaces ge-0/0/3 unit 0 family ethernet-switching vlan members USERS
-/* Review with: show | compare — then apply with: commit confirmed 5 */
-`,
-  'Junos: BGP peer': `/* Junos — BGP */
-configure
-set routing-options autonomous-system 65001
-set protocols bgp group EBGP type external
-set protocols bgp group EBGP neighbor 10.0.0.2 peer-as 65002
-set protocols bgp group EBGP neighbor 10.0.0.2 description Core-Peer
-/* Review with: show | compare — then apply with: commit confirmed 5 */
-`,
-  'Junos: OSPF': `/* Junos — OSPF */
-configure
-set protocols ospf area 0.0.0.0 interface ge-0/0/0.0 interface-type p2p
-set protocols ospf area 0.0.0.0 interface irb.10
-/* Review with: show | compare — then apply with: commit confirmed 5 */
-`,
-  'Mist/Junos: access switch baseline': `/* Mist-managed Junos switch baseline */
-configure
-set system host-name <switch-name>
-set system services ssh
-set vlans USERS vlan-id 20
-set interfaces ge-0/0/3 unit 0 family ethernet-switching interface-mode access
-set interfaces ge-0/0/3 unit 0 family ethernet-switching vlan members USERS
-commit confirmed 5 comment "GreenCLI staged access baseline"
-`,
-
-  // ─── Juniper Validated Design starters (Junos) — edit ids/addresses ───
-  'JVD: EVPN-VXLAN leaf (ERB)': `/* JVD EVPN-VXLAN — leaf (edge-routed bridging). Replace ASNs/IPs/VNIs. */
-configure
-set chassis aggregated-devices ethernet device-count 2
-set interfaces lo0 unit 0 family inet address 10.1.1.1/32
-/* Underlay: eBGP to spines */
-set protocols bgp group UNDERLAY type external
-set protocols bgp group UNDERLAY local-as 65001
-set protocols bgp group UNDERLAY family inet unicast
-set protocols bgp group UNDERLAY export LO0
-set protocols bgp group UNDERLAY neighbor 10.0.0.0 peer-as 65000
-/* Overlay: eBGP EVPN to spines (loopback) */
-set protocols bgp group OVERLAY type external
-set protocols bgp group OVERLAY multihop ttl 2
-set protocols bgp group OVERLAY local-address 10.1.1.1
-set protocols bgp group OVERLAY family evpn signaling
-set protocols bgp group OVERLAY neighbor 10.2.2.2 peer-as 65000
-/* EVPN-VXLAN */
-set protocols evpn encapsulation vxlan
-set protocols evpn default-gateway no-gateway-community
-set switch-options vtep-source-interface lo0.0
-set switch-options route-distinguisher 10.1.1.1:1
-set switch-options vrf-target target:65000:1
-set vlans V100 vlan-id 100
-set vlans V100 vxlan vni 10100
-/* Review with: show | compare — then apply with: commit confirmed 5 */
-`,
-
-  'JVD: EVPN-VXLAN spine (route-reflector)': `/* JVD EVPN-VXLAN — spine (underlay + EVPN route-reflector). */
-configure
-set interfaces lo0 unit 0 family inet address 10.2.2.2/32
-set protocols bgp group UNDERLAY type external
-set protocols bgp group UNDERLAY local-as 65000
-set protocols bgp group UNDERLAY family inet unicast
-set protocols bgp group UNDERLAY neighbor 10.0.0.1 peer-as 65001
-set protocols bgp group OVERLAY type external
-set protocols bgp group OVERLAY multihop ttl 2
-set protocols bgp group OVERLAY local-address 10.2.2.2
-set protocols bgp group OVERLAY family evpn signaling
-set protocols bgp group OVERLAY cluster 10.2.2.2
-set protocols bgp group OVERLAY neighbor 10.1.1.1 peer-as 65001
-/* Review with: show | compare — then apply with: commit confirmed 5 */
-`,
-
-  'JVD: AI fabric RoCE QoS (PFC+ECN)': `/* JVD AI/GPU fabric — lossless RoCEv2: PFC on priority 3, ECN marking. */
-configure
-set class-of-service classifiers dscp ROCE forwarding-class NO-LOSS loss-priority low code-points 011010
-set class-of-service forwarding-classes class NO-LOSS queue-num 3 no-loss
-set class-of-service congestion-notification-profile ECN input ieee-802.1 code-point 011 pfc
-set class-of-service interfaces et-0/0/0 congestion-notification-profile ECN
-set class-of-service interfaces et-0/0/0 unit 0 classifiers dscp ROCE
-set class-of-service drop-profiles ECN-DP interpolate fill-level 30 drop-probability 0
-set class-of-service drop-profiles ECN-DP interpolate fill-level 100 drop-probability 100
-set class-of-service forwarding-classes class NO-LOSS explicit-congestion-notification
-/* Review with: show | compare — then apply with: commit confirmed 5 */
-`,
-
-  'JVD: EVPN campus access (EX)': `/* JVD EVPN campus — access switch VLAN/VNI + uplink. */
-configure
-set interfaces ge-0/0/0 unit 0 family ethernet-switching interface-mode access vlan members V100
-set interfaces ae0 unit 0 family ethernet-switching interface-mode trunk vlan members all
-set vlans V100 vlan-id 100
-set vlans V100 vxlan vni 10100
-set switch-options vtep-source-interface lo0.0
-set protocols evpn encapsulation vxlan
-set protocols evpn extended-vni-list all
-/* Review with: show | compare — then apply with: commit confirmed 5 */
-`,
-};
 
 // ─── Pull menu (per device type) ───
 
@@ -1668,21 +1451,12 @@ export default function ConfigEditor() {
 
   const loadTemplate = async (name: string) => {
     setOpenMenu(null);
+    const template = templateByLabel(name);
+    if (!template) return;
     const buf = {
       name,
-      content: TEMPLATES[name],
-      language:
-        name.startsWith('Junos') || name.startsWith('JVD')
-          ? 'juniper-junos'
-          : name.startsWith('Mist')
-            ? 'mist'
-            : name.startsWith('AOS-S')
-              ? 'aruba-aos-s'
-              : name.startsWith('Aruba AP')
-                ? 'aruba-ap'
-                : name.startsWith('AOS8')
-                  ? 'aruba-controller'
-                  : 'aruba-cx',
+      content: template.body,
+      language: template.language,
       filePath: null,
       dirty: false,
       langExplicit: false,
@@ -1976,7 +1750,7 @@ export default function ConfigEditor() {
             <ChevronDown size={10} />
           </button>
           <ToolbarMenu open={menuShown('templates')} anchorRef={templatesButtonRef} onClose={closeMenu} label="Templates" className="min-w-[160px] py-1">
-            {Object.keys(TEMPLATES).map((name) => (
+            {CONFIG_TEMPLATES.map(({ label: name }) => (
               <button
                 key={name}
                 role="menuitem"
