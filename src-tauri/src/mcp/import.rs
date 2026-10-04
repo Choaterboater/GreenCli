@@ -157,7 +157,11 @@ fn read_capped(path: &Path, max_bytes: u64) -> ReadOutcome {
         return ReadOutcome::TooBig;
     }
     match String::from_utf8(bytes) {
-        Ok(text) => ReadOutcome::Text(text),
+        // Notepad and some Windows editors start the file with a BOM.
+        Ok(text) => ReadOutcome::Text(match text.strip_prefix('\u{feff}') {
+            Some(rest) => rest.to_string(),
+            None => text,
+        }),
         Err(_) => ReadOutcome::Unreadable,
     }
 }
@@ -587,9 +591,9 @@ fn server_map<'a>(
 pub fn scan(sources: &[SourceFile], home: &Path, existing: &[McpServerDef]) -> Scan {
     let home_text = home.to_string_lossy().to_string();
     let mut out = Scan::default();
-    // (source index, candidate), in file order.
+    // (place in the scan, candidate), in file order.
     let mut found: Vec<(usize, Candidate)> = Vec::new();
-    for (index, source) in sources.iter().enumerate() {
+    for source in sources {
         let text = match read_capped(&source.path, source.max_bytes) {
             ReadOutcome::Missing => continue,
             ReadOutcome::TooBig => {
@@ -654,7 +658,7 @@ pub fn scan(sources: &[SourceFile], home: &Path, existing: &[McpServerDef]) -> S
                         entry.notes.push(note);
                     }
                     found.push((
-                        index,
+                        found.len(),
                         Candidate {
                             def: entry.def,
                             source: source.label.to_string(),
@@ -680,21 +684,23 @@ pub fn scan(sources: &[SourceFile], home: &Path, existing: &[McpServerDef]) -> S
         source: c.source.clone(),
         reason,
     };
+    // Highest file first; `seq` keeps each server's place in its file.
     found.reverse();
-    let mut winners: Vec<Candidate> = Vec::new();
-    for (_, c) in found.into_iter() {
-        if let Some(winner) = winners.iter().find(|k| k.def.name == c.def.name) {
+    let mut winners: Vec<(usize, Candidate)> = Vec::new();
+    for (seq, c) in found.into_iter() {
+        let winners_defs = || winners.iter().map(|(_, k)| k);
+        if let Some(winner) = winners_defs().find(|k| k.def.name == c.def.name) {
             let reason = format!("also in {}; using that one", winner.source);
             out.skipped.push(skip_of(&c, reason));
-        } else if let Some(winner) = winners.iter().find(|k| same_setup(&k.def, &c.def)) {
+        } else if let Some(winner) = winners_defs().find(|k| same_setup(&k.def, &c.def)) {
             let reason = format!("same server as {} from {}", winner.def.name, winner.source);
             out.skipped.push(skip_of(&c, reason));
         } else {
-            winners.push(c);
+            winners.push((seq, c));
         }
     }
-    let mut kept: Vec<Candidate> = Vec::new();
-    for c in winners {
+    let mut kept: Vec<(usize, Candidate)> = Vec::new();
+    for (seq, c) in winners {
         if existing.iter().any(|e| e.name == c.def.name) {
             let reason = "a server with this name is already in GreenCLI".to_string();
             out.skipped.push(skip_of(&c, reason));
@@ -702,14 +708,13 @@ pub fn scan(sources: &[SourceFile], home: &Path, existing: &[McpServerDef]) -> S
             let reason = format!("already in GreenCLI as {}", same.name);
             out.skipped.push(skip_of(&c, reason));
         } else {
-            kept.push(c);
+            kept.push((seq, c));
         }
     }
     // In file order within each source, highest source first.
-    out.candidates = kept;
     let order: Vec<&str> = sources.iter().rev().map(|s| s.label).collect();
-    out.candidates
-        .sort_by_key(|c| order.iter().position(|l| *l == c.source));
+    kept.sort_by_key(|(seq, c)| (order.iter().position(|l| *l == c.source), *seq));
+    out.candidates = kept.into_iter().map(|(_, c)| c).collect();
     out
 }
 
@@ -846,7 +851,7 @@ fn masked_pair(arg: &str) -> Option<String> {
     is_env_pair(arg).then(|| format!("{}=…", arg.split_once('=').unwrap_or_default().0))
 }
 
-/// What a server runs, for the dialog: the program's file name and its args,
+/// What a server runs, for the dialog: the program as written (and its folder) and its args,
 /// or the web address's scheme and host. Values after a flag show only when
 /// they are numbers, paths or package-like words; env pairs, headers and
 /// token-looking parts become "…".
@@ -858,13 +863,8 @@ pub fn runs_line(def: &McpServerDef) -> String {
             .and_then(url_origin)
             .unwrap_or_else(|| "a web address".into());
     }
-    let program = def
-        .command
-        .rsplit(['/', '\\'])
-        .next()
-        .unwrap_or_default()
-        .to_string();
-    let mut words = vec![program];
+    // A path shows as written, so an unexpected copy of a familiar program stands out.
+    let mut words = vec![def.command.clone()];
     let mut previous: Option<&str> = None;
     for arg in &def.args {
         let after_flag = previous.filter(|p| is_flag(p) && !p.contains('='));
@@ -898,6 +898,9 @@ pub fn runs_line(def: &McpServerDef) -> String {
         };
         words.push(shown);
         previous = Some(arg.as_str());
+    }
+    if let Some(cwd) = def.cwd.as_deref().filter(|c| !c.is_empty()) {
+        words.push(format!("(in {cwd})"));
     }
     let line = words.join(" ");
     if line.chars().count() > 300 {

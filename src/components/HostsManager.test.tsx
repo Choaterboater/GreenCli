@@ -109,7 +109,12 @@ describe('Export lab hosts for Casper', () => {
     vi.mocked(tauriSave).mockResolvedValue('/Users/me/.casper/casper-lab.json');
     render(<HostsManager />);
     fireEvent.click(exportButton());
-    await waitFor(() => expect(notify.error).toHaveBeenCalledWith('Not saved', expect.any(String)));
+    await waitFor(() =>
+      expect(notify.error).toHaveBeenCalledWith(
+        'Not saved',
+        "GreenCLI does not write other apps' own settings files. Pick another place, for example your Documents folder."
+      )
+    );
     expect(writes()).toEqual([]);
   });
 

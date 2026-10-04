@@ -430,14 +430,14 @@ const REFUSED_FOLDERS = new Set(['.claude', '.casper', '.vscode', '.cursor', '.c
 
 /** null when fine; otherwise the plain-English reason the path is refused. A quick check on the text;
  *  src-tauri/src/export_file.rs checks the real path again (links too). Keep the two lists in step. */
-export function refusedExportPath(path: string): string | null {
+export function refusedExportPath(path: string, example = '.mcp.json in a project folder'): string | null {
   const parts = path.split(/[\\/]/).map((part) => part.toLowerCase());
   const base = parts.at(-1) ?? '';
   const folders = parts.slice(0, -1);
   const vscodeUser =
     base === 'mcp.json' && folders.length >= 2 && ['code', 'code - insiders'].includes(folders[folders.length - 2]) && folders[folders.length - 1] === 'user';
   if (REFUSED_FILES.has(base) || folders.some((folder) => REFUSED_FOLDERS.has(folder)) || vscodeUser) {
-    return "GreenCLI does not write other apps' own settings files. Pick another place, for example .mcp.json in a project folder.";
+    return `GreenCLI does not write other apps' own settings files. Pick another place, for example ${example}.`;
   }
   return null;
 }

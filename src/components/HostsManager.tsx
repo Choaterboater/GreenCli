@@ -76,7 +76,7 @@ export default function HostsManager() {
       const path = await tauriSave(LAB_EXPORT_FILE_NAME, 'Export lab hosts for Casper');
       if (!path) return;
       const { refusedExportPath } = await import('../utils/mcpExport');
-      const refused = refusedExportPath(path);
+      const refused = refusedExportPath(path, 'your Documents folder');
       if (refused) {
         notify.error('Not saved', refused);
         return;
