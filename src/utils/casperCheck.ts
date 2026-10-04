@@ -262,9 +262,12 @@ const USAGE_SENTENCE = /\s*(Casper used [^\n]*?\.)\s*$/;
 /** A run that failed: the error, with what it cost (if Casper said) kept apart. */
 export function casperErrorStatus(message: string): CasperStatus {
   const m = USAGE_SENTENCE.exec(message);
-  if (!m) return { head: message.trim(), usage: null, warning: false };
-  return { head: message.slice(0, m.index).trim(), usage: m[1], warning: false };
+  const head = (m ? message.slice(0, m.index) : message).trim().replace(/\s*\n+\s*/g, ' ');
+  return { head, usage: m ? m[1] : null, warning: SAFETY_NOTE.test(head) };
 }
+
+/** Casper's notes that something outside the check happened (a device or file changed, a secret, no sandbox). */
+const SAFETY_NOTE = /Casper changed |A secret showed up|Casper's sandbox was off|Casper may have changed files/;
 
 /** The editor's status line after a check. `left`: findings left out because their lines changed. */
 export function casperCheckStatus(

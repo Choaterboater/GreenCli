@@ -400,4 +400,15 @@ describe('casperErrorStatus', () => {
     });
     expect(casperErrorStatus("Casper isn't installed.")).toEqual({ head: "Casper isn't installed.", usage: null, warning: false });
   });
+
+  it('flags an error that says Casper changed a device or showed a secret', () => {
+    const s = casperErrorStatus(
+      'Casper stopped before it finished: Incomplete\n\nCasper changed things on sw1.\n\nA secret showed up in a command Casper ran. Change that secret.\n\nCasper used 9,000 tokens (about $0.12).'
+    );
+    expect(s.warning).toBe(true);
+    expect(s.head).toBe(
+      'Casper stopped before it finished: Incomplete Casper changed things on sw1. A secret showed up in a command Casper ran. Change that secret.'
+    );
+    expect(s.usage).toBe('Casper used 9,000 tokens (about $0.12).');
+  });
 });

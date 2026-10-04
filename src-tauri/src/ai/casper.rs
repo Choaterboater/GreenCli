@@ -1505,13 +1505,16 @@ pub fn casper_reply(
         Some(130 | 143) | None => Err("Casper was stopped before it answered.".to_string()),
         Some(n) => Err(format!("Casper failed (exit {n}): {reason}")),
     };
-    // A run that ends without an answer still says what it cost.
-    reply.map_err(
-        |e| match receipt.and_then(|r| usage_note(r.usage_tokens, r.usage_cost)) {
-            Some(n) => format!("{e}\n\n{n}"),
-            None => e,
-        },
-    )
+    // A run that ends without an answer still says what Casper did and what it cost.
+    // notes(0, ..) leaves out the "stopped" lines the error already says.
+    reply.map_err(|e| {
+        let mut extra = notes(0, receipt, picked);
+        extra.extend(receipt.and_then(|r| usage_note(r.usage_tokens, r.usage_cost)));
+        std::iter::once(e)
+            .chain(extra)
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    })
 }
 
 #[cfg(test)]
@@ -2871,6 +2874,22 @@ mod tests {
         assert_eq!(
             casper_reply(RunEnd::Exited(Some(2)), &out, "", None).unwrap_err(),
             "Casper stopped before it finished: Incomplete"
+        );
+    }
+
+    #[test]
+    fn reply_without_an_answer_keeps_the_safety_notes() {
+        // No answer, but Casper changed a device and showed a secret: the error says so, cost last.
+        let mut r = receipt("• Incomplete");
+        r.remote_changes = vec!["sw1".to_string()];
+        r.secret_in_command = true;
+        r.usage_tokens = Some(9000);
+        r.usage_cost = Some(0.12);
+        let out = output(None, &[], Some(r));
+        let err = casper_reply(RunEnd::Exited(Some(2)), &out, "", None).unwrap_err();
+        assert_eq!(
+            err,
+            "Casper stopped before it finished: Incomplete\n\nCasper changed things on sw1.\n\nA secret showed up in a command Casper ran. Change that secret.\n\nCasper used 9,000 tokens (about $0.12)."
         );
     }
 }
