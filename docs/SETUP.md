@@ -600,15 +600,21 @@ changes every time it starts; until then MCP Servers says so and the export leav
 | `list_connected_devices` | The device tabs connected in GreenCLI now: tab, name and type |
 | `device_show` | The output of one `show` line on one of those tabs, with secrets hidden (at most 16 KB) |
 
-GreenCLI must be open with the device connected. It asks you each time: 1 No · 2 Yes this once ·
-3 Yes, show commands on this device until GreenCLI closes. Casper asks first too (it marks
-`device_show` as diagnostic), so you answer two boxes. Only plain `show` lines with filters after
-`|` (include, exclude, begin, section, match, count …; on Junos `display set`, but not `trim`, xml
-or json) run: never config mode, never on Linux or Windows host tabs, and never while something is
-half-typed in the tab. Output over 16 KB is cut, keeping the start. Secrets are hidden, but a filter
-still sees them: whether a line comes back can give a secret away one guess at a time, so answer 3
-only for a program you trust. GreenCLI waits 60 seconds for your answer. One switch in **MCP
-Servers** turns this off.
+GreenCLI must be open with the device connected. It asks you first, in a box that shows the exact
+line it will type (Junos gets `| no-more`) and has three buttons: **No**, **Yes, this once**, and
+**Yes, show commands on <device> until GreenCLI closes** (it stops asking for that device until
+GreenCLI closes). Casper asks first too (it marks `device_show` as diagnostic), so you answer two
+boxes. Only plain `show` lines with filters after `|` (include, exclude, begin, section, match,
+count …; on Junos `display set`, but not `trim`, xml or json) run: never config mode, never on
+Linux or Windows host tabs, and never while something is half-typed in the tab. The text of
+include, exclude, begin, section, match, except or find may be a pattern with `^ $ * . ( ) [ ] +`;
+a `|` always starts a new filter, so `exclude (a|b)` is refused. Never `?` (on AOS-CX and Junos it
+shows help at once and leaves the line half-typed), quotes, a backtick, a backslash or `; & < >`.
+Output over 16 KB is cut, keeping the start. Secrets are hidden, but a filter still sees them:
+whether a line comes back can give a secret away one guess at a time, so pick the device button
+only for a program you trust. GreenCLI closes the box as a No after 40 seconds (nothing runs), so
+a Yes always has time to run before the 60-second wait ends. One switch in **MCP Servers** turns
+this off; turning it off also forgets every device Yes and refuses anything already asked.
 
 **Hidden copies.** When a config is captured, GreenCLI also saves a copy with secrets hidden (the
 same filter the AI uses). greencli-mcp reads configs only from these copies. A snapshot without

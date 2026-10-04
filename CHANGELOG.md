@@ -10,8 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - **greencli-mcp live show commands** (macOS and Linux): `list_connected_devices` and
   `device_show` let Casper or Claude Code run one plain `show` line on a device tab you already
-  have connected. GreenCLI asks you each time (1 No · 2 Yes this once · 3 Yes, show commands on
-  this device until GreenCLI closes) and hides secrets in the output. They talk only to the
+  have connected. GreenCLI asks you first, showing the exact line it will type (No · Yes, this
+  once · Yes, show commands on <device> until GreenCLI closes), closes the box as a No after 40
+  seconds, and hides secrets in the output. A filter's text may be a pattern (`^ $ * . ( ) [ ] +`);
+  `?` never runs. Turning the switch off forgets every device Yes. They talk only to the
   GreenCLI app on this computer, through its own channel in the data folder. On Windows they say
   "not on Windows yet".
 

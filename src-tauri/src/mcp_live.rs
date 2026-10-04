@@ -16,7 +16,8 @@
 //   answers with the `mcp_live_reply` command. If the program hangs up, the
 //   wait (60 s, under Casper's 90 s) runs out, or the switch goes off, the
 //   webview gets `mcp_live_cancel` {id} and must close that box; a late answer
-//   then goes nowhere.
+//   then goes nowhere. The webview's own box closes at 40 s, so a Yes always
+//   leaves time to run the line within the 60 s.
 // - A data folder path too long for this kind of file gives a plain refusal.
 //   There is no second place to put it.
 // - Windows: not yet ("Live show commands aren't on Windows yet.").
@@ -76,8 +77,10 @@ only filters such as include, exclude, begin, section or count after |.";
 const MISMATCH: &str = "GreenCLI and greencli-mcp don't match. Update GreenCLI and try again.";
 const BAD_ANSWER: &str = "GreenCLI's answer didn't make sense. Restart GreenCLI and try again.";
 const TURNED_OFF: &str = "Show commands were turned off in GreenCLI.";
-const NO_ANSWER: &str =
-    "GreenCLI didn't get an answer in time, so nothing ran. Ask again when you're at GreenCLI.";
+/// The webview closes its box at 40 s and says nothing ran then; this 60 s
+/// wait can only run out while a line is being typed, so it never says
+/// nothing ran.
+const NO_ANSWER: &str = "GreenCLI didn't answer in time. Ask again when you're at GreenCLI.";
 const BUSY: &str = "GreenCLI is busy with other show commands. Try again in a moment.";
 const TOO_LONG: &str = "The request is too long.";
 
@@ -123,6 +126,7 @@ struct Pending {
 
 struct Shared {
     wait: Duration,
+    request_wait: Duration,
     sink: Arc<dyn LiveSink>,
     pending: Mutex<Pending>,
 }
@@ -164,6 +168,7 @@ impl LiveChannel {
             dir,
             shared: Arc::new(Shared {
                 wait: LIVE_WAIT,
+                request_wait: REQUEST_WAIT,
                 sink,
                 pending: Mutex::new(Pending::default()),
             }),
@@ -178,6 +183,15 @@ impl LiveChannel {
         Arc::get_mut(&mut self.shared)
             .expect("with_wait before start")
             .wait = wait;
+        self
+    }
+
+    /// A shorter wait for the request line (tests).
+    #[cfg(test)]
+    pub fn with_request_wait(mut self, wait: Duration) -> Self {
+        Arc::get_mut(&mut self.shared)
+            .expect("with_request_wait before start")
+            .request_wait = wait;
         self
     }
 
@@ -478,7 +492,7 @@ async fn handle(stream: tokio::net::UnixStream, pid: Option<i32>, has_slot: bool
     use tokio::io::{AsyncWriteExt, BufReader};
     let (read, mut write) = stream.into_split();
     let mut reader = BufReader::new(read);
-    let reply = match tokio::time::timeout(REQUEST_WAIT, read_request(&mut reader)).await {
+    let reply = match tokio::time::timeout(shared.request_wait, read_request(&mut reader)).await {
         Err(_) => refuse("GreenCLI didn't get a request in time."),
         Ok(Err(text)) => refuse(text),
         Ok(Ok(_)) if !has_slot => refuse(BUSY),

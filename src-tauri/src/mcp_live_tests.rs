@@ -313,6 +313,130 @@ async fn turning_off_ends_waiting_requests() {
     );
 }
 
+#[tokio::test]
+async fn a_fifth_request_at_once_is_told_greencli_is_busy() {
+    let dir = temp_dir();
+    let (ch, web) = channel(&dir, Duration::from_secs(5));
+    ch.start_if_on().unwrap();
+    let waiting: Vec<_> = (0..MAX_AT_ONCE)
+        .map(|_| ask_in_background(&dir, json!({"v":1,"op":"sessions"})))
+        .collect();
+    until(|| (web.asks.lock().unwrap().len() == MAX_AT_ONCE).then_some(())).await;
+    let err = ask_in_background(&dir, json!({"v":1,"op":"sessions"}))
+        .await
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(err, BUSY);
+    assert_eq!(
+        web.asks.lock().unwrap().len(),
+        MAX_AT_ONCE,
+        "never handed on"
+    );
+    ch.stop();
+    for w in waiting {
+        assert!(w.await.unwrap().is_err());
+    }
+}
+
+#[tokio::test]
+async fn a_program_too_slow_to_send_its_request_is_refused() {
+    let dir = temp_dir();
+    let web = Arc::new(FakeWebview::default());
+    let ch =
+        LiveChannel::new(dir.clone(), web.clone()).with_request_wait(Duration::from_millis(200));
+    ch.start_if_on().unwrap();
+    let dir2 = dir.clone();
+    let reply = tokio::task::spawn_blocking(move || {
+        let mut s = StdStream::connect(dir2.join(SOCKET_NAME)).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        // Half a request, then nothing.
+        s.write_all(b"{\"v\":1,").unwrap();
+        let mut out = String::new();
+        let _ = s.read_to_string(&mut out);
+        out
+    })
+    .await
+    .unwrap();
+    let v: Value = serde_json::from_str(reply.trim()).unwrap();
+    assert_eq!(v["error"], "GreenCLI didn't get a request in time.");
+    assert!(web.asks.lock().unwrap().is_empty());
+    ch.stop();
+}
+
+#[test]
+fn the_wait_for_a_request_line_is_5_seconds() {
+    assert_eq!(REQUEST_WAIT, Duration::from_secs(5));
+}
+
+#[tokio::test]
+async fn an_empty_or_too_long_tab_or_device_name_is_refused() {
+    let dir = temp_dir();
+    let (ch, web) = channel(&dir, Duration::from_secs(5));
+    ch.start_if_on().unwrap();
+    for key in ["tab", "device"] {
+        for target in [String::new(), "   ".into(), "d".repeat(MAX_TARGET + 1)] {
+            let err = ask_in_background(
+                &dir,
+                json!({"v":1,"op":"show",key:target,"show":"show clock"}),
+            )
+            .await
+            .unwrap()
+            .unwrap_err();
+            assert_eq!(
+                err,
+                format!("The {key} name is empty or too long."),
+                "{key} {target:?}"
+            );
+        }
+        // Not text at all.
+        assert!(
+            ask_in_background(&dir, json!({"v":1,"op":"show",key:7,"show":"show clock"}))
+                .await
+                .unwrap()
+                .is_err()
+        );
+    }
+    assert!(web.asks.lock().unwrap().is_empty());
+    // 200 characters (not bytes) is still fine.
+    let client = ask_in_background(
+        &dir,
+        json!({"v":1,"op":"show","device":"é".repeat(MAX_TARGET),"show":"show clock"}),
+    );
+    let ask = until(|| first_ask(&web)).await;
+    assert_eq!(ask["device"].as_str().unwrap().chars().count(), MAX_TARGET);
+    ch.stop();
+    assert!(client.await.unwrap().is_err());
+}
+
+#[tokio::test]
+async fn a_folder_in_place_of_the_channel_file_is_refused_and_kept() {
+    let dir = temp_dir();
+    let sock = dir.join(SOCKET_NAME);
+    std::fs::create_dir(&sock).unwrap();
+    std::fs::write(sock.join("keep.txt"), "mine").unwrap();
+    let (ch, _web) = channel(&dir, Duration::from_secs(5));
+    let err = ch.start_if_on().unwrap_err();
+    assert!(err.contains("a folder is named"), "{err}");
+    assert!(!ch.is_listening());
+    assert_eq!(ch.status().problem.as_deref(), Some(err.as_str()));
+    assert_eq!(
+        std::fs::read_to_string(sock.join("keep.txt")).unwrap(),
+        "mine"
+    );
+}
+
+#[test]
+fn the_wait_running_out_never_says_nothing_ran() {
+    // The webview closes its box at 40 s (mcpLive.ts) and says nothing ran then.
+    // When GreenCLI's own 60 s wait runs out, a late Yes may already have typed
+    // the line, so this text must not promise that nothing ran.
+    assert!(
+        !NO_ANSWER.to_lowercase().contains("nothing ran"),
+        "{NO_ANSWER}"
+    );
+    assert!(NO_ANSWER.contains("in time"), "{NO_ANSWER}");
+}
+
 #[test]
 fn only_the_same_user_gets_in() {
     assert!(same_user(Some(501), 501));

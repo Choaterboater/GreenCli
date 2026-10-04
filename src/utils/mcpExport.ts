@@ -1318,7 +1318,7 @@ export function buildMcpExport(servers: readonly McpServerDef[], options: McpExp
     entries.push([name, { type: 'stdio', command: greencli.command, args: ['--data-dir', greencli.dataDir] }]);
     if (greencli.showCommands) {
       notes.push(
-        `"${name}" can also run show commands on device tabs connected in GreenCLI. GreenCLI asks you each time, and Casper asks first too. Turn it off in MCP Servers.`,
+        `"${name}" can also run show commands on device tabs connected in GreenCLI. Casper asks first, then GreenCLI asks. Turn it off in MCP Servers.`,
       );
     }
   } else if (greencli) {

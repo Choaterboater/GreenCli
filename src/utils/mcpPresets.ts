@@ -65,12 +65,25 @@ export const SHOW_PIPES: ReadonlySet<string> = new Set([
   ...['sec', 'sect', 'secti', 'sectio', 'section'],
 ]);
 
+/** isPlainShow's filters whose text is a pattern: these may also use ^ $ * ( ) [ ] in their text. */
+export const PATTERN_PIPES: ReadonlySet<string> = new Set([
+  ...['match', 'except', 'find'],
+  ...['i', 'in', 'inc', 'incl', 'inclu', 'includ', 'include'],
+  ...['e', 'ex', 'exc', 'excl', 'exclu', 'exclud', 'exclude'],
+  ...['b', 'be', 'beg', 'begi', 'begin'],
+  ...['sec', 'sect', 'secti', 'sectio', 'section'],
+]);
+
 /** The Read-only Auditor's characters (AUDITOR_CHAR in aiGating.ts), without quotes. */
 const SHOW_CHARS = /^[A-Za-z0-9 \t._/:@,=+|-]*$/;
+/** SHOW_CHARS plus ^ $ * ( ) [ ], for a PATTERN_PIPES filter's text only. Never ? (AOS-CX and Junos
+ *  show help at once and leave the line half-typed), quotes, backtick, backslash, ; & < >. */
+const PATTERN_CHARS = /^[A-Za-z0-9 \t._/:@,=+|^$*()[\]-]*$/;
 
 /**
  * The show-only rule for live show commands from AI tools outside GreenCLI, extended from
- * isPlainJunosShow: one line, never empty, at most 256 characters, only the Auditor's characters,
+ * isPlainJunosShow: one line, never empty, at most 256 characters, only the Auditor's characters
+ * (plus ^ $ * ( ) [ ] in a PATTERN_PIPES filter's text; a | always starts a new stage),
  * the literal first word `show` (no `do`, no `sh`) then a word starting with a letter, and every
  * `|` stage a SHOW_PIPES filter, with `display` only alone or as `display set`: secrets are hidden
  * by the word in front of them on the same line, and trim, xml or json would move that word away.
@@ -79,13 +92,16 @@ const SHOW_CHARS = /^[A-Za-z0-9 \t._/:@,=+|-]*$/;
  * src-tauri/greencli-mcp/testdata/show_only_cases.json.
  */
 export function isPlainShow(line: unknown): boolean {
-  if (typeof line !== 'string' || line.length > MAX_SHOW_LEN || !SHOW_CHARS.test(line)) return false;
+  if (typeof line !== 'string' || line.length > MAX_SHOW_LEN || !PATTERN_CHARS.test(line)) return false;
   if (AI_WRITE_PIPE.test(line)) return false;
   const [head = '', ...rest] = line.split('|');
+  if (!SHOW_CHARS.test(head)) return false;
   const words = head.split(/[ \t]+/).filter(Boolean);
   if (words[0] !== 'show' || !/^[A-Za-z]/.test(words[1] ?? '')) return false;
   return rest.every((stage) => {
     const [first = '', ...more] = stage.split(/[ \t]+/).filter(Boolean);
+    if (PATTERN_PIPES.has(first)) return true;
+    if (!SHOW_CHARS.test(stage)) return false;
     if (first === 'display') return more.length === 0 || (more.length === 1 && more[0] === 'set');
     return SHOW_PIPES.has(first);
   });

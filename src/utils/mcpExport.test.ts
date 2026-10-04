@@ -1318,7 +1318,7 @@ describe('buildMcpExport: greencli-mcp show commands', () => {
     const result = buildMcpExport([], { greencli: { command: path, dataDir, showCommands: true } });
     expect(result.file.mcpServers.greencli).toEqual({ type: 'stdio', command: path, args: ['--data-dir', dataDir] });
     expect(result.notes).toEqual([
-      '"greencli" can also run show commands on device tabs connected in GreenCLI. GreenCLI asks you each time, and Casper asks first too. Turn it off in MCP Servers.',
+      '"greencli" can also run show commands on device tabs connected in GreenCLI. Casper asks first, then GreenCLI asks. Turn it off in MCP Servers.',
     ]);
   });
 

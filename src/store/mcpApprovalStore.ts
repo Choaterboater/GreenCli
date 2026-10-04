@@ -30,6 +30,8 @@ interface McpApprovalState {
   allowDevice(server: string, tool: string, device: string): void;
   isDeviceAllowed(server: string, tool: string, device: string): boolean;
   clearServer(server: string): void;
+  /** Forget every per-device answer (the live show commands switch went off). */
+  clearDevices(): void;
   clearAll(): void;
 }
 
@@ -53,5 +55,6 @@ export const useMcpApprovalStore = create<McpApprovalState>()((set, get) => ({
       allowed: dropServer(s.allowed, server) as Record<string, string>,
       devices: dropServer(s.devices, server) as Record<string, true>,
     })),
+  clearDevices: () => set({ devices: {} }),
   clearAll: () => set({ allowed: {}, devices: {} }),
 }));

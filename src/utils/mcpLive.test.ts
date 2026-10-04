@@ -13,14 +13,21 @@ import { useDialogStore } from '../store/dialogStore';
 import { useMcpApprovalStore } from '../store/mcpApprovalStore';
 import { useSessionStore } from '../store/sessionStore';
 import type { DeviceType, Protocol, Session } from '../types';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import {
   cancelLiveRequest,
   handleLiveRequest,
+  LIVE_BOX_WAIT_MS,
+  LIVE_RUN_MAX_MS,
+  LIVE_TYPE_BY_MS,
+  LIVE_WAIT_MS,
   liveDevices,
   startMcpLive,
+  stopLiveRequests,
   type LiveRequest,
 } from './mcpLive';
-import { sendAndCapture } from './terminal';
+import { CAPTURE_MAX_MS, sendAndCapture } from './terminal';
 
 const invokeMock = vi.mocked(invoke);
 const captureMock = vi.mocked(sendAndCapture);
@@ -77,6 +84,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   useDialogStore.setState({ current: null, queue: [] });
 });
 
@@ -192,6 +200,23 @@ describe('device_show: the box', () => {
     expect(captureMock).not.toHaveBeenCalled();
   });
 
+  it('shows the exact line typed on the device, with the | no-more GreenCLI adds on Junos', async () => {
+    const run = handleLiveRequest(show({ tab: 't2' }, 'show interfaces terse | match ge-'));
+    const box = await answer('once');
+    expect(box.details).toBe('show interfaces terse | match ge- | no-more');
+    expect(await run).toMatchObject({ ok: true });
+    expect(captureMock).toHaveBeenCalledWith('t2', box.details);
+    expect(box.message).not.toMatch(/paging/);
+  });
+
+  it('names the paging lines typed around it on AOS-CX', async () => {
+    const run = handleLiveRequest(show({ tab: 't1' }, 'show vlan'));
+    const box = await answer('no');
+    expect(box.details).toBe('show vlan');
+    expect(box.message).toContain('It also types `no page` before it and `page` after.');
+    await run;
+  });
+
   it('choice 2 runs this once, then asks again', async () => {
     const first = handleLiveRequest(show({ tab: 't1' }));
     await answer('once');
@@ -237,6 +262,130 @@ describe('device_show: the box', () => {
     expect(await run).toMatchObject({ ok: false });
     expect(useDialogStore.getState().current).toBeNull();
     expect(captureMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('device_show: time', () => {
+  it('a Yes always leaves time to run before the AI tool stops waiting', () => {
+    // greencli-mcp and GreenCLI's channel wait LIVE_WAIT (60 s).
+    const lib = readFileSync(resolve(process.cwd(), 'src-tauri/greencli-mcp/src/lib.rs'), 'utf8');
+    expect(lib).toMatch(/pub const LIVE_WAIT: std::time::Duration = std::time::Duration::from_secs\(60\);/);
+    expect(LIVE_WAIT_MS).toBe(60_000);
+    expect(LIVE_BOX_WAIT_MS).toBe(40_000);
+    expect(LIVE_TYPE_BY_MS).toBe(45_000);
+    // Paging off, the capture's own limit, paging back on, back at the prompt, and room for the rest.
+    expect(LIVE_RUN_MAX_MS).toBeGreaterThanOrEqual(300 + CAPTURE_MAX_MS + 150 + 1000);
+    expect(LIVE_BOX_WAIT_MS).toBeLessThan(LIVE_TYPE_BY_MS);
+    // At least 5 s to spare after the latest possible run.
+    expect(LIVE_TYPE_BY_MS + LIVE_RUN_MAX_MS + 5_000).toBeLessThanOrEqual(LIVE_WAIT_MS);
+  });
+
+  it('the box closes on its own at 40 s, as a No, and nothing runs', async () => {
+    vi.useFakeTimers();
+    const run = handleLiveRequest(show({ tab: 't1' }));
+    await vi.waitFor(() => expect(useDialogStore.getState().current).not.toBeNull());
+    // (vi.waitFor moves fake time on a little too.)
+    await vi.advanceTimersByTimeAsync(LIVE_BOX_WAIT_MS - 1_000);
+    expect(useDialogStore.getState().current).not.toBeNull();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(useDialogStore.getState().current).toBeNull();
+    expect(await run).toEqual({ ok: false, error: 'No answer in GreenCLI in time; nothing ran.' });
+    expect(captureMock).not.toHaveBeenCalled();
+    expect(sent()).toEqual([]);
+  });
+
+  it('an answer in time stops the box timer', async () => {
+    vi.useFakeTimers();
+    const run = handleLiveRequest(show({ tab: 't1' }));
+    await vi.waitFor(() => expect(useDialogStore.getState().current).not.toBeNull());
+    await vi.advanceTimersByTimeAsync(LIVE_BOX_WAIT_MS - 1_000);
+    await answer('once');
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(await run).toMatchObject({ ok: true });
+    expect(captureMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('never starts typing after 45 s: the reply says nothing ran, and nothing did', async () => {
+    vi.useFakeTimers();
+    useMcpApprovalStore.getState().allowDevice('greencli-mcp', 'device_show', 'sw-a');
+    let finish: (v: { output: string; truncated: boolean }) => void = () => {};
+    captureMock.mockImplementationOnce(() => new Promise((r) => (finish = r)));
+    // The first request holds the tab past the point where the second could still finish.
+    const first = handleLiveRequest(show({ id: 'live-1', tab: 't1' }));
+    await vi.waitFor(() => expect(captureMock).toHaveBeenCalledTimes(1));
+    const second = handleLiveRequest(show({ id: 'live-2', tab: 't1' }));
+    await vi.advanceTimersByTimeAsync(LIVE_TYPE_BY_MS + 1);
+    finish({ output: 'show vlan\nVLAN 1\nsw-a#', truncated: false });
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(await first).toMatchObject({ ok: true });
+    const late = (await second) as { ok: boolean; error: string };
+    expect(late.ok).toBe(false);
+    expect(late.error).toMatch(/nothing ran/i);
+    expect(captureMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('a line that was typed is never reported as nothing ran', async () => {
+    useMcpApprovalStore.getState().allowDevice('greencli-mcp', 'device_show', 'sw-a');
+    let finish: (v: { output: string; truncated: boolean }) => void = () => {};
+    captureMock.mockImplementationOnce(() => new Promise((r) => (finish = r)));
+    const run = handleLiveRequest(show({ tab: 't1' }));
+    await vi.waitFor(() => expect(captureMock).toHaveBeenCalledTimes(1));
+    // The program stops waiting, and the switch goes off, while the line is on the device.
+    cancelLiveRequest('live-1');
+    stopLiveRequests();
+    finish({ output: 'show vlan\nVLAN 1\nsw-a#', truncated: false });
+    const reply = await run;
+    expect(JSON.stringify(reply)).not.toMatch(/nothing ran/i);
+  });
+});
+
+describe('device_show: the switch goes off', () => {
+  it('forgets every "Yes on this device" answer', () => {
+    useMcpApprovalStore.getState().allowDevice('greencli-mcp', 'device_show', 'sw-a');
+    useMcpApprovalStore.getState().allow('other-server', 'tool', 'fp');
+    stopLiveRequests();
+    expect(useMcpApprovalStore.getState().devices).toEqual({});
+    expect(useMcpApprovalStore.getState().isDeviceAllowed('greencli-mcp', 'device_show', 'sw-a')).toBe(false);
+    // The MCP approval box's own answers stay.
+    expect(useMcpApprovalStore.getState().isAllowed('other-server', 'tool', 'fp')).toBe(true);
+  });
+
+  it('refuses a request already handed over: no box, nothing typed', async () => {
+    let release: (v: string) => void = () => {};
+    invokeMock.mockImplementationOnce(() => new Promise((r) => (release = r as (v: string) => void)));
+    const run = handleLiveRequest(show({ tab: 't1' }));
+    stopLiveRequests();
+    release('sw-a# ');
+    expect(await run).toMatchObject({ ok: false });
+    expect(useDialogStore.getState().current).toBeNull();
+    expect(captureMock).not.toHaveBeenCalled();
+    expect(sent()).toEqual([]);
+  });
+
+  it('closes an open box, and a request allowed by answer 3 waiting its turn is not typed', async () => {
+    const boxed = handleLiveRequest(show({ id: 'live-1', tab: 't2' }));
+    await vi.waitFor(() => expect(useDialogStore.getState().current).not.toBeNull());
+    useMcpApprovalStore.getState().allowDevice('greencli-mcp', 'device_show', 'sw-a');
+    let finish: (v: { output: string; truncated: boolean }) => void = () => {};
+    captureMock.mockImplementationOnce(() => new Promise((r) => (finish = r)));
+    const running = handleLiveRequest(show({ id: 'live-2', tab: 't1' }));
+    await vi.waitFor(() => expect(captureMock).toHaveBeenCalledTimes(1));
+    const queued = handleLiveRequest(show({ id: 'live-3', tab: 't1' }));
+    await new Promise((r) => setTimeout(r, 20));
+    stopLiveRequests();
+    expect(useDialogStore.getState().current).toBeNull();
+    finish({ output: 'show vlan\nVLAN 1\nsw-a#', truncated: false });
+    expect(await boxed).toMatchObject({ ok: false });
+    expect(await running).toMatchObject({ ok: true });
+    expect(await queued).toMatchObject({ ok: false });
+    expect(captureMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('a request that comes after it is turned back on runs as usual', async () => {
+    stopLiveRequests();
+    const run = handleLiveRequest(show({ id: 'live-4', tab: 't1' }));
+    await answer('once');
+    expect(await run).toMatchObject({ ok: true });
   });
 });
 

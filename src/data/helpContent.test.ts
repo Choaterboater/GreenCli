@@ -51,6 +51,19 @@ describe('help: greencli-mcp topic', () => {
     expect(t).toContain('60 seconds');
   });
 
+  it('describes the box by its buttons, never as number keys or "each time"', () => {
+    const t = text();
+    expect(t).toContain('**Yes, show commands on <device> until GreenCLI closes**');
+    expect(t).not.toMatch(/each time/);
+    expect(t).not.toMatch(/\b1 No\b|\b2 Yes\b|\b3 Yes\b/);
+  });
+
+  it('says regex works in a filter, and which characters never do', () => {
+    const t = text();
+    expect(t).toContain('`^ $ * . ( ) [ ] +`');
+    expect(t).toMatch(/`\?`/);
+  });
+
   it('says plainly that a filter can give away a secret one guess at a time', () => {
     expect(text()).toMatch(/filter[^.]*one guess at a time/);
   });

@@ -13,9 +13,15 @@
 //   and again right before the line is typed.
 // - One request per tab at a time: from that last check until the tab is back
 //   at its prompt, no other live request can type in it.
-// - GreenCLI asks: 1 No, 2 Yes this once, 3 Yes, show commands on this device
-//   until GreenCLI closes (in memory, per device). The box names the caller
-//   only as "a program on this computer (pid N)".
+// - GreenCLI asks in a box with three buttons: No, Yes this once, and Yes,
+//   show commands on <device> until GreenCLI closes (in memory, per device).
+//   The box names the caller only as "a program on this computer (pid N)",
+//   and shows the exact line typed (with any | no-more GreenCLI adds).
+// - Time: GreenCLI's channel waits 60 s (LIVE_WAIT). The box closes on its own
+//   at 40 s as a No, and a line is never typed after 45 s, so a Yes always
+//   has time to run and answer before the wait ends.
+// - Turning the switch off forgets every per-device answer, and any request
+//   already handed over is refused before its box or its line.
 // - Each box has its own dialog group, so `mcp_live_cancel` (the program hung
 //   up, the wait ran out, or the switch went off) closes just that one.
 // - Paging is turned off around the line (AOS-CX/AOS-S `no page`, AOS-8
@@ -38,16 +44,31 @@ import { getDeviceId } from './configArchive';
 import { profileForSession } from './deviceProfiles';
 import { parseDevicePrompt, trailingLine } from './devicePrompt';
 import { isPlainShow } from './mcpPresets';
-import { endsAtPager, pagedCommand, pagerQuitKey, withPagingDisabled } from './paging';
+import { endsAtPager, pagedCommand, pagerQuitKey, pagingCommands, withPagingDisabled } from './paging';
 import { MAX_SCRUB_CHARS, WITHHELD_TEXT } from './secrets/forAi';
 import { secretFilterSupported } from './secrets/support';
-import { sendAndCapture, sleep } from './terminal';
+import { CAPTURE_MAX_MS, sendAndCapture, sleep } from './terminal';
 
 /** The approval store key for answer 3 (with the device). */
 export const LIVE_SERVER = 'greencli-mcp';
 export const LIVE_TOOL = 'device_show';
 /** The most output sent back, in bytes (GreenCLI's Rust side cuts there too). */
 export const MAX_LIVE_OUTPUT = 16 * 1024;
+
+/** How long GreenCLI's channel and greencli-mcp wait (LIVE_WAIT in greencli-mcp/src/lib.rs). */
+export const LIVE_WAIT_MS = 60_000;
+/** The box closes on its own after this, answered as No. */
+export const LIVE_BOX_WAIT_MS = 40_000;
+/** A line is never typed later than this after the request came in. */
+export const LIVE_TYPE_BY_MS = 45_000;
+/** Paging off and back on (withPagingDisabled's waits). */
+const PAGING_MS = 300 + 150;
+/** backAtPrompt: this many looks, this far apart. */
+const PROMPT_LOOKS = 5;
+const PROMPT_LOOK_MS = 200;
+/** The longest a run takes once it starts typing: paging, the capture, back at the prompt, and
+ *  room for the secret filter and the calls in between. */
+export const LIVE_RUN_MAX_MS = PAGING_MS + CAPTURE_MAX_MS + PROMPT_LOOKS * PROMPT_LOOK_MS + 1_500;
 
 /** Device types show commands may run on: switches, routers, gateways and APs. */
 const NETWORK_TYPES: ReadonlySet<DeviceType> = new Set<DeviceType>([
@@ -91,6 +112,8 @@ const NOT_IDLE =
 const UNKNOWN = "GreenCLI doesn't know that request. Update GreenCLI and greencli-mcp.";
 const SAID_NO = 'You said no in GreenCLI. Nothing ran.';
 const STOPPED = 'The request ended before it ran. Nothing ran.';
+const BOX_TIMED_OUT = 'No answer in GreenCLI in time; nothing ran.';
+const TOO_LATE = 'Too late to run it before the AI tool stops waiting. Nothing ran. Try again.';
 
 /** Connected network device tabs. */
 function liveTabs(sessions: Session[]): Session[] {
@@ -137,10 +160,10 @@ async function idleProblem(session: Session): Promise<string | null> {
 /** Wait a little for the tab to be back at its prompt (after a pager quit or
  *  the paging restore), so the next request finds it idle. */
 async function backAtPrompt(sessionId: string): Promise<void> {
-  for (let i = 0; i < 5; i++) {
+  for (let i = 0; i < PROMPT_LOOKS; i++) {
     const buffer = await invoke<string>('get_terminal_output', { sessionId }).catch(() => '');
     if (parseDevicePrompt(trailingLine(buffer ?? ''))) return;
-    await sleep(200);
+    await sleep(PROMPT_LOOK_MS);
   }
 }
 
@@ -218,6 +241,13 @@ export function cancelLiveRequest(id: string): void {
   cancelDialogs(boxGroup(id));
 }
 
+/** The switch went off: forget every "Yes, show commands on <device>" answer, and refuse every
+ *  request already handed over (its box closes; a line not typed yet never is). */
+export function stopLiveRequests(): void {
+  useMcpApprovalStore.getState().clearDevices();
+  for (const id of [...active]) cancelLiveRequest(id);
+}
+
 function choices(name: string): DialogChoice[] {
   return [
     { value: 'no', label: 'No', detail: 'Nothing runs', tone: 'plain' },
@@ -231,20 +261,41 @@ function choices(name: string): DialogChoice[] {
   ];
 }
 
-async function ask(req: LiveRequest, name: string, line: string): Promise<'once' | 'device' | null> {
+/** The answer, or 'late' when the box closed on its own at LIVE_BOX_WAIT_MS. */
+async function ask(
+  req: LiveRequest,
+  name: string,
+  command: string,
+  paging: { disable?: string; restore?: string },
+): Promise<'once' | 'device' | 'late' | null> {
   const who = req.pid != null ? `a program on this computer (pid ${req.pid})` : 'a program on this computer';
-  const value = await askChoice({
-    group: boxGroup(req.id),
-    title: `Run a show command on ${name}?`,
-    message: `Asked by ${who}. GreenCLI types this line in your open tab and sends the output back with secrets hidden.`,
-    details: line,
-    detailsLabel: 'Show line',
-    choices: choices(name),
-  });
-  return value === 'once' || value === 'device' ? value : null;
+  const parts = [
+    paging.disable && `\`${paging.disable}\` before it`,
+    paging.restore && `\`${paging.restore}\` after`,
+  ].filter(Boolean);
+  const around = parts.length ? ` It also types ${parts.join(' and ')}.` : '';
+  let late = false;
+  const timer = setTimeout(() => {
+    late = true;
+    cancelDialogs(boxGroup(req.id));
+  }, LIVE_BOX_WAIT_MS);
+  try {
+    const value = await askChoice({
+      group: boxGroup(req.id),
+      title: `Run a show command on ${name}?`,
+      message: `Asked by ${who}. GreenCLI types this line in your open tab and sends the output back with secrets hidden.${around}`,
+      details: command,
+      detailsLabel: 'Show line',
+      choices: choices(name),
+    });
+    if (late) return 'late';
+    return value === 'once' || value === 'device' ? value : null;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
-async function runShow(req: LiveRequest): Promise<LiveReply> {
+async function runShow(req: LiveRequest, started: number): Promise<LiveReply> {
   const line = req.show ?? '';
   if (!isPlainShow(line)) return no(NOT_PLAIN);
   if ((req.tab === undefined) === (req.device === undefined)) {
@@ -259,9 +310,14 @@ async function runShow(req: LiveRequest): Promise<LiveReply> {
   if (before) return no(before);
   if (cancelled.has(req.id)) return no(STOPPED);
 
+  // The exact line typed (Junos gets | no-more): what the box shows is what runs.
+  const profile = profileForSession(session.config, useSettingsStore.getState().customDeviceProfiles);
+  const command = pagedCommand(profile, line);
+
   const approvals = useMcpApprovalStore.getState();
   if (!approvals.isDeviceAllowed(LIVE_SERVER, LIVE_TOOL, name)) {
-    const answer = await ask(req, name, line);
+    const answer = await ask(req, name, command, pagingCommands(profile));
+    if (answer === 'late') return no(BOX_TIMED_OUT);
     if (cancelled.has(req.id)) return no(STOPPED);
     if (!answer) return no(SAID_NO);
     if (answer === 'device') useMcpApprovalStore.getState().allowDevice(LIVE_SERVER, LIVE_TOOL, name);
@@ -275,9 +331,9 @@ async function runShow(req: LiveRequest): Promise<LiveReply> {
     const after = await idleProblem(now);
     if (after) return after;
     if (cancelled.has(req.id)) return STOPPED;
+    // Too late to finish before the program stops waiting: never start typing.
+    if (Date.now() - started > LIVE_TYPE_BY_MS) return TOO_LATE;
 
-    const profile = profileForSession(now.config, useSettingsStore.getState().customDeviceProfiles);
-    const command = pagedCommand(profile, line);
     const capture = await withPagingDisabled(now.sessionId, profile, async () => {
       const c = await sendAndCapture(now.sessionId, command);
       // Leave a pager so the next key isn't eaten by it.
@@ -287,11 +343,11 @@ async function runShow(req: LiveRequest): Promise<LiveReply> {
       return c;
     });
     await backAtPrompt(now.sessionId);
-    return { command, capture };
+    return { capture };
   });
   if (typeof ran === 'string') return no(ran);
 
-  const { command, capture } = ran;
+  const { capture } = ran;
   const pager = endsAtPager(capture.output);
   const hidden = await hideAndCut(capture.output, command);
   if (!hidden) return no(WITHHELD_TEXT);
@@ -301,10 +357,11 @@ async function runShow(req: LiveRequest): Promise<LiveReply> {
 
 /** Answer one request from greencli-mcp. Never throws. */
 export async function handleLiveRequest(req: LiveRequest): Promise<LiveReply> {
+  const started = Date.now();
   active.add(req.id);
   try {
     if (req.op === 'sessions') return { ok: true, devices: liveDevices(useSessionStore.getState().sessions) };
-    if (req.op === 'show') return await runShow(req);
+    if (req.op === 'show') return await runShow(req, started);
     return no(UNKNOWN);
   } catch (e) {
     return no(`GreenCLI couldn't run it: ${e instanceof Error ? e.message : String(e)}`);

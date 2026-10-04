@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { isTauri } from '../utils/fileSystem';
 import { notify } from '../store/toastStore';
+import { stopLiveRequests } from '../utils/mcpLive';
 
 /** mcp_live_status: show commands from AI tools outside GreenCLI (greencli-mcp's device_show). */
 export interface LiveStatus {
@@ -33,7 +34,7 @@ export async function readLiveStatus(): Promise<LiveStatus | null> {
   return asStatus(await invoke('mcp_live_status').catch(() => null));
 }
 
-export const LIVE_SWITCH_LABEL = 'Let AI tools outside GreenCLI ask to run show commands (asks you each time)';
+export const LIVE_SWITCH_LABEL = 'Let AI tools outside GreenCLI ask to run show commands (asks you first)';
 
 /** One switch in MCP Servers: on by default; off means GreenCLI doesn't listen at all. */
 export default function McpLiveSwitch() {
@@ -64,6 +65,8 @@ export default function McpLiveSwitch() {
   }
 
   const set = async (on: boolean) => {
+    // Off: forget every "Yes on this device" answer and refuse what is already asked, at once.
+    if (!on) stopLiveRequests();
     setBusy(true);
     try {
       const next = asStatus(await invoke('mcp_live_set', { on }));
@@ -92,8 +95,8 @@ export default function McpLiveSwitch() {
       </label>
       <p>
         Casper or Claude Code can run a <code>show</code> line on a device tab you have connected, through
-        greencli-mcp. Casper asks first, then GreenCLI asks: No, Yes this once, or Yes on this device until GreenCLI
-        closes.
+        greencli-mcp. Casper asks first, then GreenCLI asks: No, Yes this once, or Yes, show commands on this device
+        until GreenCLI closes. Turning this off forgets those answers.
       </p>
       {status.on && !status.listening && (
         <p className="text-[var(--accent-warning)]">{status.problem ?? 'Not open right now.'}</p>

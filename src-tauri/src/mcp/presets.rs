@@ -640,7 +640,8 @@ pub fn is_plain_junos_show(command: &str) -> bool {
 
 // The show-only rule for live show commands from AI tools outside GreenCLI
 // extends this Junos rule with the Aruba/Cisco filters (include, exclude,
-// begin, section), the Auditor's characters and 256 characters at most. It is
+// begin, section), the Auditor's characters (plus ^ $ * ( ) [ ] in a filter's
+// text) and 256 characters at most. It is
 // defined once for Rust, in greencli-mcp (`greencli_mcp::is_plain_show`), so
 // the server and the app share it, and kept in step with isPlainShow in
 // src/utils/mcpPresets.ts by greencli-mcp/testdata/show_only_cases.json.

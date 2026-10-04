@@ -10,6 +10,11 @@
 //! - only letters, digits, space, tab and . _ / : @ , = + - | (the Read-only
 //!   Auditor's characters, without quotes), so nothing a device CLI or shell
 //!   treats specially gets through;
+//! - in a filter's text only (after include, exclude, begin, section, their
+//!   short forms, or Junos match, except and find), also the pattern
+//!   characters ^ $ * ( ) [ ]. Never ? (on AOS-CX and Junos it shows help at
+//!   once and leaves the line half-typed), quotes, backtick, backslash,
+//!   ; & < > anywhere. A | always starts a new stage, even inside ( );
 //! - the literal first word `show` (no `do`, no `sh`), then a word starting
 //!   with a letter;
 //! - every `|` stage starts with a read-only filter: the Junos ones, or
@@ -33,8 +38,23 @@ const SHOW_PIPES: &[&str] = &[
     "sec", "sect", "secti", "sectio", "section",
 ];
 
+/// Filters whose text is a pattern.
+#[rustfmt::skip]
+const PATTERN_PIPES: &[&str] = &[
+    "match", "except", "find",
+    "i", "in", "inc", "incl", "inclu", "includ", "include",
+    "e", "ex", "exc", "excl", "exclu", "exclud", "exclude",
+    "b", "be", "beg", "begi", "begin",
+    "sec", "sect", "secti", "sectio", "section",
+];
+
 fn show_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || " \t._/:@,=+|-".contains(c)
+}
+
+/// Allowed in a filter's text only.
+fn pattern_char(c: char) -> bool {
+    show_char(c) || "^$*()[]".contains(c)
 }
 
 fn space(c: char) -> bool {
@@ -43,16 +63,15 @@ fn space(c: char) -> bool {
 
 /// True only for a plain `show` line with read-only filter pipes.
 pub fn is_plain_show(line: &str) -> bool {
-    if line.len() > MAX_SHOW_LEN || !line.chars().all(show_char) {
+    if line.len() > MAX_SHOW_LEN || !line.chars().all(pattern_char) {
         return false;
     }
     let mut stages = line.split('|');
-    let head: Vec<&str> = stages
-        .next()
-        .unwrap_or("")
-        .split(space)
-        .filter(|w| !w.is_empty())
-        .collect();
+    let head = stages.next().unwrap_or("");
+    if !head.chars().all(show_char) {
+        return false;
+    }
+    let head: Vec<&str> = head.split(space).filter(|w| !w.is_empty()).collect();
     if head.first() != Some(&"show")
         || !head
             .get(1)
@@ -62,10 +81,12 @@ pub fn is_plain_show(line: &str) -> bool {
     }
     stages.all(|stage| {
         let words: Vec<&str> = stage.split(space).filter(|w| !w.is_empty()).collect();
+        let plain = || stage.chars().all(show_char);
         match words.as_slice() {
-            ["display"] | ["display", "set"] => true,
+            ["display"] | ["display", "set"] => plain(),
             ["display", ..] => false,
-            [first, ..] => SHOW_PIPES.contains(first),
+            [first, ..] if PATTERN_PIPES.contains(first) => true,
+            [first, ..] => SHOW_PIPES.contains(first) && plain(),
             [] => false,
         }
     })

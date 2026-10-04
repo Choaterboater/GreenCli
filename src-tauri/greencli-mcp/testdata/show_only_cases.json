@@ -389,15 +389,15 @@
   },
   {
     "command": "show run | include ^interface",
-    "plain": false
+    "plain": true
   },
   {
     "command": "show run | include up.*down",
-    "plain": false
+    "plain": true
   },
   {
     "command": "show run | include (up)",
-    "plain": false
+    "plain": true
   },
   {
     "command": "show x # y",
@@ -429,6 +429,134 @@
   },
   {
     "command": "show\b\b\b\bconf t",
+    "plain": false
+  },
+  {
+    "command": "show int | i up.*down",
+    "plain": true
+  },
+  {
+    "command": "show ip route | begin [0-9]+",
+    "plain": true
+  },
+  {
+    "command": "show run | include ^interface 1/1/[0-9]+$",
+    "plain": true
+  },
+  {
+    "command": "show run | exclude ^ *description",
+    "plain": true
+  },
+  {
+    "command": "show interfaces | match ge-0/0/[0-3]$",
+    "plain": true
+  },
+  {
+    "command": "show log messages | except (debug)",
+    "plain": true
+  },
+  {
+    "command": "show configuration | find ^interfaces",
+    "plain": true
+  },
+  {
+    "command": "show run | section ^router (ospf)",
+    "plain": true
+  },
+  {
+    "command": "show run | i ^vlan | e name",
+    "plain": true
+  },
+  {
+    "command": "show log | exclude (debug|info)",
+    "plain": false
+  },
+  {
+    "command": "show log | exclude debug|include info",
+    "plain": true
+  },
+  {
+    "command": "show run*",
+    "plain": false
+  },
+  {
+    "command": "show ^run",
+    "plain": false
+  },
+  {
+    "command": "show (run)",
+    "plain": false
+  },
+  {
+    "command": "show [run]",
+    "plain": false
+  },
+  {
+    "command": "show run$",
+    "plain": false
+  },
+  {
+    "command": "show x | count ^a",
+    "plain": false
+  },
+  {
+    "command": "show x | last [5]",
+    "plain": false
+  },
+  {
+    "command": "show x | no-more$",
+    "plain": false
+  },
+  {
+    "command": "show x | display set*",
+    "plain": false
+  },
+  {
+    "command": "show x | include$ up",
+    "plain": false
+  },
+  {
+    "command": "show x | ^include up",
+    "plain": false
+  },
+  {
+    "command": "show run | include ^int?",
+    "plain": false
+  },
+  {
+    "command": "show run | include ?",
+    "plain": false
+  },
+  {
+    "command": "show run | include up\\.down",
+    "plain": false
+  },
+  {
+    "command": "show run | include \"up.*\"",
+    "plain": false
+  },
+  {
+    "command": "show run | include 'up.*'",
+    "plain": false
+  },
+  {
+    "command": "show run | include `id`",
+    "plain": false
+  },
+  {
+    "command": "show run | include up; reload",
+    "plain": false
+  },
+  {
+    "command": "show run | include up & reload",
+    "plain": false
+  },
+  {
+    "command": "show run | include <up>",
+    "plain": false
+  },
+  {
+    "command": "show run | include up > x",
     "plain": false
   }
 ]

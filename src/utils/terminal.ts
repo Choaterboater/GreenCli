@@ -38,6 +38,12 @@ const TRUNCATION_DELTA_CAP = 128 * 1024;
 // DIFFERENT sessions still run concurrently — e.g. BulkRunner's pool.)
 const captureChains = new Map<string, Promise<void>>();
 
+/** sendAndCapture polls the buffer this often, at most CAPTURE_POLLS times. */
+const CAPTURE_POLL_MS = 400;
+const CAPTURE_POLLS = 15;
+/** The longest a capture waits for output to settle (~6 s), once it has typed its line. */
+export const CAPTURE_MAX_MS = CAPTURE_POLL_MS * CAPTURE_POLLS;
+
 /**
  * Send `command` to `sessionId` and poll the backend output buffer until it
  * stops growing (output settled) or the timeout is reached (~6 s).
@@ -80,8 +86,8 @@ async function sendAndCaptureInner(
   let grew = false;
   let settled = false;
   let buf = beforeText;
-  for (let i = 0; i < 15; i++) {
-    await sleep(400);
+  for (let i = 0; i < CAPTURE_POLLS; i++) {
+    await sleep(CAPTURE_POLL_MS);
     buf = await invoke<string>('get_terminal_output', { sessionId });
     if (!grew) {
       if (buf.length > before) {

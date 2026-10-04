@@ -197,10 +197,10 @@ It has seven read tools: `access_check`, `list_devices`, `list_archive_devices`,
 finds config history kept under a device's old name, after a rename or delete in GreenCLI.
 
 On macOS and Linux it also has two live tools: `list_connected_devices` (the device tabs connected
-in GreenCLI now) and `device_show` (one `show` line on one of those tabs). GreenCLI asks you each
-time: 1 No · 2 Yes this once · 3 Yes, show commands on this device until GreenCLI closes. Only
-plain `show` lines with filters like `| include`, never config mode, and secrets in the output
-are hidden. Casper asks too, so you see two boxes. One switch in MCP Servers turns it off. On
+in GreenCLI now) and `device_show` (one `show` line on one of those tabs). GreenCLI asks you
+first, showing the exact line: No, Yes this once, or Yes, show commands on <device> until GreenCLI
+closes. Only plain `show` lines with filters like `| include ^interface`, never config mode, and
+secrets in the output are hidden. Casper asks too, so you see two boxes. One switch in MCP Servers turns it off. On
 Windows these tools say "not on Windows yet".
 
 - It only reads GreenCLI's data folder. It never writes a file, opens a network connection or

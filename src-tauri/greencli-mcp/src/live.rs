@@ -3,8 +3,8 @@
 //! GreenCLI's data folder, and nowhere else (tests/source_scan.rs checks this).
 //! The running app makes that channel only while "show commands" is on in MCP
 //! Servers, lets in only programs of the same user, and asks you in a box
-//! before every show line (1 No · 2 Yes this once · 3 Yes, show commands on
-//! this device until GreenCLI closes).
+//! with three buttons (No, Yes this once, Yes, show commands on <device>
+//! until GreenCLI closes; the last stops asking for that device).
 //!
 //! One JSON line each way per call, then the connection closes:
 //! - `{"v":1,"op":"sessions"}` →

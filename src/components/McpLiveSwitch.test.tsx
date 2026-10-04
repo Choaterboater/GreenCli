@@ -3,12 +3,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
 import McpLiveSwitch, { readLiveStatus, type LiveStatus } from './McpLiveSwitch';
 import { notify } from '../store/toastStore';
+import { useMcpApprovalStore } from '../store/mcpApprovalStore';
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 vi.mock('../utils/fileSystem', () => ({ isTauri: true }));
 vi.mock('../store/toastStore', () => ({ notify: { success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() } }));
 
-const LABEL = 'Let AI tools outside GreenCLI ask to run show commands (asks you each time)';
+const LABEL = 'Let AI tools outside GreenCLI ask to run show commands (asks you first)';
 
 const status = (extra: Partial<LiveStatus> = {}): LiveStatus => ({
   on: true,
@@ -55,6 +56,24 @@ describe('McpLiveSwitch', () => {
     fireEvent.click(box);
     await waitFor(() => expect(box).not.toBeChecked());
     expect(sets()).toEqual([{ on: false }]);
+  });
+
+  it('turning it off forgets every "Yes on this device" answer', async () => {
+    backend(status());
+    useMcpApprovalStore.getState().allowDevice('greencli-mcp', 'device_show', 'sw-a');
+    render(<McpLiveSwitch />);
+    const box = await screen.findByRole('checkbox', { name: LABEL });
+    fireEvent.click(box);
+    await waitFor(() => expect(box).not.toBeChecked());
+    expect(useMcpApprovalStore.getState().devices).toEqual({});
+  });
+
+  it('describes the three buttons, with no number keys', async () => {
+    backend(status());
+    render(<McpLiveSwitch />);
+    const text = (await screen.findByText(/Casper asks first/)).textContent ?? '';
+    expect(text).toContain('No, Yes this once, or Yes, show commands on this device until GreenCLI closes');
+    expect(text).not.toMatch(/\b[123]\b/);
   });
 
   it('turns it back on', async () => {
