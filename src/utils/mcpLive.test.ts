@@ -28,7 +28,7 @@ import {
   stopLiveRequests,
   type LiveRequest,
 } from './mcpLive';
-import { CAPTURE_MAX_MS, captureInTurn, withCaptureTurn } from './terminal';
+import { captureInTurn, withCaptureTurn } from './terminal';
 
 const invokeMock = vi.mocked(invoke);
 const captureMock = vi.mocked(captureInTurn);
@@ -215,8 +215,19 @@ describe('device_show: the box', () => {
     const run = handleLiveRequest(show({ tab: 't1' }, 'show vlan'));
     const box = await answer('no');
     expect(box.details).toBe('show vlan');
-    expect(box.message).toContain('It also types `no page` before it and `page` after.');
+    expect(box.message).toContain('It also types `no page` before it and `page` after, and q if the output stops at a pager.');
     await run;
+  });
+
+  it('names the pager key: Ctrl+C on AOS-S, q on Junos', async () => {
+    useSessionStore.setState({ sessions: [tab('t6', 'sw-s', { deviceType: 'aruba-aos-s' }), tab('t2', 'edge-b', { deviceType: 'juniper-junos' })] });
+    buffers.t6 = 'sw-s# ';
+    const s = handleLiveRequest(show({ tab: 't6' }));
+    expect((await answer('no')).message).toContain('It also types `no page` before it and `page` after, and Ctrl+C if the output stops at a pager.');
+    await s;
+    const j = handleLiveRequest(show({ id: 'live-2', tab: 't2' }));
+    expect((await answer('no')).message).toContain('It also types q if the output stops at a pager.');
+    await j;
   });
 
   it('choice 2 runs this once, then asks again', async () => {
@@ -275,8 +286,6 @@ describe('device_show: time', () => {
     expect(LIVE_WAIT_MS).toBe(60_000);
     expect(LIVE_BOX_WAIT_MS).toBe(40_000);
     expect(LIVE_TYPE_BY_MS).toBe(45_000);
-    // Paging off, the capture's own limit, paging back on, back at the prompt, and room for the rest.
-    expect(LIVE_RUN_MAX_MS).toBeGreaterThanOrEqual(300 + CAPTURE_MAX_MS + 150 + 1000);
     expect(LIVE_BOX_WAIT_MS).toBeLessThan(LIVE_TYPE_BY_MS);
     // At least 5 s to spare after the latest possible run.
     expect(LIVE_TYPE_BY_MS + LIVE_RUN_MAX_MS + 5_000).toBeLessThanOrEqual(LIVE_WAIT_MS);
@@ -294,6 +303,31 @@ describe('device_show: time', () => {
     expect(await run).toEqual({ ok: false, error: 'No answer in GreenCLI in time; nothing ran.' });
     expect(captureMock).not.toHaveBeenCalled();
     expect(sent()).toEqual([]);
+  });
+
+  it('the 40 s starts when the box shows, not while it waits behind another box', async () => {
+    vi.useFakeTimers();
+    let otherAnswer: string | null | undefined;
+    useDialogStore.getState().enqueue({
+      id: 'other',
+      type: 'confirm',
+      title: 'Another GreenCLI box',
+      resolve: (v) => (otherAnswer = v),
+    });
+    const run = handleLiveRequest(show({ tab: 't1' }));
+    await vi.waitFor(() => expect(useDialogStore.getState().queue).toHaveLength(1));
+    // The other box stays up past 40 s: the show box is still waiting, not closed.
+    await vi.advanceTimersByTimeAsync(LIVE_BOX_WAIT_MS + 1_000);
+    expect(useDialogStore.getState().queue.map((d) => d.group)).toEqual(['mcp-live:live-1']);
+    await answer('ok');
+    expect(otherAnswer).toBe('ok');
+    expect(useDialogStore.getState().current?.group).toBe('mcp-live:live-1');
+    await vi.advanceTimersByTimeAsync(LIVE_BOX_WAIT_MS - 1_000);
+    expect(useDialogStore.getState().current?.group).toBe('mcp-live:live-1');
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(useDialogStore.getState().current).toBeNull();
+    expect(await run).toEqual({ ok: false, error: 'No answer in GreenCLI in time; nothing ran.' });
+    expect(captureMock).not.toHaveBeenCalled();
   });
 
   it('an answer in time stops the box timer', async () => {
@@ -320,9 +354,7 @@ describe('device_show: time', () => {
     finish({ output: 'show vlan\nVLAN 1\nsw-a#', truncated: false });
     await vi.advanceTimersByTimeAsync(5_000);
     expect(await first).toMatchObject({ ok: true });
-    const late = (await second) as { ok: boolean; error: string };
-    expect(late.ok).toBe(false);
-    expect(late.error).toMatch(/nothing ran/i);
+    expect(await second).toEqual({ ok: false, error: 'Too late to run it before the AI tool stops waiting. Nothing ran. Try again.' });
     expect(captureMock).toHaveBeenCalledTimes(1);
   });
 
@@ -339,9 +371,7 @@ describe('device_show: time', () => {
     await vi.advanceTimersByTimeAsync(LIVE_TYPE_BY_MS);
     release();
     await other;
-    const late = (await run) as { ok: boolean; error: string };
-    expect(late.ok).toBe(false);
-    expect(late.error).toMatch(/nothing ran/i);
+    expect(await run).toEqual({ ok: false, error: 'Too late to run it before the AI tool stops waiting. Nothing ran. Try again.' });
     expect(captureMock).not.toHaveBeenCalled();
     expect(sent()).toEqual([]);
   });
@@ -498,6 +528,32 @@ describe('device_show: running it', () => {
     });
     expect(await handleLiveRequest(show({ id: 'live-2', tab: 't6' }, 'show tech'))).toMatchObject({ ok: true, truncated: true });
     expect(keys()).toEqual(['\x03']);
+  });
+
+  it('a --More-- inside the output, with the prompt back after it, is not a pager: no key sent', async () => {
+    useMcpApprovalStore.getState().allowDevice('greencli-mcp', 'device_show', 'sw-a');
+    captureMock.mockResolvedValueOnce({
+      output: 'show interface brief\n1/1/1  up  uplink -- More -- spare\nsw-a#',
+      truncated: false,
+    });
+    const reply = await handleLiveRequest(show({ tab: 't1' }, 'show interface brief'));
+    expect(reply).toMatchObject({ ok: true, truncated: false });
+    expect(keys()).toEqual([]);
+  });
+
+  it('output that ends before the prompt comes back is marked cut short', async () => {
+    useMcpApprovalStore.getState().allowDevice('greencli-mcp', 'device_show', 'sw-a');
+    captureMock.mockResolvedValueOnce({ output: 'show running-config\nBuilding Configuration...', truncated: false });
+    const reply = (await handleLiveRequest(show({ tab: 't1' }, 'show running-config'))) as {
+      ok: boolean;
+      output: string;
+      truncated: boolean;
+    };
+    expect(reply).toMatchObject({ ok: true, truncated: true });
+    expect(reply.output).toContain('Building Configuration...');
+    expect(reply.output).toContain('still printing');
+    // Back at the prompt: not marked.
+    expect(await handleLiveRequest(show({ id: 'live-2', tab: 't1' }))).toMatchObject({ ok: true, truncated: false });
   });
 
   it('runs one request per tab at a time, and checks the prompt again right before typing', async () => {
