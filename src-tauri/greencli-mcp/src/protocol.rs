@@ -150,8 +150,9 @@ fn initialize(params: &Map<String, Value>) -> Value {
             "version": crate::VERSION
         },
         "instructions": "Read-only access to GreenCLI data on this computer: saved devices, \
-    config history and diffs (with secrets hidden), and intent results. Nothing here can change \
-    a device or GreenCLI."
+    config history and diffs (with secrets hidden), and intent results. On macOS and Linux, \
+    device_show runs one show line on a device tab already connected in GreenCLI, after GreenCLI \
+    asks you. Nothing here can change a device or GreenCLI."
     })
 }
 

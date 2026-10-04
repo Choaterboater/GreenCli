@@ -1,7 +1,9 @@
 // The server must only read. This scans its source (and the src/bin shim
 // that makes the binary) for anything that writes files, talks to the
 // network, starts programs, uses unsafe code or names GreenCLI's secret
-// files, and checks its dependency list stays small.
+// files, and checks its dependency list stays small. One exception, checked
+// exactly below: src/live.rs (macOS and Linux) may connect to GreenCLI's own
+// channel, <data dir>/mcp-live.sock, and nothing else.
 
 mod common;
 
@@ -209,4 +211,85 @@ fn dependencies_stay_small() {
     }
     assert!(seen.contains(&"serde_json".to_string()));
     assert!(!manifest.contains("build ="), "no build script");
+}
+
+/// The one exception to "never connects": src/live.rs, built only on macOS
+/// and Linux, may connect to GreenCLI's own channel, `mcp-live.sock` in
+/// GreenCLI's data folder, and nothing else. Every BANNED word (TcpStream,
+/// std::net, http, "socket" …) stays banned there too.
+#[test]
+fn only_live_rs_connects_and_only_to_greencli() {
+    let live_name = |p: &Path| p.ends_with("src/live.rs");
+    let sources = sources();
+    assert!(
+        sources.iter().any(|(p, _)| live_name(p)),
+        "src/live.rs is missing"
+    );
+    for (path, text) in &sources {
+        let words = ["UnixStream", "unix::net", "UnixListener", "UnixDatagram"];
+        if !live_name(path) {
+            for word in words {
+                assert!(
+                    !text.contains(word),
+                    "{}: {word} only in src/live.rs",
+                    path.display()
+                );
+            }
+            // Every use of the live module is built on macOS and Linux only.
+            let lines: Vec<&str> = text.lines().collect();
+            for (i, line) in lines.iter().enumerate() {
+                if line.contains("live::") || line.trim() == "mod live;" {
+                    let before = lines[..i]
+                        .iter()
+                        .rev()
+                        .find(|l| !l.trim().is_empty())
+                        .map(|l| l.trim());
+                    assert_eq!(
+                        before,
+                        Some("#[cfg(unix)]"),
+                        "{}:{}: the live module only under #[cfg(unix)]",
+                        path.display(),
+                        i + 1
+                    );
+                }
+            }
+            continue;
+        }
+        assert!(!text.contains("UnixListener"), "live.rs never listens");
+        assert!(!text.contains("UnixDatagram"), "live.rs");
+        assert_eq!(text.matches("unix::net").count(), 1, "one import");
+        assert!(text.contains("use std::os::unix::net::UnixStream;"));
+        assert_eq!(
+            text.matches("UnixStream").count(),
+            2,
+            "the import and one connect"
+        );
+        assert_eq!(
+            text.matches("UnixStream::connect(data_dir.join(\"mcp-live.sock\"))")
+                .count(),
+            1,
+            "live.rs connects only to <data dir>/mcp-live.sock"
+        );
+    }
+    let lib = sources
+        .iter()
+        .find(|(p, _)| p.ends_with("src/lib.rs"))
+        .unwrap();
+    assert!(lib.1.contains("#[cfg(unix)]\nmod live;"));
+}
+
+/// The only channel file named is mcp-live.sock.
+#[test]
+fn only_the_live_channel_file_is_named() {
+    for (path, text) in sources() {
+        for (i, _) in text.match_indices(".sock\"") {
+            let start = text[..i].rfind('"').unwrap();
+            assert_eq!(
+                &text[start..i + 6],
+                "\"mcp-live.sock\"",
+                "{}",
+                path.display()
+            );
+        }
+    }
 }

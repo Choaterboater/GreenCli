@@ -558,7 +558,9 @@ GreenCLI ships a small read-only MCP server, `greencli-mcp`, next to the app:
 
 It lets Casper or Claude Code read your GreenCLI data. It can't change anything: it only reads
 GreenCLI's data folder, and never writes a file, opens a network connection or starts a program
-(a source-scan test checks this).
+(a source-scan test checks this). The one exception is the live tools on macOS and Linux (below):
+they talk to the GreenCLI app on this computer through its own channel in the data folder
+(`mcp-live.sock`), and nothing else.
 
 **Add it.** Settings → **AI & MCP → MCP Servers** shows its full path, with **Copy** buttons for
 the path and for the command below (with your own folders filled in). Run the command in a
@@ -590,6 +592,20 @@ changes every time it starts; until then MCP Servers says so and the export leav
 | `get_config` | One saved config, with secrets hidden |
 | `get_config_diff` | What changed between two saved configs, with secrets hidden |
 | `list_intents` | Your network intents, with their last result and each device's status |
+
+**Live show commands** (macOS and Linux; on Windows these say "not on Windows yet"):
+
+| Tool | What it gives |
+|------|---------------|
+| `list_connected_devices` | The device tabs connected in GreenCLI now: tab, name and type |
+| `device_show` | The output of one `show` line on one of those tabs, with secrets hidden (at most 16 KB) |
+
+GreenCLI must be open with the device connected. It asks you each time: 1 No · 2 Yes this once ·
+3 Yes, show commands on this device until GreenCLI closes. Casper asks first too (it marks
+`device_show` as diagnostic), so you answer two boxes. Only plain `show` lines with filters after
+`|` (include, exclude, begin, section, match, count …) run: never config mode, never on Linux or
+Windows host tabs, and never while something is half-typed in the tab. GreenCLI waits 60 seconds
+for your answer. One switch in **MCP Servers** turns this off.
 
 **Hidden copies.** When a config is captured, GreenCLI also saves a copy with secrets hidden (the
 same filter the AI uses). greencli-mcp reads configs only from these copies. A snapshot without

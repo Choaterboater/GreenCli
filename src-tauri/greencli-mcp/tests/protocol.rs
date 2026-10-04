@@ -191,6 +191,11 @@ fn tools_list_matches_the_golden_file() {
     std::fs::remove_dir_all(dir).ok();
 }
 
+/// The live tools: list_connected_devices only reads; device_show runs a show
+/// line on a connected device, so it is marked diagnostic (Casper and
+/// GreenCLI ask first) and talks to the outside world.
+const LIVE_TOOLS: [&str; 2] = ["list_connected_devices", "device_show"];
+
 #[test]
 fn every_tool_is_marked_read_only() {
     let dir = temp_dir("marks");
@@ -201,11 +206,30 @@ fn every_tool_is_marked_read_only() {
         let a = &tool["annotations"];
         assert_eq!(a["readOnlyHint"], true, "{tool}");
         assert_eq!(a["destructiveHint"], false, "{tool}");
-        assert_eq!(a["idempotentHint"], true, "{tool}");
-        assert_eq!(a["openWorldHint"], false, "{tool}");
-        assert_eq!(tool["_meta"], json!({"casper/safety": "read"}), "{tool}");
         assert_eq!(tool["inputSchema"]["additionalProperties"], false, "{tool}");
         assert_eq!(tool["inputSchema"]["type"], "object", "{tool}");
+        let name = tool["name"].as_str().unwrap();
+        // No run, command, cli, exec or shell word: those read as exec.
+        for word in ["run", "command", "cli", "exec", "shell"] {
+            assert!(!name.contains(word), "{name}");
+        }
+        if name == "device_show" {
+            assert_eq!(a["idempotentHint"], false, "{tool}");
+            assert_eq!(a["openWorldHint"], true, "{tool}");
+            assert_eq!(
+                tool["_meta"],
+                json!({"casper/safety": "diagnostic"}),
+                "{tool}"
+            );
+        } else {
+            assert_eq!(a["idempotentHint"], true, "{tool}");
+            assert_eq!(a["openWorldHint"], false, "{tool}");
+            assert_eq!(tool["_meta"], json!({"casper/safety": "read"}), "{tool}");
+        }
+    }
+    let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
+    for live in LIVE_TOOLS {
+        assert!(names.contains(&live), "{live} is listed on every OS");
     }
     std::fs::remove_dir_all(dir).ok();
 }

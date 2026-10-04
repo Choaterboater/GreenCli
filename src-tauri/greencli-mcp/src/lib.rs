@@ -6,6 +6,14 @@
 //! connection and never starts another program; `tests/source_scan.rs`
 //! checks the source for that.
 //!
+//! One exception, on macOS and Linux only: the live tools
+//! (list_connected_devices, device_show) connect to the running GreenCLI
+//! through its own channel, `mcp-live.sock` in GreenCLI's data folder, and
+//! nowhere else. GreenCLI then asks you before each show line and types it
+//! into a tab you already have connected. Only src/live.rs may do this, and
+//! tests/source_scan.rs checks that too. On Windows those tools answer "not
+//! on Windows yet".
+//!
 //! Config text is served only from the hidden copies GreenCLI writes at
 //! capture time (`<ts>.hidden.json`, made with the same secret filter the AI
 //! uses). When a hidden copy is missing or was made by another filter (an
@@ -20,6 +28,8 @@ mod archive;
 mod devices;
 mod files;
 mod intents;
+#[cfg(unix)]
+mod live;
 mod page;
 mod protocol;
 mod show_only;
@@ -36,7 +46,17 @@ mod transport;
 pub const HIDDEN_COPY_FILTER: u32 = 1;
 
 pub use archive::hidden_copy_usable;
+#[cfg(unix)]
+pub use live::ask_live_with_wait;
 pub use show_only::{is_plain_show, MAX_SHOW_LEN};
+
+/// How long a live tool waits for GreenCLI (your answer in its box, then the
+/// device's output). Casper gives up on an MCP call after 90 s, so this stays
+/// below that: a late Yes must never type into a tab no one waits on.
+pub const LIVE_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// The longest request sent to GreenCLI's live channel, in bytes.
+pub const MAX_LIVE_REQUEST: usize = 4 * 1024;
 
 /// The app's bundle identifier: the name of its data folder.
 pub const APP_IDENTIFIER: &str = "com.choatelabs.greencli";
