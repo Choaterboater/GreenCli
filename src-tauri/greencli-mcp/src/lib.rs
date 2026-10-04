@@ -22,6 +22,7 @@ mod files;
 mod intents;
 mod page;
 mod protocol;
+mod show_only;
 mod tools;
 mod transport;
 
@@ -35,6 +36,7 @@ mod transport;
 pub const HIDDEN_COPY_FILTER: u32 = 1;
 
 pub use archive::hidden_copy_usable;
+pub use show_only::{is_plain_show, MAX_SHOW_LEN};
 
 /// The app's bundle identifier: the name of its data folder.
 pub const APP_IDENTIFIER: &str = "com.choatelabs.greencli";

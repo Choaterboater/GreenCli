@@ -8,6 +8,7 @@
 // printable ASCII and tab (see below), and the notes have no trailing period
 // (bullet style, like the other approval notes).
 
+import { AI_WRITE_PIPE } from './aiGating';
 import { strictest, type CapabilitySafety } from './mcpLabels';
 import type { McpPresetId } from './mcpTypes';
 
@@ -48,6 +49,39 @@ export function isPlainJunosShow(command: unknown): boolean {
     if (!word || !JUNOS_PIPES.has(word)) return false;
   }
   return true;
+}
+
+/** The longest line isPlainShow allows. */
+export const MAX_SHOW_LEN = 256;
+
+/** isPlainShow's filters: JUNOS_PIPES plus include, exclude, begin and section with their short
+ *  forms. Never `s` (save on Junos), grep, head, tail, wc or a pipe that writes a file. */
+export const SHOW_PIPES: ReadonlySet<string> = new Set([
+  ...JUNOS_PIPES,
+  ...['i', 'in', 'inc', 'incl', 'inclu', 'includ', 'include'],
+  ...['e', 'ex', 'exc', 'excl', 'exclu', 'exclud', 'exclude'],
+  ...['b', 'be', 'beg', 'begi', 'begin'],
+  ...['sec', 'sect', 'secti', 'sectio', 'section'],
+]);
+
+/** The Read-only Auditor's characters (AUDITOR_CHAR in aiGating.ts), without quotes. */
+const SHOW_CHARS = /^[A-Za-z0-9 \t._/:@,=+|-]*$/;
+
+/**
+ * The show-only rule for live show commands from AI tools outside GreenCLI, extended from
+ * isPlainJunosShow: one line, never empty, at most 256 characters, only the Auditor's characters,
+ * the literal first word `show` (no `do`, no `sh`) then a word starting with a letter, and every
+ * `|` stage a SHOW_PIPES filter. greencli-mcp's is_plain_show (src-tauri/greencli-mcp/src/
+ * show_only.rs, also used by the app) is the same rule; both run
+ * src-tauri/greencli-mcp/testdata/show_only_cases.json.
+ */
+export function isPlainShow(line: unknown): boolean {
+  if (typeof line !== 'string' || line.length > MAX_SHOW_LEN || !SHOW_CHARS.test(line)) return false;
+  if (AI_WRITE_PIPE.test(line)) return false;
+  const [head = '', ...rest] = line.split('|');
+  const words = head.split(/[ \t]+/).filter(Boolean);
+  if (words[0] !== 'show' || !/^[A-Za-z]/.test(words[1] ?? '')) return false;
+  return rest.every((stage) => SHOW_PIPES.has(stage.split(/[ \t]+/).filter(Boolean)[0] ?? ''));
 }
 
 export const JUNOS_EXECUTE: ReadonlySet<string> = new Set([
