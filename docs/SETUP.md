@@ -603,9 +603,12 @@ changes every time it starts; until then MCP Servers says so and the export leav
 GreenCLI must be open with the device connected. It asks you each time: 1 No · 2 Yes this once ·
 3 Yes, show commands on this device until GreenCLI closes. Casper asks first too (it marks
 `device_show` as diagnostic), so you answer two boxes. Only plain `show` lines with filters after
-`|` (include, exclude, begin, section, match, count …) run: never config mode, never on Linux or
-Windows host tabs, and never while something is half-typed in the tab. GreenCLI waits 60 seconds
-for your answer. One switch in **MCP Servers** turns this off.
+`|` (include, exclude, begin, section, match, count …; on Junos `display set`, but not `trim`, xml
+or json) run: never config mode, never on Linux or Windows host tabs, and never while something is
+half-typed in the tab. Output over 16 KB is cut, keeping the start. Secrets are hidden, but a filter
+still sees them: whether a line comes back can give a secret away one guess at a time, so answer 3
+only for a program you trust. GreenCLI waits 60 seconds for your answer. One switch in **MCP
+Servers** turns this off.
 
 **Hidden copies.** When a config is captured, GreenCLI also saves a copy with secrets hidden (the
 same filter the AI uses). greencli-mcp reads configs only from these copies. A snapshot without

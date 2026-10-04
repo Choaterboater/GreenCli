@@ -98,6 +98,11 @@ async function answer(value: string | null) {
 }
 
 const sent = () => invokeMock.mock.calls.filter(([cmd]) => cmd === 'send_data');
+/** Keys sent outside a capture (paging commands, pager quit), without the paging pair. */
+const keys = () =>
+  sent()
+    .map(([, a]) => (a as { data: string }).data)
+    .filter((d) => !['no page\r', 'page\r', 'no paging\r', 'paging\r'].includes(d));
 
 describe('list_connected_devices', () => {
   it('lists connected network device tabs only', async () => {
@@ -244,12 +249,76 @@ describe('device_show: running it', () => {
     expect(captureMock).toHaveBeenLastCalledWith('t2', 'show route | no-more');
   });
 
-  it('sends q at a pager and marks the output cut short', async () => {
+  it('turns paging off around the line on AOS-CX, AOS-S and AOS-8, and back on after', async () => {
+    const order: string[] = [];
+    invokeMock.mockImplementation(async (cmd: string, args?: unknown) => {
+      const a = args as { sessionId?: string; data?: string } | undefined;
+      if (cmd === 'get_terminal_output') return buffers[a?.sessionId ?? ''] ?? '';
+      if (cmd === 'send_data') order.push(`${a?.sessionId} send ${a?.data}`);
+      return undefined;
+    });
+    captureMock.mockImplementation(async (id, command) => {
+      order.push(`${id} capture ${command}`);
+      return { output: `${command}\nhostname x\nx#`, truncated: false };
+    });
+    useSessionStore.setState({
+      sessions: [tab('t1', 'sw-a'), tab('t6', 'sw-s', { deviceType: 'aruba-aos-s' }), tab('t7', 'mc-1', { deviceType: 'aruba-controller' })],
+    });
+    buffers.t6 = 'sw-s# ';
+    buffers.t7 = '(mc-1) #';
+    for (const name of ['sw-a', 'sw-s', 'mc-1']) useMcpApprovalStore.getState().allowDevice('greencli-mcp', 'device_show', name);
+    await handleLiveRequest(show({ tab: 't1' }, 'show running-config'));
+    await handleLiveRequest(show({ id: 'live-2', tab: 't6' }, 'show running-config'));
+    await handleLiveRequest(show({ id: 'live-3', tab: 't7' }, 'show running-config'));
+    expect(order).toEqual([
+      't1 send no page\r',
+      't1 capture show running-config',
+      't1 send page\r',
+      't6 send no page\r',
+      't6 capture show running-config',
+      't6 send page\r',
+      't7 send no paging\r',
+      't7 capture show running-config',
+      't7 send paging\r',
+    ]);
+  });
+
+  it('quits a pager with the key the pager names, and marks the output cut short', async () => {
     useMcpApprovalStore.getState().allowDevice('greencli-mcp', 'device_show', 'sw-a');
     captureMock.mockResolvedValueOnce({ output: 'show tech\nline 1\nline 2\n-- MORE --, next page: Space', truncated: false });
     const reply = await handleLiveRequest(show({ tab: 't1' }, 'show tech'));
     expect(reply).toMatchObject({ ok: true, truncated: true });
-    expect(sent()).toEqual([['send_data', { sessionId: 't1', data: 'q' }]]);
+    expect(keys()).toEqual(['q']);
+
+    // AOS-S: q doesn't close its pager, Ctrl+C does.
+    invokeMock.mockClear();
+    useSessionStore.setState({ sessions: [tab('t6', 'sw-s', { deviceType: 'aruba-aos-s' })] });
+    buffers.t6 = 'sw-s# ';
+    useMcpApprovalStore.getState().allowDevice('greencli-mcp', 'device_show', 'sw-s');
+    captureMock.mockResolvedValueOnce({
+      output: 'show tech\nline 1\n-- MORE --, next page: Space, next line: Enter, quit: Control-C',
+      truncated: false,
+    });
+    expect(await handleLiveRequest(show({ id: 'live-2', tab: 't6' }, 'show tech'))).toMatchObject({ ok: true, truncated: true });
+    expect(keys()).toEqual(['\x03']);
+  });
+
+  it('runs one request per tab at a time, and checks the prompt again right before typing', async () => {
+    useMcpApprovalStore.getState().allowDevice('greencli-mcp', 'device_show', 'sw-a');
+    let finish: (v: { output: string; truncated: boolean }) => void = () => {};
+    captureMock.mockImplementationOnce(() => new Promise((r) => (finish = r)));
+    const first = handleLiveRequest(show({ id: 'live-1', tab: 't1' }, 'show running-config'));
+    const second = handleLiveRequest(show({ id: 'live-2', tab: 't1' }, 'show  version'));
+    await vi.waitFor(() => expect(captureMock).toHaveBeenCalledTimes(1));
+    await new Promise((r) => setTimeout(r, 50));
+    // The second line waits: nothing is typed while the first is still on screen.
+    expect(captureMock).toHaveBeenCalledTimes(1);
+    // The first left the tab at a pager that would eat the start of the next line.
+    buffers.t1 = 'line 1\n-- MORE --, next page: Space';
+    finish({ output: 'show running-config\nline 1\n-- MORE --, next page: Space', truncated: false });
+    expect(await first).toMatchObject({ ok: true, truncated: true });
+    expect((await second) as { error: string }).toMatchObject({ ok: false });
+    expect(captureMock).toHaveBeenCalledTimes(1);
   });
 
   it('returns the output as data and hides secrets', async () => {
@@ -267,7 +336,7 @@ describe('device_show: running it', () => {
     expect(output).toContain('conf t');
     // Only the show line itself went to the device: the "conf t" in the output never ran.
     expect(captureMock).toHaveBeenCalledTimes(1);
-    expect(sent()).toEqual([]);
+    expect(keys()).toEqual([]);
   });
 
   it('keeps the result under 16 KB and says so when it was cut', async () => {
@@ -277,6 +346,21 @@ describe('device_show: running it', () => {
     const reply = await handleLiveRequest(show({ tab: 't1' }, 'show interface brief'));
     expect(reply).toMatchObject({ ok: true, truncated: true });
     expect(new TextEncoder().encode((reply as { output: string }).output).length).toBeLessThanOrEqual(16 * 1024);
+  });
+
+  it('keeps the start of a long config, up to 16 KB', async () => {
+    useMcpApprovalStore.getState().allowDevice('greencli-mcp', 'device_show', 'sw-a');
+    const body = Array.from({ length: 1400 }, (_, i) => `interface 1/1/${i}\n    no shutdown`).join('\n');
+    const config = `hostname sw-a\nvlan 10\n${body}`;
+    expect(config.length).toBeGreaterThan(40_000);
+    captureMock.mockResolvedValueOnce({ output: `show running-config\n${config}\nsw-a#`, truncated: false });
+    const reply = await handleLiveRequest(show({ tab: 't1' }, 'show running-config'));
+    expect(reply).toMatchObject({ ok: true, truncated: true });
+    const output = (reply as { output: string }).output;
+    expect(output.slice(0, 200)).toContain('hostname sw-a');
+    const bytes = new TextEncoder().encode(output).length;
+    expect(bytes).toBeGreaterThan(12_000);
+    expect(bytes).toBeLessThanOrEqual(16 * 1024);
   });
 });
 

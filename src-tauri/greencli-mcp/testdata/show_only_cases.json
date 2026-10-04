@@ -69,7 +69,7 @@
   },
   {
     "command": "show version | display xml",
-    "plain": true
+    "plain": false
   },
   {
     "command": "show version | except foo | last 5",
@@ -77,7 +77,47 @@
   },
   {
     "command": "show version | find bar | trim 5",
+    "plain": false
+  },
+  {
+    "command": "show version | find bar | last 5",
     "plain": true
+  },
+  {
+    "command": "show configuration | display set",
+    "plain": true
+  },
+  {
+    "command": "show configuration | display set | match vlan",
+    "plain": true
+  },
+  {
+    "command": "show configuration | display",
+    "plain": true
+  },
+  {
+    "command": "show configuration snmp | display set | trim 15",
+    "plain": false
+  },
+  {
+    "command": "show configuration system login | trim 60",
+    "plain": false
+  },
+  {
+    "command": "show configuration | display json",
+    "plain": false
+  },
+  {
+    "command": "show configuration | display xml | match name",
+    "plain": false
+  },
+  {
+    "command": "show configuration | display inheritance",
+    "plain": false
+  },
+  {
+    "command": "show configuration | display set relative",
+    "plain": false
   },
   {
     "command": "show lldp neighbor-info 1/1/1",

@@ -11,28 +11,37 @@
 // - The tab must sit at its normal prompt with nothing typed after it: not in
 //   config mode, not at a pager, nothing half-typed. Checked before the box
 //   and again right before the line is typed.
+// - One request per tab at a time: from that last check until the tab is back
+//   at its prompt, no other live request can type in it.
 // - GreenCLI asks: 1 No, 2 Yes this once, 3 Yes, show commands on this device
 //   until GreenCLI closes (in memory, per device). The box names the caller
 //   only as "a program on this computer (pid N)".
 // - Each box has its own dialog group, so `mcp_live_cancel` (the program hung
 //   up, the wait ran out, or the switch went off) closes just that one.
-// - Junos gets `| no-more`. If the output still stops at a pager, GreenCLI
-//   sends q so the tab isn't left stuck, and marks the output cut short.
-// - The output goes through prepareToolResult (secrets hidden, capped) and is
-//   returned as text: whatever it says, nothing in it is run.
+// - Paging is turned off around the line (AOS-CX/AOS-S `no page`, AOS-8
+//   `no paging`, then back on), and Junos gets `| no-more`, the same as intent
+//   checks. If the output still stops at a pager, GreenCLI sends the key that
+//   pager names (q, or Ctrl+C on AOS-S) and marks the output cut short.
+// - Secrets are hidden with the AI's secret filter (as prepareToolResult does
+//   for terminal output), then the output is cut to 16 KB keeping the start
+//   (prepareToolResult would keep the last 12,000 characters), and returned
+//   as text: whatever it says, nothing in it is run.
 
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { askChoice, cancelDialogs, type DialogChoice } from '../store/dialogStore';
 import { useMcpApprovalStore } from '../store/mcpApprovalStore';
 import { useSessionStore } from '../store/sessionStore';
+import { useSettingsStore } from '../store/settingsStore';
 import type { DeviceType, Session } from '../types';
 import { getDeviceId } from './configArchive';
+import { profileForSession } from './deviceProfiles';
 import { parseDevicePrompt, trailingLine } from './devicePrompt';
 import { isPlainShow } from './mcpPresets';
-import { endsAtPager } from './paging';
-import { prepareToolResult, rawTerminal } from './secrets/forAi';
-import { sendAndCapture } from './terminal';
+import { endsAtPager, pagedCommand, pagerQuitKey, withPagingDisabled } from './paging';
+import { MAX_SCRUB_CHARS, WITHHELD_TEXT } from './secrets/forAi';
+import { secretFilterSupported } from './secrets/support';
+import { sendAndCapture, sleep } from './terminal';
 
 /** The approval store key for answer 3 (with the device). */
 export const LIVE_SERVER = 'greencli-mcp';
@@ -125,10 +134,66 @@ async function idleProblem(session: Session): Promise<string | null> {
   return prompt.configMode ? CONFIG_MODE : null;
 }
 
-/** Junos pages show output unless `| no-more` is on the line. */
-function withoutPager(session: Session, line: string): string {
-  const junos = session.config.deviceType === 'juniper-junos' || session.config.deviceType === 'mist';
-  return junos && !/\|\s*no-more\b/.test(line) ? `${line} | no-more` : line;
+/** Wait a little for the tab to be back at its prompt (after a pager quit or
+ *  the paging restore), so the next request finds it idle. */
+async function backAtPrompt(sessionId: string): Promise<void> {
+  for (let i = 0; i < 5; i++) {
+    const buffer = await invoke<string>('get_terminal_output', { sessionId }).catch(() => '');
+    if (parseDevicePrompt(trailingLine(buffer ?? ''))) return;
+    await sleep(200);
+  }
+}
+
+// One live request per tab: each waits for the one before it on that tab.
+const tabChains = new Map<string, Promise<void>>();
+
+function oneAtATime<T>(sessionId: string, fn: () => Promise<T>): Promise<T> {
+  const prev = tabChains.get(sessionId) ?? Promise.resolve();
+  const run = prev.then(fn);
+  const tail = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  tabChains.set(sessionId, tail);
+  void tail.then(() => {
+    if (tabChains.get(sessionId) === tail) tabChains.delete(sessionId);
+  });
+  return run;
+}
+
+/** Room kept under MAX_LIVE_OUTPUT for the notes and greencli-mcp's JSON escapes. */
+const LIVE_ROOM = 2 * 1024;
+const CUT_NOTE = '[cut at 16 KB: this is the start of the output]';
+
+/** The device echoes the line first; output without the echo may start inside
+ *  a config block, so the filter is told its head may be cut. */
+function startsWithEcho(output: string, command: string): boolean {
+  const firstLine = output.trimStart().split('\n', 1)[0] ?? '';
+  return firstLine.includes(command.trim());
+}
+
+/** The output with secrets hidden and cut to fit, keeping the start; null
+ *  when the secret filter can't run here (then nothing is sent back). */
+async function hideAndCut(
+  output: string,
+  command: string,
+): Promise<{ text: string; cut: boolean } | null> {
+  if (!output) return { text: `\`${command}\` was sent, but no output came back.`, cut: false };
+  try {
+    if (!secretFilterSupported()) return null;
+    const engine = await import('./secrets/engine');
+    // Never reached in practice (the terminal keeps far less), but a cap keeps the filter quick.
+    const sliced = output.length > MAX_SCRUB_CHARS;
+    const input = sliced ? output.slice(0, MAX_SCRUB_CHARS) : output;
+    const result = engine.scrubForAi(input, { cutHead: !startsWithEcho(input, command) });
+    const hint = result.hidden ? engine.defaultCommunityHint(input) : undefined;
+    const room = MAX_LIVE_OUTPUT - LIVE_ROOM - (hint ? hint.length + 1 : 0);
+    const [head, cut] = capBytes(result.text, room);
+    const body = cut || sliced ? `${CUT_NOTE}\n${head}` : head;
+    return { text: hint ? `${body}\n${hint}` : body, cut: cut || sliced };
+  } catch {
+    return null;
+  }
 }
 
 /** Cut to at most `max` UTF-8 bytes, on a character boundary. */
@@ -202,23 +267,36 @@ async function runShow(req: LiveRequest): Promise<LiveReply> {
     if (answer === 'device') useMcpApprovalStore.getState().allowDevice(LIVE_SERVER, LIVE_TOOL, name);
   }
 
-  // The box may have been open a while: the tab must still be idle and connected.
-  const now = useSessionStore.getState().sessions.find((s) => s.sessionId === session.sessionId);
-  if (!now?.connected) return no(`That tab isn't connected any more. Nothing ran.`);
-  const after = await idleProblem(now);
-  if (after) return no(after);
-  if (cancelled.has(req.id)) return no(STOPPED);
+  const ran = await oneAtATime(session.sessionId, async () => {
+    // The box may have been open a while, and another request may just have
+    // used this tab: it must still be idle and connected right before typing.
+    const now = useSessionStore.getState().sessions.find((s) => s.sessionId === session.sessionId);
+    if (!now?.connected) return `That tab isn't connected any more. Nothing ran.`;
+    const after = await idleProblem(now);
+    if (after) return after;
+    if (cancelled.has(req.id)) return STOPPED;
 
-  const command = withoutPager(now, line);
-  const capture = await sendAndCapture(now.sessionId, command);
+    const profile = profileForSession(now.config, useSettingsStore.getState().customDeviceProfiles);
+    const command = pagedCommand(profile, line);
+    const capture = await withPagingDisabled(now.sessionId, profile, async () => {
+      const c = await sendAndCapture(now.sessionId, command);
+      // Leave a pager so the next key isn't eaten by it.
+      if (endsAtPager(c.output)) {
+        await invoke('send_data', { sessionId: now.sessionId, data: pagerQuitKey(c.output) }).catch(() => undefined);
+      }
+      return c;
+    });
+    await backAtPrompt(now.sessionId);
+    return { command, capture };
+  });
+  if (typeof ran === 'string') return no(ran);
+
+  const { command, capture } = ran;
   const pager = endsAtPager(capture.output);
-  // Leave the pager so the next key you press isn't eaten by it.
-  if (pager) await invoke('send_data', { sessionId: now.sessionId, data: 'q' }).catch(() => undefined);
-  const prepared = await prepareToolResult(rawTerminal(capture.output, command, capture.truncated || pager));
-  if (prepared.isError) return no(prepared.text);
-  const [output, cut] = capBytes(prepared.text, MAX_LIVE_OUTPUT);
-  const capped = prepared.text.startsWith('…(truncated)…') || prepared.text.includes('\n…(truncated)…\n');
-  return { ok: true, output, truncated: capture.truncated || pager || capped || cut };
+  const hidden = await hideAndCut(capture.output, command);
+  if (!hidden) return no(WITHHELD_TEXT);
+  const [output, cut] = capBytes(hidden.text, MAX_LIVE_OUTPUT);
+  return { ok: true, output, truncated: capture.truncated || pager || hidden.cut || cut };
 }
 
 /** Answer one request from greencli-mcp. Never throws. */

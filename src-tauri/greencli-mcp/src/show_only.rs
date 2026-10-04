@@ -14,15 +14,18 @@
 //!   with a letter;
 //! - every `|` stage starts with a read-only filter: the Junos ones, or
 //!   include, exclude, begin, section and their short forms. Never `s` (save
-//!   on Junos), grep, head, tail, wc or any pipe that writes a file.
+//!   on Junos), grep, head, tail, wc or any pipe that writes a file;
+//! - never `trim`, and `display` only alone or as `display set`: secrets are
+//!   hidden by the word in front of them on the same line, and trim, xml or
+//!   json would move that word away.
 
 /// The longest line allowed.
 pub const MAX_SHOW_LEN: usize = 256;
 
 #[rustfmt::skip]
 const SHOW_PIPES: &[&str] = &[
-    // Junos (the same list as is_plain_junos_show).
-    "match", "except", "count", "display", "no-more", "last", "find", "trim",
+    // Junos (is_plain_junos_show's list without trim; display is checked below).
+    "match", "except", "count", "display", "no-more", "last", "find",
     // Aruba, Cisco and others, with their short forms.
     "i", "in", "inc", "incl", "inclu", "includ", "include",
     "e", "ex", "exc", "excl", "exclu", "exclud", "exclude",
@@ -58,9 +61,12 @@ pub fn is_plain_show(line: &str) -> bool {
         return false;
     }
     stages.all(|stage| {
-        stage
-            .split(space)
-            .find(|w| !w.is_empty())
-            .is_some_and(|w| SHOW_PIPES.contains(&w))
+        let words: Vec<&str> = stage.split(space).filter(|w| !w.is_empty()).collect();
+        match words.as_slice() {
+            ["display"] | ["display", "set"] => true,
+            ["display", ..] => false,
+            [first, ..] => SHOW_PIPES.contains(first),
+            [] => false,
+        }
     })
 }

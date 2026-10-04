@@ -50,4 +50,8 @@ describe('help: greencli-mcp topic', () => {
     expect(t).toContain('16 KB');
     expect(t).toContain('60 seconds');
   });
+
+  it('says plainly that a filter can give away a secret one guess at a time', () => {
+    expect(text()).toMatch(/filter[^.]*one guess at a time/);
+  });
 });
