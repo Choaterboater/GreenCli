@@ -1,0 +1,14 @@
+{
+  "numStartups": 12,
+  "history": [{ "display": "not an mcp server" }],
+  "mcpServers": {
+    "central": { "type": "stdio", "command": "uvx", "args": ["centralmcp", "--old"] },
+    "junos": { "type": "stdio", "command": "python3", "args": ["/opt/junos/jmcp.py", "-f", "devices.json"] },
+    "grafana": { "type": "http", "url": "https://grafana.example.net:8443/mcp?key=fake-query-0002", "headers": { "Authorization": "Bearer ${GRAFANA_TOKEN}" } },
+    "old-sse": { "type": "sse", "url": "https://sse.example.net/sse" },
+    "greencli": { "type": "stdio", "command": "/Applications/GreenCLI.app/Contents/MacOS/greencli-mcp", "args": ["--data-dir", "/x"] }
+  },
+  "projects": {
+    "/Users/someone/work": { "mcpServers": { "project-only": { "command": "uvx", "args": ["project-only"] } } }
+  }
+}

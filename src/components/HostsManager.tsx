@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { Trash2, ShieldCheck, RefreshCw, FileSpreadsheet, FolderOpen, Cloud, KeyRound } from 'lucide-react';
+import { Trash2, ShieldCheck, RefreshCw, FileSpreadsheet, FolderOpen, Cloud, KeyRound, FlaskConical } from 'lucide-react';
 import { useSessionStore } from '../store/sessionStore';
 import { notify } from '../store/toastStore';
 import type { ImportSource } from '../utils/importHosts';
+import { isTauri, tauriSave } from '../utils/fileSystem';
+import { copyText } from '../utils/clipboard';
+import { buildLabExport, labImportCommand, LAB_EXPORT_FILE_NAME, type LabExport } from '../utils/labExport';
 
 interface KnownHost {
   hostPort: string;
@@ -18,8 +21,12 @@ const IMPORT_SOURCES: { id: ImportSource; label: string; icon: typeof Cloud }[] 
   { id: 'ssh', label: '~/.ssh/config', icon: KeyRound },
 ];
 
+const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
+
 export default function HostsManager() {
   const [knownHosts, setKnownHosts] = useState<KnownHost[]>([]);
+  const [labBusy, setLabBusy] = useState(false);
+  const [labDone, setLabDone] = useState<(LabExport & { command: string }) | null>(null);
 
   const loadKnown = useCallback(() => {
     invoke<KnownHost[]>('list_known_hosts')
@@ -50,6 +57,44 @@ export default function HostsManager() {
     }
   };
 
+  // The address of every host tagged "lab", as Casper's lab file. Same save flow as the MCP export:
+  // a quick path check here, then Rust checks the real path again and writes it owner-only.
+  const exportLab = async () => {
+    if (labBusy) return;
+    if (!isTauri) {
+      notify.info('Export needs the desktop app');
+      return;
+    }
+    const result = buildLabExport(useSessionStore.getState().folders);
+    if (result.hosts.length === 0) {
+      const why = result.skipped.slice(0, 3).map((s) => `${s.name}: ${s.reason}`);
+      notify.warning('No lab hosts', ['Tag a host "lab" first: right-click it, then Tags…', ...why].join(' '));
+      return;
+    }
+    setLabBusy(true);
+    try {
+      const path = await tauriSave(LAB_EXPORT_FILE_NAME, 'Export lab hosts for Casper');
+      if (!path) return;
+      const { refusedExportPath } = await import('../utils/mcpExport');
+      const refused = refusedExportPath(path);
+      if (refused) {
+        notify.error('Not saved', refused);
+        return;
+      }
+      await invoke('mcp_export_write', { path, contents: result.text });
+      setLabDone({ ...result, command: labImportCommand(path) });
+      notify.success('Lab hosts exported', `${plural(result.hosts.length, 'host')} saved`);
+    } catch (e) {
+      notify.error('Could not export lab hosts', String(e));
+    } finally {
+      setLabBusy(false);
+    }
+  };
+
+  const copyLabCommand = async (command: string) => {
+    if (await copyText(command)) notify.success('Copied');
+  };
+
   return (
     <section>
       <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-3">Host Import &amp; SSH Host Keys</h3>
@@ -72,6 +117,67 @@ export default function HostsManager() {
             </button>
           ))}
         </div>
+      </div>
+
+      {/* Lab hosts for Casper: addresses only, never names, logins or passwords */}
+      <div className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--bg-inset)] p-3 mb-3">
+        <p className="text-[13px] text-[var(--text-primary)]">Lab hosts for Casper</p>
+        <p className="text-[11px] text-[var(--text-muted)]">
+          Saves the address of every host tagged "lab" for Casper's /lab import. Casper matches by address. No names, logins or passwords.
+        </p>
+        <div className="mt-2.5 flex flex-wrap gap-1.5">
+          <button
+            onClick={exportLab}
+            disabled={labBusy}
+            className="flex items-center gap-1.5 px-3 h-8 text-[12px] rounded-md bg-[var(--bg-tertiary)] hover:bg-[var(--border-strong)] text-[var(--text-primary)] transition-colors disabled:opacity-50"
+          >
+            <FlaskConical size={13} />
+            Export lab hosts for Casper…
+          </button>
+        </div>
+        {labDone && (
+          <div role="status" className="mt-2.5 space-y-1.5 text-[11px] text-[var(--text-secondary)] leading-relaxed">
+            <div className="flex items-center gap-2">
+              <p className="min-w-0 flex-1 break-all">
+                In Casper, type: <code className="text-[var(--accent)]">{labDone.command}</code>
+              </p>
+              <button
+                onClick={() => copyLabCommand(labDone.command)}
+                className="px-2 h-6 text-[11px] rounded-md bg-[var(--bg-tertiary)] hover:bg-[var(--border-strong)] text-[var(--text-primary)]"
+              >
+                Copy
+              </button>
+            </div>
+            <p className="break-all">
+              Saved ({labDone.hosts.length}): {labDone.hosts.join(', ')}
+            </p>
+            {labDone.shortNames.map((name) => (
+              <p key={name}>
+                {name} is a one-word name: Casper treats any inventory host named {name} as lab.
+              </p>
+            ))}
+            {labDone.skipped.length > 0 && (
+              <>
+                <p>Left out:</p>
+                <ul className="list-disc pl-4">
+                  {labDone.skipped.map((s, i) => (
+                    <li key={i}>
+                      {s.name}: {s.reason}
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
+            <div className="flex justify-end">
+              <button
+                onClick={() => setLabDone(null)}
+                className="px-3 h-7 text-[11px] rounded-md bg-[var(--bg-tertiary)] hover:bg-[var(--border-strong)] text-[var(--text-primary)]"
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Known host keys */}

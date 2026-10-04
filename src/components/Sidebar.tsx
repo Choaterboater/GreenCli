@@ -251,7 +251,7 @@ export default function Sidebar({ onConnect }: SidebarProps) {
     if (!item || !ctx) return;
     const entered = await askPrompt({
       title: 'Tags',
-      message: 'Comma-separated labels for filtering (e.g. core, site-a, prod). Tag lab devices "lab".',
+      message: 'Comma-separated labels for filtering (e.g. core, site-a, prod). Tag lab devices "lab"; Settings → Host Import exports them for Casper.',
       defaultValue: (item.tags ?? []).join(', '),
       placeholder: 'core, site-a',
     });

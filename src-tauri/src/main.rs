@@ -89,6 +89,8 @@ struct AppState {
     /// Outbound MCP client manager — connects to external MCP servers so the AI
     /// assistant can use their tools (provider-agnostic).
     mcp_manager: Arc<AsyncMutex<McpManager>>,
+    /// The last MCP import scan, so an import saves exactly what was shown.
+    mcp_import: Arc<mcp::import::ImportBook>,
     /// API clients live behind Arc so request commands can clone the handle
     /// out under a brief map lock and run the (up-to-30s) network round-trip
     /// WITHOUT holding it — holding the map lock across the await serialized
@@ -158,6 +160,7 @@ impl AppState {
                 app_dir.clone(),
                 McpCreds::new(secrets.clone()),
             ))),
+            mcp_import: Arc::new(mcp::import::ImportBook::default()),
             api_clients: Arc::new(AsyncMutex::new(HashMap::new())),
             aos8_clients: Arc::new(AsyncMutex::new(HashMap::new())),
             aoss_clients: Arc::new(AsyncMutex::new(HashMap::new())),
@@ -1663,6 +1666,37 @@ async fn mcp_export_pins(state: State<'_, AppState>) -> Result<serde_json::Value
     serde_json::to_value(mgr.export_pins()).map_err(|e| e.to_string())
 }
 
+/// Look for MCP servers set up in Casper, Claude Code, ~/.mcp.json and VS
+/// Code. Fixed files only; they are read off the manager lock, and only names,
+/// sources and what each runs (secrets hidden) go back to the webview.
+#[tauri::command]
+async fn mcp_import_scan(
+    state: State<'_, AppState>,
+) -> Result<mcp::import::ImportPreview, String> {
+    let existing = state.mcp_manager.lock().await.list_configs();
+    let home = ssh::ssh_config::home_dir().ok_or("GreenCLI can't find your home folder.")?;
+    let scan = tauri::async_runtime::spawn_blocking(move || {
+        let sources = mcp::import::default_sources(&home);
+        mcp::import::scan(&sources, &home, &existing)
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(state.mcp_import.keep(scan))
+}
+
+/// Import the chosen servers from the last scan (by id). Each comes in not
+/// started, with writes off.
+#[tauri::command]
+async fn mcp_import_apply(
+    token: String,
+    ids: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<mcp::client::ImportOutcome, String> {
+    let defs = state.mcp_import.take(&token, &ids)?;
+    let mgr = state.mcp_manager.lock().await;
+    mgr.import_many(defs).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 async fn mcp_save_server(def: McpServerDef, state: State<'_, AppState>) -> Result<(), String> {
     let mgr = state.mcp_manager.lock().await;
@@ -3081,6 +3115,8 @@ fn main() {
             ai_chat_stream,
             mcp_list_servers,
             mcp_export_pins,
+            mcp_import_scan,
+            mcp_import_apply,
             mcp_save_server,
             mcp_rename_server,
             mcp_delete_server,

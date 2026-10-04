@@ -17,11 +17,14 @@ import {
   EyeOff,
   Download,
   History,
+  Upload,
 } from 'lucide-react';
 import { notify } from '../store/toastStore';
-import { askConfirm } from '../store/dialogStore';
+import { askChoice, askConfirm } from '../store/dialogStore';
+import { useSettingsStore } from '../store/settingsStore';
 import { useMcpApprovalStore } from '../store/mcpApprovalStore';
-import type { McpExportPins, McpServerDef, McpStatus } from '../utils/mcpTypes';
+import type { McpExportPins, McpImportOutcome, McpImportPreview, McpServerDef, McpStatus } from '../utils/mcpTypes';
+import { importDialog, importDoneText, pickDialog } from '../utils/mcpImport';
 import { plainHttpWarning } from '../utils/urlSafety';
 import McpServerSafety from './McpServerSafety';
 import SecretStoreNote from './SecretStoreNote';
@@ -229,6 +232,81 @@ export default function McpServers() {
     const t = setInterval(refresh, 5000);
     return () => clearInterval(t);
   }, [refresh]);
+
+  // Import from Casper, Claude Code, ~/.mcp.json and VS Code. Rust reads the
+  // files and keeps what it found; only names, places and what each server
+  // runs (secrets hidden) come here. Imported servers wait for Connect.
+  const [importing, setImporting] = useState(false);
+  // One import at a time, the offer's or the button's: two scans would ask
+  // twice. Under StrictMode the offer's first run carries on (the panel is
+  // still open) and the second sees it busy and stops.
+  const importBusy = useRef(false);
+  const open = useRef(false);
+  useEffect(() => {
+    open.current = true;
+    return () => {
+      open.current = false;
+    };
+  }, []);
+  /** `offer`: the one-time offer when MCP Servers opens. It shows only if
+   *  something was found, the panel is still open, and only once. */
+  const runImport = useCallback(
+    async (offer: boolean) => {
+      if (importBusy.current) return;
+      importBusy.current = true;
+      setImporting(true);
+      try {
+        const preview = await invoke<McpImportPreview | null>('mcp_import_scan').catch((e) => {
+          if (!offer) notify.error('Could not look for MCP servers', String(e));
+          return null;
+        });
+        if (!preview || !Array.isArray(preview.items)) return;
+        if (offer) {
+          if (!open.current || preview.items.length === 0) return;
+          if (useSettingsStore.getState().mcpImportOffered) return;
+          useSettingsStore.getState().setMcpImportOffered(true);
+        } else if (preview.items.length === 0) {
+          const why = [...preview.skipped.map((k) => `${k.name}: ${k.reason}.`), ...preview.problems];
+          notify.info('Nothing new to import', why.join(' ') || 'No MCP servers found in Casper, Claude Code, ~/.mcp.json or VS Code.');
+          return;
+        }
+        // Escape (null) counts as Not now, here and under Pick which.
+        const choice = await askChoice(importDialog(preview));
+        let ids: string[] = [];
+        if (choice === 'all') {
+          ids = preview.items.map((i) => i.id);
+        } else if (choice === 'pick') {
+          for (const [index, item] of preview.items.entries()) {
+            const answer = await askChoice(pickDialog(item, index, preview.items.length));
+            if (answer === null) return;
+            if (answer === 'import') ids.push(item.id);
+          }
+        }
+        if (ids.length === 0) return;
+        let outcome: McpImportOutcome;
+        try {
+          outcome = await invoke<McpImportOutcome>('mcp_import_apply', { token: preview.token, ids });
+        } catch (e) {
+          notify.error('Could not import MCP servers', String(e));
+          return;
+        }
+        const done = importDoneText(outcome, preview.items);
+        if (outcome.added.length) notify.success(done.title, done.detail);
+        for (const line of done.needs) notify.info(line);
+        if (done.skipped.length) notify.warning('Some servers were not imported', done.skipped.join(' '));
+        refresh();
+      } finally {
+        importBusy.current = false;
+        setImporting(false);
+      }
+    },
+    [refresh],
+  );
+
+  useEffect(() => {
+    if (!isTauri || useSettingsStore.getState().mcpImportOffered) return;
+    void runImport(true);
+  }, [runImport]);
 
   /** Connects (or restarts) a server; true when it worked. Errors are shown here, never thrown. */
   const connect = async (name: string): Promise<boolean> => {
@@ -529,6 +607,15 @@ export default function McpServers() {
       <div className="flex items-center justify-between mb-3">
         <h3 className="text-sm font-semibold text-[var(--text-primary)]">MCP Servers</h3>
         <div className="flex items-center gap-2">
+          <button
+            onClick={() => void runImport(false)}
+            disabled={importing}
+            title="Bring in MCP servers you set up in Casper, Claude Code, ~/.mcp.json or VS Code. They come in with writes off and wait for Connect."
+            className="flex items-center gap-1.5 px-2.5 py-1 text-[11px] rounded-md bg-[var(--bg-tertiary)] hover:bg-[var(--border-strong)] text-[var(--text-primary)] transition-colors disabled:opacity-50"
+          >
+            {importing ? <Loader2 size={13} className="animate-spin" /> : <Upload size={13} />}
+            Import from Casper / Claude…
+          </button>
           <button
             onClick={exportServers}
             disabled={exporting}
