@@ -148,12 +148,15 @@ impl Handler for ClientHandler {
                     &key_type,
                     &fingerprint,
                 ) {
-                    Ok(outcome) => {
+                    Ok(verified) => {
+                        let mut notes: Vec<String> = verified.notice.into_iter().collect();
                         // A previously-known host presenting a NEW key algorithm
                         // is accepted (TOFU), but an unexpected algorithm can
                         // signal a downgrade attempt — flag it so connect() can
                         // surface a warning to the user.
-                        if outcome == crate::ssh::known_hosts::KeyVerifyResult::NewAlgorithm {
+                        if verified.outcome
+                            == crate::ssh::known_hosts::KeyVerifyResult::NewAlgorithm
+                        {
                             let msg = format!(
                                 "Host {} presented a new host key algorithm ({}) with fingerprint \
                                  {}. It was recorded alongside the existing trusted key(s) — verify \
@@ -162,8 +165,13 @@ impl Handler for ClientHandler {
                                 self.host_port, key_type, fingerprint
                             );
                             log::warn!("{}", msg);
+                            notes.push(msg);
+                        }
+                        // A damaged host keys file was moved aside: say so
+                        // (connecting still goes ahead).
+                        if !notes.is_empty() {
                             if let Ok(mut g) = self.warning.lock() {
-                                *g = Some(msg);
+                                *g = Some(notes.join(" "));
                             }
                         }
                         Ok(true)
