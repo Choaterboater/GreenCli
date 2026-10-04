@@ -99,6 +99,48 @@ describe('McpServers import', () => {
     expect(applies()).toHaveLength(0);
   });
 
+  it('the button waits while the offer looks, so one scan and one dialog', async () => {
+    let finish: (p: McpImportPreview) => void = () => {};
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === 'mcp_list_servers' || cmd === 'mcp_status') return [];
+      if (cmd === 'mcp_import_scan') return new Promise<McpImportPreview>((r) => (finish = r));
+      return undefined;
+    });
+    vi.mocked(askChoice).mockResolvedValue('no');
+    render(<McpServers />);
+    await waitFor(() => expect(scans()).toBe(1));
+    const button = screen.getByRole('button', { name: /Import from Casper \/ Claude/ });
+    await waitFor(() => expect(button).toBeDisabled());
+    fireEvent.click(button);
+    finish(PREVIEW);
+    await waitFor(() => expect(askChoice).toHaveBeenCalledTimes(1));
+    await flush();
+    await flush();
+    expect(scans()).toBe(1);
+    expect(askChoice).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(button).not.toBeDisabled());
+  });
+
+  it('under StrictMode the offer scans once and still shows', async () => {
+    let finish: (p: McpImportPreview) => void = () => {};
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === 'mcp_list_servers' || cmd === 'mcp_status') return [];
+      if (cmd === 'mcp_import_scan') return new Promise<McpImportPreview>((r) => (finish = r));
+      return undefined;
+    });
+    vi.mocked(askChoice).mockResolvedValue(null);
+    render(
+      <StrictMode>
+        <McpServers />
+      </StrictMode>,
+    );
+    await waitFor(() => expect(scans()).toBe(1));
+    await flush();
+    finish(PREVIEW);
+    await waitFor(() => expect(askChoice).toHaveBeenCalledTimes(1));
+    expect(scans()).toBe(1);
+  });
+
   it('is not offered when nothing is found, and asks again next time', async () => {
     backend({ ...PREVIEW, items: [] });
     render(<McpServers />);

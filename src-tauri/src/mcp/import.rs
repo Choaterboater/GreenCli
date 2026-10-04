@@ -10,8 +10,11 @@
 //   and is listed under "needs".
 // - Messages and the preview name files, servers and variables, never a value.
 // - Imported servers come in off (not started at launch) with writes off.
+//   The first Connect turns on Connect at start.
+// - Two servers are the same when the name matches, or the program and its
+//   env or headers all match: two tenants of one program are two servers.
 
-use super::client::{same_program, McpServerDef, McpTransport, McpWrites};
+use super::client::{same_setup, McpServerDef, McpTransport, McpWrites};
 use super::presets::{is_greencli_mcp_file, match_preset, pins, plan_pins, preset_label, PinView};
 use serde::Serialize;
 use serde_json::{Map, Value};
@@ -387,6 +390,7 @@ fn translate_entry(name: &str, value: &Value, home: &str) -> Result<Entry, Strin
         enabled: false,
         writes: Some(McpWrites::Off),
         show_opt_in: false,
+        wait_for_connect: false,
     };
     match transport {
         McpTransport::Stdio => {
@@ -682,7 +686,7 @@ pub fn scan(sources: &[SourceFile], home: &Path, existing: &[McpServerDef]) -> S
         if let Some(winner) = winners.iter().find(|k| k.def.name == c.def.name) {
             let reason = format!("also in {}; using that one", winner.source);
             out.skipped.push(skip_of(&c, reason));
-        } else if let Some(winner) = winners.iter().find(|k| same_program(&k.def, &c.def)) {
+        } else if let Some(winner) = winners.iter().find(|k| same_setup(&k.def, &c.def)) {
             let reason = format!("same server as {} from {}", winner.def.name, winner.source);
             out.skipped.push(skip_of(&c, reason));
         } else {
@@ -694,7 +698,7 @@ pub fn scan(sources: &[SourceFile], home: &Path, existing: &[McpServerDef]) -> S
         if existing.iter().any(|e| e.name == c.def.name) {
             let reason = "a server with this name is already in GreenCLI".to_string();
             out.skipped.push(skip_of(&c, reason));
-        } else if let Some(same) = existing.iter().find(|e| same_program(e, &c.def)) {
+        } else if let Some(same) = existing.iter().find(|e| same_setup(e, &c.def)) {
             let reason = format!("already in GreenCLI as {}", same.name);
             out.skipped.push(skip_of(&c, reason));
         } else {
@@ -789,8 +793,63 @@ fn is_env_pair(arg: &str) -> bool {
         .is_some_and(|(name, _)| is_var_name(name) && !name.is_empty())
 }
 
+fn is_flag(arg: &str) -> bool {
+    arg.len() > 1 && arg.starts_with('-') && !arg[1..].starts_with(|c: char| c.is_ascii_digit())
+}
+
+fn is_env_flag(flag: &str) -> bool {
+    matches!(flag, "-e" | "--env")
+}
+
+fn is_header_flag(flag: &str) -> bool {
+    matches!(flag, "-H" | "--header" | "--headers")
+}
+
+/// A value safe to show after a flag: a number, a path, or a package-like
+/// word ("stdio", "python3.11", "@scope/pkg"). Anything else could be a short
+/// password ("-p hunter2"), so it is hidden.
+fn safe_shape(value: &str) -> bool {
+    if value.is_empty() || value.contains(char::is_whitespace) {
+        return false;
+    }
+    let number = value
+        .chars()
+        .all(|c| c.is_ascii_digit() || matches!(c, '.' | ':'))
+        && value.chars().any(|c| c.is_ascii_digit());
+    let path = (value.starts_with(['/', '.', '~']) || value.contains(['/', '\\']))
+        && !value.split(['/', '\\', ':']).any(token_shaped);
+    let word_chars = value.chars().all(|c| {
+        c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '_' | '.' | '@' | ':')
+    });
+    let has_digit = value.chars().any(|c| c.is_ascii_digit());
+    let word = word_chars
+        && value.starts_with(|c: char| c.is_ascii_lowercase() || c == '@')
+        && (!has_digit || value.contains(['.', '@', ':']));
+    number || path || word
+}
+
+/// A value after a flag (or in --flag=value): a web address shows its
+/// origin, a safe shape shows, anything else is "…".
+fn flag_value(value: &str) -> String {
+    if value.contains("://") {
+        return url_origin(value).unwrap_or_else(|| "…".into());
+    }
+    if safe_shape(value) {
+        value.to_string()
+    } else {
+        "…".into()
+    }
+}
+
+/// An env pair as KEY=…, or None.
+fn masked_pair(arg: &str) -> Option<String> {
+    is_env_pair(arg).then(|| format!("{}=…", arg.split_once('=').unwrap_or_default().0))
+}
+
 /// What a server runs, for the dialog: the program's file name and its args,
-/// or the web address's scheme and host. Secret-looking parts become "…".
+/// or the web address's scheme and host. Values after a flag show only when
+/// they are numbers, paths or package-like words; env pairs, headers and
+/// token-looking parts become "…".
 pub fn runs_line(def: &McpServerDef) -> String {
     if def.transport == McpTransport::Http {
         return def
@@ -808,17 +867,32 @@ pub fn runs_line(def: &McpServerDef) -> String {
     let mut words = vec![program];
     let mut previous: Option<&str> = None;
     for arg in &def.args {
-        let shown = if previous.is_some_and(|p| p.starts_with('-') && is_secret_name(p)) {
-            "…".to_string()
-        } else if arg.starts_with('-') && arg.contains('=') {
-            let (flag, value) = arg.split_once('=').unwrap_or_default();
-            if is_secret_name(flag) {
-                format!("{flag}=…")
-            } else {
-                format!("{flag}={}", mask_value(value))
+        let after_flag = previous.filter(|p| is_flag(p) && !p.contains('='));
+        let shown = if is_flag(arg) {
+            match arg.split_once('=') {
+                None => arg.clone(),
+                Some((flag, value)) => {
+                    let value = if is_secret_name(flag) || is_header_flag(flag) {
+                        "…".to_string()
+                    } else if let Some(pair) = masked_pair(value).filter(|_| is_env_flag(flag)) {
+                        pair
+                    } else {
+                        flag_value(value)
+                    };
+                    format!("{flag}={value}")
+                }
             }
-        } else if is_env_pair(arg) {
-            format!("{}=…", arg.split_once('=').unwrap_or_default().0)
+        } else if let Some(pair) = masked_pair(arg) {
+            pair
+        } else if let Some(flag) = after_flag {
+            if is_secret_name(flag) || is_header_flag(flag) {
+                "…".to_string()
+            } else {
+                flag_value(arg)
+            }
+        } else if arg.contains(": ") {
+            // A header written as one arg ("X-Key: value").
+            "…".to_string()
         } else {
             mask_value(arg)
         };
@@ -894,23 +968,30 @@ struct Pending {
     candidates: Vec<Candidate>,
 }
 
-/// The last scan, kept in Rust so an import saves exactly what the dialog
-/// showed even if a file changes in between. Values never go to the webview.
+/// How many scans stay usable: the one-time offer and the Import button can
+/// each have a dialog open, and one must not make the other stale.
+const KEPT_SCANS: usize = 4;
+
+/// The last few scans, kept in Rust so an import saves exactly what the
+/// dialog showed even if a file changes in between. Values never go to the
+/// webview.
 #[derive(Default)]
 pub struct ImportBook {
-    pending: Mutex<Option<Pending>>,
+    pending: Mutex<Vec<Pending>>,
 }
 
 impl ImportBook {
-    /// Keep a scan (replacing any older one) and return its preview.
+    /// Keep a scan (dropping the oldest past KEPT_SCANS) and return its preview.
     pub fn keep(&self, scan: Scan) -> ImportPreview {
         let token = format!("{:016x}", rand::random::<u64>());
         let shown = preview(&scan, token.clone());
         if let Ok(mut pending) = self.pending.lock() {
-            *pending = Some(Pending {
+            pending.push(Pending {
                 token,
                 candidates: scan.candidates,
             });
+            let extra = pending.len().saturating_sub(KEPT_SCANS);
+            pending.drain(..extra);
         }
         shown
     }
@@ -919,17 +1000,17 @@ impl ImportBook {
     /// an unknown id gives STALE and nothing.
     pub fn take(&self, token: &str, ids: &[String]) -> Result<Vec<McpServerDef>, String> {
         let mut pending = self.pending.lock().map_err(|_| STALE.to_string())?;
-        let Some(kept) = pending.as_ref().filter(|p| p.token == token) else {
+        let Some(at) = pending.iter().position(|p| p.token == token) else {
             return Err(STALE.into());
         };
         let mut defs = Vec::new();
         for id in ids {
-            match kept.candidates.iter().find(|c| c.def.name == *id) {
+            match pending[at].candidates.iter().find(|c| c.def.name == *id) {
                 Some(c) => defs.push(c.def.clone()),
                 None => return Err(STALE.into()),
             }
         }
-        *pending = None;
+        pending.remove(at);
         Ok(defs)
     }
 }

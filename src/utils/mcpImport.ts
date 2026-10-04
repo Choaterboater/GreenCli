@@ -96,7 +96,7 @@ export function importDoneText(
     .map((i) => `${i.name} needs ${i.needs.join(', ')}. Click Edit to add it.`);
   return {
     title: `${plural(outcome.added.length, 'MCP server')} imported`,
-    detail: 'Writes are off. Click Connect when you want one.',
+    detail: 'Writes are off. Click Connect when you want one. After that it starts with GreenCLI.',
     needs,
     skipped: outcome.skipped.map(([name, reason]) => `${name}: ${reason}`),
   };

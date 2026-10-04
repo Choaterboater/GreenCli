@@ -137,6 +137,7 @@ fn stdio(name: &str, command: &str, args: &[&str]) -> McpServerDef {
         enabled: true,
         writes: None,
         show_opt_in: false,
+        wait_for_connect: false,
     }
 }
 
@@ -303,7 +304,11 @@ fn values_never_reach_the_preview_or_the_reasons() {
             "a": {"command": "x", "args": ["--token=fake-arg-0003-AbCdEfGhIjKl"], "env": {"K": "fake-env-0004"}},
             "b": {"command": "x", "args": ["--api-key", "fake-arg-0005-AbCdEfGhIjKl"], "env": {"K": "fake ${T}"}},
             "c": {"type": "http", "url": "https://u:fake-pass-0006@h.example/mcp?token=fake-q-0007", "headers": {"Authorization": "Bearer fake-hdr-0008"}},
-            "d": {"command": "docker", "args": ["run", "-e", "API_TOKEN=fake-env-0009", "img", "ghp_FakeToken0010AbCdEfGhIj"]}
+            "d": {"command": "docker", "args": ["run", "-e", "API_TOKEN=fake-env-0009", "img", "ghp_FakeToken0010AbCdEfGhIj"]},
+            "e": {"command": "docker", "args": ["run", "--env=NETBOX_PASSWORD=hunter0011", "img"]},
+            "f": {"command": "npx", "args": ["mcp-remote", "https://h.example/mcp", "--header", "X-API-Key: sk0012"]},
+            "g": {"command": "tool", "args": ["-p", "hunter0013"]},
+            "h": {"command": "tool", "args": ["-H", "Authorization:Basic0014"]}
         }}"#,
     );
     let all = serde_json::to_string(&preview(&s, "t".into())).unwrap();
@@ -316,6 +321,10 @@ fn values_never_reach_the_preview_or_the_reasons() {
         "fake-hdr-0008",
         "fake-env-0009",
         "ghp_FakeToken0010",
+        "hunter0011",
+        "sk0012",
+        "hunter0013",
+        "Basic0014",
     ] {
         assert!(!all.contains(fake), "{fake} in {all}");
     }
@@ -340,6 +349,82 @@ fn runs_line_shows_the_program_and_masks_secrets() {
     h.transport = McpTransport::Http;
     h.url = Some("https://user:pw@mcp.example.com:8443/path?key=x".into());
     assert_eq!(runs_line(&h), "https://mcp.example.com:8443");
+    // Paths, package names and numbers still show.
+    let d = stdio(
+        "d",
+        "docker",
+        &[
+            "run",
+            "-i",
+            "--rm",
+            "--env=TZ=UTC",
+            "-v",
+            "/data:/data",
+            "ghcr.io/acme/mcp:1.2",
+            "--transport",
+            "stdio",
+        ],
+    );
+    assert_eq!(
+        runs_line(&d),
+        "docker run -i --rm --env=TZ=… -v /data:/data ghcr.io/acme/mcp:1.2 --transport stdio"
+    );
+    let r = stdio(
+        "r",
+        "npx",
+        &[
+            "mcp-remote",
+            "https://h.example/mcp",
+            "--header",
+            "X-Key: abc",
+        ],
+    );
+    assert_eq!(runs_line(&r), "npx mcp-remote https://h.example --header …");
+}
+
+#[test]
+fn two_tenants_of_one_program_both_come_in() {
+    let s = scan_one(
+        r#"{"mcpServers": {
+            "central-prod": {"command": "uvx", "args": ["central-mcp-server"], "env": {"CLIENT_ID": "prod"}},
+            "central-lab": {"command": "uvx", "args": ["central-mcp-server"], "env": {"CLIENT_ID": "lab"}},
+            "mist-a": {"type": "http", "url": "https://mist.example/mcp", "headers": {"Authorization": "Bearer a"}},
+            "mist-b": {"type": "http", "url": "https://mist.example/mcp", "headers": {"Authorization": "Bearer b"}}
+        }}"#,
+    );
+    let mut got = names(&s);
+    got.sort();
+    assert_eq!(got.len(), 4, "{got:?} {:?}", s.skipped);
+    assert!(got.contains(&"central-prod") && got.contains(&"central-lab"));
+    assert!(got.contains(&"mist-a") && got.contains(&"mist-b"));
+    // One already in GreenCLI with other values does not hide the other tenant.
+    let mut have = stdio("central", "uvx", &["central-mcp-server"]);
+    have.env.insert("CLIENT_ID".into(), "prod".into());
+    let dir = temp_dir();
+    let path = write(
+        &dir,
+        "one.json",
+        r#"{"mcpServers": {
+            "central-prod": {"command": "uvx", "args": ["central-mcp-server"], "env": {"CLIENT_ID": "prod"}},
+            "central-lab": {"command": "uvx", "args": ["central-mcp-server"], "env": {"CLIENT_ID": "lab"}}
+        }}"#,
+    );
+    let s = scan(
+        &[source(
+            "Casper",
+            "~/.casper/mcp.json",
+            path,
+            Shape::McpServers,
+        )],
+        Path::new(HOME),
+        &[have],
+    );
+    assert_eq!(names(&s), vec!["central-lab"]);
+    assert!(skipped_with(
+        &s,
+        "central-prod",
+        "already in GreenCLI as central"
+    ));
 }
 
 // ─── Precedence and skips ───
@@ -370,10 +455,12 @@ fn greencli_own_server_is_skipped() {
 
 #[test]
 fn existing_servers_are_skipped() {
-    let existing = [
-        stdio("junos", "something", &["else"]),
-        stdio("my-central", "uvx", &["centralmcp"]),
-    ];
+    let mut my_central = stdio("my-central", "uvx", &["centralmcp"]);
+    my_central.env.insert(
+        "CENTRAL_CLIENT_SECRET".into(),
+        "fake-casper-secret-0001".into(),
+    );
+    let existing = [stdio("junos", "something", &["else"]), my_central];
     let s = fixture_scan(&existing);
     assert!(!names(&s).contains(&"junos"));
     assert!(skipped_with(&s, "junos", "already in GreenCLI"));
@@ -593,10 +680,23 @@ fn the_book_imports_exactly_what_was_shown() {
         book.take(&first.token, &["nope".to_string()]).unwrap_err(),
         STALE
     );
-    // A newer scan replaces the older one.
+    // A newer scan (the button while the offer is open) leaves the older
+    // one usable.
     let second = book.keep(fixture_scan(&[]));
     assert_ne!(first.token, second.token);
+    assert_eq!(
+        book.take(&first.token, &["central".to_string()])
+            .unwrap()
+            .len(),
+        1
+    );
     assert_eq!(book.take(&first.token, &ids).unwrap_err(), STALE);
+    // Only the last few are kept.
+    for _ in 0..8 {
+        book.keep(fixture_scan(&[]));
+    }
+    assert_eq!(book.take(&second.token, &ids).unwrap_err(), STALE);
+    let second = book.keep(fixture_scan(&[]));
     let defs = book.take(&second.token, &["github".to_string()]).unwrap();
     assert_eq!(defs.len(), 1);
     assert_eq!(defs[0].name, "github");

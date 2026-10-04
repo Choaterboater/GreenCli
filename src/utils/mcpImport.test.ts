@@ -103,7 +103,7 @@ describe('importDoneText', () => {
   it('says how many came in, what needs a value and what was skipped', () => {
     const done = importDoneText({ added: ['github', 'junos'], skipped: [['lab', 'already in GreenCLI as lab2']] }, PREVIEW.items);
     expect(done.title).toBe('2 MCP servers imported');
-    expect(done.detail).toBe('Writes are off. Click Connect when you want one.');
+    expect(done.detail).toBe('Writes are off. Click Connect when you want one. After that it starts with GreenCLI.');
     expect(done.needs).toEqual(['github needs GITHUB_TOKEN. Click Edit to add it.']);
     expect(done.skipped).toEqual(['lab: already in GreenCLI as lab2']);
     expect(importDoneText({ added: ['junos'], skipped: [] }, PREVIEW.items).title).toBe('1 MCP server imported');

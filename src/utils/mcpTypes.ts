@@ -69,6 +69,8 @@ export interface McpServerDef {
   writes?: McpWrites;
   /** Junos only: plain show commands run without asking. Set by mcp_set_show_opt_in only. */
   showOptIn?: boolean;
+  /** Imported and not connected yet; the first Connect turns on Connect at start. Set by Rust only. */
+  waitForConnect?: boolean;
 }
 
 /** [A3] */

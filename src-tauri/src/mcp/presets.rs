@@ -714,6 +714,7 @@ mod tests {
             enabled: true,
             writes: None,
             show_opt_in: false,
+            wait_for_connect: false,
         }
     }
 

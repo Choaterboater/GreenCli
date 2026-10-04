@@ -237,19 +237,24 @@ export default function McpServers() {
   // files and keeps what it found; only names, places and what each server
   // runs (secrets hidden) come here. Imported servers wait for Connect.
   const [importing, setImporting] = useState(false);
+  // One import at a time, the offer's or the button's: two scans would ask
+  // twice. Under StrictMode the offer's first run carries on (the panel is
+  // still open) and the second sees it busy and stops.
   const importBusy = useRef(false);
+  const open = useRef(false);
+  useEffect(() => {
+    open.current = true;
+    return () => {
+      open.current = false;
+    };
+  }, []);
   /** `offer`: the one-time offer when MCP Servers opens. It shows only if
-   *  something was found, and only once (also under StrictMode's double run). */
+   *  something was found, the panel is still open, and only once. */
   const runImport = useCallback(
-    async (offer: { cancelled: () => boolean } | null) => {
-      // The button runs one import at a time. The offer runs on its own: under
-      // StrictMode its first run is cancelled, and the flag check below lets
-      // only one of the runs show the dialog.
-      if (!offer) {
-        if (importBusy.current) return;
-        importBusy.current = true;
-        setImporting(true);
-      }
+    async (offer: boolean) => {
+      if (importBusy.current) return;
+      importBusy.current = true;
+      setImporting(true);
       try {
         const preview = await invoke<McpImportPreview | null>('mcp_import_scan').catch((e) => {
           if (!offer) notify.error('Could not look for MCP servers', String(e));
@@ -257,7 +262,7 @@ export default function McpServers() {
         });
         if (!preview || !Array.isArray(preview.items)) return;
         if (offer) {
-          if (offer.cancelled() || preview.items.length === 0) return;
+          if (!open.current || preview.items.length === 0) return;
           if (useSettingsStore.getState().mcpImportOffered) return;
           useSettingsStore.getState().setMcpImportOffered(true);
         } else if (preview.items.length === 0) {
@@ -291,10 +296,8 @@ export default function McpServers() {
         if (done.skipped.length) notify.warning('Some servers were not imported', done.skipped.join(' '));
         refresh();
       } finally {
-        if (!offer) {
-          importBusy.current = false;
-          setImporting(false);
-        }
+        importBusy.current = false;
+        setImporting(false);
       }
     },
     [refresh],
@@ -302,11 +305,7 @@ export default function McpServers() {
 
   useEffect(() => {
     if (!isTauri || useSettingsStore.getState().mcpImportOffered) return;
-    let cancelled = false;
-    void runImport({ cancelled: () => cancelled });
-    return () => {
-      cancelled = true;
-    };
+    void runImport(true);
   }, [runImport]);
 
   /** Connects (or restarts) a server; true when it worked. Errors are shown here, never thrown. */
@@ -609,7 +608,7 @@ export default function McpServers() {
         <h3 className="text-sm font-semibold text-[var(--text-primary)]">MCP Servers</h3>
         <div className="flex items-center gap-2">
           <button
-            onClick={() => void runImport(null)}
+            onClick={() => void runImport(false)}
             disabled={importing}
             title="Bring in MCP servers you set up in Casper, Claude Code, ~/.mcp.json or VS Code. They come in with writes off and wait for Connect."
             className="flex items-center gap-1.5 px-2.5 py-1 text-[11px] rounded-md bg-[var(--bg-tertiary)] hover:bg-[var(--border-strong)] text-[var(--text-primary)] transition-colors disabled:opacity-50"
