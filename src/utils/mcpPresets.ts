@@ -8,6 +8,7 @@
 // printable ASCII and tab (see below), and the notes have no trailing period
 // (bullet style, like the other approval notes).
 
+import { AI_WRITE_PIPE } from './aiGating';
 import { strictest, type CapabilitySafety } from './mcpLabels';
 import type { McpPresetId } from './mcpTypes';
 
@@ -48,6 +49,62 @@ export function isPlainJunosShow(command: unknown): boolean {
     if (!word || !JUNOS_PIPES.has(word)) return false;
   }
   return true;
+}
+
+/** The longest line isPlainShow allows. */
+export const MAX_SHOW_LEN = 256;
+
+/** isPlainShow's filters: JUNOS_PIPES without trim, plus include, exclude, begin and section with
+ *  their short forms. Never `s` (save on Junos), grep, head, tail, wc or a pipe that writes a file.
+ *  Never trim, and display only alone or as `display set` (see isPlainShow). */
+export const SHOW_PIPES: ReadonlySet<string> = new Set([
+  ...[...JUNOS_PIPES].filter((pipe) => pipe !== 'trim'),
+  ...['i', 'in', 'inc', 'incl', 'inclu', 'includ', 'include'],
+  ...['e', 'ex', 'exc', 'excl', 'exclu', 'exclud', 'exclude'],
+  ...['b', 'be', 'beg', 'begi', 'begin'],
+  ...['sec', 'sect', 'secti', 'sectio', 'section'],
+]);
+
+/** isPlainShow's filters whose text is a pattern: these may also use ^ $ * ( ) [ ] in their text. */
+export const PATTERN_PIPES: ReadonlySet<string> = new Set([
+  ...['match', 'except', 'find'],
+  ...['i', 'in', 'inc', 'incl', 'inclu', 'includ', 'include'],
+  ...['e', 'ex', 'exc', 'excl', 'exclu', 'exclud', 'exclude'],
+  ...['b', 'be', 'beg', 'begi', 'begin'],
+  ...['sec', 'sect', 'secti', 'sectio', 'section'],
+]);
+
+/** The Read-only Auditor's characters (AUDITOR_CHAR in aiGating.ts), without quotes. */
+const SHOW_CHARS = /^[A-Za-z0-9 ._/:@,=+|-]*$/;
+/** SHOW_CHARS plus ^ $ * ( ) [ ], for a PATTERN_PIPES filter's text only. Never ? (AOS-CX and Junos
+ *  show help at once and leave the line half-typed), quotes, backtick, backslash, ; & < >. */
+const PATTERN_CHARS = /^[A-Za-z0-9 ._/:@,=+|^$*()[\]-]*$/;
+
+/**
+ * The show-only rule for live show commands from AI tools outside GreenCLI, extended from
+ * isPlainJunosShow: one line, never empty, at most 256 characters, only the Auditor's characters
+ * (plus ^ $ * ( ) [ ] in a PATTERN_PIPES filter's text; a | always starts a new stage),
+ * the literal first word `show` (no `do`, no `sh`) then a word starting with a letter, and every
+ * `|` stage a SHOW_PIPES filter, with `display` only alone or as `display set`: secrets are hidden
+ * by the word in front of them on the same line, and trim, xml or json would move that word away.
+ * greencli-mcp's is_plain_show (src-tauri/greencli-mcp/src/
+ * show_only.rs, also used by the app) is the same rule; both run
+ * src-tauri/greencli-mcp/testdata/show_only_cases.json.
+ */
+export function isPlainShow(line: unknown): boolean {
+  if (typeof line !== 'string' || line.length > MAX_SHOW_LEN || !PATTERN_CHARS.test(line)) return false;
+  if (AI_WRITE_PIPE.test(line)) return false;
+  const [head = '', ...rest] = line.split('|');
+  if (!SHOW_CHARS.test(head)) return false;
+  const words = head.split(/[ \t]+/).filter(Boolean);
+  if (words[0] !== 'show' || !/^[A-Za-z]/.test(words[1] ?? '')) return false;
+  return rest.every((stage) => {
+    const [first = '', ...more] = stage.split(/[ \t]+/).filter(Boolean);
+    if (PATTERN_PIPES.has(first)) return true;
+    if (!SHOW_CHARS.test(stage)) return false;
+    if (first === 'display') return more.length === 0 || (more.length === 1 && more[0] === 'set');
+    return SHOW_PIPES.has(first);
+  });
 }
 
 export const JUNOS_EXECUTE: ReadonlySet<string> = new Set([

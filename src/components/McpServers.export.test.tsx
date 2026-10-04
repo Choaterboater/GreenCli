@@ -98,6 +98,20 @@ describe('McpServers export', () => {
     });
   });
 
+  it('notes that greencli\'s show commands ask in GreenCLI while the switch is on', async () => {
+    const path = '/Applications/GreenCLI.app/Contents/MacOS/greencli-mcp';
+    backend([], undefined, { path, exists: true, place: 'normal', dataDir: DATA_DIR });
+    const base = vi.mocked(invoke).getMockImplementation()!;
+    vi.mocked(invoke).mockImplementation(async (cmd, args, options) =>
+      cmd === 'mcp_live_status' ? { on: true, listening: true, supported: true, problem: null } : base(cmd, args, options),
+    );
+    vi.mocked(tauriSave).mockResolvedValue('/Users/me/proj/.mcp.json');
+    render(<McpServers />);
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('mcp_list_servers'));
+    fireEvent.click(exportButton());
+    expect(await screen.findByText(/"greencli" can also run show commands/)).toBeInTheDocument();
+  });
+
   it('says so when greencli-mcp is missing, and saves nothing without servers', async () => {
     backend([], undefined, { path: '/opt/GreenCLI/greencli-mcp', exists: false, place: 'normal', dataDir: DATA_DIR });
     render(<McpServers />);

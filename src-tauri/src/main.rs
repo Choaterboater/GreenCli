@@ -13,6 +13,7 @@ mod greencli_mcp_info;
 mod intent;
 mod local;
 mod mcp;
+mod mcp_live;
 mod private_fs;
 mod securecrt;
 mod secret_store;
@@ -3017,8 +3018,20 @@ fn main() {
             // Login files are only kept while their server runs: any left by a
             // crash go before the auto-connect.
             mcp::client::sweep_creds_dir(&app_dir);
-            let state = AppState::new(app_dir, secrets)?;
+            let state = AppState::new(app_dir.clone(), secrets)?;
             app.manage(state);
+
+            // Show commands from AI tools outside GreenCLI (greencli-mcp's
+            // device_show): the channel opens only while the switch in MCP
+            // Servers is on (on by default). Each line still asks in a box.
+            let live = mcp_live::LiveChannel::new(
+                app_dir,
+                Arc::new(mcp_live::WebviewSink(app.handle().clone())),
+            );
+            if let Err(e) = live.start_if_on() {
+                log::warn!("show commands for AI tools are off: {e}");
+            }
+            app.manage(live);
 
             // The main window starts hidden (tauri.conf.json visible: false)
             // and is revealed by the frontend after its first painted frame,
@@ -3154,11 +3167,18 @@ fn main() {
             config_archive_missing_hidden,
             config_archive_set_hidden,
             greencli_mcp_info::greencli_mcp_info,
+            mcp_live::mcp_live_status,
+            mcp_live::mcp_live_set,
+            mcp_live::mcp_live_reply,
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")
         .run(|app_handle, event| {
             if let tauri::RunEvent::Exit = event {
+                // Close the show-command channel first: nothing new starts.
+                if let Some(live) = app_handle.try_state::<mcp_live::LiveChannel>() {
+                    live.stop();
+                }
                 tauri::async_runtime::block_on(shutdown_children(app_handle));
             }
         });

@@ -11,7 +11,7 @@ import { describe, expect, it } from 'vitest';
 import { buildPlan, MAX_DEPTH, skippedCheck } from './mcpApproval';
 import { argsDepth, readNamed, writesOffHides } from './mcpGate';
 import { toolLabel, type CapabilitySafety } from './mcpLabels';
-import { isPlainJunosShow } from './mcpPresets';
+import { isPlainJunosShow, isPlainShow } from './mcpPresets';
 
 function fixture<T>(name: string): T[] {
   return JSON.parse(readFileSync(resolve(process.cwd(), 'src-tauri/src/mcp/testdata', name), 'utf8')) as T[];
@@ -55,6 +55,16 @@ describe('MCP label fixtures shared with Rust', () => {
     expect(cases.some((c) => c.command.length === 512 && c.plain)).toBe(true);
     expect(cases.some((c) => c.command.length === 513 && !c.plain)).toBe(true);
     for (const c of cases) expect([c.command, isPlainJunosShow(c.command)]).toEqual([c.command, c.plain]);
+  });
+
+  it('live show commands: the show-only vectors greencli-mcp and presets.rs also run', () => {
+    const cases = JSON.parse(
+      readFileSync(resolve(process.cwd(), 'src-tauri/greencli-mcp/testdata/show_only_cases.json'), 'utf8')
+    ) as { command: string; plain: boolean }[];
+    expect(cases.length).toBeGreaterThanOrEqual(60);
+    for (const c of cases) expect([c.command, isPlainShow(c.command)]).toEqual([c.command, c.plain]);
+    expect(isPlainShow(undefined)).toBe(false);
+    expect(isPlainShow(5)).toBe(false);
   });
 
   it('skipped checks, with nesting over 32 and unreadable JSON text counted as skipped', () => {

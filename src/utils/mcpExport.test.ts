@@ -1309,3 +1309,26 @@ describe('buildMcpExport: greencli-mcp', () => {
     expect(result.notes.join(' ')).toContain(`at most ${CASPER_MAX_SERVERS} servers`);
   });
 });
+
+describe('buildMcpExport: greencli-mcp show commands', () => {
+  const path = '/Applications/GreenCLI.app/Contents/MacOS/greencli-mcp';
+  const dataDir = '/Users/me/Library/Application Support/com.choatelabs.greencli';
+
+  it('says show commands ask in GreenCLI, and that Casper asks too, while the switch is on', () => {
+    const result = buildMcpExport([], { greencli: { command: path, dataDir, showCommands: true } });
+    expect(result.file.mcpServers.greencli).toEqual({ type: 'stdio', command: path, args: ['--data-dir', dataDir] });
+    expect(result.notes).toEqual([
+      '"greencli" can also run show commands on device tabs connected in GreenCLI. Casper asks first, then GreenCLI asks. Turn it off in MCP Servers.',
+    ]);
+  });
+
+  it('says nothing about show commands while they are off', () => {
+    const result = buildMcpExport([], { greencli: { command: path, dataDir, showCommands: false } });
+    expect(result.notes).toEqual([]);
+  });
+
+  it('uses the renamed name in the note', () => {
+    const result = buildMcpExport([def({ name: 'greencli' })], { greencli: { command: path, dataDir, showCommands: true } });
+    expect(result.notes.join(' ')).toContain('"greencli-2" can also run show commands');
+  });
+});

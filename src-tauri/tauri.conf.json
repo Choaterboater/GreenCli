@@ -25,7 +25,8 @@
         "center": true,
         "titleBarStyle": "Overlay",
         "hiddenTitle": true,
-        "useHttpsScheme": true
+        "useHttpsScheme": true,
+        "backgroundThrottling": "disabled"
       }
     ],
     "security": {

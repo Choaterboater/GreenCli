@@ -38,6 +38,12 @@ const TRUNCATION_DELTA_CAP = 128 * 1024;
 // DIFFERENT sessions still run concurrently — e.g. BulkRunner's pool.)
 const captureChains = new Map<string, Promise<void>>();
 
+/** sendAndCapture polls the buffer this often, at most CAPTURE_POLLS times. */
+const CAPTURE_POLL_MS = 400;
+const CAPTURE_POLLS = 15;
+/** The longest a capture waits for output to settle (~6 s), once it has typed its line. */
+export const CAPTURE_MAX_MS = CAPTURE_POLL_MS * CAPTURE_POLLS;
+
 /**
  * Send `command` to `sessionId` and poll the backend output buffer until it
  * stops growing (output settled) or the timeout is reached (~6 s).
@@ -45,8 +51,17 @@ const captureChains = new Map<string, Promise<void>>();
  * a `truncated` flag (see CaptureResult).
  */
 export function sendAndCapture(sessionId: string, command: string): Promise<CaptureResult> {
+  return withCaptureTurn(sessionId, () => captureInTurn(sessionId, command));
+}
+
+/**
+ * Run `fn` in `sessionId`'s capture turn: after every capture already waiting
+ * on that tab, and before any that comes later. Inside, capture with
+ * `captureInTurn` (sendAndCapture would wait for this turn and never start).
+ */
+export function withCaptureTurn<T>(sessionId: string, fn: () => Promise<T>): Promise<T> {
   const prev = captureChains.get(sessionId) ?? Promise.resolve();
-  const run = prev.then(() => sendAndCaptureInner(sessionId, command));
+  const run = prev.then(fn);
   // Keep the chain alive even when a capture rejects, and drop the map entry
   // once this tail settles so the map can't grow with one entry per session
   // ever used.
@@ -59,6 +74,11 @@ export function sendAndCapture(sessionId: string, command: string): Promise<Capt
     if (captureChains.get(sessionId) === tail) captureChains.delete(sessionId);
   });
   return run;
+}
+
+/** sendAndCapture without waiting its turn: only inside withCaptureTurn. */
+export function captureInTurn(sessionId: string, command: string): Promise<CaptureResult> {
+  return sendAndCaptureInner(sessionId, command);
 }
 
 async function sendAndCaptureInner(
@@ -80,8 +100,8 @@ async function sendAndCaptureInner(
   let grew = false;
   let settled = false;
   let buf = beforeText;
-  for (let i = 0; i < 15; i++) {
-    await sleep(400);
+  for (let i = 0; i < CAPTURE_POLLS; i++) {
+    await sleep(CAPTURE_POLL_MS);
     buf = await invoke<string>('get_terminal_output', { sessionId });
     if (!grew) {
       if (buf.length > before) {

@@ -196,8 +196,17 @@ It has seven read tools: `access_check`, `list_devices`, `list_archive_devices`,
 `list_config_history`, `get_config`, `get_config_diff` and `list_intents`. `list_archive_devices`
 finds config history kept under a device's old name, after a rename or delete in GreenCLI.
 
+On macOS and Linux it also has two live tools: `list_connected_devices` (the device tabs connected
+in GreenCLI now) and `device_show` (one `show` line on one of those tabs). GreenCLI asks you
+first, showing the exact line: No, Yes this once, or Yes, show commands on <device> until GreenCLI
+closes. Only plain `show` lines with filters like `| include ^interface`, never config mode, and
+secrets in the output are hidden. Casper asks too, so you see two boxes. One switch in MCP Servers turns it off. On
+Windows these tools say "not on Windows yet".
+
 - It only reads GreenCLI's data folder. It never writes a file, opens a network connection or
-  starts a program (a test checks the source for this).
+  starts a program (a test checks the source for this). The one exception: the live tools talk
+  to the GreenCLI app on this computer through its own channel in the data folder, and nothing
+  else.
 - The device list has no passwords, user names, notes or startup commands.
 - Configs and diffs come only from copies with secrets hidden, saved when a config is captured. A
   snapshot with no up-to-date hidden copy is refused, never served raw. For older snapshots, open

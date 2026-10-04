@@ -1,0 +1,570 @@
+[
+  {
+    "command": "show version",
+    "plain": true
+  },
+  {
+    "command": "show ip interface brief | include up",
+    "plain": true
+  },
+  {
+    "command": "show run | include up",
+    "plain": true
+  },
+  {
+    "command": "show running-config",
+    "plain": true
+  },
+  {
+    "command": "show tech",
+    "plain": true
+  },
+  {
+    "command": "show interfaces terse | match ge- | no-more",
+    "plain": true
+  },
+  {
+    "command": "show running-config | i hostname",
+    "plain": true
+  },
+  {
+    "command": "show running-config | inc vlan",
+    "plain": true
+  },
+  {
+    "command": "show running-config | in vlan",
+    "plain": true
+  },
+  {
+    "command": "show running-config | exclude description",
+    "plain": true
+  },
+  {
+    "command": "show running-config | e description",
+    "plain": true
+  },
+  {
+    "command": "show running-config | ex description",
+    "plain": true
+  },
+  {
+    "command": "show running-config | begin interface",
+    "plain": true
+  },
+  {
+    "command": "show running-config | b interface",
+    "plain": true
+  },
+  {
+    "command": "show running-config | section interface",
+    "plain": true
+  },
+  {
+    "command": "show running-config | sec interface",
+    "plain": true
+  },
+  {
+    "command": "show vlan | count",
+    "plain": true
+  },
+  {
+    "command": "show version | display xml",
+    "plain": false
+  },
+  {
+    "command": "show version | except foo | last 5",
+    "plain": true
+  },
+  {
+    "command": "show version | find bar | trim 5",
+    "plain": false
+  },
+  {
+    "command": "show version | find bar | last 5",
+    "plain": true
+  },
+  {
+    "command": "show configuration | display set",
+    "plain": true
+  },
+  {
+    "command": "show configuration | display set | match vlan",
+    "plain": true
+  },
+  {
+    "command": "show configuration | display",
+    "plain": true
+  },
+  {
+    "command": "show configuration snmp | display set | trim 15",
+    "plain": false
+  },
+  {
+    "command": "show configuration system login | trim 60",
+    "plain": false
+  },
+  {
+    "command": "show configuration | display json",
+    "plain": false
+  },
+  {
+    "command": "show configuration | display xml | match name",
+    "plain": false
+  },
+  {
+    "command": "show configuration | display inheritance",
+    "plain": false
+  },
+  {
+    "command": "show configuration | display set relative",
+    "plain": false
+  },
+  {
+    "command": "show lldp neighbor-info 1/1/1",
+    "plain": true
+  },
+  {
+    "command": "show ip route 192.0.2.0/24",
+    "plain": true
+  },
+  {
+    "command": "show interface 1/1/1,1/1/2",
+    "plain": true
+  },
+  {
+    "command": "show mac-address-table address 00:00:5e:00:53:01",
+    "plain": true
+  },
+  {
+    "command": "show IP route",
+    "plain": true
+  },
+  {
+    "command": "show running-config |include vlan",
+    "plain": true
+  },
+  {
+    "command": " show version ",
+    "plain": true
+  },
+  {
+    "command": "show\tversion",
+    "plain": false
+  },
+  {
+    "command": "show vl\tan",
+    "plain": false
+  },
+  {
+    "command": "show run | include up\t",
+    "plain": false
+  },
+  {
+    "command": "show  version",
+    "plain": true
+  },
+  {
+    "command": "show aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "plain": true
+  },
+  {
+    "command": "show aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "plain": false
+  },
+  {
+    "command": "",
+    "plain": false
+  },
+  {
+    "command": " ",
+    "plain": false
+  },
+  {
+    "command": "show",
+    "plain": false
+  },
+  {
+    "command": "show ",
+    "plain": false
+  },
+  {
+    "command": "|",
+    "plain": false
+  },
+  {
+    "command": "show x |",
+    "plain": false
+  },
+  {
+    "command": "show x || count",
+    "plain": false
+  },
+  {
+    "command": "show x | | count",
+    "plain": false
+  },
+  {
+    "command": "do show vlan",
+    "plain": false
+  },
+  {
+    "command": "sh run",
+    "plain": false
+  },
+  {
+    "command": "sho run",
+    "plain": false
+  },
+  {
+    "command": "Show version",
+    "plain": false
+  },
+  {
+    "command": "SHOW version",
+    "plain": false
+  },
+  {
+    "command": "showx",
+    "plain": false
+  },
+  {
+    "command": "show -x",
+    "plain": false
+  },
+  {
+    "command": "show 1",
+    "plain": false
+  },
+  {
+    "command": "show x\nping 192.0.2.1 -c 1",
+    "plain": false
+  },
+  {
+    "command": "show x\rconf t",
+    "plain": false
+  },
+  {
+    "command": "show x\r\n",
+    "plain": false
+  },
+  {
+    "command": "show version\n",
+    "plain": false
+  },
+  {
+    "command": "show x; reload",
+    "plain": false
+  },
+  {
+    "command": "show x & reload",
+    "plain": false
+  },
+  {
+    "command": "show run | save x",
+    "plain": false
+  },
+  {
+    "command": "show run | s x",
+    "plain": false
+  },
+  {
+    "command": "show run | sa x",
+    "plain": false
+  },
+  {
+    "command": "show run | tee x",
+    "plain": false
+  },
+  {
+    "command": "show run | append x",
+    "plain": false
+  },
+  {
+    "command": "show run | a x",
+    "plain": false
+  },
+  {
+    "command": "show run | redirect x",
+    "plain": false
+  },
+  {
+    "command": "show run > x",
+    "plain": false
+  },
+  {
+    "command": "show x | tail /etc/passwd",
+    "plain": false
+  },
+  {
+    "command": "show x | grep up",
+    "plain": false
+  },
+  {
+    "command": "show x | egrep up",
+    "plain": false
+  },
+  {
+    "command": "show x | head 5",
+    "plain": false
+  },
+  {
+    "command": "show x | wc -l",
+    "plain": false
+  },
+  {
+    "command": "show x | s file",
+    "plain": false
+  },
+  {
+    "command": "show x | se file",
+    "plain": false
+  },
+  {
+    "command": "show x | more",
+    "plain": false
+  },
+  {
+    "command": "show x | Include up",
+    "plain": false
+  },
+  {
+    "command": "ping 192.0.2.1",
+    "plain": false
+  },
+  {
+    "command": "traceroute 192.0.2.1",
+    "plain": false
+  },
+  {
+    "command": "cat /etc/passwd",
+    "plain": false
+  },
+  {
+    "command": "tail -f /var/log/x",
+    "plain": false
+  },
+  {
+    "command": "date",
+    "plain": false
+  },
+  {
+    "command": "more x",
+    "plain": false
+  },
+  {
+    "command": "monitor interface 1/1/1",
+    "plain": false
+  },
+  {
+    "command": "display version",
+    "plain": false
+  },
+  {
+    "command": "get system status",
+    "plain": false
+  },
+  {
+    "command": "configure terminal",
+    "plain": false
+  },
+  {
+    "command": "conf t",
+    "plain": false
+  },
+  {
+    "command": "show $(id)",
+    "plain": false
+  },
+  {
+    "command": "show $HOME",
+    "plain": false
+  },
+  {
+    "command": "show `id`",
+    "plain": false
+  },
+  {
+    "command": "show a \\ b",
+    "plain": false
+  },
+  {
+    "command": "show run | include \"up\"",
+    "plain": false
+  },
+  {
+    "command": "show run | include 'up'",
+    "plain": false
+  },
+  {
+    "command": "show run | include ^interface",
+    "plain": true
+  },
+  {
+    "command": "show run | include up.*down",
+    "plain": true
+  },
+  {
+    "command": "show run | include (up)",
+    "plain": true
+  },
+  {
+    "command": "show x # y",
+    "plain": false
+  },
+  {
+    "command": "show x ?",
+    "plain": false
+  },
+  {
+    "command": "show r\u00e9sum\u00e9",
+    "plain": false
+  },
+  {
+    "command": "show\u000bversion",
+    "plain": false
+  },
+  {
+    "command": "show\ufeffversion",
+    "plain": false
+  },
+  {
+    "command": "show\u0000version",
+    "plain": false
+  },
+  {
+    "command": "show\u001bversion",
+    "plain": false
+  },
+  {
+    "command": "show\b\b\b\bconf t",
+    "plain": false
+  },
+  {
+    "command": "show int | i up.*down",
+    "plain": true
+  },
+  {
+    "command": "show ip route | begin [0-9]+",
+    "plain": true
+  },
+  {
+    "command": "show run | include ^interface 1/1/[0-9]+$",
+    "plain": true
+  },
+  {
+    "command": "show run | exclude ^ *description",
+    "plain": true
+  },
+  {
+    "command": "show interfaces | match ge-0/0/[0-3]$",
+    "plain": true
+  },
+  {
+    "command": "show log messages | except (debug)",
+    "plain": true
+  },
+  {
+    "command": "show configuration | find ^interfaces",
+    "plain": true
+  },
+  {
+    "command": "show run | section ^router (ospf)",
+    "plain": true
+  },
+  {
+    "command": "show run | i ^vlan | e name",
+    "plain": true
+  },
+  {
+    "command": "show log | exclude (debug|info)",
+    "plain": false
+  },
+  {
+    "command": "show log | exclude debug|include info",
+    "plain": true
+  },
+  {
+    "command": "show run*",
+    "plain": false
+  },
+  {
+    "command": "show ^run",
+    "plain": false
+  },
+  {
+    "command": "show (run)",
+    "plain": false
+  },
+  {
+    "command": "show [run]",
+    "plain": false
+  },
+  {
+    "command": "show run$",
+    "plain": false
+  },
+  {
+    "command": "show x | count ^a",
+    "plain": false
+  },
+  {
+    "command": "show x | last [5]",
+    "plain": false
+  },
+  {
+    "command": "show x | no-more$",
+    "plain": false
+  },
+  {
+    "command": "show x | display set*",
+    "plain": false
+  },
+  {
+    "command": "show x | include$ up",
+    "plain": false
+  },
+  {
+    "command": "show x | ^include up",
+    "plain": false
+  },
+  {
+    "command": "show run | include ^int?",
+    "plain": false
+  },
+  {
+    "command": "show run | include ?",
+    "plain": false
+  },
+  {
+    "command": "show run | include up\\.down",
+    "plain": false
+  },
+  {
+    "command": "show run | include \"up.*\"",
+    "plain": false
+  },
+  {
+    "command": "show run | include 'up.*'",
+    "plain": false
+  },
+  {
+    "command": "show run | include `id`",
+    "plain": false
+  },
+  {
+    "command": "show run | include up; reload",
+    "plain": false
+  },
+  {
+    "command": "show run | include up & reload",
+    "plain": false
+  },
+  {
+    "command": "show run | include <up>",
+    "plain": false
+  },
+  {
+    "command": "show run | include up > x",
+    "plain": false
+  }
+]

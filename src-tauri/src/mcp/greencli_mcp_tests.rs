@@ -1,5 +1,6 @@
 // GreenCLI's own MCP checks agree with greencli-mcp: every tool it lists is
-// labelled Read, none is a router, and its access check reads as read-only.
+// labelled Read except device_show (Diagnostic: it runs a show line on a
+// connected tab), none is a router, and its access check reads as read-only.
 
 use super::access::{access_check_tool, parse_access_check, AccessState};
 use super::client::tool_from_json;
@@ -24,18 +25,27 @@ fn listed_tools() -> Vec<Value> {
 }
 
 #[test]
-fn every_greencli_mcp_tool_is_read() {
+fn every_greencli_mcp_tool_is_read_but_device_show() {
     let tools = listed_tools();
     let golden: Value =
         serde_json::from_str(include_str!("../../greencli-mcp/testdata/tools_list.json")).unwrap();
     assert_eq!(Value::Array(tools.clone()), golden);
+    let mut names = Vec::new();
     for raw in &tools {
         let tool = tool_from_json("greencli", raw).unwrap();
         let label = tool_label(&tool.name, tool.annotations.as_ref(), tool.meta.as_ref());
-        assert_eq!(label, SafetyLabel::Read, "{}", tool.name);
+        let want = if tool.name == "device_show" {
+            SafetyLabel::Diagnostic
+        } else {
+            SafetyLabel::Read
+        };
+        assert_eq!(label, want, "{}", tool.name);
         assert!(!is_router_name(&tool.name), "{}", tool.name);
         assert!(!writes_off_hides(label, &tool.name), "{}", tool.name);
+        names.push(tool.name);
     }
+    assert!(names.iter().any(|n| n == "list_connected_devices"));
+    assert!(names.iter().any(|n| n == "device_show"));
 }
 
 #[test]

@@ -558,7 +558,9 @@ GreenCLI ships a small read-only MCP server, `greencli-mcp`, next to the app:
 
 It lets Casper or Claude Code read your GreenCLI data. It can't change anything: it only reads
 GreenCLI's data folder, and never writes a file, opens a network connection or starts a program
-(a source-scan test checks this).
+(a source-scan test checks this). The one exception is the live tools on macOS and Linux (below):
+they talk to the GreenCLI app on this computer through its own channel in the data folder
+(`mcp-live.sock`), and nothing else.
 
 **Add it.** Settings → **AI & MCP → MCP Servers** shows its full path, with **Copy** buttons for
 the path and for the command below (with your own folders filled in). Run the command in a
@@ -590,6 +592,29 @@ changes every time it starts; until then MCP Servers says so and the export leav
 | `get_config` | One saved config, with secrets hidden |
 | `get_config_diff` | What changed between two saved configs, with secrets hidden |
 | `list_intents` | Your network intents, with their last result and each device's status |
+
+**Live show commands** (macOS and Linux; on Windows these say "not on Windows yet"):
+
+| Tool | What it gives |
+|------|---------------|
+| `list_connected_devices` | The device tabs connected in GreenCLI now: tab, name and type |
+| `device_show` | The output of one `show` line on one of those tabs, with secrets hidden (at most 16 KB) |
+
+GreenCLI must be open with the device connected. It asks you first, in a box that shows the exact
+line it will type (Junos gets `| no-more`) and has three buttons: **No**, **Yes, this once**, and
+**Yes, show commands on <device> until GreenCLI closes** (it stops asking for that device until
+GreenCLI closes). Casper asks first too (it marks `device_show` as diagnostic), so you answer two
+boxes. Only plain `show` lines with filters after `|` (include, exclude, begin, section, match,
+count …; on Junos `display set`, but not `trim`, xml or json) run: never config mode, never on
+Linux or Windows host tabs, and never while something is half-typed in the tab. The text of
+include, exclude, begin, section, match, except or find may be a pattern with `^ $ * . ( ) [ ] +`;
+a `|` always starts a new filter, so `exclude (a|b)` is refused. Never `?` (on AOS-CX and Junos it
+shows help at once and leaves the line half-typed), quotes, a backtick, a backslash or `; & < >`.
+Output over 16 KB is cut, keeping the start. Secrets are hidden, but a filter still sees them:
+whether a line comes back can give a secret away one guess at a time, so pick the device button
+only for a program you trust. GreenCLI closes the box as a No after 40 seconds (nothing runs), so
+a Yes always has time to run before the 60-second wait ends. One switch in **MCP Servers** turns
+this off; turning it off also forgets every device Yes and refuses anything already asked.
 
 **Hidden copies.** When a config is captured, GreenCLI also saves a copy with secrets hidden (the
 same filter the AI uses). greencli-mcp reads configs only from these copies. A snapshot without

@@ -89,7 +89,9 @@ export interface McpExportOptions {
  *  `--data-dir`, since Casper starts servers without the app's environment), or why it is left
  *  out ("missing": not next to GreenCLI in this build; "not-installed": GreenCLI runs from
  *  outside Applications, so the path would change). */
-export type GreencliExport = { command: string; dataDir: string } | { leftOut: 'missing' | 'not-installed' };
+export type GreencliExport =
+  | { command: string; dataDir: string; /** Its show commands are on (MCP Servers switch, macOS/Linux). */ showCommands?: boolean }
+  | { leftOut: 'missing' | 'not-installed' };
 
 /** The server name greencli-mcp gets in the file. */
 export const GREENCLI_SERVER_NAME = 'greencli';
@@ -1314,6 +1316,11 @@ export function buildMcpExport(servers: readonly McpServerDef[], options: McpExp
       notes.push(`GreenCLI's read-only server is saved as "${name}", because another server already uses "${GREENCLI_SERVER_NAME}".`);
     }
     entries.push([name, { type: 'stdio', command: greencli.command, args: ['--data-dir', greencli.dataDir] }]);
+    if (greencli.showCommands) {
+      notes.push(
+        `"${name}" can also run show commands on device tabs connected in GreenCLI. Casper asks first, then GreenCLI asks. Turn it off in MCP Servers.`,
+      );
+    }
   } else if (greencli) {
     notes.push(
       greencli.leftOut === 'missing'

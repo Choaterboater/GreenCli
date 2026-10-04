@@ -28,6 +28,7 @@ import { importDialog, importDoneText, pickDialog } from '../utils/mcpImport';
 import { plainHttpWarning } from '../utils/urlSafety';
 import McpServerSafety from './McpServerSafety';
 import SecretStoreNote from './SecretStoreNote';
+import McpLiveSwitch, { readLiveStatus } from './McpLiveSwitch';
 import { keyCheckError, saveMcpLogin } from '../utils/secretStore';
 
 type McpTransport = McpServerDef['transport'];
@@ -57,11 +58,11 @@ async function readGreencliInfo(): Promise<GreencliMcpInfo | null> {
 }
 
 /** How the export should treat greencli-mcp. */
-function greencliForExport(info: GreencliMcpInfo | null): GreencliExport | undefined {
+function greencliForExport(info: GreencliMcpInfo | null, showCommands: boolean): GreencliExport | undefined {
   if (!info) return undefined;
   if (!info.exists) return { leftOut: 'missing' };
   if (info.place !== 'normal') return { leftOut: 'not-installed' };
-  return { command: info.path, dataDir: info.dataDir };
+  return { command: info.path, dataDir: info.dataDir, showCommands };
 }
 
 const blankForm = {
@@ -573,7 +574,9 @@ export default function McpServers() {
       const pins = new Map(Object.entries(pinList ?? {}));
       const { buildMcpExport, exportSummary, refusedExportPath, EXPORT_FILE_NAME } = await import('../utils/mcpExport');
       // GreenCLI's own read-only server goes in too, even with no saved servers.
-      const greencliEntry = greencliForExport(await readGreencliInfo());
+      // Its show commands get a note while their switch is on.
+      const live = await readLiveStatus();
+      const greencliEntry = greencliForExport(await readGreencliInfo(), !!live?.supported && live.on);
       const result = buildMcpExport(defs, { withCredentials, pins, greencli: greencliEntry });
       if (result.count === 0) {
         notify.warning(
@@ -703,6 +706,9 @@ export default function McpServers() {
           )}
         </div>
       )}
+
+      {/* Show commands from AI tools outside GreenCLI (greencli-mcp's device_show) */}
+      <McpLiveSwitch />
 
       {/* Export result: names and places only, never a secret value */}
       {exportDone && (

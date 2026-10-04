@@ -186,7 +186,9 @@ fn a_whole_session_leaks_nothing_and_changes_nothing() {
             "list_config_history",
             "get_config",
             "get_config_diff",
-            "list_intents"
+            "list_intents",
+            "list_connected_devices",
+            "device_show"
         ]
     );
 
@@ -272,6 +274,17 @@ fn a_whole_session_leaks_nothing_and_changes_nothing() {
     ] {
         let (is_error, _) = s.tool("get_config", json!({"device": device}));
         assert!(is_error);
+    }
+    // With GreenCLI not open, the live tools fail closed and touch nothing.
+    for (tool, args) in [
+        ("list_connected_devices", json!({})),
+        (
+            "device_show",
+            json!({"device": "sw-core-01", "show": "show version"}),
+        ),
+    ] {
+        let (is_error, _) = s.tool(tool, args);
+        assert!(is_error, "{tool}");
     }
     s.ask("ping", json!({}));
 

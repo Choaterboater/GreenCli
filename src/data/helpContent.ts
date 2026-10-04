@@ -256,9 +256,9 @@ export const HELP_TOPICS: HelpTopic[] = [
     title: 'greencli-mcp (for Casper / Claude Code)',
     icon: Database,
     summary: 'A read-only MCP server that lets Casper or Claude Code read your GreenCLI data.',
-    keywords: ['greencli-mcp', 'greencli', 'mcp', 'claude code', 'casper', 'claude mcp add', 'read-only', 'hidden copy', 'make hidden copies', 'config archive', 'diff', 'devices', 'intents', 'list_archive_devices', 'renamed device'],
+    keywords: ['greencli-mcp', 'greencli', 'mcp', 'claude code', 'casper', 'claude mcp add', 'read-only', 'hidden copy', 'make hidden copies', 'config archive', 'diff', 'devices', 'intents', 'list_archive_devices', 'renamed device', 'show commands', 'device_show', 'list_connected_devices', 'live'],
     blocks: [
-      { kind: 'p', text: 'greencli-mcp lets Casper or Claude Code read your GreenCLI data. It can’t change anything: it only reads GreenCLI’s data folder, and never writes a file, opens a network connection or starts a program. It sits next to the app.' },
+      { kind: 'p', text: 'greencli-mcp lets Casper or Claude Code read your GreenCLI data. It can’t change anything: it only reads GreenCLI’s data folder, and never writes a file, opens a network connection or starts a program. It sits next to the app. The one exception is its show commands (below): on macOS and Linux they ask the GreenCLI app on this computer, and nothing else.' },
       {
         kind: 'steps',
         items: [
@@ -274,6 +274,17 @@ export const HELP_TOPICS: HelpTopic[] = [
           'Config history stays under the name a device had when it was captured. After you rename or delete a saved device, or for a Quick Connect you never saved, the AI finds that history with `list_archive_devices`.',
           'Configs come only from **hidden copies** made when a config is captured. If a tool says a snapshot has no hidden copy, or that it is out of date, open **Config Archive** (activity bar or command palette) and click **Make hidden copies**. If it says the copy was made by a newer GreenCLI, restart Claude Code or Casper so they use the updated greencli-mcp.',
           'A diff can’t show a changed password: both sides show it hidden.',
+        ],
+      },
+      {
+        kind: 'bullets',
+        items: [
+          '**Show commands** (macOS and Linux; on Windows they say not on Windows yet): `list_connected_devices` lists the device tabs connected in GreenCLI now, and `device_show` runs one `show` line on one of them. GreenCLI must be open with the device connected.',
+          'GreenCLI asks you first, in a box with three buttons: **No**, **Yes, this once**, or **Yes, show commands on <device> until GreenCLI closes** (with the device’s name; it stops asking for that device until GreenCLI closes). The box shows the exact line it will type, and names the asker as a program on this computer, with its process number.',
+          'Casper asks first too (it treats `device_show` as a check on a device), so you answer two boxes: Casper’s, then GreenCLI’s.',
+          'Only plain `show` lines run, with filters after `|` (include, exclude, begin, section, match, count …; on Junos `display set`, but not `trim`, xml or json). The text of include, exclude, begin, section, match, except or find may be a pattern with `^ $ * . ( ) [ ] +`; a `|` always starts a new filter. Never `?` (it shows help on the device and leaves the line half-typed), quotes, a backtick, a backslash or `; & < >`. Never config mode, never on Linux or Windows host tabs, and never while something is half-typed in the tab. `show running-config` and `show tech` work; secrets are hidden and the output stops at 16 KB (you get the start).',
+          'Secrets are hidden, but a filter still sees them: whether a line comes back can give a secret away one guess at a time. Pick **Yes, show commands on this device** only for a program you trust.',
+          'GreenCLI waits 40 seconds for your answer, then closes the box as a No (nothing runs), so a Yes always has time to run before the AI tool stops waiting at 60 seconds. To turn this off, clear **Let AI tools outside GreenCLI ask to run show commands** in **MCP Servers**; that also forgets every Yes for a device, and anything already asked is refused.',
         ],
       },
     ],
