@@ -1,0 +1,9 @@
+{
+  "editor.fontSize": 13, // not MCP
+  "mcp": {
+    "servers": {
+      "junos": { "command": "python3", "args": ["/opt/junos/jmcp.py"] },
+      "folder-tool": { "command": "node", "args": ["${workspaceFolder}/server.js"] },
+    },
+  },
+}

@@ -1,0 +1,13 @@
+// VS Code user mcp.json
+{
+  "servers": {
+    /* a block comment */
+    "docs": {
+      "type": "http",
+      "url": "https://docs.example.org/mcp", // a URL with // inside
+    },
+    "asks": { "command": "x", "args": ["${input:api-key}"] },
+    "home-tool": { "command": "${userHome}/bin/tool", "args": ["--root", "${env:HOME_ROOT}"] },
+  },
+  "inputs": [],
+}

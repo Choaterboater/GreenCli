@@ -193,7 +193,7 @@ impl McpServerDef {
 /// saves only those, so a field left over from the other transport in an
 /// older save must not turn writes off. Env and headers are left out, so a
 /// rotated token keeps the server's settings.
-fn same_program(a: &McpServerDef, b: &McpServerDef) -> bool {
+pub(crate) fn same_program(a: &McpServerDef, b: &McpServerDef) -> bool {
     fn trimmed(v: &Option<String>) -> &str {
         v.as_deref().map(str::trim).unwrap_or("")
     }
@@ -311,6 +311,13 @@ pub(crate) fn dedupe_tools(server: &str, tools: Vec<McpToolInfo>) -> Vec<McpTool
 
 // ─── On-disk config store ───
 
+/// What `import_many` did: the names added, and (name, reason) for each skipped.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct ImportOutcome {
+    pub added: Vec<String>,
+    pub skipped: Vec<(String, String)>,
+}
+
 pub struct McpConfigStore {
     path: PathBuf,
 }
@@ -382,6 +389,38 @@ impl McpConfigStore {
             all.push(def);
         }
         self.save(&all)
+    }
+
+    /// Add imported servers in one save: each comes in not started at launch
+    /// (enabled false) with writes off and no opt-in. Names and programs are
+    /// checked again here, since the list may have changed since the scan.
+    /// Callers hold the MCP manager lock, like every other save.
+    pub fn import_many(&self, defs: Vec<McpServerDef>) -> Result<ImportOutcome, AppError> {
+        let mut all = self.load_checked()?;
+        let mut outcome = ImportOutcome::default();
+        for mut def in defs {
+            if all.iter().any(|d| d.name == def.name) {
+                outcome.skipped.push((
+                    def.name,
+                    "a server with this name is already in GreenCLI".into(),
+                ));
+                continue;
+            }
+            if let Some(same) = all.iter().find(|d| same_program(d, &def)) {
+                let reason = format!("already in GreenCLI as {}", same.name);
+                outcome.skipped.push((def.name, reason));
+                continue;
+            }
+            def.enabled = false;
+            def.writes = Some(McpWrites::Off);
+            def.show_opt_in = false;
+            outcome.added.push(def.name.clone());
+            all.push(def);
+        }
+        if !outcome.added.is_empty() {
+            self.save(&all)?;
+        }
+        Ok(outcome)
     }
 
     /// Change one saved server in place and save. Returns the updated definition.
@@ -2058,6 +2097,11 @@ impl McpManager {
             .collect()
     }
 
+    /// See McpConfigStore::import_many. Call it with the manager lock held.
+    pub fn import_many(&self, defs: Vec<McpServerDef>) -> Result<ImportOutcome, AppError> {
+        self.store.import_many(defs)
+    }
+
     pub fn save_config(&self, def: McpServerDef) -> Result<(), AppError> {
         self.store.upsert(def)
     }
@@ -2942,6 +2986,65 @@ while (<STDIN>) {
     }
 
     // ─── config store ───
+
+    #[test]
+    fn import_many_adds_servers_off_and_keeps_the_rest() {
+        let dir = temp_dir();
+        let store = McpConfigStore::new(dir.clone());
+        store.upsert(def("kept", "uvx", &["kept"])).unwrap();
+        // Saved after the scan: a clash by name and one by program.
+        store.upsert(def("late", "uvx", &["late"])).unwrap();
+        let mut on = def("new", "uvx", &["new"]);
+        on.writes = Some(McpWrites::On);
+        on.show_opt_in = true;
+        let outcome = store
+            .import_many(vec![
+                on,
+                def("late", "other", &[]),
+                def("late-copy", "uvx", &["late"]),
+            ])
+            .unwrap();
+        assert_eq!(outcome.added, vec!["new".to_string()]);
+        let reasons: Vec<(&str, &str)> = outcome
+            .skipped
+            .iter()
+            .map(|(n, r)| (n.as_str(), r.as_str()))
+            .collect();
+        assert_eq!(
+            reasons,
+            vec![
+                ("late", "a server with this name is already in GreenCLI"),
+                ("late-copy", "already in GreenCLI as late"),
+            ]
+        );
+        let all = store.load();
+        assert_eq!(
+            all.iter().map(|d| d.name.as_str()).collect::<Vec<_>>(),
+            vec!["kept", "late", "new"]
+        );
+        let added = &all[2];
+        assert!(!added.enabled);
+        assert_eq!(added.writes, Some(McpWrites::Off));
+        assert!(!added.show_opt_in);
+        // Two with the same name in one call: only the first.
+        let outcome = store
+            .import_many(vec![def("twin", "a", &[]), def("twin", "b", &[])])
+            .unwrap();
+        assert_eq!(outcome.added, vec!["twin".to_string()]);
+        assert_eq!(outcome.skipped.len(), 1);
+    }
+
+    #[test]
+    fn import_many_refuses_an_unreadable_file() {
+        let dir = temp_dir();
+        std::fs::write(dir.join("mcp_servers.json"), "{ broken").unwrap();
+        let store = McpConfigStore::new(dir.clone());
+        assert!(store.import_many(vec![def("new", "uvx", &[])]).is_err());
+        assert_eq!(
+            std::fs::read_to_string(dir.join("mcp_servers.json")).unwrap(),
+            "{ broken"
+        );
+    }
 
     #[test]
     fn upsert_keeps_the_opt_in_for_the_same_program() {
