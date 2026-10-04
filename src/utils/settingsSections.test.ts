@@ -19,8 +19,8 @@ describe('settings sections', () => {
     expect(ids('webhook')).toEqual(['intent-schedule']);
     expect(ids('mist')).toContain('mist');
     expect(ids('zzz nothing')).toEqual([]);
-    // Casper's own settings, and the MCP export for Casper.
-    expect(ids('casper')).toEqual(['ai', 'mcp']);
+    // Casper's own settings, the MCP export and the lab host export for Casper.
+    expect(ids('casper')).toEqual(['hosts', 'ai', 'mcp']);
     expect(ids('allow writes')).toEqual(['mcp']);
     expect(ids('read-only')).toEqual(['mcp']);
     expect(ids('run plain show commands')).toEqual(['mcp']);
@@ -42,6 +42,11 @@ describe('settings sections', () => {
   it('matches group names too, and returns everything for an empty search', () => {
     expect(ids('integrations')).toEqual(['central', 'mist']);
     expect(searchSettings('   ')).toHaveLength(SETTINGS_SECTIONS.length);
+  });
+
+  it('finds the lab host export under Host Import', () => {
+    expect(ids('export lab')).toContain('hosts');
+    expect(ids('casper lab')).toContain('hosts');
   });
 
   it('resolves every Help deep-link to a group', () => {
