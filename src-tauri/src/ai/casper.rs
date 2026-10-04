@@ -1330,7 +1330,7 @@ fn usage_note(tokens: Option<u64>, cost: Option<f64>) -> Option<String> {
         if c == 0.0 {
             "about $0".to_string()
         } else if c < 0.01 {
-            "under $0.01".to_string()
+            "less than about $0.01".to_string()
         } else {
             format!("about ${c:.2}")
         }
@@ -2791,7 +2791,7 @@ mod tests {
         );
         assert_eq!(
             usage_note(Some(850), Some(0.0004)).as_deref(),
-            Some("Casper used 850 tokens (under $0.01).")
+            Some("Casper used 850 tokens (less than about $0.01).")
         );
         assert_eq!(
             usage_note(Some(850), Some(0.0)).as_deref(),

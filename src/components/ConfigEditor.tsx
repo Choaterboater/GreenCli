@@ -507,6 +507,8 @@ export default function ConfigEditor() {
     running: boolean;
     problems: CasperProblem[];
     status: CasperStatus;
+    /** The run failed: its message says what to do, so it wraps instead of being cut off. */
+    failed?: boolean;
   } | null>(null);
   const casperRunRef = useRef<string | null>(null);
   const casperCheckBufferRef = useRef<string | null>(null);
@@ -1533,7 +1535,7 @@ export default function ConfigEditor() {
     const bufferId = active.id;
     const { casperCommand, sessionLogDir } = useSettingsStore.getState();
     let runId = '';
-    const finish = (problems: CasperProblem[], status: CasperStatus) => {
+    const finish = (problems: CasperProblem[], status: CasperStatus, failed = false) => {
       if (casperRunRef.current !== runId) return;
       casperRunRef.current = null;
       const monaco = monacoRef.current;
@@ -1548,7 +1550,7 @@ export default function ConfigEditor() {
         );
         casperMarksRef.current = { bufferId, ids };
       }
-      setCasperCheck({ bufferId, running: false, problems, status });
+      setCasperCheck({ bufferId, running: false, problems, status, failed });
     };
     // The tab as it is now: it may have been edited while Casper checked.
     const linesNow = () => {
@@ -1572,7 +1574,7 @@ export default function ConfigEditor() {
       const { placed, left } = placeCasperProblems(result.problems, lines, linesNow());
       finish(placed, casperCheckStatus({ ...result, problems: placed }, left));
     } catch (e) {
-      finish([], casperErrorStatus(plainCliError(e)));
+      finish([], casperErrorStatus(plainCliError(e)), true);
     }
   };
 
@@ -2214,7 +2216,7 @@ export default function ConfigEditor() {
           <span role="status" aria-label="Casper" className="flex items-center gap-1 min-w-0 mr-1 text-[10px] text-[var(--text-secondary)]">
             {casperCheck.running && <RefreshCw size={10} className="animate-spin flex-shrink-0" />}
             <span
-              className={`truncate max-w-[28rem] ${casperCheck.status.warning ? 'text-[var(--accent-warning)]' : ''}`}
+              className={`${casperCheck.failed ? 'break-words' : 'truncate'} max-w-[28rem] ${casperCheck.status.warning ? 'text-[var(--accent-warning)]' : ''}`}
               title={[casperCheck.status.head, casperCheck.status.usage].filter(Boolean).join(' ')}
             >
               {casperCheck.status.head}
