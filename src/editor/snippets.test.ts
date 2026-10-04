@@ -138,9 +138,11 @@ describe('the everyday set', () => {
     for (const snippet of CONFIG_SNIPPETS) expect([snippet.label, /checkpoint\s+auto/.test(snippet.body)]).toEqual([snippet.label, false]);
   });
 
-  it('warns on every login and 802.1X RADIUS snippet that a wrong key can lock you out', () => {
+  it('says on every RADIUS login snippet to test a second SSH login first (Send safely cannot catch a lockout)', () => {
     for (const prefix of ['cx-radius', 'aoss-radius', 'junos-radius']) {
-      expect([prefix, byPrefix(prefix)!.body]).toEqual([prefix, expect.stringMatching(/Send safely: a wrong key can lock you out of SSH\./)]);
+      const body = byPrefix(prefix)!.body;
+      expect([prefix, body]).toEqual([prefix, expect.stringMatching(/open a second SSH login/)]);
+      expect([prefix, /Send safely/.test(body)]).toEqual([prefix, false]);
     }
   });
 
@@ -152,6 +154,12 @@ describe('the everyday set', () => {
 
   it('Junos RADIUS login keeps local passwords as a fallback', () => {
     expect(byPrefix('junos-radius')!.body).toContain('set system authentication-order [ radius password ]');
+  });
+
+  it('Junos RADIUS login lets RADIUS-only users in through the remote template user', () => {
+    const snippet = byPrefix('junos-radius')!;
+    expect(snippet.body).toContain('set system login user remote class ${login_class}');
+    expect(snippet.description).toMatch(/remote/);
   });
 
   it('the Instant AP WLAN leaves commit apply to the person or to Send safely', () => {

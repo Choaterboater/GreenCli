@@ -45,4 +45,31 @@ describe('SnippetsMenu', () => {
     expect(screen.queryByRole('menu')).toBeNull();
     expect(document.activeElement).toBe(button);
   });
+  it('focuses the first snippet on open, and the New snippet label when that form is still open', () => {
+    useSessionStore.setState({
+      sessions: [{ sessionId: 's1', connected: true, config: { id: 'sw1', name: 'sw1', protocol: 'ssh', host: '10.0.0.1' } }],
+      activeSessionId: 's1',
+    } as never);
+    render(<SnippetsMenu />);
+    const button = screen.getByLabelText('Snippets');
+    const hiddenAtFocus: boolean[] = [];
+    const realFocus = HTMLElement.prototype.focus;
+    const spy = vi.spyOn(HTMLElement.prototype, 'focus').mockImplementation(function (this: HTMLElement, ...args) {
+      const menu = this.closest('[role="menu"]') as HTMLElement | null;
+      if (menu) hiddenAtFocus.push(menu.style.visibility === 'hidden');
+      return realFocus.apply(this, args);
+    });
+    try {
+      fireEvent.click(button);
+      expect(document.activeElement).toBe(screen.getByRole('menuitem', { name: /PoE/ }));
+      fireEvent.click(screen.getByText(/New snippet/));
+      fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'Escape' });
+      expect(screen.queryByRole('menu')).toBeNull();
+      fireEvent.click(button);
+      expect(document.activeElement).toBe(screen.getByPlaceholderText(/^Label/));
+      expect(hiddenAtFocus).not.toContain(true);
+    } finally {
+      spy.mockRestore();
+    }
+  });
 });

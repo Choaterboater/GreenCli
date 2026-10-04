@@ -9,6 +9,7 @@ import {
   jobBlockFromEditor,
   parseVariableTable,
   toCsv,
+  vendorSteps,
 } from '../utils/changeJobs';
 import type { DeviceType } from '../types';
 
@@ -73,8 +74,11 @@ describe('config templates', () => {
         expect([t.label, lines.some((l) => /^commit\b/i.test(l))]).toEqual([t.label, false]);
         expect([t.label, t.body]).toEqual([t.label, expect.stringContaining('Send safely')]);
       }
-      if (t.language === 'aruba-cx' || t.language === 'aruba-aos-s') {
+      if (t.language === 'aruba-cx') {
         expect([t.label, t.body]).toEqual([t.label, expect.stringContaining('! Use Send safely (rollback timer, saves after confirm).')]);
+      }
+      if (t.language === 'aruba-aos-s') {
+        expect([t.label, t.body]).toEqual([t.label, expect.stringContaining('! AOS-S has no rollback timer')]);
       }
       if (t.language === 'aruba-ap') {
         expect([t.label, lines.some((l) => /^commit\s+apply/i.test(l))]).toEqual([t.label, false]);
@@ -104,6 +108,20 @@ describe('config templates', () => {
     }
   });
 
+  it('promises a rollback timer only where Send safely has one', () => {
+    for (const t of CONFIG_TEMPLATES) {
+      if (vendorSteps(t.language as DeviceType).wrapper !== 'none') continue;
+      const promised = t.body.replace(/no rollback timer/gi, '').match(/rollback timer/i);
+      expect([t.label, promised]).toEqual([t.label, null]);
+    }
+  });
+
+  it('RADIUS login: test a second SSH login before confirming or saving (Send safely cannot catch it)', () => {
+    const body = templateByLabel('AOS-CX: AAA / RADIUS')!.body;
+    expect(body).not.toMatch(/Send safely: a wrong key/);
+    expect(body).toMatch(/open a second SSH login/);
+  });
+
   describe('fixes that must not come back', () => {
     const junos = CONFIG_TEMPLATES.filter((t) => JUNOS.includes(t.language));
 
@@ -124,7 +142,7 @@ describe('config templates', () => {
       const body = templateByLabel('AOS-CX: AAA / RADIUS')!.body;
       expect(body).toContain('radius-server host ${radius_ip} key plaintext ${radius_key} vrf ${vrf}');
       expect(body).not.toMatch(/aaa authorization commands/);
-      expect(body).toMatch(/a wrong key can lock you out of SSH/);
+      expect(body).toMatch(/can lock you out/);
     });
 
     it('AOS8 WLAN has a passphrase, a node and an AP group', () => {
@@ -206,6 +224,18 @@ describe('config templates', () => {
 
     it('the Mist baseline says Mist overwrites local changes', () => {
       expect(templateByLabel('Mist/Junos: access switch baseline')!.body).toMatch(/Mist overwrites/);
+    });
+
+    it('JVD RoCE QoS schedules every class it uses, so RoCE cannot starve BGP', () => {
+      const body = templateByLabel('JVD: AI fabric RoCE QoS (PFC+ECN)')!.body;
+      for (const fc of ['NO-LOSS', 'best-effort', 'network-control']) {
+        const m = body.match(new RegExp(`scheduler-maps SM-AI forwarding-class ${fc} scheduler (\\S+)`));
+        expect([fc, !!m]).toEqual([fc, true]);
+        expect([fc, body]).toEqual([fc, expect.stringMatching(new RegExp(`schedulers ${m![1]} transmit-rate `))]);
+        expect([fc, body]).toEqual([fc, expect.stringMatching(new RegExp(`schedulers ${m![1]} buffer-size `))]);
+      }
+      // BGP (DSCP 48) still lands in network-control under the custom classifier.
+      expect(body).toContain('classifiers dscp ROCE forwarding-class network-control loss-priority low code-points 110000');
     });
   });
 });

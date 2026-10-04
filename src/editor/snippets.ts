@@ -154,7 +154,7 @@ export const CONFIG_SNIPPETS: readonly ConfigSnippet[] = [
     description: 'Log in to the switch with RADIUS, local accounts as the fallback. vrf: mgmt or default.',
     languages: CX,
     body:
-      '! Send safely: a wrong key can lock you out of SSH.\n' +
+      '! A wrong key or a user RADIUS rejects can lock you out: before you confirm or save,\n! open a second SSH login to the switch and check it works.\n' +
       'radius-server host ${radius_ip} key plaintext ${radius_key} vrf ${vrf}\n' +
       'aaa group server radius ${group}\n    server ${radius_ip} vrf ${vrf}\n' +
       'aaa authentication login default group ${group} local\n' +
@@ -219,7 +219,7 @@ export const CONFIG_SNIPPETS: readonly ConfigSnippet[] = [
     description: 'Log in over SSH with RADIUS, local accounts as the fallback.',
     languages: AOSS,
     body:
-      '! Send safely: a wrong key can lock you out of SSH.\n' +
+      '! A wrong key or a user RADIUS rejects can lock you out: before you confirm or save,\n! open a second SSH login to the switch and check it works.\n' +
       'radius-server host ${radius_ip} key ${radius_key}\n' +
       'aaa authentication ssh login radius local\naaa authentication ssh enable radius local\n',
   },
@@ -313,12 +313,13 @@ export const CONFIG_SNIPPETS: readonly ConfigSnippet[] = [
   {
     label: 'Junos: RADIUS login',
     prefix: 'junos-radius',
-    description: 'Log in with RADIUS, local passwords as the fallback.',
+    description: 'Log in with RADIUS, local passwords as the fallback. RADIUS users with no local account log in as the "remote" user.',
     languages: JUNOS,
     body:
-      '/* Send safely: a wrong key can lock you out of SSH. */\n' +
+      '/* A wrong key or a user RADIUS rejects can lock you out: before you confirm, open a second SSH login and check it works. */\n' +
       'set system radius-server ${radius_ip} secret ${radius_secret}\n' +
-      'set system authentication-order [ radius password ]\n',
+      'set system authentication-order [ radius password ]\n' +
+      'set system login user remote class ${login_class}\n',
   },
   {
     label: 'Junos: SNMPv3 user',

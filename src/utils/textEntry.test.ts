@@ -50,4 +50,12 @@ describe('inPopup', () => {
     menu.remove();
     dialog.remove();
   });
+  it('counts the button of an open menu: arrows and Enter there are for the menu', () => {
+    const button = document.createElement('button');
+    button.setAttribute('aria-haspopup', 'menu');
+    button.setAttribute('aria-expanded', 'true');
+    expect(inPopup(button)).toBe(true);
+    button.setAttribute('aria-expanded', 'false');
+    expect(inPopup(button)).toBe(false);
+  });
 });

@@ -14,6 +14,8 @@ export interface ConfigTemplate {
 }
 
 const CX_END = '! Use Send safely (rollback timer, saves after confirm). Or save once it looks right: write memory\n';
+const AOSS_END =
+  '! AOS-S has no rollback timer: check the management VLAN/IP and your own port first. Save once it looks right: write memory\n';
 const JUNOS_END =
   '/* Review: show | compare. Then use Send safely (arrow next to Send): it commits with a rollback timer and confirms for you. */\n';
 
@@ -99,7 +101,8 @@ ${CX_END}`,
     label: 'AOS-CX: AAA / RADIUS',
     language: 'aruba-cx',
     body: `! RADIUS login for the switch (vrf: mgmt or default)
-! Send safely: a wrong key can lock you out of SSH.
+! A wrong key or a user RADIUS rejects can lock you out: before you confirm or save,
+! open a second SSH login to the switch and check it works.
 configure terminal
 radius-server host \${radius_ip} key plaintext \${radius_key} vrf \${vrf}
 aaa group server radius \${group}
@@ -124,7 +127,7 @@ vlan 20
    tagged \${uplink}
    untagged \${access_ports}
    exit
-${CX_END}`,
+${AOSS_END}`,
   },
   {
     label: 'Aruba AP: WLAN basics',
@@ -292,15 +295,25 @@ ${JUNOS_END}`,
     body: `/* JVD AI/GPU fabric — lossless RoCEv2: PFC on DSCP 26 (011010), ECN marking. A starter: run commit check. */
 configure
 set class-of-service classifiers dscp ROCE forwarding-class NO-LOSS loss-priority low code-points 011010
+set class-of-service classifiers dscp ROCE forwarding-class network-control loss-priority low code-points 110000
 set class-of-service forwarding-classes class NO-LOSS queue-num 3 no-loss
 set class-of-service congestion-notification-profile CNP input dscp code-point 011010 pfc
 set class-of-service interfaces \${interface} congestion-notification-profile CNP
 set class-of-service interfaces \${interface} unit 0 classifiers dscp ROCE
 set class-of-service drop-profiles ECN-DP interpolate fill-level 30 drop-probability 0
 set class-of-service drop-profiles ECN-DP interpolate fill-level 100 drop-probability 100
+set class-of-service schedulers SCH-NOLOSS transmit-rate percent 50
+set class-of-service schedulers SCH-NOLOSS buffer-size percent 50
 set class-of-service schedulers SCH-NOLOSS explicit-congestion-notification
 set class-of-service schedulers SCH-NOLOSS drop-profile-map loss-priority any protocol any drop-profile ECN-DP
+/* Every class in use gets a scheduler: unmapped ones get no bandwidth, and BGP could flap. */
+set class-of-service schedulers SCH-NC transmit-rate percent 10
+set class-of-service schedulers SCH-NC buffer-size percent 10
+set class-of-service schedulers SCH-BE transmit-rate percent 40
+set class-of-service schedulers SCH-BE buffer-size percent 40
 set class-of-service scheduler-maps SM-AI forwarding-class NO-LOSS scheduler SCH-NOLOSS
+set class-of-service scheduler-maps SM-AI forwarding-class network-control scheduler SCH-NC
+set class-of-service scheduler-maps SM-AI forwarding-class best-effort scheduler SCH-BE
 set class-of-service interfaces \${interface} scheduler-map SM-AI
 ${JUNOS_END}`,
   },
