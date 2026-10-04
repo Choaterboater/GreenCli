@@ -1076,9 +1076,9 @@ pub fn bridge_problem(forwards: &[(String, u16)], loopback_mcp: &[String]) -> Op
 }
 
 /// Shown when a port forward is opened while Casper answers.
-pub const BUSY_FORWARD: &str = "Casper is answering a question in the AI panel, and its commands can reach this computer's local ports. Open the port forward when it's done, or press Stop first.";
+pub const BUSY_FORWARD: &str = "Casper is answering (AI panel or editor), and its commands can reach this computer's local ports. Open the port forward when it's done, or press Stop first.";
 /// Shown when a web MCP server is connected while Casper answers.
-pub const BUSY_MCP: &str = "Casper is answering a question in the AI panel, and its commands can reach this computer's local ports. Connect this MCP server when it's done, or press Stop first.";
+pub const BUSY_MCP: &str = "Casper is answering (AI panel or editor), and its commands can reach this computer's local ports. Connect this MCP server when it's done, or press Stop first.";
 
 /// Counts the Casper questions in progress. While one runs, GreenCLI opens
 /// no port forward and connects no web MCP server: Casper checked for those
@@ -1123,6 +1123,10 @@ pub struct CasperReceipt {
     pub sandbox_off_reason: Option<String>,
     /// Files changed (with changedDuringChecks); None when Casper couldn't compare.
     pub changed: Option<Vec<String>>,
+    /// Model tokens the run used (receipt `usage.tokens`); None when Casper couldn't tell.
+    pub usage_tokens: Option<u64>,
+    /// Casper's cost estimate in dollars (receipt `usage.estimatedCost`), never an invoice.
+    pub usage_cost: Option<f64>,
 }
 
 /// What GreenCLI read from Casper's stdout.
@@ -1195,6 +1199,12 @@ fn parse_receipt(v: &Value) -> CasperReceipt {
         }
         _ => None,
     };
+    let usage = v.get("usage");
+    let usage_tokens = usage.and_then(|u| u.get("tokens")).and_then(Value::as_u64);
+    let usage_cost = usage
+        .and_then(|u| u.get("estimatedCost"))
+        .and_then(Value::as_f64)
+        .filter(|c| c.is_finite() && *c >= 0.0);
     CasperReceipt {
         outcome: str_field(v, "outcome").unwrap_or_default(),
         verdict: str_field(v, "verdict").filter(|s| !s.trim().is_empty()),
@@ -1204,6 +1214,8 @@ fn parse_receipt(v: &Value) -> CasperReceipt {
         secret_in_command: v.get("secretInCommand").and_then(Value::as_bool) == Some(true),
         sandbox_off_reason,
         changed,
+        usage_tokens,
+        usage_cost,
     }
 }
 
@@ -1298,6 +1310,42 @@ fn italic(note: &str) -> String {
     format!("*{}*", note.trim())
 }
 
+/// 4210 -> "4,210".
+fn with_commas(n: u64) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// "Casper used 4,210 tokens (about $0.02)." The cost is Casper's estimate,
+/// so it always says "about"; it is left out when Casper gives none.
+fn usage_note(tokens: Option<u64>, cost: Option<f64>) -> Option<String> {
+    let cost = cost.map(|c| {
+        if c == 0.0 {
+            "about $0".to_string()
+        } else if c < 0.01 {
+            "under $0.01".to_string()
+        } else {
+            format!("about ${c:.2}")
+        }
+    });
+    match (tokens, cost) {
+        (Some(t), cost) => {
+            let word = if t == 1 { "token" } else { "tokens" };
+            let cost = cost.map(|c| format!(" ({c})")).unwrap_or_default();
+            Some(format!("Casper used {} {word}{cost}.", with_commas(t)))
+        }
+        (None, Some(c)) => Some(format!("Casper used {c}.")),
+        (None, None) => None,
+    }
+}
+
 fn notes(code: i32, receipt: Option<&CasperReceipt>, picked: Option<&Path>) -> Vec<String> {
     let mut out = Vec::new();
     let Some(r) = receipt else {
@@ -1360,7 +1408,11 @@ fn notes(code: i32, receipt: Option<&CasperReceipt>, picked: Option<&Path>) -> V
     out
 }
 
-fn with_notes(answer: &str, notes: Vec<String>) -> String {
+/// The answer plus GreenCLI's notes; what it cost always comes last.
+fn with_notes(answer: &str, mut notes: Vec<String>, receipt: Option<&CasperReceipt>) -> String {
+    if let Some(n) = receipt.and_then(|r| usage_note(r.usage_tokens, r.usage_cost)) {
+        notes.push(n);
+    }
     let answer = answer.trim();
     if notes.is_empty() {
         return answer.to_string();
@@ -1422,9 +1474,9 @@ pub fn casper_reply(
         "it stopped with an error".to_string()
     };
     let receipt = out.receipt.as_ref();
-    match code {
+    let reply = match code {
         Some(0) => match answer {
-            Some(a) => Ok(with_notes(a, notes(0, receipt, picked))),
+            Some(a) => Ok(with_notes(a, notes(0, receipt, picked), receipt)),
             None => Err("Casper finished without an answer.".to_string()),
         },
         Some(1) => match (answer, receipt) {
@@ -1433,7 +1485,7 @@ pub fn casper_reply(
                 if let Some(v) = verdict {
                     n.push(format!("Casper says: {v}"));
                 }
-                Ok(with_notes(a, n))
+                Ok(with_notes(a, n, receipt))
             }
             _ => Err(format!("Casper couldn't answer: {reason}")),
         },
@@ -1445,14 +1497,24 @@ pub fn casper_reply(
                         n.push(format!("Casper didn't check this change: {v}"));
                     }
                 }
-                Ok(with_notes(a, n))
+                Ok(with_notes(a, n, receipt))
             }
             None => Err(format!("Casper stopped before it finished: {reason}")),
         },
         Some(64) => Err(format!("Casper didn't accept the options GreenCLI sent: {hint}. Check the Casper command in Settings → AI & MCP.")),
         Some(130 | 143) | None => Err("Casper was stopped before it answered.".to_string()),
         Some(n) => Err(format!("Casper failed (exit {n}): {reason}")),
-    }
+    };
+    // A run that ends without an answer still says what Casper did and what it cost.
+    // notes(0, ..) leaves out the "stopped" lines the error already says.
+    reply.map_err(|e| {
+        let mut extra = notes(0, receipt, picked);
+        extra.extend(receipt.and_then(|r| usage_note(r.usage_tokens, r.usage_cost)));
+        std::iter::once(e)
+            .chain(extra)
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    })
 }
 
 #[cfg(test)]
@@ -2678,5 +2740,156 @@ mod tests {
         let long = "é".repeat(400);
         let hint = stderr_hint(&long);
         assert!(hint.len() <= 300 && hint.chars().all(|c| c == 'é'));
+    }
+
+    // ─── Busy ───
+
+    #[test]
+    fn busy_texts_fit_an_editor_check_too() {
+        for text in [BUSY_FORWARD, BUSY_MCP] {
+            // An editor check counts as a Casper run too: the text can't say only the AI panel.
+            assert!(!text.contains("a question in the AI panel"), "{text}");
+            assert!(text.contains("editor"), "{text}");
+            assert!(text.starts_with("Casper is answering"), "{text}");
+            assert!(text.contains("Stop"), "{text}");
+        }
+    }
+
+    // ─── Usage ───
+
+    #[test]
+    fn parse_receipt_usage() {
+        let line = |usage: &str| {
+            parse_json_lines(&format!(
+                "{{\"v\":1,\"type\":\"receipt\",\"outcome\":\"done\",\"changed\":[],{usage}}}\n"
+            ))
+            .receipt
+            .unwrap()
+        };
+        let r = line("\"usage\":{\"turns\":3,\"tokens\":4210,\"estimatedCost\":0.0213}");
+        assert_eq!(r.usage_tokens, Some(4210));
+        assert_eq!(r.usage_cost, Some(0.0213));
+        let r = line("\"usage\":{\"turns\":3,\"tokens\":null,\"estimatedCost\":null}");
+        assert_eq!((r.usage_tokens, r.usage_cost), (None, None));
+        let r = line("\"usage\":null");
+        assert_eq!((r.usage_tokens, r.usage_cost), (None, None));
+        let r = line("\"turnLimit\":null");
+        assert_eq!((r.usage_tokens, r.usage_cost), (None, None));
+        let r = line("\"usage\":{\"turns\":1,\"tokens\":900,\"estimatedCost\":-1}");
+        assert_eq!((r.usage_tokens, r.usage_cost), (Some(900), None));
+    }
+
+    #[test]
+    fn usage_note_formats() {
+        assert_eq!(
+            usage_note(Some(4210), Some(0.0213)).as_deref(),
+            Some("Casper used 4,210 tokens (about $0.02).")
+        );
+        assert_eq!(
+            usage_note(Some(1_234_567), Some(1.5)).as_deref(),
+            Some("Casper used 1,234,567 tokens (about $1.50).")
+        );
+        assert_eq!(
+            usage_note(Some(850), Some(0.0004)).as_deref(),
+            Some("Casper used 850 tokens (under $0.01).")
+        );
+        assert_eq!(
+            usage_note(Some(850), Some(0.0)).as_deref(),
+            Some("Casper used 850 tokens (about $0).")
+        );
+        assert_eq!(
+            usage_note(Some(1), None).as_deref(),
+            Some("Casper used 1 token.")
+        );
+        assert_eq!(
+            usage_note(None, Some(0.05)).as_deref(),
+            Some("Casper used about $0.05.")
+        );
+        assert_eq!(usage_note(None, None), None);
+    }
+
+    #[test]
+    fn reply_shows_usage_on_every_answer() {
+        let recorded = concat!(
+            "{\"v\":1,\"type\":\"session_start\"}\n",
+            "{\"v\":1,\"type\":\"assistant_message\",\"text\":\"VLAN 10 is fine.\"}\n",
+            "{\"v\":1,\"type\":\"receipt\",\"outcome\":\"done\",\"exitCode\":0,\"changed\":[],",
+            "\"verdict\":\"✓ Done\",\"usage\":{\"turns\":2,\"tokens\":4210,\"estimatedCost\":0.0213}}\n"
+        );
+        let out = parse_json_lines(recorded);
+        assert_eq!(
+            casper_reply(RunEnd::Exited(Some(0)), &out, "", None).unwrap(),
+            "VLAN 10 is fine.\n\n---\n*Casper used 4,210 tokens (about $0.02).*"
+        );
+
+        // No cost from Casper: tokens only.
+        let out = parse_json_lines(&recorded.replace("0.0213", "null"));
+        assert_eq!(
+            casper_reply(RunEnd::Exited(Some(0)), &out, "", None).unwrap(),
+            "VLAN 10 is fine.\n\n---\n*Casper used 4,210 tokens.*"
+        );
+
+        // No usage at all: the reply is unchanged.
+        let out = parse_json_lines(&recorded.replace(
+            "\"usage\":{\"turns\":2,\"tokens\":4210,\"estimatedCost\":0.0213}",
+            "\"usage\":null",
+        ));
+        assert_eq!(
+            casper_reply(RunEnd::Exited(Some(0)), &out, "", None).unwrap(),
+            "VLAN 10 is fine."
+        );
+
+        // The usage note comes last, after the other notes, on exit 1, 2 and 3 too.
+        for code in [1, 2, 3] {
+            let mut r = receipt("• Incomplete");
+            r.secret_in_command = true;
+            r.usage_tokens = Some(12);
+            r.usage_cost = Some(0.3);
+            let out = output(Some("So far."), &[], Some(r));
+            let ok = casper_reply(RunEnd::Exited(Some(code)), &out, "", None).unwrap();
+            assert!(ok.contains("*A secret showed up"), "{ok}");
+            assert!(
+                ok.ends_with("*Casper used 12 tokens (about $0.30).*"),
+                "{code}: {ok}"
+            );
+        }
+    }
+
+    #[test]
+    fn reply_without_an_answer_still_says_what_it_cost() {
+        // Casper spent tokens but wrote no answer: the error says what it cost.
+        for code in [0, 1, 2, 3, 5] {
+            let mut r = receipt("• Incomplete");
+            r.usage_tokens = Some(9000);
+            r.usage_cost = Some(0.12);
+            let out = output(None, &[], Some(r));
+            let err = casper_reply(RunEnd::Exited(Some(code)), &out, "", None).unwrap_err();
+            assert!(
+                err.ends_with("\n\nCasper used 9,000 tokens (about $0.12)."),
+                "{code}: {err}"
+            );
+        }
+        // No usage in the receipt: the error is unchanged.
+        let out = output(None, &[], Some(receipt("• Incomplete")));
+        assert_eq!(
+            casper_reply(RunEnd::Exited(Some(2)), &out, "", None).unwrap_err(),
+            "Casper stopped before it finished: Incomplete"
+        );
+    }
+
+    #[test]
+    fn reply_without_an_answer_keeps_the_safety_notes() {
+        // No answer, but Casper changed a device and showed a secret: the error says so, cost last.
+        let mut r = receipt("• Incomplete");
+        r.remote_changes = vec!["sw1".to_string()];
+        r.secret_in_command = true;
+        r.usage_tokens = Some(9000);
+        r.usage_cost = Some(0.12);
+        let out = output(None, &[], Some(r));
+        let err = casper_reply(RunEnd::Exited(Some(2)), &out, "", None).unwrap_err();
+        assert_eq!(
+            err,
+            "Casper stopped before it finished: Incomplete\n\nCasper changed things on sw1.\n\nA secret showed up in a command Casper ran. Change that secret.\n\nCasper used 9,000 tokens (about $0.12)."
+        );
     }
 }

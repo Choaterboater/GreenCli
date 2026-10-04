@@ -21,6 +21,8 @@ export interface ConfigProblem {
   message: string;
   /** Stable id for the kind of problem ("danger", "placeholder", …). */
   code: string;
+  /** Who found it: GreenCLI when unset, "Casper" for Mark mistakes with Casper. */
+  source?: string;
 }
 
 /** Device config languages: the only ones that get the device checks. */

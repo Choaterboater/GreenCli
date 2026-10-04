@@ -64,6 +64,20 @@ import { linesInSpan, selectedLines, spanText, type LineSpan } from '../utils/se
 import { jobBlockFromEditor, vendorSteps } from '../utils/changeJobs';
 import { askMenu, buildAskPrompt, secretLinePairs, type AskKind } from '../utils/askAi';
 import { hideSecretsForCopy, hideSecretsInText } from '../utils/secrets/forCopy';
+import {
+  buildCasperCheckPrompt,
+  casperCheckArgs,
+  casperCheckStatus,
+  casperErrorStatus,
+  currentCasperProblems,
+  parseCasperProblems,
+  placeCasperProblems,
+  promptTooBig,
+  type CasperProblem,
+  type CasperStatus,
+} from '../utils/casperCheck';
+import { runStoppable } from '../utils/aiRuns';
+import { plainCliError } from '../utils/cliPrompt';
 import { useAiBridge } from '../store/aiBridgeStore';
 import { fenceDeviceLanguage, isOtherVendor, locateTarget, restoreSecrets, withSuggestion } from '../utils/aiReview';
 import { showSidePanel } from './sidePanelActions';
@@ -485,6 +499,22 @@ export default function ConfigEditor() {
   const [sendProgress, setSendProgress] = useState<{ sent: number; total: number } | null>(null);
   // The whole lines the editor selection covers (Send selected lines, Ask AI).
   const [selection, setSelection] = useState<LineSpan | null>(null);
+  // Mark mistakes with Casper: the run in progress or its findings, for one
+  // tab. Only the run whose id is in casperRunRef may land; Stop, a new run,
+  // Clear and closing the tab all reset it.
+  const [casperCheck, setCasperCheck] = useState<{
+    bufferId: string;
+    running: boolean;
+    problems: CasperProblem[];
+    status: CasperStatus;
+  } | null>(null);
+  const casperRunRef = useRef<string | null>(null);
+  const casperCheckBufferRef = useRef<string | null>(null);
+  useEffect(() => {
+    casperCheckBufferRef.current = casperCheck?.bufferId ?? null;
+  }, [casperCheck]);
+  // Decorations that follow each finding's line through edits (ids in finding order).
+  const casperMarksRef = useRef<{ bufferId: string; ids: string[] } | null>(null);
   // Config archive panel (NW-16): store-lifted so Tools / palette can open it.
   const showArchive = useSessionStore((s) => s.showArchive);
   const setShowArchive = useSessionStore((s) => s.setShowArchive);
@@ -524,6 +554,32 @@ export default function ConfigEditor() {
       }
     },
     [modelForBuffer]
+  );
+
+  /** Stop a Casper run in progress and remove its marks. */
+  const clearCasperCheck = useCallback(() => {
+    const runId = casperRunRef.current;
+    casperRunRef.current = null;
+    if (runId) invoke('ai_cancel_stream', { streamId: runId }).catch(() => {});
+    const marks = casperMarksRef.current;
+    casperMarksRef.current = null;
+    if (marks) {
+      try {
+        modelForBuffer(marks.bufferId)?.deltaDecorations(marks.ids, []);
+      } catch {
+        // the tab's model is already gone
+      }
+    }
+    setCasperCheck(null);
+  }, [modelForBuffer]);
+  // Closing the editor stops a run in progress.
+  useEffect(
+    () => () => {
+      const runId = casperRunRef.current;
+      casperRunRef.current = null;
+      if (runId) invoke('ai_cancel_stream', { streamId: runId }).catch(() => {});
+    },
+    []
   );
 
   // Draw the last send's bars on the model of the tab it came from (models
@@ -570,12 +626,29 @@ export default function ConfigEditor() {
   const lineCount = useMemo(() => deferredContent.split('\n').length, [deferredContent]);
   const baseProblems = useMemo(() => buildProblems(deferredContent, language), [deferredContent, language]);
   // The line the switch rejected on the last Send joins the list (red), quoting the switch.
+  // Casper's findings join it too, each while its line reads as it did when
+  // Casper was asked. They never reach the Send checks, which use
+  // buildProblems on their own.
+  const casperProblems = useMemo(() => {
+    if (!casperCheck || casperCheck.bufferId !== active.id || !casperCheck.problems.length) return [];
+    const marks = casperMarksRef.current;
+    const model = marks?.bufferId === active.id ? modelForBuffer(active.id) : null;
+    const lineOf =
+      model && marks && !model.isDisposed()
+        ? (i: number) => (marks.ids[i] ? model.getDecorationRange(marks.ids[i])?.startLineNumber ?? null : null)
+        : undefined;
+    return currentCasperProblems(casperCheck.problems, deferredContent.split('\n'), lineOf);
+  }, [casperCheck, active.id, deferredContent, modelForBuffer]);
   const problems = useMemo(() => {
-    if (!sendReport || sendReport.bufferId !== active.id) return baseProblems;
-    const rejected = rejectedLineProblem(deferredContent, sendReport.lineNumber, sendReport.deviceText);
-    if (!rejected) return baseProblems;
-    return [rejected, ...baseProblems].sort((a, b) => a.lineNumber - b.lineNumber || a.startColumn - b.startColumn);
-  }, [baseProblems, sendReport, active.id, deferredContent]);
+    const rejected =
+      sendReport && sendReport.bufferId === active.id
+        ? rejectedLineProblem(deferredContent, sendReport.lineNumber, sendReport.deviceText)
+        : null;
+    if (!rejected && !casperProblems.length) return baseProblems;
+    return [...(rejected ? [rejected] : []), ...baseProblems, ...casperProblems].sort(
+      (a, b) => a.lineNumber - b.lineNumber || a.startColumn - b.startColumn
+    );
+  }, [baseProblems, sendReport, active.id, deferredContent, casperProblems]);
   const problemCounts = useMemo(
     () => ({
       error: problems.filter((p) => p.severity === 'error').length,
@@ -609,7 +682,7 @@ export default function ConfigEditor() {
         endColumn: Math.max(p.endColumn, p.startColumn + 1),
         severity: severity[p.severity],
         message: p.message,
-        source: 'GreenCLI',
+        source: p.source ?? 'GreenCLI',
         code: p.code,
       }))
     );
@@ -729,6 +802,7 @@ export default function ConfigEditor() {
     const buf = buffersRef.current.find((b) => b.id === id);
     if (!buf) return;
     if (!(await confirmDiscardBuf(buf))) return;
+    if (casperMarksRef.current?.bufferId === id || casperCheckBufferRef.current === id) clearCasperCheck();
     disposeBufferModel(id);
     rawCapturesRef.current.delete(id);
     setViewingRawIds((prev) => {
@@ -744,7 +818,7 @@ export default function ConfigEditor() {
     if (next.length === 0) next = [makeBuffer('untitled')];
     setBuffers(next);
     if (activeIdRef.current === id) setActiveId(next[Math.min(idx, next.length - 1)].id);
-  }, []);
+  }, [clearCasperCheck]);
 
   // ─── File open ───
 
@@ -1194,6 +1268,13 @@ export default function ConfigEditor() {
       contextMenuOrder: 4,
       run: () => editorCommandsRef.current.askAi('custom'),
     });
+    ed.addAction({
+      id: 'greencli-ask-casper',
+      label: 'Mark Mistakes with Casper',
+      contextMenuGroupId: '0_greencli',
+      contextMenuOrder: 5,
+      run: () => editorCommandsRef.current.askAi('casper'),
+    });
 
     setSelection(selectedLines(ed.getSelection()));
     ed.onDidChangeCursorSelection((e) => setSelection(selectedLines(e.selection)));
@@ -1350,6 +1431,7 @@ export default function ConfigEditor() {
    *  first (nothing goes if that can't run); the editor keeps the real lines
    *  so an answer can come back as a diff to review. */
   const askAi = async (kind: AskKind) => {
+    if (kind === 'casper') return markWithCasper();
     setOpenMenu(null);
     const span = selectedLines(editorRef.current?.getSelection());
     const text = span ? spanText(content, span) : content;
@@ -1404,6 +1486,102 @@ export default function ConfigEditor() {
       secretLines: secretLinePairs(text, hidden.text),
     });
     showSidePanel('ai');
+  };
+
+  /** Mark mistakes with Casper: the selected lines (or the tab), secrets
+   *  hidden first, go to Casper; the line-numbered list in its answer becomes
+   *  marks in this tab. Nothing else in the answer is used. */
+  const markWithCasper = async () => {
+    setOpenMenu(null);
+    const span = selectedLines(editorRef.current?.getSelection());
+    const text = span ? spanText(content, span) : content;
+    if (!text.trim()) {
+      showStatus('Nothing to check');
+      return;
+    }
+    const hidden = await hideSecretsInText(text);
+    if (!hidden.ok) {
+      showStatus(
+        hidden.reason === 'too-big'
+          ? 'Not sent to Casper: too big to check for secrets (over 1 MB)'
+          : 'Not sent to Casper: GreenCLI could not check it for secrets on this system'
+      );
+      return;
+    }
+    // Marks land by line number, so hiding must keep every line in place.
+    if (hidden.text.split('\n').length !== text.split('\n').length) {
+      showStatus('Not sent to Casper: hiding the secrets moved lines');
+      return;
+    }
+    const lines = content.split('\n');
+    const asked = span ?? { start: 1, end: lines.length };
+    const known = buildProblems(content, language).filter((p) => p.lineNumber >= asked.start && p.lineNumber <= asked.end);
+    const prompt = buildCasperCheckPrompt({
+      text: hidden.text,
+      firstLine: asked.start,
+      language,
+      languageName: LANGUAGE_LIST.find((l) => l.id === language)?.label,
+      tabName: active.name,
+      hidden: hidden.hidden,
+      known,
+    });
+    if (promptTooBig(prompt)) {
+      showStatus('Too big for Casper: select fewer lines');
+      return;
+    }
+    clearCasperCheck();
+    const bufferId = active.id;
+    const { casperCommand, sessionLogDir } = useSettingsStore.getState();
+    let runId = '';
+    const finish = (problems: CasperProblem[], status: CasperStatus) => {
+      if (casperRunRef.current !== runId) return;
+      casperRunRef.current = null;
+      const monaco = monacoRef.current;
+      const model = modelForBuffer(bufferId);
+      if (monaco && model && problems.length) {
+        const ids = model.deltaDecorations(
+          [],
+          problems.map((p) => ({
+            range: new monaco.Range(p.lineNumber, 1, p.lineNumber, 1),
+            options: { stickiness: monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges },
+          }))
+        );
+        casperMarksRef.current = { bufferId, ids };
+      }
+      setCasperCheck({ bufferId, running: false, problems, status });
+    };
+    // The tab as it is now: it may have been edited while Casper checked.
+    const linesNow = () => {
+      const model = modelForBuffer(bufferId);
+      if (model && !model.isDisposed()) return model.getLinesContent();
+      return (buffersRef.current.find((b) => b.id === bufferId)?.content ?? '').split('\n');
+    };
+    try {
+      const reply = await runStoppable((id) => {
+        runId = id;
+        casperRunRef.current = id;
+        setCasperCheck({ bufferId, running: true, problems: [], status: { head: 'Casper is checking…', usage: null, warning: false } });
+        return invoke<string>('ai_cli', casperCheckArgs({ command: casperCommand, prompt, runId: id, logFolder: sessionLogDir }));
+      });
+      const result = parseCasperProblems(reply, { span: asked, lines, known });
+      if (!result.ok) {
+        finish([], casperCheckStatus(result));
+        return;
+      }
+      // Findings are numbered by the lines Casper was sent; move each to where its line is now.
+      const { placed, left } = placeCasperProblems(result.problems, lines, linesNow());
+      finish(placed, casperCheckStatus({ ...result, problems: placed }, left));
+    } catch (e) {
+      finish([], casperErrorStatus(plainCliError(e)));
+    }
+  };
+
+  /** Stop the Casper run in progress; its answer, if it still comes, is ignored. */
+  const stopCasper = () => {
+    const runId = casperRunRef.current;
+    casperRunRef.current = null;
+    if (runId) invoke('ai_cancel_stream', { streamId: runId }).catch(() => {});
+    setCasperCheck((c) => (c ? { ...c, running: false, status: { head: 'Stopped.', usage: null, warning: false } } : c));
   };
 
   // After each render, like saveFileRef: the right-click items reach the latest handlers.
@@ -1961,14 +2139,15 @@ export default function ConfigEditor() {
                 ? `About ${selection.start === selection.end ? `line ${selection.start}` : `lines ${selection.start}–${selection.end}`}. Secrets are hidden first.`
                 : 'About the whole tab (select lines to narrow it). Secrets are hidden first.'}
             </p>
-            {askMenu(language, problemCounts.error + problemCounts.warning > 0).map((item) => (
+            {askMenu(language, problems.some((p) => p.source !== 'Casper' && p.severity !== 'info')).map((item) => (
               <button
                 key={item.kind}
                 role="menuitem"
                 onClick={() => void askAi(item.kind)}
-                className="flex items-center w-full px-3 py-1.5 text-xs text-left text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]"
+                className="flex flex-col items-start w-full px-3 py-1.5 text-xs text-left text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]"
               >
                 {item.label}
+                {item.note && <span className="text-[10px] text-[var(--text-muted)]">{item.note}</span>}
               </button>
             ))}
           </ToolbarMenu>
@@ -2030,6 +2209,40 @@ export default function ConfigEditor() {
           </button>
         )}
         {statusMsg && <span className="text-[10px] text-[var(--text-secondary)] mr-1">{statusMsg}</span>}
+        {/* Mark mistakes with Casper: progress and Stop, then what it found and what it cost. */}
+        {casperCheck && casperCheck.bufferId === active.id && (
+          <span role="status" aria-label="Casper" className="flex items-center gap-1 min-w-0 mr-1 text-[10px] text-[var(--text-secondary)]">
+            {casperCheck.running && <RefreshCw size={10} className="animate-spin flex-shrink-0" />}
+            <span
+              className={`truncate max-w-[28rem] ${casperCheck.status.warning ? 'text-[var(--accent-warning)]' : ''}`}
+              title={[casperCheck.status.head, casperCheck.status.usage].filter(Boolean).join(' ')}
+            >
+              {casperCheck.status.head}
+            </span>
+            {/* What it cost sits apart, so the cut-off never hides it. */}
+            {casperCheck.status.usage && <span className="flex-shrink-0 whitespace-nowrap">{casperCheck.status.usage}</span>}
+            {casperCheck.running ? (
+              <button
+                onClick={stopCasper}
+                aria-label="Stop Casper"
+                title="Stop Casper"
+                className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[var(--accent-danger)] hover:bg-[var(--bg-tertiary)]"
+              >
+                <Square size={9} />
+                Stop
+              </button>
+            ) : (
+              <button
+                onClick={clearCasperCheck}
+                aria-label="Clear Casper's marks"
+                title="Clear Casper's marks"
+                className="p-0.5 rounded hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)]"
+              >
+                <X size={10} />
+              </button>
+            )}
+          </span>
+        )}
 
         {/* Send to terminal — confirmed before every send; cancellable mid-send
             (a stopped send leaves a partial config on the device). */}

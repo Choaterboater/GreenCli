@@ -5,7 +5,7 @@
 
 import type { LineSpan } from './sendSelection';
 
-export type AskKind = 'explain' | 'check' | 'convert' | 'fix' | 'custom';
+export type AskKind = 'explain' | 'check' | 'casper' | 'convert' | 'fix' | 'custom';
 
 const VENDOR_LABELS: Record<string, string> = {
   'aruba-cx': 'Aruba CX',
@@ -31,13 +31,23 @@ export function otherVendor(language: string): { id: string; label: string } | n
 export interface AskMenuItem {
   kind: AskKind;
   label: string;
+  /** A line under the label (what it does, what it may cost). */
+  note?: string;
 }
+
+/** Mark mistakes with Casper: Casper's findings become squiggles, not a chat answer. */
+export const CASPER_CHECK_ITEM: AskMenuItem = {
+  kind: 'casper',
+  label: 'Mark mistakes with Casper',
+  note: 'Sends these lines to Casper with secrets hidden and marks what it finds. Uses your Casper model (may cost tokens).',
+};
 
 export function askMenu(language: string, hasProblems: boolean): AskMenuItem[] {
   const other = otherVendor(language);
   return [
     { kind: 'explain', label: 'Explain these lines' },
     { kind: 'check', label: 'Check them for mistakes' },
+    CASPER_CHECK_ITEM,
     ...(hasProblems ? [{ kind: 'fix' as const, label: 'Fix the problems found' }] : []),
     ...(other ? [{ kind: 'convert' as const, label: `Convert to ${other.label}` }] : []),
     { kind: 'custom', label: 'Ask something else…' },
@@ -66,6 +76,7 @@ function questionFor(input: AskInput, vendor: string): string {
     case 'explain':
       return `Explain what these ${vendor} lines do, in plain words. Go line by line where it helps.`;
     case 'check':
+    case 'casper':
       return `Check these ${vendor} lines for mistakes, risky commands and anything missing. Say what you would change and why.`;
     case 'fix':
       return `Fix the problems GreenCLI found in these ${vendor} lines (listed below).`;

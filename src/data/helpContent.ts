@@ -381,7 +381,7 @@ export const HELP_TOPICS: HelpTopic[] = [
           '**Folder view**: the folder button opens a folder as a file tree beside the editor; click a file to open it.',
           '**Send selected lines**: select lines, then the arrow next to Send (or right-click). Only those lines go out.',
           '**Send safely**: the arrow next to Send opens Change Jobs with the tab and this device filled in: a dry run, then the switch\'s own rollback timer.',
-          '**Ask AI** (editor toolbar or right-click): explain, check, fix, or convert Aruba ↔ Junos the selected lines. Secrets are hidden first.',
+          '**Ask AI** (editor toolbar or right-click): explain, check, fix, or convert Aruba ↔ Junos the selected lines. Secrets are hidden first. **Mark mistakes with Casper** has Casper mark what it finds as squiggles and Problems rows named Casper, and says what it cost.',
           '**Review in Editor**: an AI answer\'s code opens as a diff against the lines you asked about. Apply or Discard; ' + formatChord('Mod+Z') + ' undoes an Apply.',
         ],
       },
