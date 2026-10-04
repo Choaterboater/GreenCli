@@ -16,6 +16,13 @@ describe('ProblemsPanel', () => {
     expect(screen.getByText(/Risky: this reboots the switch/)).toBeTruthy();
   });
 
+  it("marks Casper's findings as Casper's, and GreenCLI's without a name", () => {
+    const casper = { lineNumber: 2, startColumn: 1, endColumn: 5, severity: 'warning' as const, message: 'VLAN has no name.', code: 'casper', source: 'Casper' };
+    render(<ProblemsPanel problems={[...problems, casper]} capped={false} disabled={false} onJump={vi.fn()} onClose={vi.fn()} />);
+    expect(screen.getByText('Casper:').parentElement?.textContent).toBe('Casper: VLAN has no name.');
+    expect(screen.getAllByText('Casper:')).toHaveLength(1);
+  });
+
   it('jumps to a problem when its row is clicked, and stays open', () => {
     const onJump = vi.fn();
     const onClose = vi.fn();

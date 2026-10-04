@@ -85,7 +85,11 @@ export default function ProblemsPanel({ problems, capped, disabled, onJump, onCl
                 <span className="text-[var(--text-muted)] tabular-nums">
                   Ln {problem.lineNumber}, Col {problem.startColumn}
                 </span>
-                <span className="text-[var(--text-primary)]">{problem.message}</span>
+                <span className="text-[var(--text-primary)]">
+                  {problem.source === 'Casper' && <span className="font-semibold text-[var(--text-secondary)]">Casper:</span>}
+                  {problem.source === 'Casper' && ' '}
+                  {problem.message}
+                </span>
               </button>
             );
           })

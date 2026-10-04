@@ -6,10 +6,13 @@ describe('askMenu', () => {
     expect(askMenu('aruba-cx', false).map((i) => i.label)).toEqual([
       'Explain these lines',
       'Check them for mistakes',
+      'Mark mistakes with Casper',
       'Convert to Junos',
       'Ask something else…',
     ]);
-    expect(askMenu('mist', true).map((i) => i.kind)).toEqual(['explain', 'check', 'fix', 'convert', 'custom']);
+    expect(askMenu('mist', true).map((i) => i.kind)).toEqual(['explain', 'check', 'casper', 'fix', 'convert', 'custom']);
+    // Shown always: without Casper, a plain message says so.
+    expect(askMenu('yaml', false).find((i) => i.kind === 'casper')?.note).toMatch(/Casper.*secrets hidden.*may cost tokens/);
     expect(askMenu('yaml', false).some((i) => i.kind === 'convert')).toBe(false);
     expect(otherVendor('juniper-junos')).toEqual({ id: 'aruba-cx', label: 'Aruba CX' });
   });
