@@ -50,6 +50,7 @@ import {
 import { currentWindow, focusWindow, isTauri } from './utils/tauri';
 import { listenFileDrops } from './utils/fileDrop';
 import { registerBeforeExit } from './utils/beforeExit';
+import { startMcpLive } from './utils/mcpLive';
 import { useUpdateCheck } from './hooks/useUpdateCheck';
 import Toaster from './components/Toaster';
 import DialogHost from './components/DialogHost';
@@ -406,6 +407,10 @@ function App() {
       un.then((f) => f());
     };
   }, []);
+
+  // Show commands asked for by greencli-mcp (Casper, Claude Code …): GreenCLI
+  // checks the tab, asks you, and answers (utils/mcpLive).
+  useEffect(() => startMcpLive(), []);
 
   // Reconnect (and connect) emit this when a known host presents a new key
   // algorithm. Toast only — no confirm dialog this change.
