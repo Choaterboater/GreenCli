@@ -106,3 +106,34 @@ export interface McpStatus {
   /** [A3] */
   restartNeeded?: boolean;
 }
+
+/** One server mcp_import_scan found (Rust mcp/import.rs PreviewItem). No values. */
+export interface McpImportItem {
+  id: string;
+  name: string;
+  /** Where it came from: "Casper", "Claude Code", "~/.mcp.json", "VS Code". */
+  source: string;
+  transport: 'stdio' | 'http';
+  /** Product name when GreenCLI knows the server. */
+  preset: string | null;
+  /** What Connect adds while writes are off (confirmed is always false here). */
+  pins: McpPins;
+  /** ${NAME}s that came in empty, to fill in with Edit. */
+  needs: string[];
+  notes: string[];
+  /** The program and its args (secrets hidden), or the web address's host. */
+  runs: string;
+}
+
+export interface McpImportPreview {
+  token: string;
+  items: McpImportItem[];
+  skipped: { name: string; source: string; reason: string }[];
+  problems: string[];
+}
+
+/** What mcp_import_apply did: names added, and [name, reason] for each skipped. */
+export interface McpImportOutcome {
+  added: string[];
+  skipped: [string, string][];
+}

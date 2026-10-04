@@ -146,6 +146,8 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
       'run plain show commands',
       'show commands',
       'export',
+      'import',
+      'vs code',
       '.mcp.json',
       'casper',
       'claude code',

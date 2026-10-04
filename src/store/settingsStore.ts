@@ -37,6 +37,7 @@ interface SettingsState extends TerminalSettings {
   setCasperCommand: (command: string) => void;
   setCasperWorkFolder: (folder: string) => void;
   setAiReferences: (refs: string) => void;
+  setMcpImportOffered: (offered: boolean) => void;
   // AI agents (per-session personas)
   addAiAgent: (agent: AiAgent) => void;
   updateAiAgent: (id: string, patch: Partial<AiAgent>) => void;
@@ -88,6 +89,7 @@ export const useSettingsStore = create<SettingsState>()(
       setCasperCommand: (casperCommand) => set({ casperCommand }),
       setCasperWorkFolder: (casperWorkFolder) => set({ casperWorkFolder }),
       setAiReferences: (aiReferences) => set({ aiReferences }),
+      setMcpImportOffered: (mcpImportOffered) => set({ mcpImportOffered }),
 
       addAiAgent: (agent) => set((s) => ({ aiAgents: [...(s.aiAgents ?? []), agent] })),
       updateAiAgent: (id, patch) =>
