@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { MAX_PROBLEMS, buildProblems, problemSummary, rejectedLineProblem, sendProblemNote } from './configProblems';
+import { MAX_PROBLEMS, buildProblems, problemBadge, problemSummary, rejectedLineProblem, sendProblemNote } from './configProblems';
 
 describe('buildProblems', () => {
   it('underlines a risky line with what it does, from its first word to its end', () => {
@@ -208,5 +208,38 @@ describe('secrets written into code and data files', () => {
   it('only checks code and data files', () => {
     expect(values('password: Hunter22', 'markdown')).toEqual([]);
     expect(buildProblems('password: Hunter22', 'aruba-cx').some((p) => p.code === 'code-secret')).toBe(false);
+  });
+});
+
+describe('problemBadge', () => {
+  const badge = (text: string, language: string) => problemBadge(buildProblems(text, language), language, text);
+
+  it('says clean for a device config with nothing found', () => {
+    expect(badge('vlan 10\n  name users\n', 'aruba-cx')).toBe('clean');
+    expect(badge('set vlans users vlan-id 10\ncommit\n', 'juniper-junos')).toBe('clean');
+    expect(badge('hostname sw1\n', 'generic')).toBe('clean');
+  });
+
+  it('shows counts when there is a problem, in any language', () => {
+    expect(badge('reload\n', 'aruba-cx')).toBe('counts');
+    expect(badge('api_key = "abc123def456"\n', 'python')).toBe('counts');
+  });
+
+  it('shows nothing for an empty tab', () => {
+    expect(badge('', 'aruba-cx')).toBe('none');
+    expect(badge('  \n', 'aruba-cx')).toBe('none');
+  });
+
+  it('shows nothing for clean code, data and plain text', () => {
+    expect(badge('print("hi")\n', 'python')).toBe('none');
+    expect(badge('name: users\n', 'yaml')).toBe('none');
+    expect(badge('notes from the call\n', 'plaintext')).toBe('none');
+  });
+
+  it('shows counts for a line the switch rejected, even on clean text', () => {
+    const text = 'vlan 10\n  name users\n';
+    const rejected = rejectedLineProblem(text, 2, '% Invalid input');
+    expect(rejected).toBeDefined();
+    expect(problemBadge([rejected!], 'aruba-cx', text)).toBe('counts');
   });
 });

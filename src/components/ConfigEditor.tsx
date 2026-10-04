@@ -23,6 +23,7 @@ import {
   History,
   ListTree,
   AlertTriangle,
+  CheckCircle2,
   Plus,
   RefreshCw,
   Square,
@@ -49,6 +50,7 @@ import {
   MAX_PROBLEMS,
   NETWORK_LANGUAGES,
   buildProblems,
+  problemBadge,
   problemSummary,
   rejectedLineProblem,
   sendProblemNote,
@@ -799,6 +801,7 @@ export default function ConfigEditor() {
     }),
     [problems]
   );
+  const badge = useMemo(() => problemBadge(problems, language, deferredContent), [problems, language, deferredContent]);
 
   // Problems as Monaco markers: squiggles, hover text, scrollbar marks, and
   // F8 / Shift+F8 to step through them. Skipped while the deferred copy lags
@@ -2202,17 +2205,27 @@ export default function ConfigEditor() {
 
         <div className="flex-1" />
 
-        {/* Problems: counts by kind; opens the Problems panel (Ctrl+Shift+M). F8 steps through them in the editor. */}
-        {problems.length > 0 && (
+        {/* Problems: counts by kind (or "No problems" on a clean device config); opens the Problems panel (Ctrl+Shift+M). F8 steps through them in the editor. */}
+        {badge !== 'none' && (
           <button
             onClick={() => setShowProblems(!showProblems)}
             aria-pressed={showProblems}
             className={`flex items-center gap-2 mr-1 px-1.5 py-0.5 text-[10px] rounded hover:bg-[var(--bg-tertiary)] ${
               showProblems ? 'bg-[var(--bg-tertiary)]' : ''
             }`}
-            title={`${problemSummary(problems)}. Click for the Problems panel (Ctrl+Shift+M), F8 for the next one`}
-            aria-label={`Problems: ${problemSummary(problems)}`}
+            title={
+              badge === 'clean'
+                ? 'No problems found. Click for the Problems panel (Ctrl+Shift+M)'
+                : `${problemSummary(problems)}. Click for the Problems panel (Ctrl+Shift+M), F8 for the next one`
+            }
+            aria-label={badge === 'clean' ? 'Problems: none' : `Problems: ${problemSummary(problems)}`}
           >
+            {badge === 'clean' && (
+              <span className="flex items-center gap-0.5 text-[var(--accent-success)]">
+                <CheckCircle2 size={11} />
+                No problems
+              </span>
+            )}
             {problemCounts.error > 0 && (
               <span className="flex items-center gap-0.5 text-[var(--accent-danger)]">
                 <XCircle size={11} />

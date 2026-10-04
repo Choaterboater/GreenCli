@@ -258,3 +258,17 @@ export function problemSummary(problems: readonly ConfigProblem[]): string {
   if (tips) parts.push(`${tips} ${tips === 1 ? 'tip' : 'tips'}`);
   return parts.join(', ');
 }
+
+/** What the toolbar shows: the counts, a "No problems" tick, or nothing. */
+export type ProblemBadge = 'counts' | 'clean' | 'none';
+
+/**
+ * Counts whenever something was found. The tick only on a device config
+ * with text in it: code files and plain text get lighter checks, so a tick
+ * there would promise more than was checked.
+ */
+export function problemBadge(problems: readonly ConfigProblem[], language: string, text: string): ProblemBadge {
+  if (problems.length > 0) return 'counts';
+  if (!text.trim()) return 'none';
+  return NETWORK_LANGUAGES.has(language) ? 'clean' : 'none';
+}
