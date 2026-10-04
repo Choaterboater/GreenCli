@@ -49,7 +49,7 @@ const PATTERN_PIPES: &[&str] = &[
 ];
 
 fn show_char(c: char) -> bool {
-    c.is_ascii_alphanumeric() || " \t._/:@,=+|-".contains(c)
+    c.is_ascii_alphanumeric() || " ._/:@,=+|-".contains(c)
 }
 
 /// Allowed in a filter's text only.

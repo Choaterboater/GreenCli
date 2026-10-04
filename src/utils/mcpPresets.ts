@@ -75,10 +75,10 @@ export const PATTERN_PIPES: ReadonlySet<string> = new Set([
 ]);
 
 /** The Read-only Auditor's characters (AUDITOR_CHAR in aiGating.ts), without quotes. */
-const SHOW_CHARS = /^[A-Za-z0-9 \t._/:@,=+|-]*$/;
+const SHOW_CHARS = /^[A-Za-z0-9 ._/:@,=+|-]*$/;
 /** SHOW_CHARS plus ^ $ * ( ) [ ], for a PATTERN_PIPES filter's text only. Never ? (AOS-CX and Junos
  *  show help at once and leave the line half-typed), quotes, backtick, backslash, ; & < >. */
-const PATTERN_CHARS = /^[A-Za-z0-9 \t._/:@,=+|^$*()[\]-]*$/;
+const PATTERN_CHARS = /^[A-Za-z0-9 ._/:@,=+|^$*()[\]-]*$/;
 
 /**
  * The show-only rule for live show commands from AI tools outside GreenCLI, extended from

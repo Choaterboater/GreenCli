@@ -149,7 +149,15 @@
   },
   {
     "command": "show\tversion",
-    "plain": true
+    "plain": false
+  },
+  {
+    "command": "show vl\tan",
+    "plain": false
+  },
+  {
+    "command": "show run | include up\t",
+    "plain": false
   },
   {
     "command": "show  version",
