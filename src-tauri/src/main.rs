@@ -1879,7 +1879,7 @@ fn list_known_hosts(state: State<'_, AppState>) -> Result<Vec<KnownHostEntry>, S
 }
 
 #[tauri::command]
-fn remove_known_host(host_port: String, state: State<'_, AppState>) -> Result<(), String> {
+fn remove_known_host(host_port: String, state: State<'_, AppState>) -> Result<Option<String>, String> {
     let kh = crate::ssh::known_hosts::KnownHosts::new(state.app_dir.join("known_hosts.json"));
     kh.remove(&host_port)
 }
