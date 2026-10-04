@@ -18,6 +18,7 @@ import { resolve } from 'node:path';
 import {
   cancelLiveRequest,
   handleLiveRequest,
+  LIVE_ASK_BY_MS,
   LIVE_BOX_WAIT_MS,
   LIVE_RUN_MAX_MS,
   LIVE_TYPE_BY_MS,
@@ -287,6 +288,10 @@ describe('device_show: time', () => {
     expect(LIVE_BOX_WAIT_MS).toBe(40_000);
     expect(LIVE_TYPE_BY_MS).toBe(45_000);
     expect(LIVE_BOX_WAIT_MS).toBeLessThan(LIVE_TYPE_BY_MS);
+    // A box never stays up past the ask-by mark, which leaves time to start typing.
+    expect(LIVE_ASK_BY_MS).toBe(44_000);
+    expect(LIVE_BOX_WAIT_MS).toBeLessThan(LIVE_ASK_BY_MS);
+    expect(LIVE_ASK_BY_MS).toBeLessThan(LIVE_TYPE_BY_MS);
     // At least 5 s to spare after the latest possible run.
     expect(LIVE_TYPE_BY_MS + LIVE_RUN_MAX_MS + 5_000).toBeLessThanOrEqual(LIVE_WAIT_MS);
   });
@@ -316,18 +321,69 @@ describe('device_show: time', () => {
     });
     const run = handleLiveRequest(show({ tab: 't1' }));
     await vi.waitFor(() => expect(useDialogStore.getState().queue).toHaveLength(1));
-    // The other box stays up past 40 s: the show box is still waiting, not closed.
-    await vi.advanceTimersByTimeAsync(LIVE_BOX_WAIT_MS + 1_000);
+    // The other box stays up 5 s: the show box is still waiting, not closed.
+    await vi.advanceTimersByTimeAsync(5_000);
     expect(useDialogStore.getState().queue.map((d) => d.group)).toEqual(['mcp-live:live-1']);
     await answer('ok');
     expect(otherAnswer).toBe('ok');
     expect(useDialogStore.getState().current?.group).toBe('mcp-live:live-1');
-    await vi.advanceTimersByTimeAsync(LIVE_BOX_WAIT_MS - 1_000);
+    // 40 s from when it showed (45 s from the request) is past the ask-by mark,
+    // so it stays up 38 s here and closes at the ask-by mark instead.
+    await vi.advanceTimersByTimeAsync(LIVE_ASK_BY_MS - 6_000);
     expect(useDialogStore.getState().current?.group).toBe('mcp-live:live-1');
     await vi.advanceTimersByTimeAsync(1_000);
     expect(useDialogStore.getState().current).toBeNull();
     expect(await run).toEqual({ ok: false, error: 'No answer in GreenCLI in time; nothing ran.' });
     expect(captureMock).not.toHaveBeenCalled();
+  });
+
+  it('a box that shows at 30 s closes by the ask-by mark, not 40 s later, and a Yes just before it runs', async () => {
+    vi.useFakeTimers();
+    useDialogStore.getState().enqueue({ id: 'other', type: 'confirm', title: 'Another GreenCLI box', resolve: () => {} });
+    const late = handleLiveRequest(show({ id: 'live-1', tab: 't1' }));
+    await vi.waitFor(() => expect(useDialogStore.getState().queue).toHaveLength(1));
+    await vi.advanceTimersByTimeAsync(30_000);
+    await answer('ok');
+    expect(useDialogStore.getState().current?.group).toBe('mcp-live:live-1');
+    await vi.advanceTimersByTimeAsync(LIVE_ASK_BY_MS - 30_000);
+    expect(useDialogStore.getState().current).toBeNull();
+    expect(await late).toEqual({ ok: false, error: 'No answer in GreenCLI in time; nothing ran.' });
+    expect(captureMock).not.toHaveBeenCalled();
+
+    // Shown at 30 s and answered just before the mark: the line runs.
+    useDialogStore.getState().enqueue({ id: 'other2', type: 'confirm', title: 'Another GreenCLI box', resolve: () => {} });
+    const ok = handleLiveRequest(show({ id: 'live-2', tab: 't1' }));
+    await vi.waitFor(() => expect(useDialogStore.getState().queue).toHaveLength(1));
+    await vi.advanceTimersByTimeAsync(30_000);
+    await answer('ok');
+    await vi.advanceTimersByTimeAsync(LIVE_ASK_BY_MS - 30_000 - 1_500);
+    await answer('once');
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(await ok).toMatchObject({ ok: true });
+    expect(captureMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('a box still waiting behind another box at the ask-by mark never shows, and nothing is typed', async () => {
+    vi.useFakeTimers();
+    let otherAnswer: string | null | undefined;
+    useDialogStore.getState().enqueue({
+      id: 'other',
+      type: 'confirm',
+      title: 'Another GreenCLI box',
+      resolve: (v) => (otherAnswer = v),
+    });
+    const run = handleLiveRequest(show({ tab: 't1' }));
+    await vi.waitFor(() => expect(useDialogStore.getState().queue).toHaveLength(1));
+    await vi.advanceTimersByTimeAsync(46_000);
+    // Dropped from the line before it ever showed; the other box is untouched.
+    expect(useDialogStore.getState().queue).toEqual([]);
+    expect(useDialogStore.getState().current?.id).toBe('other');
+    expect(await run).toEqual({ ok: false, error: 'No answer in GreenCLI in time; nothing ran.' });
+    await answer('ok');
+    expect(otherAnswer).toBe('ok');
+    expect(useDialogStore.getState().current).toBeNull();
+    expect(captureMock).not.toHaveBeenCalled();
+    expect(sent()).toEqual([]);
   });
 
   it('an answer in time stops the box timer', async () => {

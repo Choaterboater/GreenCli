@@ -20,9 +20,10 @@
 //   The box names the caller only as "a program on this computer (pid N)",
 //   and shows the exact line typed (with any | no-more GreenCLI adds).
 // - Time: GreenCLI's channel waits 60 s (LIVE_WAIT). The box closes on its own
-//   40 s after it shows (not while it waits behind another box) as a No, and a
-//   line is never typed after 45 s, so a Yes always has time to run and answer
-//   before the wait ends.
+//   as a No 40 s after it shows (not while it waits behind another box), but
+//   never later than 44 s after the request came in: a box still waiting then
+//   is dropped before it shows. A line is never typed after 45 s, so a Yes
+//   always has time to run and answer before the wait ends.
 // - Turning the switch off forgets every per-device answer, and any request
 //   already handed over, or handed over later until it is back on, is refused
 //   before its box or its line.
@@ -68,6 +69,8 @@ export const LIVE_WAIT_MS = 60_000;
 export const LIVE_BOX_WAIT_MS = 40_000;
 /** A line is never typed later than this after the request came in. */
 export const LIVE_TYPE_BY_MS = 45_000;
+/** No box stays up (or waits to show) past this, counted from the request, so a Yes can still be typed. */
+export const LIVE_ASK_BY_MS = LIVE_TYPE_BY_MS - 1_000;
 /** Paging off and back on (withPagingDisabled's waits). */
 const PAGING_MS = 300 + 150;
 /** backAtPrompt: this many looks, this far apart. */
@@ -287,9 +290,11 @@ function whenShown(group: string, fn: () => void): () => void {
   return stop;
 }
 
-/** The answer, or 'late' when the box closed on its own LIVE_BOX_WAIT_MS after it showed. */
+/** The answer, or 'late' when the box closed on its own: LIVE_BOX_WAIT_MS after it showed, or at
+ *  LIVE_ASK_BY_MS after `started`, whichever comes first (shown or still waiting behind another box). */
 async function ask(
   req: LiveRequest,
+  started: number,
   name: string,
   command: string,
   paging: { disable?: string; restore?: string },
@@ -304,13 +309,16 @@ async function ask(
   const around = parts.length ? ` It also types ${parts.join(' and ')}, and ${pager}.` : ` It also types ${pager}.`;
   const group = boxGroup(req.id);
   let late = false;
+  const closeLate = () => {
+    late = true;
+    cancelDialogs(group);
+  };
   let timer: ReturnType<typeof setTimeout> | undefined;
+  // Past the ask-by mark a Yes could not be typed in time: close the box, or drop it before it shows.
+  const deadline = setTimeout(closeLate, Math.max(0, started + LIVE_ASK_BY_MS - Date.now()));
   // The 40 s counts from when the box shows, not while it waits behind another box.
   const stopWatching = whenShown(group, () => {
-    timer = setTimeout(() => {
-      late = true;
-      cancelDialogs(group);
-    }, LIVE_BOX_WAIT_MS);
+    timer = setTimeout(closeLate, LIVE_BOX_WAIT_MS);
   });
   try {
     const value = await askChoice({
@@ -326,6 +334,7 @@ async function ask(
   } finally {
     stopWatching();
     clearTimeout(timer);
+    clearTimeout(deadline);
   }
 }
 
@@ -351,7 +360,7 @@ async function runShow(req: LiveRequest, started: number): Promise<LiveReply> {
   const approvals = useMcpApprovalStore.getState();
   if (!approvals.isDeviceAllowed(LIVE_SERVER, LIVE_TOOL, name)) {
     const quitKey = session.config.deviceType === 'aruba-aos-s' ? 'Ctrl+C' : 'q';
-    const answer = await ask(req, name, command, pagingCommands(profile), quitKey);
+    const answer = await ask(req, started, name, command, pagingCommands(profile), quitKey);
     if (answer === 'late') return no(BOX_TIMED_OUT);
     if (cancelled.has(req.id)) return no(STOPPED);
     if (!answer) return no(SAID_NO);
