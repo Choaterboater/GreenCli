@@ -114,7 +114,8 @@ export const CONFIG_SNIPPETS: readonly ConfigSnippet[] = [
     languages: CX,
     body:
       'router ospf 1\n    router-id ${router_id}\n    area 0.0.0.0\n' +
-      'interface ${interface}\n    ip ospf 1 area 0.0.0.0\n    ip ospf network point-to-point\n',
+      'interface ${interface}\n    no shutdown\n    routing\n    ip address ${p2p_ip_cidr}\n' +
+      '    ip ospf 1 area 0.0.0.0\n    ip ospf network point-to-point\n',
   },
   {
     label: 'AOS-CX: BGP peer',
@@ -379,7 +380,7 @@ export const CONFIG_SNIPPETS: readonly ConfigSnippet[] = [
     description: 'A WPA2 WLAN with a passphrase.',
     languages: IAP,
     body:
-      'wlan ssid-profile ${ssid}\n    enable\n    essid ${ssid}\n    opmode wpa2-psk-aes\n    wpa-passphrase ${passphrase}\nexit\n' +
+      'wlan ssid-profile ${profile_name}\n    enable\n    essid ${ssid}\n    opmode wpa2-psk-aes\n    wpa-passphrase ${passphrase}\nexit\n' +
       '! Plain Send: finish with commit apply\n',
   },
 ];

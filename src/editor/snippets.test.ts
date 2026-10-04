@@ -3,12 +3,13 @@ import { CONFIG_SNIPPETS, registerSnippetCompletions, snippetMenuGroups, snippet
 import { buildProblems } from '../utils/configProblems';
 import { prepareSendLines } from '../utils/configSafety';
 
+// Monaco's own snippet parser (no DOM needed), so the test reads ${1:\\${name\\}} the way the editor does.
+// @ts-expect-error the deep path ships no types
+import { SnippetParser } from 'monaco-editor/esm/vs/editor/contrib/snippet/browser/snippetParser.js';
+
 /** What the editor holds after inserting a snippet and pressing Esc without filling anything. */
 function insertedUnfilled(monacoSnippet: string): string {
-  return monacoSnippet
-    .replace(/\$0$/, '')
-    .replace(/\$\{\d+:((?:\\.|[^\\}])*)\}/g, '$1')
-    .replace(/\\([\\$}])/g, '$1');
+  return (new SnippetParser().parse(monacoSnippet, true) as { toString(): string }).toString();
 }
 
 describe('toMonacoSnippet', () => {
@@ -167,6 +168,17 @@ describe('the everyday set', () => {
     expect(prepareSendLines(body).some((l) => /^commit\s+apply/i.test(l.text))).toBe(false);
     expect(body).toContain('! Plain Send: finish with commit apply');
     expect(body).toContain('wpa-passphrase ${passphrase}');
+  });
+
+  it('the Instant AP WLAN names its profile apart from the SSID, so an SSID with spaces still works', () => {
+    const body = byPrefix('iap-wlan')!.body;
+    expect(body).toContain('wlan ssid-profile ${profile_name}\n');
+    expect(body).toContain('    essid ${ssid}\n');
+  });
+
+  it('AOS-CX OSPF turns the port on as a routed port with an address first', () => {
+    const body = byPrefix('cx-ospf')!.body;
+    expect(body).toContain('interface ${interface}\n    no shutdown\n    routing\n    ip address ${p2p_ip_cidr}\n    ip ospf 1 area 0.0.0.0\n');
   });
 
   it('commit-keep confirms a commit confirmed; commit-check only checks', () => {

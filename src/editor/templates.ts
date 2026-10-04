@@ -234,9 +234,9 @@ ${JUNOS_END}`,
 
   // ─── Juniper Validated Design starters (Junos): fill the blanks, then check with commit check ───
   {
-    label: 'JVD: EVPN-VXLAN leaf (ERB)',
+    label: 'JVD: EVPN-VXLAN leaf (bridged overlay)',
     language: 'juniper-junos',
-    body: `/* JVD EVPN-VXLAN — leaf (edge-routed bridging). A starter: fill the blanks, then run commit check. */
+    body: `/* JVD EVPN-VXLAN — leaf (bridged overlay: Layer 2 only, the gateway is outside the fabric). A starter: fill the blanks, then run commit check. */
 configure
 set chassis aggregated-devices ethernet device-count 2
 set routing-options router-id \${leaf_lo0}
@@ -258,7 +258,6 @@ set protocols bgp group OVERLAY family evpn signaling
 set protocols bgp group OVERLAY neighbor \${spine_lo0} peer-as \${spine_asn}
 /* EVPN-VXLAN */
 set protocols evpn encapsulation vxlan
-set protocols evpn default-gateway no-gateway-community
 set protocols evpn extended-vni-list all
 set switch-options vtep-source-interface lo0.0
 set switch-options route-distinguisher \${leaf_lo0}:1
