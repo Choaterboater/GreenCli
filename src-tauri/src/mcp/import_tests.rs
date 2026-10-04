@@ -58,6 +58,16 @@ fn fixture_sources(dir: &Path) -> Vec<SourceFile> {
             Shape::VsCodeMcp,
         ),
         source(
+            "Claude Desktop",
+            "claude_desktop_config.json",
+            write(
+                dir,
+                "claude_desktop_config.json",
+                include_str!("testdata/import/claude_desktop_config.json"),
+            ),
+            Shape::McpServers,
+        ),
+        source(
             "~/.mcp.json",
             "~/.mcp.json",
             write(
@@ -198,6 +208,27 @@ fn every_source_shape_parses() {
         docs.def.url.as_deref(),
         Some("https://docs.example.org/mcp")
     );
+    assert!(s.problems.is_empty(), "{:?}", s.problems);
+}
+
+#[test]
+fn claude_desktop_servers_come_in_like_the_others() {
+    let s = fixture_scan(&[]);
+    // Its own server comes in; the rest of the file (preferences...) is ignored.
+    let fs = candidate(&s, "filesystem");
+    assert_eq!(fs.source, "Claude Desktop");
+    assert_eq!(fs.def.command, "npx");
+    assert!(!fs.def.enabled);
+    assert_eq!(fs.def.writes, Some(McpWrites::Off));
+    // The same program and env as ~/.mcp.json's github: comes in once.
+    assert!(!names(&s).contains(&"gh-desktop"));
+    assert!(skipped_with(&s, "gh-desktop", "same server as github"));
+    // A name Casper also uses: Casper wins.
+    assert_eq!(candidate(&s, "central").source, "Casper");
+    assert!(s
+        .skipped
+        .iter()
+        .any(|k| k.name == "central" && k.source == "Claude Desktop"));
     assert!(s.problems.is_empty(), "{:?}", s.problems);
 }
 
@@ -526,8 +557,26 @@ fn default_sources_order_and_caps() {
     let sources = default_sources(home);
     let labels: Vec<&str> = sources.iter().map(|s| s.label).collect();
     let n = labels.len();
-    assert_eq!(&labels[n - 3..], &["~/.mcp.json", "Claude Code", "Casper"]);
-    assert!(labels[..n - 3].iter().all(|l| l.starts_with("VS Code")));
+    assert_eq!(
+        &labels[n - 4..],
+        &["Claude Desktop", "~/.mcp.json", "Claude Code", "Casper"]
+    );
+    assert!(labels[..n - 4].iter().all(|l| l.starts_with("VS Code")));
+    let desktop = &sources[n - 4];
+    assert_eq!(desktop.shape, Shape::McpServers);
+    let folder = if cfg!(target_os = "macos") {
+        home.join("Library")
+            .join("Application Support")
+            .join("Claude")
+    } else if cfg!(windows) {
+        std::env::var_os("APPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join("AppData").join("Roaming"))
+            .join("Claude")
+    } else {
+        home.join(".config").join("Claude")
+    };
+    assert_eq!(desktop.path, folder.join("claude_desktop_config.json"));
     let claude = &sources[n - 2];
     assert_eq!(claude.path, home.join(".claude.json"));
     assert_eq!(claude.max_bytes, 32 * 1024 * 1024);

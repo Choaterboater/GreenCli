@@ -1667,8 +1667,8 @@ async fn mcp_export_pins(state: State<'_, AppState>) -> Result<serde_json::Value
     serde_json::to_value(mgr.export_pins()).map_err(|e| e.to_string())
 }
 
-/// Look for MCP servers set up in Casper, Claude Code, ~/.mcp.json and VS
-/// Code. Fixed files only; they are read off the manager lock, and only names,
+/// Look for MCP servers set up in Casper, Claude Code, ~/.mcp.json, Claude
+/// Desktop and VS Code. Fixed files only; they are read off the manager lock, and only names,
 /// sources and what each runs (secrets hidden) go back to the webview.
 #[tauri::command]
 async fn mcp_import_scan(

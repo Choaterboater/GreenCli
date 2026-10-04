@@ -1,4 +1,5 @@
-// Finds MCP servers set up in Casper, Claude Code, ~/.mcp.json and VS Code,
+// Finds MCP servers set up in Casper, Claude Code, ~/.mcp.json, Claude
+// Desktop and VS Code,
 // so they can be copied into GreenCLI's own list. A port of Casper
 // src/mcp/import.ts, with GreenCLI's rules on top:
 //
@@ -34,7 +35,7 @@ pub const STALE: &str = "The list changed. Open Import again.";
 /// Where a file keeps its servers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Shape {
-    /// {"mcpServers": {...}}: Casper, Claude Code, ~/.mcp.json.
+    /// {"mcpServers": {...}}: Casper, Claude Code, ~/.mcp.json, Claude Desktop.
     McpServers,
     /// VS Code mcp.json: {"servers": {...}}, comments allowed.
     VsCodeMcp,
@@ -52,10 +53,10 @@ pub struct SourceFile {
     pub max_bytes: u64,
 }
 
-/// VS Code's user folders (stable, then Insiders) on this system.
-fn vscode_user_dirs(home: &Path) -> Vec<(PathBuf, bool)> {
-    let editions = [("Code", false), ("Code - Insiders", true)];
-    let base = if cfg!(target_os = "macos") {
+/// Where desktop apps keep their settings on this system: Application
+/// Support on macOS, %APPDATA% on Windows, ~/.config elsewhere.
+fn app_config_dir(home: &Path) -> PathBuf {
+    if cfg!(target_os = "macos") {
         home.join("Library").join("Application Support")
     } else if cfg!(windows) {
         std::env::var_os("APPDATA")
@@ -63,15 +64,21 @@ fn vscode_user_dirs(home: &Path) -> Vec<(PathBuf, bool)> {
             .unwrap_or_else(|| home.join("AppData").join("Roaming"))
     } else {
         home.join(".config")
-    };
+    }
+}
+
+/// VS Code's user folders (stable, then Insiders) on this system.
+fn vscode_user_dirs(home: &Path) -> Vec<(PathBuf, bool)> {
+    let editions = [("Code", false), ("Code - Insiders", true)];
+    let base = app_config_dir(home);
     editions
         .iter()
         .map(|(dir, insiders)| (base.join(dir).join("User"), *insiders))
         .collect()
 }
 
-/// Every file GreenCLI looks in, lowest precedence first: VS Code,
-/// ~/.mcp.json, ~/.claude.json, then ~/.casper/mcp.json. A later file wins
+/// Every file GreenCLI looks in, lowest precedence first: VS Code, Claude
+/// Desktop, ~/.mcp.json, ~/.claude.json, then ~/.casper/mcp.json. A later file wins
 /// when two use the same name. Fixed paths only: nothing comes from the
 /// webview.
 pub fn default_sources(home: &Path) -> Vec<SourceFile> {
@@ -101,6 +108,15 @@ pub fn default_sources(home: &Path) -> Vec<SourceFile> {
             max_bytes: OTHER_MAX_BYTES,
         });
     }
+    sources.push(SourceFile {
+        label: "Claude Desktop",
+        file_label: "claude_desktop_config.json",
+        path: app_config_dir(home)
+            .join("Claude")
+            .join("claude_desktop_config.json"),
+        shape: Shape::McpServers,
+        max_bytes: OTHER_MAX_BYTES,
+    });
     sources.push(SourceFile {
         label: "~/.mcp.json",
         file_label: "~/.mcp.json",
