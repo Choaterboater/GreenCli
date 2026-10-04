@@ -96,9 +96,10 @@ export interface CasperProblem extends ConfigProblem {
   text: string;
 }
 
+/** `warnings`: Casper's safety notes (it changed a device, a secret was in a command, its sandbox was off). */
 export type CasperResult =
-  | { ok: true; problems: CasperProblem[]; usage: string | null; turnLimit: boolean }
-  | { ok: false; usage: string | null; turnLimit: boolean };
+  | { ok: true; problems: CasperProblem[]; usage: string | null; warnings: string[]; turnLimit: boolean }
+  | { ok: false; usage: string | null; warnings: string[]; turnLimit: boolean };
 
 export interface ParseOptions {
   /** The lines that were sent (editor line numbers). */
@@ -150,7 +151,8 @@ export function parseCasperProblems(reply: string, o: ParseOptions): CasperResul
   const notes = notesOf(reply);
   const usage = notes.find((n) => n.startsWith('Casper used ')) ?? null;
   const turnLimit = notes.some((n) => n.startsWith('Casper reached its turn limit'));
-  const none = { ok: false as const, usage, turnLimit };
+  const warnings = notes.filter((n) => !n.startsWith('Casper used ') && !n.startsWith('Casper reached its turn limit'));
+  const none = { ok: false as const, usage, warnings, turnLimit };
 
   const blocks = [...reply.matchAll(JSON_BLOCK)];
   if (!blocks.length) return none;
@@ -189,7 +191,7 @@ export function parseCasperProblems(reply: string, o: ParseOptions): CasperResul
     });
   }
   problems.sort((a, b) => a.lineNumber - b.lineNumber);
-  return { ok: true, problems, usage, turnLimit };
+  return { ok: true, problems, usage, warnings, turnLimit };
 }
 
 /**
@@ -221,13 +223,61 @@ export function currentCasperProblems(
   return out;
 }
 
-/** The editor's status line after a check. */
+/**
+ * Casper's findings moved to where their lines are now: the tab may have been
+ * edited while Casper checked. Lines are matched through the unchanged lines
+ * at the top and bottom of the tab, so an edit above a line moves its finding
+ * with it; a finding whose line was edited or deleted is left out (`left`).
+ */
+export function placeCasperProblems(
+  problems: readonly CasperProblem[],
+  askedLines: readonly string[],
+  nowLines: readonly string[]
+): { placed: CasperProblem[]; left: number } {
+  const most = Math.min(askedLines.length, nowLines.length);
+  let top = 0;
+  while (top < most && askedLines[top] === nowLines[top]) top++;
+  let bottom = 0;
+  while (bottom < most - top && askedLines[askedLines.length - 1 - bottom] === nowLines[nowLines.length - 1 - bottom]) bottom++;
+  const shift = nowLines.length - askedLines.length;
+  const placed: CasperProblem[] = [];
+  for (const p of problems) {
+    const line =
+      p.lineNumber <= top ? p.lineNumber : p.lineNumber > askedLines.length - bottom ? p.lineNumber + shift : null;
+    if (line && nowLines[line - 1] === p.text) placed.push(line === p.lineNumber ? p : { ...p, lineNumber: line });
+  }
+  return { placed, left: problems.length - placed.length };
+}
+
+/** The editor's status line. `usage` (what it cost) is shown on its own so it is never cut off. */
+export interface CasperStatus {
+  head: string;
+  usage: string | null;
+  /** Casper sent a safety note: the line is shown as a warning. */
+  warning: boolean;
+}
+
+const USAGE_SENTENCE = /\s*(Casper used [^\n]*?\.)\s*$/;
+
+/** A run that failed: the error, with what it cost (if Casper said) kept apart. */
+export function casperErrorStatus(message: string): CasperStatus {
+  const m = USAGE_SENTENCE.exec(message);
+  if (!m) return { head: message.trim(), usage: null, warning: false };
+  return { head: message.slice(0, m.index).trim(), usage: m[1], warning: false };
+}
+
+/** The editor's status line after a check. `left`: findings left out because their lines changed. */
 export function casperCheckStatus(
-  result: { ok: true; problems: ReadonlyArray<{ severity: ProblemSeverity }>; usage: string | null; turnLimit: boolean } | { ok: false; usage: string | null; turnLimit: boolean }
-): string {
+  result:
+    | { ok: true; problems: ReadonlyArray<{ severity: ProblemSeverity }>; usage: string | null; warnings: readonly string[]; turnLimit: boolean }
+    | { ok: false; usage: string | null; warnings: readonly string[]; turnLimit: boolean },
+  left = 0
+): CasperStatus {
   let head: string;
   if (!result.ok) {
     head = result.turnLimit ? 'Casper ran out of turns before it finished. Ask again.' : "Casper didn't send a list of mistakes. Ask again.";
+  } else if (!result.problems.length && left) {
+    head = `${left} ${left === 1 ? 'finding' : 'findings'} left out: ${left === 1 ? 'its line' : 'their lines'} changed while Casper checked. Ask again.`;
   } else if (!result.problems.length) {
     head = result.turnLimit ? 'Casper ran out of turns before it finished. Ask again.' : 'Casper found no mistakes.';
   } else {
@@ -243,6 +293,8 @@ export function casperCheckStatus(
       .filter(([n]) => n > 0)
       .map(([n, one, many]) => `${n} ${n === 1 ? one : many}`);
     head = `Casper marked ${parts.join(', ')}.`;
+    if (left) head += ` ${left} more left out: ${left === 1 ? 'its line' : 'their lines'} changed while Casper checked.`;
   }
-  return result.usage ? `${head} ${result.usage}` : head;
+  if (result.warnings.length) head = `${head} ${result.warnings.join(' ')}`;
+  return { head, usage: result.usage, warning: result.warnings.length > 0 };
 }

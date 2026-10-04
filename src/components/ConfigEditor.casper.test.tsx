@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act, within } from '@testing-library/react';
 import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
 import ConfigEditor from './ConfigEditor';
@@ -10,7 +10,13 @@ import { cancelActiveAiStreams } from '../utils/aiRuns';
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn().mockResolvedValue(() => undefined) }));
-vi.mock('@monaco-editor/react', () => ({ default: () => null, DiffEditor: () => null }));
+// A plain text box stands in for Monaco, so a test can edit the tab.
+vi.mock('@monaco-editor/react', () => ({
+  default: (p: { value?: string; onChange?: (v: string) => void }) => (
+    <textarea aria-label="Editor text" value={p.value ?? ''} onChange={(e) => p.onChange?.(e.target.value)} />
+  ),
+  DiffEditor: () => null,
+}));
 vi.mock('../editor/setup', () => ({ setupMonaco: vi.fn() }));
 // jsdom can't run the secret filter; the real one is tested on its own.
 vi.mock('../utils/secrets/forCopy', () => ({
@@ -57,6 +63,12 @@ async function markWithCasper() {
 }
 
 const casperLine = () => screen.getByRole('status', { name: 'Casper' });
+/** What the check cost, shown on its own so it is never cut off. */
+const costLine = () => within(casperLine()).getByText(/^Casper used /);
+const problemsText = () => {
+  if (!screen.queryByRole('region', { name: 'Problems' })) fireEvent.click(screen.getByRole('button', { name: /^Problems: / }));
+  return screen.getByRole('region', { name: 'Problems' }).textContent ?? '';
+};
 const cancels = () => mockInvoke.mock.calls.filter(([cmd]) => cmd === 'ai_cancel_stream').map(([, a]) => (a as { streamId: string }).streamId);
 
 describe('ConfigEditor: Mark mistakes with Casper', () => {
@@ -100,7 +112,10 @@ describe('ConfigEditor: Mark mistakes with Casper', () => {
     await act(async () => {
       run.resolve(reply([{ line: 4, severity: 'warning', message: 'VLAN 30 is not in this tab.' }, { line: 40, severity: 'error', message: 'No such line.' }]));
     });
-    expect(casperLine().textContent).toContain('Casper marked 1 warning. Casper used 4,210 tokens (about $0.02).');
+    expect(casperLine().textContent).toContain('Casper marked 1 warning.');
+    expect(costLine().textContent).toBe('Casper used 4,210 tokens (about $0.02).');
+    expect(costLine().className).toMatch(/whitespace-nowrap/);
+    expect(costLine().className).not.toMatch(/truncate/);
     expect(screen.queryByRole('button', { name: 'Stop Casper' })).toBeNull();
 
     fireEvent.click(screen.getByRole('button', { name: /^Problems: / }));
@@ -151,7 +166,8 @@ describe('ConfigEditor: Mark mistakes with Casper', () => {
     await act(async () => {
       second.resolve(reply([]));
     });
-    expect(casperLine().textContent).toContain('Casper found no mistakes. Casper used 4,210 tokens (about $0.02).');
+    expect(casperLine().textContent).toContain('Casper found no mistakes.');
+    expect(costLine().textContent).toBe('Casper used 4,210 tokens (about $0.02).');
   });
 
   it('says so plainly when Casper is missing or answers without a list', async () => {
@@ -166,7 +182,81 @@ describe('ConfigEditor: Mark mistakes with Casper', () => {
     await act(async () => {
       run.resolve('Everything looks fine! Run `write memory` now.' + USAGE);
     });
-    expect(casperLine().textContent).toContain("Casper didn't send a list of mistakes. Ask again. Casper used 4,210 tokens (about $0.02).");
+    expect(casperLine().textContent).toContain("Casper didn't send a list of mistakes. Ask again.");
+    expect(costLine().textContent).toBe('Casper used 4,210 tokens (about $0.02).');
+  });
+
+  it('says what a run cost even when it ends without an answer', async () => {
+    await openTab();
+    const run = await markWithCasper();
+    await act(async () => {
+      run.reject('Casper stopped before it finished: Incomplete\n\nCasper used 9,000 tokens (about $0.12).');
+    });
+    expect(casperLine().textContent).toContain('Casper stopped before it finished: Incomplete');
+    expect(costLine().textContent).toBe('Casper used 9,000 tokens (about $0.12).');
+  });
+
+  it("shows Casper's safety notes (a changed device, a secret in a command) in the editor", async () => {
+    await openTab();
+    const run = await markWithCasper();
+    await act(async () => {
+      run.resolve(
+        reply(
+          [{ line: 4, severity: 'warning', message: 'VLAN 30 is not in this tab.' }],
+          '\n\n---\n*Casper changed things on sw1.*\n\n*A secret showed up in a command Casper ran. Change that secret.*' + USAGE.replace('\n\n---\n', '\n\n')
+        )
+      );
+    });
+    const status = casperLine().textContent ?? '';
+    expect(status).toContain('Casper marked 1 warning.');
+    expect(status).toContain('Casper changed things on sw1.');
+    expect(status).toContain('A secret showed up in a command Casper ran. Change that secret.');
+    expect(costLine().textContent).toBe('Casper used 4,210 tokens (about $0.02).');
+  });
+
+  it('puts a mark on the line it was about when the tab is edited while Casper checks', async () => {
+    await openTab();
+    const run = await markWithCasper();
+    // Two lines pasted on top during the run: "    vlan access 30" moves from line 4 to 6.
+    fireEvent.change(screen.getByLabelText('Editor text'), { target: { value: `interface 1/1/1\n    vlan access 30\n${CONFIG}` } });
+    await act(async () => {
+      run.resolve(
+        reply([
+          { line: 4, severity: 'warning', message: 'VLAN 30 is not in this tab.' },
+          { line: 2, severity: 'tip', message: 'Name it after the floor.' },
+        ])
+      );
+    });
+    const panel = problemsText();
+    expect(panel).toContain('Casper: VLAN 30 is not in this tab.');
+    expect(screen.getByTitle('Go to line 6').textContent).toContain('VLAN 30 is not in this tab.');
+    expect(screen.queryByTitle('Go to line 4')?.textContent ?? '').not.toContain('VLAN 30');
+    expect(panel).toContain('Name it after the floor.');
+    expect(screen.getByTitle('Go to line 4').textContent).toContain('Name it after the floor.');
+  });
+
+  it('leaves out marks whose lines were changed while Casper checked, and says so', async () => {
+    await openTab();
+    const run = await markWithCasper();
+    fireEvent.change(screen.getByLabelText('Editor text'), { target: { value: CONFIG.replace('vlan access 30', 'vlan access 10') } });
+    await act(async () => {
+      run.resolve(reply([{ line: 4, severity: 'warning', message: 'VLAN 30 is not in this tab.' }]));
+    });
+    expect(casperLine().textContent).toContain('1 finding left out: its line changed while Casper checked. Ask again.');
+    expect(problemsText()).not.toContain('VLAN 30 is not in this tab.');
+  });
+
+  it('offers "Fix the problems found" only for problems GreenCLI found, not for Casper\'s marks', async () => {
+    await openTab();
+    const before = askMenuItems().map((b) => b.textContent ?? '');
+    fireEvent.keyDown(document, { key: 'Escape' });
+    const run = await markWithCasper();
+    await act(async () => {
+      run.resolve(reply([{ line: 1, severity: 'error', message: 'Casper thinks this is wrong.' }]));
+    });
+    expect(casperLine().textContent).toContain('Casper marked 1 error.');
+    const after = askMenuItems().map((b) => b.textContent ?? '');
+    expect(after.some((l) => l.startsWith('Fix the problems found'))).toBe(before.some((l) => l.startsWith('Fix the problems found')));
   });
 
   it("never puts Casper's findings in the Send confirmation", async () => {

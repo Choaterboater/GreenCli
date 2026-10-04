@@ -68,10 +68,13 @@ import {
   buildCasperCheckPrompt,
   casperCheckArgs,
   casperCheckStatus,
+  casperErrorStatus,
   currentCasperProblems,
   parseCasperProblems,
+  placeCasperProblems,
   promptTooBig,
   type CasperProblem,
+  type CasperStatus,
 } from '../utils/casperCheck';
 import { runStoppable } from '../utils/aiRuns';
 import { plainCliError } from '../utils/cliPrompt';
@@ -503,7 +506,7 @@ export default function ConfigEditor() {
     bufferId: string;
     running: boolean;
     problems: CasperProblem[];
-    status: string;
+    status: CasperStatus;
   } | null>(null);
   const casperRunRef = useRef<string | null>(null);
   const casperCheckBufferRef = useRef<string | null>(null);
@@ -1530,7 +1533,7 @@ export default function ConfigEditor() {
     const bufferId = active.id;
     const { casperCommand, sessionLogDir } = useSettingsStore.getState();
     let runId = '';
-    const finish = (problems: CasperProblem[], status: string) => {
+    const finish = (problems: CasperProblem[], status: CasperStatus) => {
       if (casperRunRef.current !== runId) return;
       casperRunRef.current = null;
       const monaco = monacoRef.current;
@@ -1547,17 +1550,29 @@ export default function ConfigEditor() {
       }
       setCasperCheck({ bufferId, running: false, problems, status });
     };
+    // The tab as it is now: it may have been edited while Casper checked.
+    const linesNow = () => {
+      const model = modelForBuffer(bufferId);
+      if (model && !model.isDisposed()) return model.getLinesContent();
+      return (buffersRef.current.find((b) => b.id === bufferId)?.content ?? '').split('\n');
+    };
     try {
       const reply = await runStoppable((id) => {
         runId = id;
         casperRunRef.current = id;
-        setCasperCheck({ bufferId, running: true, problems: [], status: 'Casper is checking…' });
+        setCasperCheck({ bufferId, running: true, problems: [], status: { head: 'Casper is checking…', usage: null, warning: false } });
         return invoke<string>('ai_cli', casperCheckArgs({ command: casperCommand, prompt, runId: id, logFolder: sessionLogDir }));
       });
       const result = parseCasperProblems(reply, { span: asked, lines, known });
-      finish(result.ok ? result.problems : [], casperCheckStatus(result));
+      if (!result.ok) {
+        finish([], casperCheckStatus(result));
+        return;
+      }
+      // Findings are numbered by the lines Casper was sent; move each to where its line is now.
+      const { placed, left } = placeCasperProblems(result.problems, lines, linesNow());
+      finish(placed, casperCheckStatus({ ...result, problems: placed }, left));
     } catch (e) {
-      finish([], plainCliError(e));
+      finish([], casperErrorStatus(plainCliError(e)));
     }
   };
 
@@ -1566,7 +1581,7 @@ export default function ConfigEditor() {
     const runId = casperRunRef.current;
     casperRunRef.current = null;
     if (runId) invoke('ai_cancel_stream', { streamId: runId }).catch(() => {});
-    setCasperCheck((c) => (c ? { ...c, running: false, status: 'Stopped.' } : c));
+    setCasperCheck((c) => (c ? { ...c, running: false, status: { head: 'Stopped.', usage: null, warning: false } } : c));
   };
 
   // After each render, like saveFileRef: the right-click items reach the latest handlers.
@@ -2124,7 +2139,7 @@ export default function ConfigEditor() {
                 ? `About ${selection.start === selection.end ? `line ${selection.start}` : `lines ${selection.start}–${selection.end}`}. Secrets are hidden first.`
                 : 'About the whole tab (select lines to narrow it). Secrets are hidden first.'}
             </p>
-            {askMenu(language, problemCounts.error + problemCounts.warning > 0).map((item) => (
+            {askMenu(language, problems.some((p) => p.source !== 'Casper' && p.severity !== 'info')).map((item) => (
               <button
                 key={item.kind}
                 role="menuitem"
@@ -2198,9 +2213,14 @@ export default function ConfigEditor() {
         {casperCheck && casperCheck.bufferId === active.id && (
           <span role="status" aria-label="Casper" className="flex items-center gap-1 min-w-0 mr-1 text-[10px] text-[var(--text-secondary)]">
             {casperCheck.running && <RefreshCw size={10} className="animate-spin flex-shrink-0" />}
-            <span className="truncate max-w-[28rem]" title={casperCheck.status}>
-              {casperCheck.status}
+            <span
+              className={`truncate max-w-[28rem] ${casperCheck.status.warning ? 'text-[var(--accent-warning)]' : ''}`}
+              title={[casperCheck.status.head, casperCheck.status.usage].filter(Boolean).join(' ')}
+            >
+              {casperCheck.status.head}
             </span>
+            {/* What it cost sits apart, so the cut-off never hides it. */}
+            {casperCheck.status.usage && <span className="flex-shrink-0 whitespace-nowrap">{casperCheck.status.usage}</span>}
             {casperCheck.running ? (
               <button
                 onClick={stopCasper}

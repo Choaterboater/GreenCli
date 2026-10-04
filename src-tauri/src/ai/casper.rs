@@ -1474,7 +1474,7 @@ pub fn casper_reply(
         "it stopped with an error".to_string()
     };
     let receipt = out.receipt.as_ref();
-    match code {
+    let reply = match code {
         Some(0) => match answer {
             Some(a) => Ok(with_notes(a, notes(0, receipt, picked), receipt)),
             None => Err("Casper finished without an answer.".to_string()),
@@ -1504,7 +1504,14 @@ pub fn casper_reply(
         Some(64) => Err(format!("Casper didn't accept the options GreenCLI sent: {hint}. Check the Casper command in Settings → AI & MCP.")),
         Some(130 | 143) | None => Err("Casper was stopped before it answered.".to_string()),
         Some(n) => Err(format!("Casper failed (exit {n}): {reason}")),
-    }
+    };
+    // A run that ends without an answer still says what it cost.
+    reply.map_err(
+        |e| match receipt.and_then(|r| usage_note(r.usage_tokens, r.usage_cost)) {
+            Some(n) => format!("{e}\n\n{n}"),
+            None => e,
+        },
+    )
 }
 
 #[cfg(test)]
@@ -2843,5 +2850,27 @@ mod tests {
                 "{code}: {ok}"
             );
         }
+    }
+
+    #[test]
+    fn reply_without_an_answer_still_says_what_it_cost() {
+        // Casper spent tokens but wrote no answer: the error says what it cost.
+        for code in [0, 1, 2, 3, 5] {
+            let mut r = receipt("• Incomplete");
+            r.usage_tokens = Some(9000);
+            r.usage_cost = Some(0.12);
+            let out = output(None, &[], Some(r));
+            let err = casper_reply(RunEnd::Exited(Some(code)), &out, "", None).unwrap_err();
+            assert!(
+                err.ends_with("\n\nCasper used 9,000 tokens (about $0.12)."),
+                "{code}: {err}"
+            );
+        }
+        // No usage in the receipt: the error is unchanged.
+        let out = output(None, &[], Some(receipt("• Incomplete")));
+        assert_eq!(
+            casper_reply(RunEnd::Exited(Some(2)), &out, "", None).unwrap_err(),
+            "Casper stopped before it finished: Incomplete"
+        );
     }
 }

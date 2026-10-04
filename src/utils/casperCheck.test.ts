@@ -4,8 +4,10 @@ import {
   buildCasperCheckPrompt,
   casperCheckArgs,
   casperCheckStatus,
+  casperErrorStatus,
   currentCasperProblems,
   parseCasperProblems,
+  placeCasperProblems,
   promptTooBig,
   type CasperProblem,
 } from './casperCheck';
@@ -141,6 +143,16 @@ describe('parseCasperProblems', () => {
     expect(result.ok && result.problems).toHaveLength(1);
     expect(result.usage).toBe('Casper used 4,210 tokens (about $0.02).');
     expect(result.turnLimit).toBe(true);
+  });
+
+  it("keeps Casper's safety notes (changed devices, a secret in a command) apart from what it cost", () => {
+    const reply =
+      block('{"problems":[]}') +
+      '\n\n---\n*Casper changed things on sw1.*\n\n*A secret showed up in a command Casper ran. Change that secret.*\n\n*Casper used 4,210 tokens (about $0.02).*';
+    const result = parseCasperProblems(reply, opts);
+    expect(result.warnings).toEqual(['Casper changed things on sw1.', 'A secret showed up in a command Casper ran. Change that secret.']);
+    expect(result.usage).toBe('Casper used 4,210 tokens (about $0.02).');
+    expect(parseCasperProblems('No list.' + reply.slice(reply.indexOf('\n\n---\n')), opts)).toMatchObject({ ok: false, warnings: result.warnings });
   });
 
   it('gives no list (never throws) for a missing block or malformed JSON', () => {
@@ -295,23 +307,97 @@ describe('currentCasperProblems', () => {
   });
 });
 
+describe('placeCasperProblems', () => {
+  const found: CasperProblem[] = [
+    { lineNumber: 5, startColumn: 5, endColumn: 19, severity: 'error', message: 'VLAN 30 does not exist.', code: 'casper', source: 'Casper', text: '    vlan access 30' },
+    { lineNumber: 7, startColumn: 1, endColumn: 5, severity: 'warning', message: 'exit here closes the port.', code: 'casper', source: 'Casper', text: 'exit' },
+  ];
+
+  it('keeps every finding where it was when the tab did not change', () => {
+    expect(placeCasperProblems(found, LINES, LINES)).toEqual({ placed: found, left: 0 });
+  });
+
+  it('follows lines pushed down by an edit made while Casper checked, never onto a repeated line', () => {
+    const asked = ['interface 1/1/1', 'exit', 'interface 1/1/2', 'exit'];
+    const onSecondExit: CasperProblem[] = [
+      { lineNumber: 4, startColumn: 1, endColumn: 5, severity: 'warning', message: 'Port 1/1/2 has no VLAN.', code: 'casper', source: 'Casper', text: 'exit' },
+    ];
+    // Two lines pasted on top during the run: old line 4 now reads "exit"
+    // too, but it closes interface 1/1/1. The finding belongs on line 6.
+    const now = ['interface 1/1/0', 'exit', ...asked];
+    expect(now[3]).toBe('exit');
+    const { placed, left } = placeCasperProblems(onSecondExit, asked, now);
+    expect(placed.map((p) => p.lineNumber)).toEqual([6]);
+    expect(left).toBe(0);
+  });
+
+  it('keeps lines above the edit, and leaves out findings on lines that changed', () => {
+    const now = LINES.map((l, i) => (i === 4 ? '    vlan access 10' : l));
+    const { placed, left } = placeCasperProblems(found, LINES, now);
+    expect(placed.map((p) => p.lineNumber)).toEqual([7]);
+    expect(left).toBe(1);
+  });
+
+  it('leaves out a finding whose line was deleted', () => {
+    const { placed, left } = placeCasperProblems(found, LINES, LINES.slice(0, 6));
+    expect(placed.map((p) => p.lineNumber)).toEqual([5]);
+    expect(left).toBe(1);
+  });
+});
+
 describe('casperCheckStatus', () => {
   const p = (severity: 'error' | 'warning' | 'info') => ({ severity });
+  const ok = (problems: Array<{ severity: 'error' | 'warning' | 'info' }>, usage: string | null, more: { warnings?: string[]; turnLimit?: boolean } = {}) => ({
+    ok: true as const,
+    problems,
+    usage,
+    warnings: more.warnings ?? [],
+    turnLimit: more.turnLimit ?? false,
+  });
 
-  it('counts what Casper marked and adds what it cost', () => {
-    expect(casperCheckStatus({ ok: true, problems: [p('warning'), p('warning'), p('info')], usage: 'Casper used 4,210 tokens (about $0.02).', turnLimit: false })).toBe(
-      'Casper marked 2 warnings, 1 tip. Casper used 4,210 tokens (about $0.02).'
-    );
-    expect(casperCheckStatus({ ok: true, problems: [p('error')], usage: null, turnLimit: false })).toBe('Casper marked 1 error.');
-    expect(casperCheckStatus({ ok: true, problems: [], usage: 'Casper used 900 tokens.', turnLimit: false })).toBe(
-      'Casper found no mistakes. Casper used 900 tokens.'
-    );
+  it('counts what Casper marked, and keeps what it cost apart so it is never cut off', () => {
+    expect(casperCheckStatus(ok([p('warning'), p('warning'), p('info')], 'Casper used 4,210 tokens (about $0.02).'))).toEqual({
+      head: 'Casper marked 2 warnings, 1 tip.',
+      usage: 'Casper used 4,210 tokens (about $0.02).',
+      warning: false,
+    });
+    expect(casperCheckStatus(ok([p('error')], null))).toEqual({ head: 'Casper marked 1 error.', usage: null, warning: false });
+    expect(casperCheckStatus(ok([], 'Casper used 900 tokens.')).head).toBe('Casper found no mistakes.');
   });
 
   it('says plainly when nothing usable came back, or turns ran out', () => {
-    expect(casperCheckStatus({ ok: false, usage: null, turnLimit: false })).toBe("Casper didn't send a list of mistakes. Ask again.");
-    expect(casperCheckStatus({ ok: false, usage: 'Casper used 9 tokens.', turnLimit: true })).toBe(
-      'Casper ran out of turns before it finished. Ask again. Casper used 9 tokens.'
+    expect(casperCheckStatus({ ok: false, usage: null, warnings: [], turnLimit: false }).head).toBe("Casper didn't send a list of mistakes. Ask again.");
+    expect(casperCheckStatus({ ok: false, usage: 'Casper used 9 tokens.', warnings: [], turnLimit: true })).toEqual({
+      head: 'Casper ran out of turns before it finished. Ask again.',
+      usage: 'Casper used 9 tokens.',
+      warning: false,
+    });
+  });
+
+  it("shows Casper's safety notes on every path, as a warning", () => {
+    const warnings = ['Casper changed things on sw1.', 'A secret showed up in a command Casper ran. Change that secret.'];
+    for (const result of [ok([p('warning')], 'Casper used 9 tokens.', { warnings }), { ok: false as const, usage: null, warnings, turnLimit: false }]) {
+      const status = casperCheckStatus(result);
+      expect(status.head).toContain('Casper changed things on sw1. A secret showed up in a command Casper ran. Change that secret.');
+      expect(status.warning).toBe(true);
+    }
+  });
+
+  it('says how many findings were left out because their lines changed during the check', () => {
+    expect(casperCheckStatus(ok([p('error')], null), 2).head).toBe(
+      'Casper marked 1 error. 2 more left out: their lines changed while Casper checked.'
     );
+    expect(casperCheckStatus(ok([], null), 1).head).toBe('1 finding left out: its line changed while Casper checked. Ask again.');
+  });
+});
+
+describe('casperErrorStatus', () => {
+  it('keeps what a run without an answer cost apart from the error', () => {
+    expect(casperErrorStatus('Casper stopped before it finished: Incomplete\n\nCasper used 9,000 tokens (about $0.12).')).toEqual({
+      head: 'Casper stopped before it finished: Incomplete',
+      usage: 'Casper used 9,000 tokens (about $0.12).',
+      warning: false,
+    });
+    expect(casperErrorStatus("Casper isn't installed.")).toEqual({ head: "Casper isn't installed.", usage: null, warning: false });
   });
 });
