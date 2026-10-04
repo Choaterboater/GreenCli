@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isTextEntry } from './textEntry';
+import { inPopup, isTextEntry } from './textEntry';
 
 describe('isTextEntry', () => {
   it('knows text fields', () => {
@@ -29,5 +29,25 @@ describe('isTextEntry', () => {
     expect(isTextEntry(document.createElement('div'))).toBe(false);
     expect(isTextEntry(null)).toBe(false);
     expect(isTextEntry(window)).toBe(false);
+  });
+});
+
+describe('inPopup', () => {
+  it('keeps keys inside a dialog or an open menu away from the terminal', () => {
+    const menu = document.createElement('div');
+    menu.setAttribute('role', 'menu');
+    const item = document.createElement('button');
+    menu.appendChild(item);
+    const dialog = document.createElement('div');
+    dialog.setAttribute('aria-modal', 'true');
+    const ok = document.createElement('button');
+    dialog.appendChild(ok);
+    document.body.append(menu, dialog);
+    expect(inPopup(item)).toBe(true);
+    expect(inPopup(ok)).toBe(true);
+    expect(inPopup(document.createElement('button'))).toBe(false);
+    expect(inPopup(null)).toBe(false);
+    menu.remove();
+    dialog.remove();
   });
 });

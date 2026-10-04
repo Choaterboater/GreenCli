@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback, useMemo, useDeferredValue } from 'react';
 import Editor, { DiffEditor, OnMount } from '@monaco-editor/react';
 import ConfigArchive from './ConfigArchive';
+import ToolbarMenu from './ToolbarMenu';
 import ProblemsPanel from './ProblemsPanel';
 import FolderPane from './FolderPane';
 import EditorStatusBar from './EditorStatusBar';
@@ -524,6 +525,8 @@ const SEND_MARK_COLOR: Record<SendMarkState, string> = {
 
 // ─── Component ───
 
+type ToolbarMenuId = 'lang' | 'templates' | 'snippets' | 'pull' | 'compare' | 'ask' | 'send';
+
 export default function ConfigEditor() {
   // Narrow per-field selectors — whole-store subscriptions re-rendered the
   // editor (and re-created its callbacks) on every unrelated store change.
@@ -620,12 +623,23 @@ export default function ConfigEditor() {
       danger: true,
     }));
 
-  const [showTemplates, setShowTemplates] = useState(false);
-  const [showSnippets, setShowSnippets] = useState(false);
-  const [showLangPicker, setShowLangPicker] = useState(false);
-  const [showPullMenu, setShowPullMenu] = useState(false);
+  // The toolbar's dropdown menus: one open at a time. They are drawn outside
+  // the panel (ToolbarMenu), so they close when the editor hides.
+  const [openMenu, setOpenMenu] = useState<ToolbarMenuId | null>(null);
+  const toggleMenu = (id: ToolbarMenuId) => setOpenMenu((open) => (open === id ? null : id));
+  const closeMenu = useCallback(() => setOpenMenu(null), []);
+  const menuShown = (id: ToolbarMenuId) => openMenu === id && showConfigEditor;
+  useEffect(() => {
+    if (!showConfigEditor) setOpenMenu(null);
+  }, [showConfigEditor]);
+  const langButtonRef = useRef<HTMLButtonElement>(null);
+  const templatesButtonRef = useRef<HTMLButtonElement>(null);
+  const snippetsButtonRef = useRef<HTMLButtonElement>(null);
+  const pullButtonRef = useRef<HTMLButtonElement>(null);
+  const compareButtonRef = useRef<HTMLButtonElement>(null);
+  const askButtonRef = useRef<HTMLButtonElement>(null);
+  const sendButtonRef = useRef<HTMLButtonElement>(null);
   const [showProblems, setShowProblems] = useState(false);
-  const [showCompareMenu, setShowCompareMenu] = useState(false);
   const [langSearch, setLangSearch] = useState('');
 
   const [sending, setSending] = useState(false);
@@ -686,8 +700,6 @@ export default function ConfigEditor() {
   const [sendProgress, setSendProgress] = useState<{ sent: number; total: number } | null>(null);
   // The whole lines the editor selection covers (Send selected lines, Ask AI).
   const [selection, setSelection] = useState<LineSpan | null>(null);
-  const [showSendMenu, setShowSendMenu] = useState(false);
-  const [showAskMenu, setShowAskMenu] = useState(false);
   // Config archive panel (NW-16): store-lifted so Tools / palette can open it.
   const showArchive = useSessionStore((s) => s.showArchive);
   const setShowArchive = useSessionStore((s) => s.setShowArchive);
@@ -1116,7 +1128,7 @@ export default function ConfigEditor() {
   // blanks become Tab stops (Tab to the next, Esc when done), like typing its prefix.
   const insertSnippet = useCallback((label: string) => {
     const snippet = CONFIG_SNIPPETS.find((item) => item.label === label);
-    setShowSnippets(false);
+    setOpenMenu(null);
     if (!snippet) return;
     const editor = editorRef.current;
     if (!editor || !editor.getModel()) {
@@ -1241,7 +1253,7 @@ export default function ConfigEditor() {
 
   // Diff the editor against a running-config pulled earlier (kept per device).
   const compareWithPulled = useCallback((device: string) => {
-    setShowCompareMenu(false);
+    setOpenMenu(null);
     const baseline = baselinesRef.current.get(device);
     if (!baseline) return;
     setDiffOriginal(baseline.text);
@@ -1252,7 +1264,7 @@ export default function ConfigEditor() {
 
   // Open a baseline file and diff it against the current editor content.
   const openDiffAgainst = useCallback(async () => {
-    setShowCompareMenu(false);
+    setOpenMenu(null);
     try {
       let text: string | null = null;
       let name = '';
@@ -1552,7 +1564,7 @@ export default function ConfigEditor() {
    *  first (nothing goes if that can't run); the editor keeps the real lines
    *  so an answer can come back as a diff to review. */
   const askAi = async (kind: AskKind) => {
-    setShowAskMenu(false);
+    setOpenMenu(null);
     const span = selectedLines(editorRef.current?.getSelection());
     const text = span ? spanText(content, span) : content;
     if (!text.trim()) {
@@ -1652,7 +1664,7 @@ export default function ConfigEditor() {
   };
 
   const loadTemplate = async (name: string) => {
-    setShowTemplates(false);
+    setOpenMenu(null);
     const buf = {
       name,
       content: TEMPLATES[name],
@@ -1902,48 +1914,47 @@ export default function ConfigEditor() {
         {/* Language picker */}
         <div className="relative">
           <button
-            onClick={() => { setShowLangPicker(!showLangPicker); setLangSearch(''); setShowTemplates(false); setShowSnippets(false); setShowPullMenu(false); }}
+            ref={langButtonRef}
+            onClick={() => { toggleMenu('lang'); setLangSearch(''); }}
             className="flex items-center gap-1.5 px-2 py-1 text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] rounded transition-colors"
             title="Change language mode"
+            aria-haspopup="menu"
+            aria-expanded={menuShown('lang')}
           >
             <Code2 size={12} />
             <span className="max-w-[80px] truncate">{currentLangLabel}</span>
             <ChevronDown size={10} />
           </button>
-          {showLangPicker && (
-            <>
-              <div className="fixed inset-0 z-20" onClick={() => setShowLangPicker(false)} />
-              <div className="absolute top-full left-0 mt-1 z-30 w-48 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg shadow-xl flex flex-col">
-                <div className="p-1.5 border-b border-[var(--bg-tertiary)]">
-                  <input
-                    autoFocus
-                    value={langSearch}
-                    onChange={(e) => setLangSearch(e.target.value)}
-                    placeholder="Filter…"
-                    className="w-full text-xs bg-[var(--bg-primary)] border border-[var(--border)] rounded px-2 py-1 text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)]"
-                  />
-                </div>
-                <div className="overflow-y-auto max-h-56 py-1">
-                  {filteredLangs.map((l) => (
-                    <button
-                      key={l.id}
-                      onClick={() => { patchActive({ language: l.id, langExplicit: true }); setShowLangPicker(false); }}
-                      className={`flex items-center w-full px-3 py-1.5 text-xs text-left transition-colors ${
-                        language === l.id
-                          ? 'text-[var(--accent)] bg-[var(--accent-soft)]'
-                          : 'text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
-                      }`}
-                    >
-                      {l.label}
-                    </button>
-                  ))}
-                  {filteredLangs.length === 0 && (
-                    <p className="px-3 py-2 text-xs text-[var(--text-muted)]">No match</p>
-                  )}
-                </div>
-              </div>
-            </>
-          )}
+          <ToolbarMenu open={menuShown('lang')} anchorRef={langButtonRef} onClose={closeMenu} label="Language" className="w-48 flex flex-col">
+            <div className="p-1.5 border-b border-[var(--bg-tertiary)]">
+              <input
+                autoFocus
+                value={langSearch}
+                onChange={(e) => setLangSearch(e.target.value)}
+                placeholder="Filter…"
+                className="w-full text-xs bg-[var(--bg-primary)] border border-[var(--border)] rounded px-2 py-1 text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)]"
+              />
+            </div>
+            <div className="overflow-y-auto max-h-56 py-1">
+              {filteredLangs.map((l) => (
+                <button
+                  key={l.id}
+                  role="menuitem"
+                  onClick={() => { patchActive({ language: l.id, langExplicit: true }); setOpenMenu(null); }}
+                  className={`flex items-center w-full px-3 py-1.5 text-xs text-left transition-colors ${
+                    language === l.id
+                      ? 'text-[var(--accent)] bg-[var(--accent-soft)]'
+                      : 'text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
+                  }`}
+                >
+                  {l.label}
+                </button>
+              ))}
+              {filteredLangs.length === 0 && (
+                <p className="px-3 py-2 text-xs text-[var(--text-muted)]">No match</p>
+              )}
+            </div>
+          </ToolbarMenu>
         </div>
 
         <div className="w-px h-4 bg-[var(--border)] mx-0.5" />
@@ -1951,35 +1962,37 @@ export default function ConfigEditor() {
         {/* Templates (Aruba + Junos) */}
         <div className="relative">
           <button
-            onClick={() => { setShowTemplates(!showTemplates); setShowLangPicker(false); setShowSnippets(false); setShowPullMenu(false); }}
+            ref={templatesButtonRef}
+            onClick={() => toggleMenu('templates')}
+            aria-haspopup="menu"
+            aria-expanded={menuShown('templates')}
             className="flex items-center gap-1.5 px-2 py-1 text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] rounded transition-colors"
           >
             <BookOpen size={12} />
             Templates
             <ChevronDown size={10} />
           </button>
-          {showTemplates && (
-            <>
-              <div className="fixed inset-0 z-20" onClick={() => setShowTemplates(false)} />
-              <div className="absolute top-full left-0 mt-1 z-30 min-w-[160px] bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg shadow-xl py-1">
-                {Object.keys(TEMPLATES).map((name) => (
-                  <button
-                    key={name}
-                    onClick={() => loadTemplate(name)}
-                    className="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] text-left"
-                  >
-                    {name}
-                  </button>
-                ))}
-              </div>
-            </>
-          )}
+          <ToolbarMenu open={menuShown('templates')} anchorRef={templatesButtonRef} onClose={closeMenu} label="Templates" className="min-w-[160px] py-1">
+            {Object.keys(TEMPLATES).map((name) => (
+              <button
+                key={name}
+                role="menuitem"
+                onClick={() => loadTemplate(name)}
+                className="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] text-left"
+              >
+                {name}
+              </button>
+            ))}
+          </ToolbarMenu>
         </div>
 
         {/* Snippets */}
         <div className="relative">
           <button
-            onClick={() => { setShowSnippets(!showSnippets); setShowTemplates(false); setShowLangPicker(false); setShowPullMenu(false); }}
+            ref={snippetsButtonRef}
+            onClick={() => toggleMenu('snippets')}
+            aria-haspopup="menu"
+            aria-expanded={menuShown('snippets')}
             className="flex items-center gap-1.5 px-2 py-1 text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] rounded transition-colors"
             title="Insert common network config snippets"
           >
@@ -1987,27 +2000,23 @@ export default function ConfigEditor() {
             Snippets
             <ChevronDown size={10} />
           </button>
-          {showSnippets && (
-            <>
-              <div className="fixed inset-0 z-20" onClick={() => setShowSnippets(false)} />
-              <div className="absolute top-full left-0 mt-1 z-30 min-w-[260px] bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg shadow-xl py-1">
-                {CONFIG_SNIPPETS.map((snippet) => (
-                  <button
-                    key={snippet.label}
-                    onClick={() => insertSnippet(snippet.label)}
-                    className="grid grid-cols-[1fr_auto] gap-3 w-full px-3 py-1.5 text-xs text-left hover:bg-[var(--bg-tertiary)]"
-                    title={snippet.description}
-                  >
-                    <span className="text-[var(--text-primary)]">{snippet.label}</span>
-                    <code className="text-[10px] text-[var(--text-muted)]">{snippet.prefix}</code>
-                  </button>
-                ))}
-                <p className="px-3 pt-1.5 mt-1 border-t border-[var(--border)] text-[10px] text-[var(--text-muted)]">
-                  Or type the word on the right at the start of a line. Tab moves to the next blank.
-                </p>
-              </div>
-            </>
-          )}
+          <ToolbarMenu open={menuShown('snippets')} anchorRef={snippetsButtonRef} onClose={closeMenu} label="Snippets" className="min-w-[260px] py-1">
+            {CONFIG_SNIPPETS.map((snippet) => (
+              <button
+                key={snippet.label}
+                role="menuitem"
+                onClick={() => insertSnippet(snippet.label)}
+                className="grid grid-cols-[1fr_auto] gap-3 w-full px-3 py-1.5 text-xs text-left hover:bg-[var(--bg-tertiary)]"
+                title={snippet.description}
+              >
+                <span className="text-[var(--text-primary)]">{snippet.label}</span>
+                <code className="text-[10px] text-[var(--text-muted)]">{snippet.prefix}</code>
+              </button>
+            ))}
+            <p className="px-3 pt-1.5 mt-1 border-t border-[var(--border)] text-[10px] text-[var(--text-muted)]">
+              Or type the word on the right at the start of a line. Tab moves to the next blank.
+            </p>
+          </ToolbarMenu>
         </div>
 
         {/* Outline: Monaco's Go to Symbol box (Ctrl+Shift+O) — type to jump to an
@@ -2042,7 +2051,10 @@ export default function ConfigEditor() {
             Pull
           </button>
           <button
-            onClick={() => { setShowPullMenu(!showPullMenu); setShowTemplates(false); setShowLangPicker(false); setShowSnippets(false); }}
+            ref={pullButtonRef}
+            onClick={() => toggleMenu('pull')}
+            aria-haspopup="menu"
+            aria-expanded={menuShown('pull')}
             disabled={!activeSession?.connected || pulling}
             className="flex items-center px-0.5 rounded-r transition-colors disabled:opacity-40 text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]"
             title="Pull other command output"
@@ -2050,45 +2062,45 @@ export default function ConfigEditor() {
           >
             <ChevronDown size={10} />
           </button>
-          {showPullMenu && (
-            <>
-              <div className="fixed inset-0 z-20" onClick={() => setShowPullMenu(false)} />
-              <div className="absolute top-full left-0 mt-1 z-30 min-w-[210px] bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg shadow-xl py-1">
-                {pullMenuItems.map((item) => (
-                  <button
-                    key={item.label}
-                    onClick={() => { setShowPullMenu(false); pullCommand(item.label, item.command); }}
-                    className="grid grid-cols-[1fr_auto] items-center gap-3 w-full px-3 py-1.5 text-xs text-left text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]"
-                  >
-                    <span>{item.label}</span>
-                    <span className="text-[10px] text-[var(--text-muted)] font-mono truncate max-w-[150px]">
-                      {item.command ?? ''}
-                    </span>
-                  </button>
-                ))}
-                <div className="my-1 border-t border-[var(--bg-tertiary)]" />
-                <button
-                  onClick={() => { setShowPullMenu(false); pullCustom(); }}
-                  className="flex items-center w-full px-3 py-1.5 text-xs text-left text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]"
-                >
-                  Custom command…
-                </button>
-              </div>
-            </>
-          )}
+          <ToolbarMenu open={menuShown('pull')} anchorRef={pullButtonRef} onClose={closeMenu} label="Pull" className="min-w-[210px] py-1">
+            {pullMenuItems.map((item) => (
+              <button
+                key={item.label}
+                role="menuitem"
+                onClick={() => { setOpenMenu(null); pullCommand(item.label, item.command); }}
+                className="grid grid-cols-[1fr_auto] items-center gap-3 w-full px-3 py-1.5 text-xs text-left text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]"
+              >
+                <span>{item.label}</span>
+                <span className="text-[10px] text-[var(--text-muted)] font-mono truncate max-w-[150px]">
+                  {item.command ?? ''}
+                </span>
+              </button>
+            ))}
+            <div className="my-1 border-t border-[var(--bg-tertiary)]" />
+            <button
+              role="menuitem"
+              onClick={() => { setOpenMenu(null); pullCustom(); }}
+              className="flex items-center w-full px-3 py-1.5 text-xs text-left text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]"
+            >
+              Custom command…
+            </button>
+          </ToolbarMenu>
         </div>
 
         {/* Compare: with a running-config you pulled (kept per device) or a file.
             Picking a file no longer replaces what you pulled. */}
         <div className="relative">
           <button
+            ref={compareButtonRef}
             onClick={() => {
               if (diffMode) {
                 setDiffMode(false);
                 return;
               }
-              setShowCompareMenu(!showCompareMenu);
+              toggleMenu('compare');
             }}
+            aria-haspopup={diffMode ? undefined : 'menu'}
+            aria-expanded={diffMode ? undefined : menuShown('compare')}
             disabled={reviewing}
             className={`flex items-center gap-1.5 px-2 py-1 text-xs rounded transition-colors disabled:opacity-40 ${
               diffMode ? 'text-[var(--accent)] bg-[var(--accent-soft)]' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
@@ -2099,56 +2111,56 @@ export default function ConfigEditor() {
             {diffMode ? 'Exit Diff' : 'Diff'}
             {!diffMode && <ChevronDown size={10} />}
           </button>
-          {showCompareMenu && !diffMode && (
-            <>
-              <div className="fixed inset-0 z-20" onClick={() => setShowCompareMenu(false)} />
-              <div className="absolute top-full left-0 mt-1 z-30 w-72 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg shadow-xl py-1">
-                {(() => {
-                  const activeDevice = activeSession ? deviceKey(activeSession.config) : null;
-                  const pulled = [...baselinesRef.current.entries()].sort(
-                    ([a], [b]) => Number(b === activeDevice) - Number(a === activeDevice)
-                  );
-                  if (!pulled.length) {
-                    return (
-                      <p className="px-3 py-1.5 text-xs text-[var(--text-muted)]">
-                        Nothing pulled yet. Pull the running-config to compare with it.
-                      </p>
-                    );
-                  }
-                  return pulled.map(([device, baseline]) => (
-                    <button
-                      key={device}
-                      onClick={() => compareWithPulled(device)}
-                      className="block w-full px-3 py-1.5 text-left hover:bg-[var(--bg-tertiary)]"
-                    >
-                      <span className="block text-xs text-[var(--text-primary)] truncate">
-                        Running-config from {baseline.label}
-                        {device === activeDevice ? ' (this session)' : ''}
-                      </span>
-                      <span className="block text-[10px] text-[var(--text-muted)]">
-                        pulled {timeAgo(baseline.pulledAt)}
-                        {baseline.truncated ? ' · may be cut off' : ''}
-                      </span>
-                    </button>
-                  ));
-                })()}
-                <div className="my-1 border-t border-[var(--border)]" />
+          <ToolbarMenu open={menuShown('compare') && !diffMode} anchorRef={compareButtonRef} onClose={closeMenu} label="Diff" className="w-72 py-1">
+            {(() => {
+              const activeDevice = activeSession ? deviceKey(activeSession.config) : null;
+              const pulled = [...baselinesRef.current.entries()].sort(
+                ([a], [b]) => Number(b === activeDevice) - Number(a === activeDevice)
+              );
+              if (!pulled.length) {
+                return (
+                  <p className="px-3 py-1.5 text-xs text-[var(--text-muted)]">
+                    Nothing pulled yet. Pull the running-config to compare with it.
+                  </p>
+                );
+              }
+              return pulled.map(([device, baseline]) => (
                 <button
-                  onClick={openDiffAgainst}
-                  className="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] text-left"
+                  key={device}
+                  role="menuitem"
+                  onClick={() => compareWithPulled(device)}
+                  className="block w-full px-3 py-1.5 text-left hover:bg-[var(--bg-tertiary)]"
                 >
-                  <FolderOpen size={12} />
-                  A file…
+                  <span className="block text-xs text-[var(--text-primary)] truncate">
+                    Running-config from {baseline.label}
+                    {device === activeDevice ? ' (this session)' : ''}
+                  </span>
+                  <span className="block text-[10px] text-[var(--text-muted)]">
+                    pulled {timeAgo(baseline.pulledAt)}
+                    {baseline.truncated ? ' · may be cut off' : ''}
+                  </span>
                 </button>
-              </div>
-            </>
-          )}
+              ));
+            })()}
+            <div className="my-1 border-t border-[var(--border)]" />
+            <button
+              role="menuitem"
+              onClick={openDiffAgainst}
+              className="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] text-left"
+            >
+              <FolderOpen size={12} />
+              A file…
+            </button>
+          </ToolbarMenu>
         </div>
 
         {/* Ask AI about the selected lines (or the tab): secrets hidden first. */}
         <div className="relative">
           <button
-            onClick={() => setShowAskMenu((open) => !open)}
+            ref={askButtonRef}
+            onClick={() => toggleMenu('ask')}
+            aria-haspopup="menu"
+            aria-expanded={menuShown('ask')}
             disabled={!content.trim()}
             className="flex items-center gap-1.5 px-2 py-1 text-xs rounded transition-colors disabled:opacity-40 text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]"
             title={selection ? 'Ask the AI about the selected lines' : 'Ask the AI about this tab'}
@@ -2157,27 +2169,23 @@ export default function ConfigEditor() {
             Ask AI
             <ChevronDown size={10} />
           </button>
-          {showAskMenu && (
-            <>
-              <div className="fixed inset-0 z-20" onClick={() => setShowAskMenu(false)} />
-              <div className="absolute top-full left-0 mt-1 z-30 w-60 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg shadow-xl py-1">
-                <p className="px-3 py-1 text-[10px] text-[var(--text-muted)]">
-                  {selection
-                    ? `About ${selection.start === selection.end ? `line ${selection.start}` : `lines ${selection.start}–${selection.end}`}. Secrets are hidden first.`
-                    : 'About the whole tab (select lines to narrow it). Secrets are hidden first.'}
-                </p>
-                {askMenu(language, problemCounts.error + problemCounts.warning > 0).map((item) => (
-                  <button
-                    key={item.kind}
-                    onClick={() => void askAi(item.kind)}
-                    className="flex items-center w-full px-3 py-1.5 text-xs text-left text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]"
-                  >
-                    {item.label}
-                  </button>
-                ))}
-              </div>
-            </>
-          )}
+          <ToolbarMenu open={menuShown('ask')} anchorRef={askButtonRef} onClose={closeMenu} label="Ask AI" className="w-60 py-1">
+            <p className="px-3 py-1 text-[10px] text-[var(--text-muted)]">
+              {selection
+                ? `About ${selection.start === selection.end ? `line ${selection.start}` : `lines ${selection.start}–${selection.end}`}. Secrets are hidden first.`
+                : 'About the whole tab (select lines to narrow it). Secrets are hidden first.'}
+            </p>
+            {askMenu(language, problemCounts.error + problemCounts.warning > 0).map((item) => (
+              <button
+                key={item.kind}
+                role="menuitem"
+                onClick={() => void askAi(item.kind)}
+                className="flex items-center w-full px-3 py-1.5 text-xs text-left text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]"
+              >
+                {item.label}
+              </button>
+            ))}
+          </ToolbarMenu>
         </div>
 
         {/* Config archive history + golden diff */}
@@ -2258,7 +2266,10 @@ export default function ConfigEditor() {
                 : 'Send'}
             </button>
             <button
-              onClick={() => setShowSendMenu((open) => !open)}
+              ref={sendButtonRef}
+              onClick={() => toggleMenu('send')}
+              aria-haspopup="menu"
+              aria-expanded={menuShown('send')}
               disabled={sending || pulling}
               className="flex items-center px-1 border-l border-black/20 bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-40 text-[var(--accent-fg)] rounded-r transition-colors"
               title="Send selected lines, or send safely as a Change Job"
@@ -2266,39 +2277,36 @@ export default function ConfigEditor() {
             >
               <ChevronDown size={11} />
             </button>
-            {showSendMenu && (
-              <>
-                <div className="fixed inset-0 z-20" onClick={() => setShowSendMenu(false)} />
-                <div className="absolute top-full right-0 mt-1 z-30 w-72 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg shadow-xl py-1">
-                  <button
-                    onClick={() => {
-                      setShowSendMenu(false);
-                      if (selection) void sendToTerminal(selection);
-                    }}
-                    disabled={!selection || !activeSession.connected}
-                    className="flex flex-col w-full px-3 py-1.5 text-xs text-left text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] disabled:opacity-40 disabled:hover:bg-transparent"
-                  >
-                    <span>
-                      Send selected lines
-                      {selection ? ` (${selection.start === selection.end ? `line ${selection.start}` : `lines ${selection.start}–${selection.end}`})` : ''}
-                    </span>
-                    <span className="text-[10px] text-[var(--text-muted)]">
-                      {selection ? 'Only these lines go out, one at a time.' : 'Select some lines in the editor first.'}
-                    </span>
-                  </button>
-                  <button
-                    onClick={() => {
-                      setShowSendMenu(false);
-                      sendSafely(selection);
-                    }}
-                    className="flex flex-col w-full px-3 py-1.5 text-xs text-left text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]"
-                  >
-                    <span>Send safely as a Change Job…{selection ? ' (selected lines)' : ''}</span>
-                    <span className="text-[10px] text-[var(--text-muted)]">{safeSendHint}</span>
-                  </button>
-                </div>
-              </>
-            )}
+            <ToolbarMenu open={menuShown('send')} anchorRef={sendButtonRef} onClose={closeMenu} align="end" label="Send options" className="w-72 py-1">
+              <button
+                role="menuitem"
+                onClick={() => {
+                  setOpenMenu(null);
+                  if (selection) void sendToTerminal(selection);
+                }}
+                disabled={!selection || !activeSession.connected}
+                className="flex flex-col w-full px-3 py-1.5 text-xs text-left text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] disabled:opacity-40 disabled:hover:bg-transparent"
+              >
+                <span>
+                  Send selected lines
+                  {selection ? ` (${selection.start === selection.end ? `line ${selection.start}` : `lines ${selection.start}–${selection.end}`})` : ''}
+                </span>
+                <span className="text-[10px] text-[var(--text-muted)]">
+                  {selection ? 'Only these lines go out, one at a time.' : 'Select some lines in the editor first.'}
+                </span>
+              </button>
+              <button
+                role="menuitem"
+                onClick={() => {
+                  setOpenMenu(null);
+                  sendSafely(selection);
+                }}
+                className="flex flex-col w-full px-3 py-1.5 text-xs text-left text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]"
+              >
+                <span>Send safely as a Change Job…{selection ? ' (selected lines)' : ''}</span>
+                <span className="text-[10px] text-[var(--text-muted)]">{safeSendHint}</span>
+              </button>
+            </ToolbarMenu>
           </div>
         )}
       </div>

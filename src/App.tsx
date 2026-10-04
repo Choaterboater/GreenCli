@@ -35,7 +35,7 @@ import { openTerminalSearch, sendSearchCommand } from './utils/terminalSearch';
 import { closeSessions } from './utils/closeSessions';
 import { savedHostId, tabConfigForOpen, tabLabel } from './utils/tabs';
 import { MAX_PANES } from './utils/splitPanes';
-import { isTextEntry } from './utils/textEntry';
+import { inPopup, isTextEntry } from './utils/textEntry';
 import {
   findStep,
   isFindChord,
@@ -954,7 +954,8 @@ function App() {
         return;
       }
       const target = e.target as HTMLElement | null;
-      if (target?.closest?.('[aria-modal="true"], [role="dialog"], .modal-backdrop')) return;
+      // A dialog, or an open menu (toolbar menus live outside the editor).
+      if (inPopup(target)) return;
       // A text field, or the Config Editor (Monaco may type into a plain div).
       if (isTextEntry(target)) return;
       // Text selected in a panel (AI chat, API responses, Bulk Runner output,
