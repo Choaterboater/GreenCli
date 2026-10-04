@@ -167,7 +167,8 @@ impl Handler for ClientHandler {
                             log::warn!("{}", msg);
                             notes.push(msg);
                         }
-                        // A damaged host keys file was moved aside: say so
+                        // A damaged host keys file was moved aside, or the key
+                        // couldn't be saved: say so
                         // (connecting still goes ahead).
                         if !notes.is_empty() {
                             if let Ok(mut g) = self.warning.lock() {

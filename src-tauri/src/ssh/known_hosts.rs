@@ -189,7 +189,9 @@ impl KnownHosts {
                      again on next connect."
                 );
                 log::warn!("{notice}");
-                self.save(&map);
+                if let Err(e) = self.save(&map) {
+                    log::warn!("Couldn't write the kept host keys back: {e}");
+                }
                 (map, Some(notice), true)
             }
             None => {
@@ -215,18 +217,18 @@ impl KnownHosts {
         fs::rename(&self.path, &target).ok().map(|_| target)
     }
 
-    fn save(&self, map: &HashMap<String, HostKeys>) {
+    fn save(&self, map: &HashMap<String, HostKeys>) -> std::io::Result<()> {
         if let Some(parent) = self.path.parent() {
-            let _ = fs::create_dir_all(parent);
+            fs::create_dir_all(parent)?;
         }
-        if let Ok(bytes) = serde_json::to_vec_pretty(map) {
-            // Atomic: write a temp file then rename, so a concurrent reader never
-            // sees a torn file and a crash can't truncate the trust store.
-            let tmp = self.path.with_extension("json.tmp");
-            if fs::write(&tmp, bytes).is_ok() {
-                let _ = fs::rename(&tmp, &self.path);
-            }
-        }
+        let bytes = serde_json::to_vec_pretty(map)?;
+        // Atomic: write a temp file then rename, so a concurrent reader never
+        // sees a torn file and a crash can't truncate the trust store.
+        let tmp = self.path.with_extension("json.tmp");
+        fs::write(&tmp, bytes)?;
+        fs::rename(&tmp, &self.path).inspect_err(|_| {
+            let _ = fs::remove_file(&tmp);
+        })
     }
 
     /// List all trusted entries as (host:port, key-algorithm, fingerprint),
@@ -245,12 +247,17 @@ impl KnownHosts {
     }
 
     /// Remove a trusted entry so the host is re-trusted (TOFU) on next connect.
-    pub fn remove(&self, host_port: &str) {
+    /// A failed save comes back as a plain error.
+    pub fn remove(&self, host_port: &str) -> Result<(), String> {
         let _guard = WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (mut map, _notice, can_save) = self.load_for_write();
         if map.remove(host_port).is_some() && can_save {
-            self.save(&map);
+            self.save(&map).map_err(|e| {
+                log::warn!("Couldn't save host keys after forgetting {host_port}: {e}");
+                format!("Couldn't forget {host_port}: the host keys file couldn't be saved.")
+            })?;
         }
+        Ok(())
     }
 
     /// Verify a fingerprint for `host:port` presented under key algorithm
@@ -272,16 +279,29 @@ impl KnownHosts {
         // connects can't each load the same snapshot and clobber each other's record.
         let _guard = WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (mut map, notice, can_save) = self.load_for_write();
+        let notice = std::cell::RefCell::new(notice);
         let key_type = normalize_key_type(key_type);
+        // A failed save never blocks the connection: it adds one plain
+        // warning line instead (like OpenSSH's "Failed to add the host").
         let save = |map: &HashMap<String, HostKeys>| {
-            if can_save {
-                self.save(map);
+            if !can_save {
+                return;
+            }
+            if let Err(e) = self.save(map) {
+                log::warn!("Couldn't save the host key for {host_port}: {e}");
+                let line = "Couldn't save the host key, so it isn't pinned; it will be \
+                            trusted again on next connect.";
+                let mut n = notice.borrow_mut();
+                *n = Some(match n.take() {
+                    Some(prev) => format!("{prev} {line}"),
+                    None => line.to_string(),
+                });
             }
         };
         let done = |outcome| {
             Ok(Verified {
                 outcome,
-                notice: notice.clone(),
+                notice: notice.borrow().clone(),
             })
         };
 
@@ -322,7 +342,7 @@ impl KnownHosts {
                  {fingerprint}. Possible MITM — remove the entry from known_hosts.json to \
                  re-trust."
             );
-            if let Some(n) = &notice {
+            if let Some(n) = notice.borrow().as_ref() {
                 reason.push(' ');
                 reason.push_str(n);
             }
@@ -513,6 +533,70 @@ mod tests {
         assert_eq!(v.outcome, KeyVerifyResult::Trusted);
         assert_eq!(v.notice, None);
         assert!(!dir.corrupt().exists());
+    }
+
+    /// Make `dir` read-only so nothing can be written in it. Returns false
+    /// when running as root (writes still succeed), so the test can skip.
+    #[cfg(unix)]
+    fn lock_dir(dir: &Path) -> bool {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o555)).unwrap();
+        let probe = dir.join("probe");
+        if fs::write(&probe, b"x").is_ok() {
+            let _ = fs::remove_file(&probe);
+            return false;
+        }
+        true
+    }
+
+    #[cfg(unix)]
+    fn unlock_dir(dir: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_save_still_connects_and_says_so() {
+        let dir = TempDir::new("nosave");
+        if !lock_dir(&dir.0) {
+            unlock_dir(&dir.0);
+            return;
+        }
+        let v = verify_or_record(&dir.store(), "r1:22", "ssh-ed25519", "SHA256:aaa");
+        unlock_dir(&dir.0);
+        let v = v.expect("connecting goes ahead");
+        assert_eq!(v.outcome, KeyVerifyResult::FirstSeen);
+        let notice = v.notice.expect("one plain warning line");
+        assert!(notice.contains("Couldn't save"), "{notice}");
+        assert!(!dir.store().exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_returns_the_error() {
+        let dir = TempDir::new("saveerr");
+        if !lock_dir(&dir.0) {
+            unlock_dir(&dir.0);
+            return;
+        }
+        let r = KnownHosts::new(dir.store()).save(&HashMap::new());
+        unlock_dir(&dir.0);
+        assert!(r.is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_forget_returns_the_error() {
+        let dir = TempDir::new("noforget");
+        verify_or_record(&dir.store(), "r1:22", "ssh-ed25519", "SHA256:aaa").unwrap();
+        if !lock_dir(&dir.0) {
+            unlock_dir(&dir.0);
+            return;
+        }
+        let r = KnownHosts::new(dir.store()).remove("r1:22");
+        unlock_dir(&dir.0);
+        assert!(r.is_err());
     }
 
     #[cfg(unix)]
