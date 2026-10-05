@@ -1,0 +1,3 @@
+# LF in every checkout, whatever core.autocrlf says (Git for Windows defaults to CRLF).
+# Tests read source files and Casper copies byte for byte.
+* text=auto eol=lf
