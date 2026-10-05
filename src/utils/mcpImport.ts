@@ -1,5 +1,5 @@
 // The words for importing MCP servers set up elsewhere (Casper, Claude Code,
-// ~/.mcp.json, VS Code). The scan and the import itself are in Rust
+// ~/.mcp.json, Claude Desktop, VS Code). The scan and the import itself are in Rust
 // (src-tauri/src/mcp/import.rs); nothing here ever sees an env, header or
 // argument value.
 import type { DialogChoice } from '../store/dialogStore';

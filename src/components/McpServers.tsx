@@ -234,7 +234,7 @@ export default function McpServers() {
     return () => clearInterval(t);
   }, [refresh]);
 
-  // Import from Casper, Claude Code, ~/.mcp.json and VS Code. Rust reads the
+  // Import from Casper, Claude Code, ~/.mcp.json, Claude Desktop and VS Code. Rust reads the
   // files and keeps what it found; only names, places and what each server
   // runs (secrets hidden) come here. Imported servers wait for Connect.
   const [importing, setImporting] = useState(false);
@@ -268,7 +268,7 @@ export default function McpServers() {
           useSettingsStore.getState().setMcpImportOffered(true);
         } else if (preview.items.length === 0) {
           const why = [...preview.skipped.map((k) => `${k.name}: ${k.reason}.`), ...preview.problems];
-          notify.info('Nothing new to import', why.join(' ') || 'No MCP servers found in Casper, Claude Code, ~/.mcp.json or VS Code.');
+          notify.info('Nothing new to import', why.join(' ') || 'No MCP servers found in Casper, Claude Code, ~/.mcp.json, Claude Desktop or VS Code.');
           return;
         }
         // Escape (null) counts as Not now, here and under Pick which.
@@ -613,7 +613,7 @@ export default function McpServers() {
           <button
             onClick={() => void runImport(false)}
             disabled={importing}
-            title="Bring in MCP servers you set up in Casper, Claude Code, ~/.mcp.json or VS Code. They come in with writes off and wait for Connect."
+            title="Bring in MCP servers you set up in Casper, Claude Code, ~/.mcp.json, Claude Desktop or VS Code. They come in with writes off and wait for Connect."
             className="flex items-center gap-1.5 px-2.5 py-1 text-[11px] rounded-md bg-[var(--bg-tertiary)] hover:bg-[var(--border-strong)] text-[var(--text-primary)] transition-colors disabled:opacity-50"
           >
             {importing ? <Loader2 size={13} className="animate-spin" /> : <Upload size={13} />}

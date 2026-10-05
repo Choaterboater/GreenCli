@@ -1,0 +1,16 @@
+{
+  "globalShortcut": "",
+  "preferences": { "menuBarEnabled": false },
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/home/tester/Desktop"]
+    },
+    "gh-desktop": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": { "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}", "LOG_LEVEL": "${LOG_LEVEL:-info}" }
+    },
+    "central": { "command": "uvx", "args": ["centralmcp", "--desktop"] }
+  }
+}
