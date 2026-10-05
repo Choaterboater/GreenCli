@@ -135,3 +135,10 @@ jobs:
       - name: Tests
         run: cargo test --workspace
         working-directory: src-tauri
+
+      # The real app, not a mock: a debug build with its own app id and a
+      # throwaway home folder. Its window renders, it offers a fake Claude
+      # Desktop config's servers, and greencli-mcp reaches it over the named
+      # pipe (and refuses a pipe without the secret after a crash).
+      - name: App check (real window and named pipe)
+        run: node scripts/windows-app-check.mjs --build
