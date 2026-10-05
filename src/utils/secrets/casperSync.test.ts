@@ -17,6 +17,11 @@ const SOURCE = resolve(CASPER, 'src/secrets');
 const FILES = ['patterns.ts', 'prose.ts', 'assignments.ts', 'scrub.ts'];
 const BODY_MARK = '// ---- casper source below ----\n';
 
+/** Casper's file with LF line ends: a Windows checkout made before Casper's .gitattributes has CRLF. */
+function readLf(file: string): string {
+  return readFileSync(file, 'utf8').replace(/\r\n/g, '\n');
+}
+
 /** Casper's file as GreenCLI keeps it. scrub.ts loses the node:path import and
  *  the file-read rules (CODE_EXTENSIONS … shouldScrubRead): there are no file reads here. */
 function forGreenCli(file: string, source: string): string {
@@ -43,7 +48,7 @@ const haveCasper = existsSync(resolve(SOURCE, 'scrub.ts'));
 describe.skipIf(!haveCasper)('copies of Casper secret rules', () => {
   for (const file of FILES) {
     it(`${file} matches Casper`, () => {
-      const expected = forGreenCli(file, readFileSync(resolve(SOURCE, file), 'utf8'));
+      const expected = forGreenCli(file, readLf(resolve(SOURCE, file)));
       const target = resolve(HERE, file);
       if (process.env.CASPER_SYNC_WRITE === '1') {
         const commit = execFileSync('git', ['-C', CASPER, 'rev-parse', '--short', 'HEAD'], { encoding: 'utf8' }).trim();

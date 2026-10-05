@@ -16,6 +16,11 @@ const CASPER = resolve(process.env.CASPER_DIR ?? resolve(process.cwd(), '../casp
 const SOURCE = resolve(CASPER, 'src/capabilities/labels.ts');
 const BODY_MARK = '// ---- casper source below ----\n';
 
+/** Casper's file with LF line ends: a Windows checkout made before Casper's .gitattributes has CRLF. */
+function readLf(file: string): string {
+  return readFileSync(file, 'utf8').replace(/\r\n/g, '\n');
+}
+
 const CASPER_IMPORTS =
   'import type { CapabilitySafety } from "./broker";\nimport type { MCPTool } from "../mcp/manager";\n';
 const GREENCLI_IMPORT = 'import type { CapabilitySafety, MCPTool } from "./mcpTypes";\n';
@@ -40,7 +45,7 @@ const haveCasper = existsSync(SOURCE);
 
 describe.skipIf(!haveCasper)("copy of Casper's tool labels", () => {
   it('mcpLabels.ts matches Casper', () => {
-    const expected = forGreenCli(readFileSync(SOURCE, 'utf8'));
+    const expected = forGreenCli(readLf(SOURCE));
     if (process.env.CASPER_SYNC_WRITE === '1') {
       const commit = execFileSync('git', ['-C', CASPER, 'rev-parse', '--short', 'HEAD'], { encoding: 'utf8' }).trim();
       writeFileSync(TARGET, header(commit) + expected);

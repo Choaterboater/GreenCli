@@ -94,8 +94,9 @@ jobs:
 
   rust-windows:
     # The Linux job never compiles the Windows side of #[cfg(unix)] code
-    # (file permissions, private_fs), which release.yml ships. A check (plus
-    # the updater tests): it catches a Windows build break before a tag does.
+    # (file permissions, private_fs, the live show named pipe), which
+    # release.yml ships. The whole Rust and unit test suites run here too, so
+    # a Windows break shows up before a tag does.
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -108,6 +109,8 @@ jobs:
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
@@ -120,23 +123,22 @@ jobs:
           npm ci
           npm run build
 
-      - name: Cargo check
-        run: cargo check --workspace --all-targets
+      - name: Unit tests
+        run: npx vitest run
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
         working-directory: src-tauri
 
-      # Only the updater tests: they check the app's platform name against
-      # the updater plugin's own on a system GreenCLI ships updates for (the
-      # Linux job can't). Just these, to keep the job short.
-      - name: Updater tests
-        run: cargo test -p green-cli --bin green-cli "updater::"
+      # All of them: the updater's platform name, both ends of the live show
+      # named pipe, greencli-mcp's source scan, and the Windows paths.
+      - name: Tests
+        run: cargo test --workspace
         working-directory: src-tauri
 
-      # Live show commands use a named pipe on Windows: both ends run here
-      # (the app's listener, and greencli-mcp with its source scan).
-      - name: Live show command tests (GreenCLI)
-        run: cargo test -p green-cli --bin green-cli "mcp_live::"
-        working-directory: src-tauri
-
-      - name: greencli-mcp tests
-        run: cargo test -p greencli-mcp
-        working-directory: src-tauri
+      # The real app, not a mock: a debug build with its own app id and a
+      # throwaway home folder. Its window renders, it offers a fake Claude
+      # Desktop config's servers, and greencli-mcp reaches it over the named
+      # pipe (and refuses a pipe without the secret after a crash).
+      - name: App check (real window and named pipe)
+        run: node scripts/windows-app-check.mjs --build

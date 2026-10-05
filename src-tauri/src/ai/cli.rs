@@ -1048,7 +1048,9 @@ mod tests {
             assert!(!place.picked);
             let yaml = std::fs::read_to_string(place.dir.join(".casper/project.yaml")).unwrap();
             assert!(yaml.contains("denyRead"));
-            assert!(yaml.contains(&*c.app_dir.to_string_lossy()));
+            // The path is written JSON-quoted: on Windows each "\" is doubled.
+            let quoted = serde_json::to_string(&c.app_dir.to_string_lossy()).unwrap();
+            assert!(yaml.contains(&quoted), "{yaml}");
             assert!(place
                 .dir
                 .starts_with(base.join("cache").join("casper-work")));
