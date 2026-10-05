@@ -4,8 +4,10 @@
 //! - macOS and Linux: `mcp-live.sock` in GreenCLI's data folder;
 //! - Windows: the named pipe on this computer whose name GreenCLI writes in
 //!   that same file (`greencli-live-` and 32 hex digits, a new one each time
-//!   the channel opens). The data folder is yours alone, so another user
-//!   can't learn the name and take the pipe first.
+//!   the channel opens), with a secret on the next line. Any local user can
+//!   list pipe names, so after a crash someone else could make a pipe under
+//!   the old name. So GreenCLI's first line on each call holds the secret,
+//!   and nothing is sent until it matches (the file is yours alone).
 //!
 //! The running app makes that channel only while "show commands" is on in MCP
 //! Servers, lets in only programs of the same user, and asks you in a box
@@ -24,7 +26,7 @@ use crate::tools::ToolFail;
 use crate::transport::{self, Line};
 use crate::{LIVE_CLIENT_WAIT, MAX_LIVE_REQUEST};
 use serde_json::{json, Map, Value};
-use std::io::{BufRead, BufReader, ErrorKind, Write};
+use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::path::Path;
@@ -162,6 +164,44 @@ pub fn ask_live_with_wait(
     }
 }
 
+/// Windows: the pipe's name and GreenCLI's secret in the text of
+/// mcp-live.sock, one per line and nothing else: `greencli-live-` and 32
+/// lowercase hex digits (never a path or another computer), then 64.
+pub fn live_channel_parts(text: &str) -> Option<(&str, &str)> {
+    let is_hex = |t: &str, n: usize| {
+        t.len() == n && t.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+    };
+    let (name, secret) = text.split_once('\n')?;
+    let hex = name.strip_prefix("greencli-live-")?;
+    (is_hex(hex, 32) && is_hex(secret, 64)).then_some((name, secret))
+}
+
+/// Windows: GreenCLI's first line on each call, with its line break.
+pub fn live_hello(secret: &str) -> String {
+    format!("{{\"v\":1,\"greencli\":\"{secret}\"}}\n")
+}
+
+/// Windows: read the first line (no more bytes than it should have) and
+/// check it is GreenCLI's, holding `secret`.
+pub fn read_live_hello<R: BufRead>(reader: &mut R, secret: &str) -> bool {
+    let want = live_hello(secret);
+    let mut got = Vec::with_capacity(want.len());
+    if (&mut *reader)
+        .take(want.len() as u64)
+        .read_until(b'\n', &mut got)
+        .is_err()
+    {
+        return false;
+    }
+    same_bytes(&got, want.as_bytes())
+}
+
+/// Equal, in a time that doesn't depend on where they differ.
+fn same_bytes(a: &[u8], b: &[u8]) -> bool {
+    let diff = a.iter().zip(b).fold(0u8, |d, (x, y)| d | (x ^ y));
+    a.len() == b.len() && std::hint::black_box(diff) == 0
+}
+
 /// GreenCLI's one answer line, read after the request went out.
 fn read_answer<R: BufRead>(reader: &mut R, wait: Duration) -> Result<Vec<u8>, String> {
     match transport::read_line(reader, MAX_REPLY) {
@@ -197,21 +237,37 @@ fn exchange(data_dir: &Path, line: Vec<u8>, wait: Duration) -> Result<Vec<u8>, S
     read_answer(&mut BufReader::new(stream), wait)
 }
 
-/// Windows: send `line` over GreenCLI's pipe, read the answer. A pipe has no
-/// read timeout, so the call runs on its own thread and this one waits at
-/// most `wait`. If that runs out, the thread ends when GreenCLI closes the
-/// pipe (its own wait is shorter).
+/// Windows: check GreenCLI's first line on its pipe, then send `line` and
+/// read the answer. A pipe has no read timeout, so the call runs on its own
+/// thread and this one waits at most LIVE_HELLO_WAIT for the first line and
+/// `wait` for the answer. If a wait runs out, the thread ends when the pipe
+/// closes (GreenCLI's own wait is shorter), and after a first line that came
+/// too late or was wrong it sends nothing.
 #[cfg(windows)]
 fn exchange(data_dir: &Path, line: Vec<u8>, wait: Duration) -> Result<Vec<u8>, String> {
-    let mut pipe = connect_pipe(data_dir)?;
-    let (tx, rx) = std::sync::mpsc::channel();
+    use std::sync::mpsc::channel;
+    let (pipe, secret) = connect_pipe(data_dir)?;
+    let (hello_tx, hello_rx) = channel();
+    let (go_tx, go_rx) = channel::<()>();
+    let (tx, rx) = channel();
     std::thread::spawn(move || {
-        let answer = match pipe.write_all(&line).and_then(|()| pipe.flush()) {
-            Ok(()) => read_answer(&mut BufReader::new(pipe), wait),
+        let mut reader = BufReader::new(pipe);
+        let is_greencli = read_live_hello(&mut reader, &secret);
+        if hello_tx.send(is_greencli).is_err() || !is_greencli || go_rx.recv().is_err() {
+            return;
+        }
+        let out = reader.get_mut();
+        let answer = match out.write_all(&line).and_then(|()| out.flush()) {
+            Ok(()) => read_answer(&mut reader, wait),
             Err(_) => Err(NOT_OPEN.to_string()),
         };
         let _ = tx.send(answer);
     });
+    if hello_rx.recv_timeout(wait.min(crate::LIVE_HELLO_WAIT)) != Ok(true) {
+        // Not GreenCLI, or too slow to say so: go_tx goes, nothing is sent.
+        return Err(NOT_OPEN.into());
+    }
+    let _ = go_tx.send(());
     match rx.recv_timeout(wait) {
         Ok(answer) => answer,
         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(didnt_answer(wait)),
@@ -221,31 +277,30 @@ fn exchange(data_dir: &Path, line: Vec<u8>, wait: Duration) -> Result<Vec<u8>, S
     }
 }
 
-/// The pipe's name, from <data dir>/mcp-live.sock: `greencli-live-` and 32
-/// lowercase hex digits, nothing else (so never a path or another computer).
+/// The pipe's name and GreenCLI's secret, from <data dir>/mcp-live.sock
+/// (checked by live_channel_parts).
 #[cfg(windows)]
-fn pipe_name(data_dir: &Path) -> Option<String> {
-    use std::io::Read;
+fn pipe_name(data_dir: &Path) -> Option<(String, String)> {
     let mut text = String::new();
     std::fs::File::open(data_dir.join("mcp-live.sock"))
         .ok()?
-        .take(64)
+        .take(256)
         .read_to_string(&mut text)
         .ok()?;
-    let hex = text.strip_prefix("greencli-live-")?;
-    let ok = hex.len() == 32 && hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
-    ok.then_some(text)
+    let (name, secret) = live_channel_parts(&text)?;
+    Some((name.to_string(), secret.to_string()))
 }
 
-/// Open GreenCLI's pipe for one call. All its doors busy for a moment (another
-/// call just came in) is waited out, briefly.
+/// Open GreenCLI's pipe for one call; also gives the secret its first line
+/// must hold. All its doors busy for a moment (another call just came in) is
+/// waited out, briefly.
 #[cfg(windows)]
-fn connect_pipe(data_dir: &Path) -> Result<std::fs::File, String> {
+fn connect_pipe(data_dir: &Path) -> Result<(std::fs::File, String), String> {
     use std::os::windows::fs::OpenOptionsExt;
     /// GreenCLI's end may not act as this program.
     const SECURITY_ANONYMOUS: u32 = 0;
     const ERROR_PIPE_BUSY: i32 = 231;
-    let Some(name) = pipe_name(data_dir) else {
+    let Some((name, secret)) = pipe_name(data_dir) else {
         return Err(NOT_OPEN.into());
     };
     let pipe = format!(r"\\.\pipe\{name}");
@@ -257,7 +312,7 @@ fn connect_pipe(data_dir: &Path) -> Result<std::fs::File, String> {
             .security_qos_flags(SECURITY_ANONYMOUS)
             .open(&pipe)
         {
-            Ok(file) => return Ok(file),
+            Ok(file) => return Ok((file, secret)),
             Err(e)
                 if e.raw_os_error() == Some(ERROR_PIPE_BUSY)
                     && start.elapsed() < Duration::from_secs(2) =>

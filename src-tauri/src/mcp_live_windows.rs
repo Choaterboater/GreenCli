@@ -5,20 +5,22 @@
 //   refused as well, see create_pipe);
 // - each program that comes in is checked again by the user of its process.
 // It is always made new (never joined), so a pipe someone made first under
-// the same name is never used.
+// the same name is never used. The file that names it, with the secret, gets
+// the same one rule (write_only_user).
 
-use std::io;
+use std::io::{self, Write};
 use std::mem::size_of;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use tokio::net::windows::named_pipe::{NamedPipeServer, PipeMode, ServerOptions};
-use windows_sys::Win32::Foundation::{GENERIC_ALL, HANDLE};
+use windows_sys::Win32::Foundation::{GENERIC_ALL, GENERIC_READ, GENERIC_WRITE, HANDLE};
 use windows_sys::Win32::Security::{
     AddAccessAllowedAce, GetLengthSid, GetTokenInformation, InitializeAcl,
-    InitializeSecurityDescriptor, IsValidSid, SetSecurityDescriptorDacl, TokenUser,
-    ACCESS_ALLOWED_ACE, ACL, ACL_REVISION, PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES,
+    InitializeSecurityDescriptor, IsValidSid, SetKernelObjectSecurity, SetSecurityDescriptorDacl,
+    TokenUser, ACCESS_ALLOWED_ACE, ACL, ACL_REVISION, DACL_SECURITY_INFORMATION,
+    PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES,
     SECURITY_DESCRIPTOR, TOKEN_QUERY, TOKEN_USER,
 };
-use windows_sys::Win32::System::Pipes::GetNamedPipeClientProcessId;
+use windows_sys::Win32::System::Pipes::{GetNamedPipeClientProcessId, GetNamedPipeServerProcessId};
 use windows_sys::Win32::System::SystemServices::SECURITY_DESCRIPTOR_REVISION;
 use windows_sys::Win32::System::Threading::{
     GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
@@ -90,6 +92,20 @@ pub fn client_user(pipe: &NamedPipeServer) -> Option<(u32, UserSid)> {
     let mut pid = 0u32;
     // SAFETY: the pipe handle is open for the call.
     check(unsafe { GetNamedPipeClientProcessId(pipe.as_raw_handle() as HANDLE, &mut pid) }).ok()?;
+    Some((pid, process_user(pid)?))
+}
+
+/// The user of the program that made the pipe `pipe` (a client's handle to
+/// it). None when that can't be read.
+pub fn pipe_server_user(pipe: &impl AsRawHandle) -> Option<UserSid> {
+    let mut pid = 0u32;
+    // SAFETY: the pipe handle is open for the call.
+    check(unsafe { GetNamedPipeServerProcessId(pipe.as_raw_handle() as HANDLE, &mut pid) }).ok()?;
+    process_user(pid)
+}
+
+/// The user process `pid` runs as. None when that can't be read.
+fn process_user(pid: u32) -> Option<UserSid> {
     // SAFETY: a process handle (null on failure), owned from here on.
     let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
     if process.is_null() {
@@ -103,7 +119,7 @@ pub fn client_user(pipe: &NamedPipeServer) -> Option<(u32, UserSid)> {
         .ok()?;
     // SAFETY: a token handle just opened.
     let token = unsafe { OwnedHandle::from_raw_handle(token as _) };
-    Some((pid, token_user(&token).ok()?))
+    token_user(&token).ok()
 }
 
 /// Security rules that let `user` in, and no one else. The parts point at
@@ -156,6 +172,40 @@ impl OnlyUser {
             attrs,
         })
     }
+}
+
+/// Write `bytes` to a new file at `path` whose one rule lets `user` in, and
+/// no one else (nothing taken from the folder): the 0600 of Windows.
+pub fn write_only_user(path: &std::path::Path, bytes: &[u8], user: &UserSid) -> io::Result<()> {
+    use std::os::windows::fs::OpenOptionsExt;
+    /// May change the file's rules.
+    const WRITE_DAC: u32 = 0x0004_0000;
+    let only = OnlyUser::new(user)?;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .access_mode(GENERIC_READ | GENERIC_WRITE | WRITE_DAC)
+        .open(path)?;
+    // SAFETY: the file handle is open; the descriptor lives in `only`.
+    check(unsafe {
+        SetKernelObjectSecurity(
+            file.as_raw_handle() as HANDLE,
+            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+            only.attrs.lpSecurityDescriptor,
+        )
+    })?;
+    file.write_all(bytes)?;
+    file.flush()
+}
+
+/// Tests: a user other than this one (Local System, S-1-5-18).
+#[cfg(test)]
+pub fn local_system() -> UserSid {
+    UserSid(vec![
+        u32::from_le_bytes([1, 1, 0, 0]),
+        u32::from_le_bytes([0, 0, 0, 5]),
+        18,
+    ])
 }
 
 /// `\\.\pipe\<name>`: a pipe on this computer.

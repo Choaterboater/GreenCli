@@ -304,7 +304,8 @@ fn only_live_rs_connects_and_only_to_greencli() {
 /// Windows: live.rs reads the pipe name from <data dir>/mcp-live.sock, checks
 /// it, and opens `\\.\pipe\<name>` (this computer only) for reading and
 /// writing, once, in a `#[cfg(windows)]` fn. It never makes, empties or adds
-/// to a file, and the server may not act as this program (anonymous).
+/// to a file, and the server may not act as this program (anonymous). The
+/// request goes out only after the pipe's first line held GreenCLI's secret.
 fn check_windows_pipe(text: &str) {
     let flat: String = text.chars().filter(|c| !c.is_whitespace()).collect();
     assert_eq!(
@@ -327,12 +328,30 @@ fn check_windows_pipe(text: &str) {
         flat.contains(r#"letpipe=format!(r"\\.\pipe\{name}");"#),
         "a pipe on this computer"
     );
-    assert!(flat.contains("letSome(name)=pipe_name(data_dir)else{"));
+    assert!(flat.contains("letSome((name,secret))=pipe_name(data_dir)else{"));
     assert_eq!(
         flat.matches("File::open(data_dir.join(\"mcp-live.sock\"))")
             .count(),
         1,
         "the name comes from <data dir>/mcp-live.sock"
+    );
+    let hello = flat
+        .find("letis_greencli=read_live_hello(&mutreader,&secret);")
+        .expect("live.rs: the first line is checked");
+    let gate = flat
+        .find("ifhello_tx.send(is_greencli).is_err()||!is_greencli||go_rx.recv().is_err(){return;}")
+        .expect("live.rs: nothing is sent unless it matched");
+    let send = flat
+        .find("out.write_all(&line)")
+        .expect("live.rs: one request write");
+    assert_eq!(
+        flat.matches("write_all(").count(),
+        2,
+        "the pipe and the Unix stream"
+    );
+    assert!(
+        hello < gate && gate < send,
+        "live.rs: the request goes after the check"
     );
     for word in [".create(", ".append(", ".truncate(", "create_new"] {
         assert!(!text.contains(word), "live.rs: {word}");

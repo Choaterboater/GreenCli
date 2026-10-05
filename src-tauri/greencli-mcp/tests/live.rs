@@ -146,20 +146,36 @@ mod calls {
             (rt, server)
         }
 
-        /// GreenCLI's pipe, and its name written in <dir>/mcp-live.sock.
-        fn listen(dir: &Path) -> (Runtime, NamedPipeServer) {
+        /// A secret the way GreenCLI writes it: 64 lowercase hex digits.
+        pub fn secret() -> String {
+            format!("{}{}", unique_name(""), unique_name(""))
+        }
+
+        /// The first line GreenCLI sends on each call: it proves the pipe is
+        /// GreenCLI's.
+        pub fn hello(secret: &str) -> String {
+            format!("{{\"v\":1,\"greencli\":\"{secret}\"}}\n")
+        }
+
+        /// GreenCLI's pipe, and its name and secret written in
+        /// <dir>/mcp-live.sock (one per line).
+        pub fn listen(dir: &Path) -> (Runtime, NamedPipeServer, String) {
             let name = unique_name("greencli-live-");
-            std::fs::write(dir.join("mcp-live.sock"), &name).unwrap();
-            pipe(&name)
+            let secret = secret();
+            std::fs::write(dir.join("mcp-live.sock"), format!("{name}\n{secret}")).unwrap();
+            let (rt, server) = pipe(&name);
+            (rt, server, secret)
         }
 
         /// A fake GreenCLI: takes one call, answers with `reply` (None: hangs
         /// up), and returns the request line it got.
         pub fn fake(dir: &Path, reply: Option<String>) -> JoinHandle<String> {
-            let (rt, server) = listen(dir);
+            let (rt, server, secret) = listen(dir);
             std::thread::spawn(move || {
                 rt.block_on(async move {
+                    let mut server = server;
                     server.connect().await.unwrap();
+                    server.write_all(hello(&secret).as_bytes()).await.unwrap();
                     let mut reader = BufReader::new(server);
                     let mut line = String::new();
                     reader.read_line(&mut line).await.unwrap();
@@ -176,10 +192,12 @@ mod calls {
 
         /// A GreenCLI that takes a call and says nothing for `wait`.
         pub fn hold(dir: &Path, wait: Duration) -> JoinHandle<()> {
-            let (rt, server) = listen(dir);
+            let (rt, server, secret) = listen(dir);
             std::thread::spawn(move || {
                 rt.block_on(async move {
+                    let mut server = server;
                     server.connect().await.unwrap();
+                    server.write_all(hello(&secret).as_bytes()).await.unwrap();
                     tokio::time::sleep(wait).await;
                     drop(server);
                 })
@@ -471,13 +489,131 @@ mod calls {
         std::fs::remove_dir_all(dir).ok();
     }
 
+    /// The file holds the pipe's name and then GreenCLI's secret on a second
+    /// line. Without a well-formed secret the pipe is never opened, so an
+    /// older or broken file can't send a call to a pipe that can't prove
+    /// itself.
+    #[cfg(windows)]
+    #[test]
+    fn without_a_secret_the_pipe_is_never_opened() {
+        let dir = short_dir();
+        let name = windows::unique_name("greencli-live-");
+        let (rt, server) = windows::pipe(&name);
+        let secret = windows::secret();
+        for text in [
+            name.clone(),
+            format!("{name}\n"),
+            format!("{name}\n{}", &secret[1..]),
+            format!("{name}\n{secret}0"),
+            format!("{name}\n{}", secret.to_uppercase()),
+            format!("{name}\n{secret}\n"),
+            format!("{name}\r\n{secret}"),
+            format!("{name}\n{secret}\nmore"),
+            format!("{secret}\n{name}"),
+        ] {
+            std::fs::write(dir.join("mcp-live.sock"), &text).unwrap();
+            let (is_error, body, _) = call(&dir, "list_connected_devices", json!({}));
+            assert!(is_error, "{text:?}");
+            let error = body["error"].as_str().unwrap();
+            assert!(
+                error.starts_with("GreenCLI isn't open"),
+                "{text:?}: {error}"
+            );
+        }
+        let connected = rt.block_on(async {
+            tokio::time::timeout(Duration::from_millis(200), server.connect()).await
+        });
+        assert!(connected.is_err(), "the pipe was opened without a secret");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// GreenCLI crashed, and someone else made a pipe under the name its file
+    /// still holds. That pipe doesn't know the secret: it must get no bytes of
+    /// the request, and the AI gets the plain "isn't open".
+    #[cfg(windows)]
+    #[test]
+    fn a_pipe_that_does_not_know_the_secret_gets_no_request() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let ok = json!({"ok": true, "devices": []}).to_string();
+        let firsts: Vec<Option<Vec<u8>>> = vec![
+            // Says nothing at all.
+            None,
+            // Answers at once, as if it were GreenCLI.
+            Some(format!("{ok}\n").into_bytes()),
+            // A first line with another secret.
+            Some(windows::hello(&windows::secret()).into_bytes()),
+            // The right shape, nearly: no line break.
+            Some(
+                windows::hello(&windows::secret())
+                    .trim_end()
+                    .as_bytes()
+                    .to_vec(),
+            ),
+            // Far too much, and no line break.
+            Some(vec![b'x'; 60_000]),
+        ];
+        for first in firsts {
+            let dir = short_dir();
+            let (rt, server, _secret) = windows::listen(&dir);
+            let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+            let label = format!("{:?}", first.as_ref().map(|f| f.len()));
+            let squatter = std::thread::spawn(move || {
+                rt.block_on(async move {
+                    let mut server = server;
+                    // A client that already left may never show as connected.
+                    let _ = tokio::time::timeout(Duration::from_secs(3), server.connect()).await;
+                    if let Some(first) = first {
+                        // May fail once the client hangs up.
+                        let _ = server.write_all(&first).await;
+                        let _ = server.flush().await;
+                    }
+                    // Whatever the client sent until it gave up.
+                    let mut got = Vec::new();
+                    let mut buf = [0u8; 4096];
+                    let _ = done_rx.recv();
+                    while let Ok(Ok(n)) =
+                        tokio::time::timeout(Duration::from_millis(300), server.read(&mut buf))
+                            .await
+                    {
+                        if n == 0 {
+                            break;
+                        }
+                        got.extend_from_slice(&buf[..n]);
+                    }
+                    got
+                })
+            });
+            let started = std::time::Instant::now();
+            let answer = greencli_mcp::ask_live_with_wait(
+                &dir,
+                &json!({"v": 1, "op": "sessions"}),
+                Duration::from_secs(1),
+            );
+            assert!(started.elapsed() < Duration::from_secs(3), "{label}");
+            done_tx.send(()).unwrap();
+            let error = answer.unwrap_err();
+            assert!(error.starts_with("GreenCLI isn't open"), "{label}: {error}");
+            let got = squatter.join().unwrap();
+            assert!(
+                got.is_empty(),
+                "{label}: the pipe got {:?}",
+                String::from_utf8_lossy(&got)
+            );
+            std::fs::remove_dir_all(dir).ok();
+        }
+    }
+
     /// GreenCLI quit without cleaning up: the file names a pipe that's gone.
     #[cfg(windows)]
     #[test]
     fn a_pipe_that_is_gone_means_greencli_is_not_open() {
         let dir = short_dir();
         let name = windows::unique_name("greencli-live-");
-        std::fs::write(dir.join("mcp-live.sock"), &name).unwrap();
+        std::fs::write(
+            dir.join("mcp-live.sock"),
+            format!("{name}\n{}", windows::secret()),
+        )
+        .unwrap();
         let (is_error, body, _) = call(&dir, "list_connected_devices", json!({}));
         assert!(is_error);
         let error = body["error"].as_str().unwrap();
