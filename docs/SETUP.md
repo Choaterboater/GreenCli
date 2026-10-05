@@ -560,8 +560,9 @@ It lets Casper or Claude Code read your GreenCLI data. It can't change anything:
 GreenCLI's data folder, and never writes a file, opens a network connection or starts a program
 (a source-scan test checks this). The one exception is the live tools (below): they talk to the
 GreenCLI app on this computer through its own channel in the data folder (`mcp-live.sock`; on
-Windows, a named pipe whose name GreenCLI keeps in that file), and nothing else. Only programs
-running as your own user get in.
+Windows, a named pipe whose name GreenCLI keeps in that file, with a secret only you can read; the
+tools send nothing until the pipe shows that secret), and nothing else. Only programs running as
+your own user get in.
 
 **Add it.** Settings → **AI & MCP → MCP Servers** shows its full path, with **Copy** buttons for
 the path and for the command below (with your own folders filled in). Run the command in a

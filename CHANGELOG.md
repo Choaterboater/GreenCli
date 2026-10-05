@@ -17,7 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   keeps its timers on time while its window is hidden. Turning the switch off forgets every device
   Yes and refuses what comes in after. They talk only to the
   GreenCLI app on this computer, through its own channel in the data folder (on Windows, a named
-  pipe that lets in only your own Windows user).
+  pipe that lets in only your own Windows user, and that must show a secret only you can read
+  before anything is sent, so a pipe someone else makes under the same name after a crash gets
+  nothing and doesn't keep show commands off).
 
 ## [2.0.1] - 2026-10-03
 

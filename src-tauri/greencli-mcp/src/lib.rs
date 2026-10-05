@@ -46,7 +46,7 @@ pub const HIDDEN_COPY_FILTER: u32 = 1;
 
 pub use archive::hidden_copy_usable;
 #[cfg(any(unix, windows))]
-pub use live::ask_live_with_wait;
+pub use live::{ask_live_with_wait, live_channel_parts, live_hello, read_live_hello};
 pub use show_only::{is_plain_show, MAX_SHOW_LEN};
 
 /// How long a live tool waits for GreenCLI (your answer in its box, then the
@@ -58,6 +58,10 @@ pub const LIVE_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
 /// GreenCLI's own LIVE_WAIT, so its answer when that runs out is the one the
 /// AI gets.
 pub const LIVE_CLIENT_WAIT: std::time::Duration = std::time::Duration::from_secs(65);
+
+/// Windows: how long the live tools wait for GreenCLI's first line, which
+/// proves the pipe is GreenCLI's, before they send anything.
+pub const LIVE_HELLO_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// The longest request sent to GreenCLI's live channel, in bytes.
 pub const MAX_LIVE_REQUEST: usize = 4 * 1024;

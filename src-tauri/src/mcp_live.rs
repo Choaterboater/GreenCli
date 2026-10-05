@@ -12,8 +12,13 @@
 //   "a program on this computer (pid N)", never as a program name.
 // - Windows: the channel is a named pipe on this computer, made new each time
 //   with a random name (`greencli-live-` and 32 hex digits) that GreenCLI
-//   writes in `mcp-live.sock` in the data folder (yours alone), so another
-//   user can't learn it and take the pipe first. The pipe's rules let in this
+//   writes in `mcp-live.sock` in the data folder, with a random secret on the
+//   next line. Only this user may read that file. Any local user can list
+//   pipe names, though, so after a crash someone else could make a pipe
+//   under the old name. So GreenCLI's first line on each call holds the
+//   secret, and greencli-mcp sends nothing until it matches; and at start an
+//   old name counts as another GreenCLI only if that pipe's program is this
+//   user or it knows the secret (pipe_in_use). The pipe's rules let in this
 //   user only, and each program is checked again by its process's user
 //   (mcp_live_windows.rs). Remote computers are refused.
 // - Only plain show lines pass (greencli_mcp::is_plain_show); the webview then
@@ -318,36 +323,24 @@ impl LiveChannel {
         let path = self.path();
         let failed =
             |e: &dyn std::fmt::Display| format!("GreenCLI couldn't start show commands: {e}");
-        if let Ok(meta) = std::fs::symlink_metadata(&path) {
-            if meta.is_dir() {
-                return Err(format!(
-                    "GreenCLI can't start show commands: a folder is named {}.",
-                    path.display()
-                ));
-            }
-            if pipe_in_use(&path) {
-                return Err(
-                    "Another GreenCLI is already open; show commands go to that one.".into(),
-                );
-            }
-            // Left by a GreenCLI that didn't close cleanly.
-            std::fs::remove_file(&path)
-                .map_err(|e| format!("GreenCLI couldn't remove an old {SOCKET_NAME}: {e}"))?;
-        }
         let user = windows::current_user().map_err(|e| failed(&e))?;
-        let name = format!("{PIPE_PREFIX}{:032x}", rand::random::<u128>());
+        clear_old_file(&path, &user)?;
+        let name = format!("{PIPE_PREFIX}{}", random_hex(16).map_err(|e| failed(&e))?);
+        let secret = random_hex(32).map_err(|e| failed(&e))?;
         // The pipe belongs to the runtime its task runs on.
         let runtime = tauri::async_runtime::handle();
         let first = {
             let _inside = runtime.inner().enter();
             windows::create_pipe(&name, &user, true).map_err(|e| failed(&e))?
         };
-        if let Err(e) = crate::private_fs::write_private(&path, name.as_bytes()) {
+        let text = format!("{name}\n{secret}");
+        if let Err(e) = windows::write_only_user(&path, text.as_bytes(), &user) {
             let _ = std::fs::remove_file(&path);
             return Err(failed(&e));
         }
+        let hello: Arc<str> = greencli_mcp::live_hello(&secret).into();
         let shared = self.shared.clone();
-        let task = runtime.spawn(accept_pipe_loop(first, name, user, shared));
+        let task = runtime.spawn(accept_pipe_loop(first, name, user, hello, shared));
         Ok(Running { task })
     }
 
@@ -413,33 +406,93 @@ fn same_user<U: PartialEq>(peer: Option<U>, own: U) -> bool {
 #[cfg(windows)]
 const PIPE_PREFIX: &str = "greencli-live-";
 
-/// Windows: `greencli-live-` and 32 lowercase hex digits, nothing else (the
-/// same check greencli-mcp makes).
+/// Windows: `bytes` random bytes from the system, as lowercase hex.
 #[cfg(windows)]
-fn is_pipe_name(name: &str) -> bool {
-    name.strip_prefix(PIPE_PREFIX).is_some_and(|hex| {
-        hex.len() == 32 && hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
-    })
+fn random_hex(bytes: usize) -> Result<String, rand::Error> {
+    use rand::RngCore;
+    let mut buf = vec![0u8; bytes];
+    rand::rngs::OsRng.try_fill_bytes(&mut buf)?;
+    Ok(buf.iter().map(|b| format!("{b:02x}")).collect())
 }
 
-/// Windows: a GreenCLI is open on the pipe named in `file`.
+/// Windows: the pipe's name and the secret in `file`, both checked the way
+/// greencli-mcp checks them. None for anything else.
 #[cfg(windows)]
-fn pipe_in_use(file: &std::path::Path) -> bool {
+fn channel_file(file: &std::path::Path) -> Option<(String, String)> {
+    use std::io::Read;
+    let mut text = String::new();
+    std::fs::File::open(file)
+        .ok()?
+        .take(256)
+        .read_to_string(&mut text)
+        .ok()?;
+    let (name, secret) = greencli_mcp::live_channel_parts(&text)?;
+    Some((name.to_string(), secret.to_string()))
+}
+
+/// Windows: before a start, remove the file a GreenCLI that didn't close
+/// cleanly left, unless another GreenCLI of `own` is open on it.
+#[cfg(windows)]
+fn clear_old_file(path: &std::path::Path, own: &windows::UserSid) -> Result<(), String> {
+    let Ok(meta) = std::fs::symlink_metadata(path) else {
+        return Ok(());
+    };
+    if meta.is_dir() {
+        return Err(format!(
+            "GreenCLI can't start show commands: a folder is named {}.",
+            path.display()
+        ));
+    }
+    if pipe_in_use(path, own) {
+        return Err("Another GreenCLI is already open; show commands go to that one.".into());
+    }
+    std::fs::remove_file(path)
+        .map_err(|e| format!("GreenCLI couldn't remove an old {SOCKET_NAME}: {e}"))
+}
+
+/// Windows: another GreenCLI is open on the pipe named in `file`. After a
+/// crash, someone else may have made a pipe under that name, so it counts
+/// only if its program runs as `own`, or its first line holds the secret in
+/// `file`. Nothing is sent to it, and it may not act as GreenCLI (anonymous).
+/// A pipe that stays busy can't be checked, so it doesn't count either.
+#[cfg(windows)]
+fn pipe_in_use(file: &std::path::Path, own: &windows::UserSid) -> bool {
+    use std::os::windows::fs::OpenOptionsExt;
+    const SECURITY_ANONYMOUS: u32 = 0;
     const ERROR_PIPE_BUSY: i32 = 231;
-    let Ok(name) = std::fs::read_to_string(file) else {
+    let Some((name, secret)) = channel_file(file) else {
         return false;
     };
-    if !is_pipe_name(&name) {
-        return false;
+    let start = std::time::Instant::now();
+    let pipe = loop {
+        match std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .security_qos_flags(SECURITY_ANONYMOUS)
+            .open(windows::pipe_path(&name))
+        {
+            Ok(pipe) => break pipe,
+            Err(e)
+                if e.raw_os_error() == Some(ERROR_PIPE_BUSY)
+                    && start.elapsed() < Duration::from_secs(2) =>
+            {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(_) => return false,
+        }
+    };
+    if windows::pipe_server_user(&pipe).as_ref() == Some(own) {
+        return true;
     }
-    match std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(windows::pipe_path(&name))
-    {
-        Ok(_) => true,
-        Err(e) => e.raw_os_error() == Some(ERROR_PIPE_BUSY),
-    }
+    // A pipe has no read timeout: read on a thread, wait here at most
+    // LIVE_HELLO_WAIT. A pipe that never speaks keeps only that thread.
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut reader = std::io::BufReader::new(pipe);
+        let _ = tx.send(greencli_mcp::read_live_hello(&mut reader, &secret));
+    });
+    rx.recv_timeout(greencli_mcp::LIVE_HELLO_WAIT)
+        .unwrap_or(false)
 }
 
 fn refuse(text: impl Into<String>) -> Value {
@@ -585,11 +638,14 @@ async fn accept_loop(
 
 /// Windows: take each program on the pipe. A new door opens before the
 /// program that came in is served, so the next one can come in meanwhile.
+/// Each one first gets `hello`, the line with the secret that proves this is
+/// GreenCLI.
 #[cfg(windows)]
 async fn accept_pipe_loop(
     mut door: tokio::net::windows::named_pipe::NamedPipeServer,
     name: String,
     own: windows::UserSid,
+    hello: Arc<str>,
     shared: Arc<Shared>,
 ) {
     let slots = Arc::new(tokio::sync::Semaphore::new(MAX_AT_ONCE));
@@ -618,9 +674,14 @@ async fn accept_pipe_loop(
         let pid = peer.map(|(pid, _)| pid);
         let slot = slots.clone().try_acquire_owned().ok();
         let shared = shared.clone();
+        let hello = hello.clone();
         tokio::spawn(async move {
+            use tokio::io::AsyncWriteExt;
+            let mut stream = stream;
             let has_slot = slot.is_some();
-            handle(stream, pid, has_slot, &shared).await;
+            if stream.write_all(hello.as_bytes()).await.is_ok() {
+                handle(stream, pid, has_slot, &shared).await;
+            }
             drop(slot);
         });
     }

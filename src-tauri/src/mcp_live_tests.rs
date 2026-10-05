@@ -76,11 +76,36 @@ fn connect_raw(dir: &Path) -> std::io::Result<std::os::unix::net::UnixStream> {
 }
 
 /// A raw connection to the channel, the way a program would open it: the
-/// pipe named in <data dir>/mcp-live.sock.
+/// pipe named in <data dir>/mcp-live.sock. GreenCLI's first line, which must
+/// hold the secret in that file, is read and checked here.
 #[cfg(windows)]
 fn connect_raw(dir: &Path) -> std::io::Result<std::fs::File> {
-    let name = std::fs::read_to_string(dir.join(SOCKET_NAME))?;
-    connect_raw_name(&name)
+    let (name, secret) = file_parts(&dir.join(SOCKET_NAME));
+    let mut pipe = connect_raw_name(&name)?;
+    let mut first = Vec::new();
+    let mut byte = [0u8; 1];
+    while first.last() != Some(&b'\n') && first.len() < 200 {
+        pipe.read_exact(&mut byte)?;
+        first.push(byte[0]);
+    }
+    assert_eq!(
+        String::from_utf8_lossy(&first),
+        format!("{{\"v\":1,\"greencli\":\"{secret}\"}}\n")
+    );
+    Ok(pipe)
+}
+
+/// Windows: the pipe's name and the secret in the file, one per line.
+#[cfg(windows)]
+fn file_parts(file: &Path) -> (String, String) {
+    let text = std::fs::read_to_string(file).unwrap();
+    let (name, secret) = text.split_once('\n').unwrap();
+    (name.to_string(), secret.to_string())
+}
+
+#[cfg(windows)]
+fn is_hex(text: &str, len: usize) -> bool {
+    text.len() == len && text.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 #[cfg(unix)]
@@ -99,8 +124,8 @@ async fn starts_owner_only_and_removes_a_stale_file_first() {
     assert!(!sock.exists());
 }
 
-/// Windows: the file holds the pipe's name, a new one each start, and the
-/// pipe lets in this user only.
+/// Windows: the file holds the pipe's name and a secret, new ones each start,
+/// and only this user may read it. The pipe lets in this user only.
 #[cfg(windows)]
 #[tokio::test]
 async fn starts_owner_only_and_removes_a_stale_file_first() {
@@ -110,55 +135,186 @@ async fn starts_owner_only_and_removes_a_stale_file_first() {
     let (ch, _web) = channel(&dir, Duration::from_secs(5));
     ch.start_if_on().unwrap();
     assert!(ch.is_listening());
-    let name = std::fs::read_to_string(&sock).unwrap();
+    let (name, secret) = file_parts(&sock);
     let hex = name.strip_prefix("greencli-live-").unwrap();
-    assert_eq!(hex.len(), 32, "{name}");
-    assert!(
-        hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')),
-        "{name}"
+    assert!(is_hex(hex, 32), "{name}");
+    assert!(is_hex(&secret, 64), "{secret}");
+    let me = windows::current_user().unwrap();
+
+    // Exactly one rule on the file, not taken from the folder: this user.
+    let file = std::fs::File::open(&sock).unwrap();
+    assert_eq!(
+        windows::pipe_rules(&file).unwrap(),
+        vec![(true, me.clone())]
     );
+    drop(file);
 
     // Exactly one rule on the pipe: this user may use it. Nobody else.
     let pipe = connect_raw(&dir).unwrap();
     let rules = windows::pipe_rules(&pipe).unwrap();
-    assert_eq!(rules, vec![(true, windows::current_user().unwrap())]);
+    assert_eq!(rules, vec![(true, me)]);
     drop(pipe);
 
     ch.stop();
     assert!(!sock.exists());
     assert!(connect_raw_name(&name).is_err(), "the pipe closed");
 
-    // A new name next time.
+    // A new name and secret next time.
     ch.start_if_on().unwrap();
-    let next = std::fs::read_to_string(&sock).unwrap();
+    let (next, next_secret) = file_parts(&sock);
     assert_ne!(next, name);
+    assert_ne!(next_secret, secret);
     ch.stop();
 }
 
 /// Windows: an old file is opened as a pipe only when it holds a GreenCLI
-/// pipe name. Also checks a start outside any async runtime (the app's setup).
+/// pipe name and a secret. Also checks a start outside any async runtime (the
+/// app's setup).
 #[cfg(windows)]
 #[test]
 fn only_greencli_pipe_names_are_tried() {
     let hex = "0123456789abcdef0123456789abcdef";
-    assert!(is_pipe_name(&format!("greencli-live-{hex}")));
+    let secret = "5a".repeat(32);
+    let dir = temp_dir();
+    let file = dir.join(SOCKET_NAME);
+    let good = format!("greencli-live-{hex}");
+    std::fs::write(&file, format!("{good}\n{secret}")).unwrap();
+    assert_eq!(channel_file(&file), Some((good.clone(), secret.clone())));
     for bad in [
         format!(r"greencli-live-..\{}", &hex[3..]),
         format!(r"greencli-live-{hex}\x"),
         format!("greencli-live-{}", hex.to_uppercase()),
-        format!("greencli-live-{hex}\n"),
         format!("greencli-live-{}", &hex[1..]),
         format!("other-{hex}"),
         String::new(),
     ] {
-        assert!(!is_pipe_name(&bad), "{bad:?}");
+        std::fs::write(&file, format!("{bad}\n{secret}")).unwrap();
+        assert_eq!(channel_file(&file), None, "{bad:?}");
     }
-    let dir = temp_dir();
+    for bad in [
+        good.clone(),
+        format!("{good}\n"),
+        format!("{good}\n{}", &secret[2..]),
+        format!("{good}\n{secret}\n"),
+        format!("{good}\n{}", secret.to_uppercase()),
+        format!("{good}\r\n{secret}"),
+    ] {
+        std::fs::write(&file, &bad).unwrap();
+        assert_eq!(channel_file(&file), None, "{bad:?}");
+    }
+    std::fs::remove_file(&file).unwrap();
     let (ch, _web) = channel(&dir, Duration::from_secs(5));
     ch.start_if_on().unwrap();
-    let written = std::fs::read_to_string(dir.join(SOCKET_NAME)).unwrap();
-    assert!(is_pipe_name(&written), "{written}");
+    assert!(channel_file(&file).is_some());
     ch.stop();
+}
+
+/// Windows: GreenCLI crashed and left its file; then someone else made a pipe
+/// under the name in it. That pipe isn't another GreenCLI: its program isn't
+/// this user and it doesn't know the secret. So the old file goes, GreenCLI
+/// starts on a new name, and that pipe gets nothing. (Here the pipe's program
+/// is this test, so "this user" is set to someone else.)
+#[cfg(windows)]
+#[tokio::test]
+async fn a_stale_file_and_someone_elses_pipe_mean_a_new_channel() {
+    use tokio::io::AsyncReadExt;
+    let dir = temp_dir();
+    let sock = dir.join(SOCKET_NAME);
+    let name = format!("greencli-live-{:032x}", rand::random::<u128>());
+    let secret = "5a".repeat(32);
+    std::fs::write(&sock, format!("{name}\n{secret}")).unwrap();
+    let mut taken = tokio::net::windows::named_pipe::ServerOptions::new()
+        .first_pipe_instance(true)
+        .create(windows::pipe_path(&name))
+        .unwrap();
+    let file = sock.clone();
+    let cleared =
+        tokio::task::spawn_blocking(move || clear_old_file(&file, &windows::local_system()))
+            .await
+            .unwrap();
+    assert_eq!(cleared, Ok(()));
+    assert!(!sock.exists(), "the old file is gone");
+    let (ch, _web) = channel(&dir, Duration::from_secs(5));
+    ch.start_if_on().unwrap();
+    let (new_name, new_secret) = file_parts(&sock);
+    assert_ne!(new_name, name);
+    assert_ne!(new_secret, secret);
+    let dir2 = dir.clone();
+    tokio::task::spawn_blocking(move || connect_raw(&dir2).map(drop))
+        .await
+        .unwrap()
+        .expect("the new channel works");
+
+    // The other pipe got nothing.
+    let mut buf = [0u8; 64];
+    let got = tokio::time::timeout(Duration::from_millis(300), taken.read(&mut buf)).await;
+    assert!(
+        matches!(got, Err(_) | Ok(Ok(0)) | Ok(Err(_))),
+        "the other pipe got {got:?}"
+    );
+    ch.stop();
+}
+
+/// Windows: a pipe whose program is this user counts as another GreenCLI at
+/// once, without waiting for its first line.
+#[cfg(windows)]
+#[tokio::test]
+async fn a_pipe_of_this_user_is_another_greencli() {
+    let dir = temp_dir();
+    let sock = dir.join(SOCKET_NAME);
+    let name = format!("greencli-live-{:032x}", rand::random::<u128>());
+    std::fs::write(
+        &sock,
+        format!(
+            "{name}
+{}",
+            "5a".repeat(32)
+        ),
+    )
+    .unwrap();
+    let _pipe = tokio::net::windows::named_pipe::ServerOptions::new()
+        .first_pipe_instance(true)
+        .create(windows::pipe_path(&name))
+        .unwrap();
+    let started = Instant::now();
+    let me = windows::current_user().unwrap();
+    let file = sock.clone();
+    assert!(tokio::task::spawn_blocking(move || pipe_in_use(&file, &me))
+        .await
+        .unwrap());
+    assert!(started.elapsed() < Duration::from_secs(2));
+}
+
+/// Windows: a pipe whose program isn't seen as this user still counts as
+/// another GreenCLI when it knows the secret.
+#[cfg(windows)]
+#[tokio::test]
+async fn a_pipe_that_knows_the_secret_is_another_greencli() {
+    use tokio::io::AsyncWriteExt;
+    let dir = temp_dir();
+    let sock = dir.join(SOCKET_NAME);
+    let name = format!("greencli-live-{:032x}", rand::random::<u128>());
+    let secret = "a5".repeat(32);
+    std::fs::write(&sock, format!("{name}\n{secret}")).unwrap();
+    let mut pipe = tokio::net::windows::named_pipe::ServerOptions::new()
+        .first_pipe_instance(true)
+        .create(windows::pipe_path(&name))
+        .unwrap();
+    let hello = format!("{{\"v\":1,\"greencli\":\"{secret}\"}}\n");
+    let server = tokio::spawn(async move {
+        pipe.connect().await.unwrap();
+        pipe.write_all(hello.as_bytes()).await.unwrap();
+        pipe
+    });
+    let file = sock.clone();
+    let cleared =
+        tokio::task::spawn_blocking(move || clear_old_file(&file, &windows::local_system()))
+            .await
+            .unwrap();
+    let err = cleared.unwrap_err();
+    assert!(err.contains("already open"), "{err}");
+    assert!(sock.exists(), "the file is kept");
+    drop(server.await.unwrap());
 }
 
 /// Open the pipe `name`. Busy for a moment (GreenCLI is opening the next
