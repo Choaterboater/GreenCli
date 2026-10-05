@@ -6,13 +6,12 @@
 //! connection and never starts another program; `tests/source_scan.rs`
 //! checks the source for that.
 //!
-//! One exception, on macOS and Linux only: the live tools
-//! (list_connected_devices, device_show) connect to the running GreenCLI
-//! through its own channel, `mcp-live.sock` in GreenCLI's data folder, and
+//! One exception: the live tools (list_connected_devices, device_show)
+//! connect to the running GreenCLI through its own channel, `mcp-live.sock`
+//! in GreenCLI's data folder (on Windows, the named pipe that file names), and
 //! nowhere else. GreenCLI then asks you before each show line and types it
 //! into a tab you already have connected. Only src/live.rs may do this, and
-//! tests/source_scan.rs checks that too. On Windows those tools answer "not
-//! on Windows yet".
+//! tests/source_scan.rs checks that too.
 //!
 //! Config text is served only from the hidden copies GreenCLI writes at
 //! capture time (`<ts>.hidden.json`, made with the same secret filter the AI
@@ -28,7 +27,7 @@ mod archive;
 mod devices;
 mod files;
 mod intents;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 mod live;
 mod page;
 mod protocol;
@@ -46,7 +45,7 @@ mod transport;
 pub const HIDDEN_COPY_FILTER: u32 = 1;
 
 pub use archive::hidden_copy_usable;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub use live::ask_live_with_wait;
 pub use show_only::{is_plain_show, MAX_SHOW_LEN};
 

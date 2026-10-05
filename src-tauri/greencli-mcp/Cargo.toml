@@ -18,3 +18,8 @@ serde_json = "1.0"
 dirs = "7"
 # Unified diffs for get_config_diff.
 similar = { version = "3", default-features = false, features = ["std", "text"] }
+
+# Tests only: a fake GreenCLI named pipe (tests/live.rs, Windows). Not in the
+# binary; tests/source_scan.rs checks [dependencies] only.
+[dev-dependencies]
+tokio = { version = "1", features = ["net", "rt", "io-util", "time"] }

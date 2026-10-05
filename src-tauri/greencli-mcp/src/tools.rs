@@ -3,7 +3,7 @@
 //! asks you (see live.rs).
 
 use crate::archive::{self, DiffFrom};
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use crate::live::call as live_call;
 use serde_json::{json, Map, Value};
 use std::path::Path;
@@ -343,11 +343,11 @@ from GreenCLI's MCP settings.",
 }
 
 /// The live tools are listed on every OS (one tools/list everywhere), but
-/// GreenCLI's live channel is macOS and Linux only for now.
-#[cfg(not(unix))]
+/// GreenCLI's live channel is on macOS, Linux and Windows only.
+#[cfg(not(any(unix, windows)))]
 fn live_call(_: &Path, _: &str, _: &Map<String, Value>) -> Result<Value, ToolFail> {
     Err(ToolFail::Error(
-        "Live show commands aren't on Windows yet.".into(),
+        "Live show commands aren't on this system.".into(),
     ))
 }
 

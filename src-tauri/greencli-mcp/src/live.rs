@@ -1,6 +1,12 @@
-//! Live show commands (macOS and Linux only): the one place this server talks
-//! to anything. It connects to GreenCLI's own channel, `mcp-live.sock` in
-//! GreenCLI's data folder, and nowhere else (tests/source_scan.rs checks this).
+//! Live show commands: the one place this server talks to anything. It
+//! connects to GreenCLI's own channel and nowhere else (tests/source_scan.rs
+//! checks this):
+//! - macOS and Linux: `mcp-live.sock` in GreenCLI's data folder;
+//! - Windows: the named pipe on this computer whose name GreenCLI writes in
+//!   that same file (`greencli-live-` and 32 hex digits, a new one each time
+//!   the channel opens). The data folder is yours alone, so another user
+//!   can't learn the name and take the pipe first.
+//!
 //! The running app makes that channel only while "show commands" is on in MCP
 //! Servers, lets in only programs of the same user, and asks you in a box
 //! with three buttons (No, Yes this once, Yes, show commands on <device>
@@ -18,7 +24,8 @@ use crate::tools::ToolFail;
 use crate::transport::{self, Line};
 use crate::{LIVE_CLIENT_WAIT, MAX_LIVE_REQUEST};
 use serde_json::{json, Map, Value};
-use std::io::{BufReader, ErrorKind, Write};
+use std::io::{BufRead, BufReader, ErrorKind, Write};
+#[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::time::Duration;
@@ -119,6 +126,14 @@ fn ask(data_dir: &Path, request: &Value) -> Result<Value, ToolFail> {
     ask_live_with_wait(data_dir, request, LIVE_CLIENT_WAIT).map_err(ToolFail::Error)
 }
 
+fn didnt_answer(wait: Duration) -> String {
+    format!(
+        "GreenCLI didn't answer within {} seconds. The line may have run; check in \
+GreenCLI before asking again.",
+        wait.as_secs().max(1)
+    )
+}
+
 /// One call to GreenCLI, waiting at most `wait` for its answer. `Ok` holds
 /// the answer of an `"ok":true` reply; any other outcome is plain words.
 pub fn ask_live_with_wait(
@@ -131,39 +146,7 @@ pub fn ask_live_with_wait(
         return Err("The request is too long.".into());
     }
     line.push(b'\n');
-    let mut stream = match UnixStream::connect(data_dir.join("mcp-live.sock")) {
-        Ok(s) => s,
-        Err(e) if e.kind() == ErrorKind::InvalidInput => {
-            return Err(format!(
-                "GreenCLI's data folder path is too long for show commands: {}",
-                data_dir.display()
-            ))
-        }
-        Err(_) => return Err(NOT_OPEN.into()),
-    };
-    let didnt_answer = || {
-        format!(
-            "GreenCLI didn't answer within {} seconds. The line may have run; check in \
-GreenCLI before asking again.",
-            wait.as_secs().max(1)
-        )
-    };
-    stream
-        .set_read_timeout(Some(wait))
-        .and_then(|()| stream.set_write_timeout(Some(Duration::from_secs(5))))
-        .and_then(|()| stream.write_all(&line))
-        .and_then(|()| stream.flush())
-        .map_err(|_| NOT_OPEN.to_string())?;
-    let mut reader = BufReader::new(stream);
-    let bytes = match transport::read_line(&mut reader, MAX_REPLY) {
-        Ok(Line::Text(bytes)) => bytes,
-        Ok(Line::TooLong) => return Err("GreenCLI's answer was too long.".into()),
-        Ok(Line::Eof) => return Err("GreenCLI closed the request without an answer.".into()),
-        Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
-            return Err(didnt_answer())
-        }
-        Err(_) => return Err("GreenCLI closed the request without an answer.".into()),
-    };
+    let bytes = exchange(data_dir, line, wait)?;
     let reply: Value = serde_json::from_slice(&bytes)
         .map_err(|_| "GreenCLI's answer didn't make sense. Update GreenCLI and try again.")?;
     match reply.get("ok").and_then(Value::as_bool) {
@@ -176,5 +159,112 @@ GreenCLI before asking again.",
             Err(text.chars().take(500).collect())
         }
         None => Err("GreenCLI's answer didn't make sense. Update GreenCLI and try again.".into()),
+    }
+}
+
+/// GreenCLI's one answer line, read after the request went out.
+fn read_answer<R: BufRead>(reader: &mut R, wait: Duration) -> Result<Vec<u8>, String> {
+    match transport::read_line(reader, MAX_REPLY) {
+        Ok(Line::Text(bytes)) => Ok(bytes),
+        Ok(Line::TooLong) => Err("GreenCLI's answer was too long.".into()),
+        Ok(Line::Eof) => Err("GreenCLI closed the request without an answer.".into()),
+        Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
+            Err(didnt_answer(wait))
+        }
+        Err(_) => Err("GreenCLI closed the request without an answer.".into()),
+    }
+}
+
+/// macOS and Linux: send `line` over <data dir>/mcp-live.sock, read the answer.
+#[cfg(unix)]
+fn exchange(data_dir: &Path, line: Vec<u8>, wait: Duration) -> Result<Vec<u8>, String> {
+    let mut stream = match UnixStream::connect(data_dir.join("mcp-live.sock")) {
+        Ok(s) => s,
+        Err(e) if e.kind() == ErrorKind::InvalidInput => {
+            return Err(format!(
+                "GreenCLI's data folder path is too long for show commands: {}",
+                data_dir.display()
+            ))
+        }
+        Err(_) => return Err(NOT_OPEN.into()),
+    };
+    stream
+        .set_read_timeout(Some(wait))
+        .and_then(|()| stream.set_write_timeout(Some(Duration::from_secs(5))))
+        .and_then(|()| stream.write_all(&line))
+        .and_then(|()| stream.flush())
+        .map_err(|_| NOT_OPEN.to_string())?;
+    read_answer(&mut BufReader::new(stream), wait)
+}
+
+/// Windows: send `line` over GreenCLI's pipe, read the answer. A pipe has no
+/// read timeout, so the call runs on its own thread and this one waits at
+/// most `wait`. If that runs out, the thread ends when GreenCLI closes the
+/// pipe (its own wait is shorter).
+#[cfg(windows)]
+fn exchange(data_dir: &Path, line: Vec<u8>, wait: Duration) -> Result<Vec<u8>, String> {
+    let mut pipe = connect_pipe(data_dir)?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let answer = match pipe.write_all(&line).and_then(|()| pipe.flush()) {
+            Ok(()) => read_answer(&mut BufReader::new(pipe), wait),
+            Err(_) => Err(NOT_OPEN.to_string()),
+        };
+        let _ = tx.send(answer);
+    });
+    match rx.recv_timeout(wait) {
+        Ok(answer) => answer,
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(didnt_answer(wait)),
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            Err("GreenCLI closed the request without an answer.".into())
+        }
+    }
+}
+
+/// The pipe's name, from <data dir>/mcp-live.sock: `greencli-live-` and 32
+/// lowercase hex digits, nothing else (so never a path or another computer).
+#[cfg(windows)]
+fn pipe_name(data_dir: &Path) -> Option<String> {
+    use std::io::Read;
+    let mut text = String::new();
+    std::fs::File::open(data_dir.join("mcp-live.sock"))
+        .ok()?
+        .take(64)
+        .read_to_string(&mut text)
+        .ok()?;
+    let hex = text.strip_prefix("greencli-live-")?;
+    let ok = hex.len() == 32 && hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
+    ok.then_some(text)
+}
+
+/// Open GreenCLI's pipe for one call. All its doors busy for a moment (another
+/// call just came in) is waited out, briefly.
+#[cfg(windows)]
+fn connect_pipe(data_dir: &Path) -> Result<std::fs::File, String> {
+    use std::os::windows::fs::OpenOptionsExt;
+    /// GreenCLI's end may not act as this program.
+    const SECURITY_ANONYMOUS: u32 = 0;
+    const ERROR_PIPE_BUSY: i32 = 231;
+    let Some(name) = pipe_name(data_dir) else {
+        return Err(NOT_OPEN.into());
+    };
+    let pipe = format!(r"\\.\pipe\{name}");
+    let start = std::time::Instant::now();
+    loop {
+        match std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .security_qos_flags(SECURITY_ANONYMOUS)
+            .open(&pipe)
+        {
+            Ok(file) => return Ok(file),
+            Err(e)
+                if e.raw_os_error() == Some(ERROR_PIPE_BUSY)
+                    && start.elapsed() < Duration::from_secs(2) =>
+            {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(_) => return Err(NOT_OPEN.into()),
+        }
     }
 }
