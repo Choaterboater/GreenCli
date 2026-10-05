@@ -10,6 +10,12 @@
 // - The file is 0600 in the 0700 data folder, and only programs of the same
 //   user get in (peer uid). The peer pid goes to the webview, which shows it as
 //   "a program on this computer (pid N)", never as a program name.
+// - Windows: the channel is a named pipe on this computer, made new each time
+//   with a random name (`greencli-live-` and 32 hex digits) that GreenCLI
+//   writes in `mcp-live.sock` in the data folder (yours alone), so another
+//   user can't learn it and take the pipe first. The pipe's rules let in this
+//   user only, and each program is checked again by its process's user
+//   (mcp_live_windows.rs). Remote computers are refused.
 // - Only plain show lines pass (greencli_mcp::is_plain_show); the webview then
 //   checks the tab, asks you in a box, types the line and hides secrets.
 // - The webview gets `mcp_live_request` {id, pid, op, tab|device, show} and
@@ -19,11 +25,11 @@
 //   then goes nowhere. The webview's own box closes at 40 s, so a Yes always
 //   leaves time to run the line within the 60 s.
 // - A data folder path too long for this kind of file gives a plain refusal.
-//   There is no second place to put it.
-// - Windows: not yet ("Live show commands aren't on Windows yet.").
+//   There is no second place to put it. (Not on Windows: a pipe name has no
+//   such limit.)
 
-// Windows builds keep the shared parts but never open the channel.
-#![cfg_attr(not(unix), allow(dead_code))]
+// Other systems keep the shared parts but never open the channel.
+#![cfg_attr(not(any(unix, windows)), allow(dead_code))]
 
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -42,8 +48,8 @@ pub const OFF_FILE: &str = "mcp-live.off";
 pub const LIVE_WAIT: Duration = greencli_mcp::LIVE_WAIT;
 /// The most show output sent back, in bytes.
 pub const MAX_OUTPUT: usize = 16 * 1024;
-#[cfg_attr(unix, allow(dead_code))]
-pub const NOT_ON_WINDOWS: &str = "Live show commands aren't on Windows yet.";
+#[cfg_attr(any(unix, windows), allow(dead_code))]
+pub const NOT_HERE: &str = "Live show commands aren't on this system.";
 
 /// Requests handled at once; more get "busy".
 const MAX_AT_ONCE: usize = 4;
@@ -62,14 +68,17 @@ const MAX_DEVICES: usize = 200;
     target_os = "dragonfly"
 ))]
 const MAX_PATH: usize = 103;
-#[cfg(not(any(
-    target_os = "macos",
-    target_os = "ios",
-    target_os = "freebsd",
-    target_os = "openbsd",
-    target_os = "netbsd",
-    target_os = "dragonfly"
-)))]
+#[cfg(all(
+    unix,
+    not(any(
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd",
+        target_os = "dragonfly"
+    ))
+))]
 const MAX_PATH: usize = 107;
 
 const NOT_PLAIN: &str = "Only a plain show line can run: one line that starts with show, with \
@@ -114,7 +123,7 @@ pub struct Status {
     pub on: bool,
     /// The channel is open right now.
     pub listening: bool,
-    /// This system has live show commands (macOS and Linux).
+    /// This system has live show commands (macOS, Linux and Windows).
     pub supported: bool,
     /// Why it isn't open although the switch is on, in plain words.
     pub problem: Option<String>,
@@ -221,7 +230,7 @@ impl LiveChannel {
         Status {
             on: self.is_on(),
             listening: self.is_listening(),
-            supported: cfg!(unix),
+            supported: cfg!(any(unix, windows)),
             problem: lock(&self.problem).clone(),
         }
     }
@@ -299,9 +308,47 @@ impl LiveChannel {
         tx.is_some_and(|tx| tx.send(reply).is_ok())
     }
 
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     fn bind(&self) -> Result<Running, String> {
-        Err(NOT_ON_WINDOWS.into())
+        Err(NOT_HERE.into())
+    }
+
+    #[cfg(windows)]
+    fn bind(&self) -> Result<Running, String> {
+        let path = self.path();
+        let failed =
+            |e: &dyn std::fmt::Display| format!("GreenCLI couldn't start show commands: {e}");
+        if let Ok(meta) = std::fs::symlink_metadata(&path) {
+            if meta.is_dir() {
+                return Err(format!(
+                    "GreenCLI can't start show commands: a folder is named {}.",
+                    path.display()
+                ));
+            }
+            if pipe_in_use(&path) {
+                return Err(
+                    "Another GreenCLI is already open; show commands go to that one.".into(),
+                );
+            }
+            // Left by a GreenCLI that didn't close cleanly.
+            std::fs::remove_file(&path)
+                .map_err(|e| format!("GreenCLI couldn't remove an old {SOCKET_NAME}: {e}"))?;
+        }
+        let user = windows::current_user().map_err(|e| failed(&e))?;
+        let name = format!("{PIPE_PREFIX}{:032x}", rand::random::<u128>());
+        // The pipe belongs to the runtime its task runs on.
+        let runtime = tauri::async_runtime::handle();
+        let first = {
+            let _inside = runtime.inner().enter();
+            windows::create_pipe(&name, &user, true).map_err(|e| failed(&e))?
+        };
+        if let Err(e) = crate::private_fs::write_private(&path, name.as_bytes()) {
+            let _ = std::fs::remove_file(&path);
+            return Err(failed(&e));
+        }
+        let shared = self.shared.clone();
+        let task = runtime.spawn(accept_pipe_loop(first, name, user, shared));
+        Ok(Running { task })
     }
 
     #[cfg(unix)]
@@ -358,8 +405,41 @@ impl LiveChannel {
 }
 
 /// Only programs running as the same user as GreenCLI get in.
-fn same_user(peer_uid: Option<u32>, own_uid: u32) -> bool {
-    peer_uid == Some(own_uid)
+fn same_user<U: PartialEq>(peer: Option<U>, own: U) -> bool {
+    peer == Some(own)
+}
+
+/// Windows: the pipe's name starts with this; 32 hex digits follow.
+#[cfg(windows)]
+const PIPE_PREFIX: &str = "greencli-live-";
+
+/// Windows: `greencli-live-` and 32 lowercase hex digits, nothing else (the
+/// same check greencli-mcp makes).
+#[cfg(windows)]
+fn is_pipe_name(name: &str) -> bool {
+    name.strip_prefix(PIPE_PREFIX).is_some_and(|hex| {
+        hex.len() == 32 && hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+    })
+}
+
+/// Windows: a GreenCLI is open on the pipe named in `file`.
+#[cfg(windows)]
+fn pipe_in_use(file: &std::path::Path) -> bool {
+    const ERROR_PIPE_BUSY: i32 = 231;
+    let Ok(name) = std::fs::read_to_string(file) else {
+        return false;
+    };
+    if !is_pipe_name(&name) {
+        return false;
+    }
+    match std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(windows::pipe_path(&name))
+    {
+        Ok(_) => true,
+        Err(e) => e.raw_os_error() == Some(ERROR_PIPE_BUSY),
+    }
 }
 
 fn refuse(text: impl Into<String>) -> Value {
@@ -490,7 +570,52 @@ async fn accept_loop(
             log::warn!("show commands: refused a program of another user");
             continue;
         }
-        let pid = cred.and_then(|c| c.pid());
+        let pid = cred
+            .and_then(|c| c.pid())
+            .and_then(|p| u32::try_from(p).ok());
+        let slot = slots.clone().try_acquire_owned().ok();
+        let shared = shared.clone();
+        tokio::spawn(async move {
+            let has_slot = slot.is_some();
+            handle(stream, pid, has_slot, &shared).await;
+            drop(slot);
+        });
+    }
+}
+
+/// Windows: take each program on the pipe. A new door opens before the
+/// program that came in is served, so the next one can come in meanwhile.
+#[cfg(windows)]
+async fn accept_pipe_loop(
+    mut door: tokio::net::windows::named_pipe::NamedPipeServer,
+    name: String,
+    own: windows::UserSid,
+    shared: Arc<Shared>,
+) {
+    let slots = Arc::new(tokio::sync::Semaphore::new(MAX_AT_ONCE));
+    loop {
+        let came_in = door.connect().await.is_ok();
+        // The next door (a program that left before it was taken: a fresh one).
+        let next = loop {
+            match windows::create_pipe(&name, &own, false) {
+                Ok(next) => break next,
+                Err(e) => {
+                    log::warn!("show commands: couldn't open the next pipe door: {e}");
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+            }
+        };
+        let stream = std::mem::replace(&mut door, next);
+        if !came_in {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            continue;
+        }
+        let peer = windows::client_user(&stream);
+        if !same_user(peer.as_ref().map(|(_, user)| user), &own) {
+            log::warn!("show commands: refused a program of another user");
+            continue;
+        }
+        let pid = peer.map(|(pid, _)| pid);
         let slot = slots.clone().try_acquire_owned().ok();
         let shared = shared.clone();
         tokio::spawn(async move {
@@ -502,10 +627,12 @@ async fn accept_loop(
 }
 
 /// One connection: read the request, ask the webview, answer, close.
-#[cfg(unix)]
-async fn handle(stream: tokio::net::UnixStream, pid: Option<i32>, has_slot: bool, shared: &Shared) {
+async fn handle<S>(stream: S, pid: Option<u32>, has_slot: bool, shared: &Shared)
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite,
+{
     use tokio::io::{AsyncWriteExt, BufReader};
-    let (read, mut write) = stream.into_split();
+    let (read, mut write) = tokio::io::split(stream);
     let mut reader = BufReader::new(read);
     let reply = match tokio::time::timeout(shared.request_wait, read_request(&mut reader)).await {
         Err(_) => refuse("GreenCLI didn't get a request in time."),
@@ -526,7 +653,6 @@ async fn handle(stream: tokio::net::UnixStream, pid: Option<i32>, has_slot: bool
 }
 
 /// One line of at most MAX_LIVE_REQUEST bytes, without its line break.
-#[cfg(unix)]
 async fn read_request<R>(reader: &mut R) -> Result<Vec<u8>, &'static str>
 where
     R: tokio::io::AsyncBufRead + Unpin,
@@ -552,10 +678,9 @@ where
 
 /// Hand the request to the webview and wait for its answer, the wait to run
 /// out, the program to hang up (None), or the switch to go off.
-#[cfg(unix)]
 async fn serve<R>(
     request: Request,
-    pid: Option<i32>,
+    pid: Option<u32>,
     shared: &Shared,
     rest: &mut R,
 ) -> Option<Value>
@@ -625,6 +750,10 @@ pub fn mcp_live_reply(id: String, reply: Value, live: State<'_, LiveChannel>) ->
     live.answer(&id, reply)
 }
 
-#[cfg(all(test, unix))]
+#[cfg(windows)]
+#[path = "mcp_live_windows.rs"]
+mod windows;
+
+#[cfg(all(test, any(unix, windows)))]
 #[path = "mcp_live_tests.rs"]
 mod tests;

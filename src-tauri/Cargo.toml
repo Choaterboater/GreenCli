@@ -66,6 +66,9 @@ keyring = { version = "3", features = ["apple-native"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 keyring = { version = "3", features = ["windows-native"] }
+# Live show commands over a named pipe (mcp_live_windows.rs): its security
+# rules and the user of the program on the other end. Already in the tree.
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Pipes", "Win32_System_SystemServices", "Win32_System_Threading"] }
 
 # The Secret Service over D-Bus (needs libdbus-1-dev and pkg-config to build).
 [target.'cfg(target_os = "linux")'.dependencies]
