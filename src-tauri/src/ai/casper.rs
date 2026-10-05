@@ -2087,31 +2087,45 @@ mod tests {
 
     // ─── Working folder ───
 
+    /// A full path on this system: "/Users/me" here, "C:/Users/me" on Windows.
+    fn full(p: &str) -> PathBuf {
+        PathBuf::from(if cfg!(windows) {
+            format!("C:{p}")
+        } else {
+            p.to_string()
+        })
+    }
+
     #[test]
     fn chosen_folder_rules() {
-        let home = PathBuf::from("/Users/me");
-        let app = PathBuf::from("/Users/me/Library/Application Support/com.greencli.app");
+        let home = full("/Users/me");
+        let app = full("/Users/me/Library/Application Support/com.greencli.app");
         let protected = vec![
             app.clone(),
-            PathBuf::from("/Users/me/Library/Caches/com.greencli.app"),
+            full("/Users/me/Library/Caches/com.greencli.app"),
             home.join(".casper"),
         ];
-        let run = run_folders(
-            Some(&home),
-            OsStr::new("/usr/bin:/Users/me/.local/bin:relative"),
-        );
+        let path_var = std::env::join_paths([
+            full("/usr/bin"),
+            full("/Users/me/.local/bin"),
+            PathBuf::from("relative"),
+        ])
+        .unwrap();
+        let run = run_folders(Some(&home), &path_var);
         let rules = FolderRules {
             home: Some(&home),
             protected: &protected,
             run: &run,
             case_insensitive: false,
         };
-        let check = |p: &str| check_chosen_folder(Path::new(p), &rules, true);
+        let check = |p: &str| check_chosen_folder(&full(p), &rules, true);
         assert!(check("/Users/me").unwrap_err().contains("home folder"));
         assert!(check("/Users").unwrap_err().contains("home folder"));
         assert!(check("/").unwrap_err().contains("home folder"));
-        assert!(check("relative/x").unwrap_err().contains("full path"));
-        assert!(check_chosen_folder(Path::new("/Users/me/p"), &rules, false)
+        assert!(check_chosen_folder(Path::new("relative/x"), &rules, true)
+            .unwrap_err()
+            .contains("full path"));
+        assert!(check_chosen_folder(&full("/Users/me/p"), &rules, false)
             .unwrap_err()
             .contains("isn't there any more"));
         let no_home = FolderRules {
@@ -2120,14 +2134,14 @@ mod tests {
             run: &run,
             case_insensitive: false,
         };
-        assert!(
-            check_chosen_folder(Path::new("/Users/me/p"), &no_home, true)
-                .unwrap_err()
-                .contains("can't find your home folder")
-        );
+        assert!(check_chosen_folder(&full("/Users/me/p"), &no_home, true)
+            .unwrap_err()
+            .contains("can't find your home folder"));
         let own = "GreenCLI's or Casper's own files";
-        assert!(check(app.to_str().unwrap()).unwrap_err().contains(own));
-        assert!(check(&format!("{}/logs", app.display()))
+        assert!(check_chosen_folder(&app, &rules, true)
+            .unwrap_err()
+            .contains(own));
+        assert!(check_chosen_folder(&app.join("logs"), &rules, true)
             .unwrap_err()
             .contains(own));
         assert!(check("/Users/me/Library/Application Support")
@@ -2145,12 +2159,36 @@ mod tests {
             "/Users/me/.config/autostart",
             "/Users/me/Library/LaunchAgents",
             "/Users/me/code/x/.vscode",
-            "/usr/local/bin",
-            "/usr/local",
-            "/etc",
-            "/opt/tools",
+            "/usr/bin/x",
+            "/usr",
         ] {
             assert!(check(p).unwrap_err().contains(runs), "{p}");
+        }
+        // The system folders.
+        if cfg!(windows) {
+            let mut system = Vec::new();
+            for var in ["SystemRoot", "ProgramFiles", "ProgramData"] {
+                if let Some(v) = std::env::var_os(var).filter(|v| !v.is_empty()) {
+                    system.push(PathBuf::from(v).join("x"));
+                }
+            }
+            if let Some(v) = std::env::var_os("APPDATA").filter(|v| !v.is_empty()) {
+                system
+                    .push(PathBuf::from(v).join(r"Microsoft\Windows\Start Menu\Programs\Startup"));
+            }
+            for p in &system {
+                assert!(
+                    check_chosen_folder(p, &rules, true)
+                        .unwrap_err()
+                        .contains(runs),
+                    "{}",
+                    p.display()
+                );
+            }
+        } else {
+            for p in ["/usr/local/bin", "/usr/local", "/etc", "/opt/tools"] {
+                assert!(check(p).unwrap_err().contains(runs), "{p}");
+            }
         }
         // A relative PATH entry is ignored.
         assert!(check("/Users/me/code/relative").is_ok());
@@ -2164,9 +2202,9 @@ mod tests {
             run: &run,
             case_insensitive: true,
         };
-        assert!(check_chosen_folder(Path::new("/users/ME"), &ci, true).is_err());
-        assert!(check_chosen_folder(Path::new("/USERS/me/.CASPER/x"), &ci, true).is_err());
-        assert!(check_chosen_folder(Path::new("/users/ME"), &rules, true).is_ok());
+        assert!(check_chosen_folder(&full("/users/ME"), &ci, true).is_err());
+        assert!(check_chosen_folder(&full("/USERS/me/.CASPER/x"), &ci, true).is_err());
+        assert!(check_chosen_folder(&full("/users/ME"), &rules, true).is_ok());
     }
 
     #[test]
