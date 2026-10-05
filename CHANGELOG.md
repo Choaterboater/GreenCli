@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- **greencli-mcp live show commands** (macOS and Linux): `list_connected_devices` and
+- **greencli-mcp live show commands** (macOS, Linux and Windows): `list_connected_devices` and
   `device_show` let Casper or Claude Code run one plain `show` line on a device tab you already
   have connected. GreenCLI asks you first, showing the exact line it will type (No · Yes, this
   once · Yes, show commands on <device> until GreenCLI closes), closes the box as a No after 40
@@ -16,8 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `?` never runs. A show line waits its turn behind anything else reading that tab, and GreenCLI
   keeps its timers on time while its window is hidden. Turning the switch off forgets every device
   Yes and refuses what comes in after. They talk only to the
-  GreenCLI app on this computer, through its own channel in the data folder. On Windows they say
-  "not on Windows yet".
+  GreenCLI app on this computer, through its own channel in the data folder (on Windows, a named
+  pipe that lets in only your own Windows user).
 
 ## [2.0.1] - 2026-10-03
 

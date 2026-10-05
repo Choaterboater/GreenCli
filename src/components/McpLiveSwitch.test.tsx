@@ -141,10 +141,10 @@ describe('McpLiveSwitch', () => {
     expect(screen.getByText(problem)).toBeInTheDocument();
   });
 
-  it('on Windows says not yet, with no switch', async () => {
+  it('on a system without them says so, with no switch', async () => {
     backend(status({ on: true, listening: false, supported: false }));
     render(<McpLiveSwitch />);
-    expect(await screen.findByText(/aren.t on Windows yet/)).toBeInTheDocument();
+    expect(await screen.findByText(/aren.t on this system/)).toBeInTheDocument();
     expect(screen.queryByRole('checkbox')).toBeNull();
   });
 
