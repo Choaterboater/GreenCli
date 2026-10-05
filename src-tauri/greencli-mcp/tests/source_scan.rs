@@ -2,8 +2,9 @@
 // that makes the binary) for anything that writes files, talks to the
 // network, starts programs, uses unsafe code or names GreenCLI's secret
 // files, and checks its dependency list stays small. One exception, checked
-// exactly below: src/live.rs (macOS and Linux) may connect to GreenCLI's own
-// channel, <data dir>/mcp-live.sock, and nothing else.
+// exactly below: src/live.rs may connect to GreenCLI's own channel,
+// <data dir>/mcp-live.sock (on Windows, the named pipe that file names), and
+// nothing else.
 
 mod common;
 
@@ -30,7 +31,8 @@ fn sources() -> Vec<(PathBuf, String)> {
     files
         .into_iter()
         .map(|p| {
-            let text = std::fs::read_to_string(&p).unwrap();
+            // A Windows checkout has CRLF line ends; the checks use \n.
+            let text = std::fs::read_to_string(&p).unwrap().replace("\r\n", "\n");
             (p, text)
         })
         .collect()
@@ -87,6 +89,11 @@ const BANNED: &[&str] = &[
 fn no_writes_network_or_programs() {
     for (path, text) in sources() {
         for word in BANNED {
+            // src/live.rs opens GreenCLI's pipe on Windows; checked exactly in
+            // only_live_rs_connects_and_only_to_greencli.
+            if *word == "OpenOptions" && is_live_rs(&path) {
+                continue;
+            }
             assert!(
                 !text.contains(word),
                 "{} contains the banned text {word:?}",
@@ -117,6 +124,11 @@ fn only_reading_calls() {
         }
         for (i, _) in text.match_indices("fs::") {
             let rest = &text[i + 4..];
+            let pipe_open = rest.starts_with("OpenOptions::new()")
+                || text[..i].ends_with("windows::") && rest.starts_with("OpenOptionsExt;");
+            if pipe_open && is_live_rs(&path) {
+                continue; // GreenCLI's pipe, checked exactly below
+            }
             let name: String = rest
                 .chars()
                 .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
@@ -213,13 +225,18 @@ fn dependencies_stay_small() {
     assert!(!manifest.contains("build ="), "no build script");
 }
 
-/// The one exception to "never connects": src/live.rs, built only on macOS
-/// and Linux, may connect to GreenCLI's own channel, `mcp-live.sock` in
-/// GreenCLI's data folder, and nothing else. Every BANNED word (TcpStream,
-/// std::net, http, "socket" …) stays banned there too.
+fn is_live_rs(path: &Path) -> bool {
+    path.ends_with("src/live.rs")
+}
+
+/// The one exception to "never connects": src/live.rs may connect to
+/// GreenCLI's own channel, `mcp-live.sock` in GreenCLI's data folder (on
+/// Windows, the named pipe whose name that file holds), and nothing else.
+/// Every BANNED word (TcpStream, std::net, http, "socket" …) stays banned
+/// there too.
 #[test]
 fn only_live_rs_connects_and_only_to_greencli() {
-    let live_name = |p: &Path| p.ends_with("src/live.rs");
+    let live_name = |p: &Path| is_live_rs(p);
     let sources = sources();
     assert!(
         sources.iter().any(|(p, _)| live_name(p)),
@@ -235,7 +252,8 @@ fn only_live_rs_connects_and_only_to_greencli() {
                     path.display()
                 );
             }
-            // Every use of the live module is built on macOS and Linux only.
+            // Every use of the live module is built on macOS, Linux and
+            // Windows only.
             let lines: Vec<&str> = text.lines().collect();
             for (i, line) in lines.iter().enumerate() {
                 if line.contains("live::") || line.trim() == "mod live;" {
@@ -246,8 +264,8 @@ fn only_live_rs_connects_and_only_to_greencli() {
                         .map(|l| l.trim());
                     assert_eq!(
                         before,
-                        Some("#[cfg(unix)]"),
-                        "{}:{}: the live module only under #[cfg(unix)]",
+                        Some("#[cfg(any(unix, windows))]"),
+                        "{}:{}: the live module only under #[cfg(any(unix, windows))]",
                         path.display(),
                         i + 1
                     );
@@ -270,12 +288,73 @@ fn only_live_rs_connects_and_only_to_greencli() {
             1,
             "live.rs connects only to <data dir>/mcp-live.sock"
         );
+        assert!(
+            text.contains("#[cfg(unix)]\nuse std::os::unix::net::UnixStream;"),
+            "UnixStream only on macOS and Linux"
+        );
+        check_windows_pipe(text);
     }
     let lib = sources
         .iter()
         .find(|(p, _)| p.ends_with("src/lib.rs"))
         .unwrap();
-    assert!(lib.1.contains("#[cfg(unix)]\nmod live;"));
+    assert!(lib.1.contains("#[cfg(any(unix, windows))]\nmod live;"));
+}
+
+/// Windows: live.rs reads the pipe name from <data dir>/mcp-live.sock, checks
+/// it, and opens `\\.\pipe\<name>` (this computer only) for reading and
+/// writing, once, in a `#[cfg(windows)]` fn. It never makes, empties or adds
+/// to a file, and the server may not act as this program (anonymous).
+fn check_windows_pipe(text: &str) {
+    let flat: String = text.chars().filter(|c| !c.is_whitespace()).collect();
+    assert_eq!(
+        text.matches("OpenOptions").count(),
+        2,
+        "the OpenOptionsExt import and one open"
+    );
+    assert_eq!(
+        flat.matches(
+            "std::fs::OpenOptions::new().read(true).write(true)\
+.security_qos_flags(SECURITY_ANONYMOUS).open(&pipe)"
+        )
+        .count(),
+        1,
+        "one open, of the pipe, read and write"
+    );
+    assert!(flat.contains("constSECURITY_ANONYMOUS:u32=0;"));
+    assert_eq!(flat.matches("letpipe=").count(), 1);
+    assert!(
+        flat.contains(r#"letpipe=format!(r"\\.\pipe\{name}");"#),
+        "a pipe on this computer"
+    );
+    assert!(flat.contains("letSome(name)=pipe_name(data_dir)else{"));
+    assert_eq!(
+        flat.matches("File::open(data_dir.join(\"mcp-live.sock\"))")
+            .count(),
+        1,
+        "the name comes from <data dir>/mcp-live.sock"
+    );
+    for word in [".create(", ".append(", ".truncate(", "create_new"] {
+        assert!(!text.contains(word), "live.rs: {word}");
+    }
+    let lines: Vec<&str> = text.lines().collect();
+    for name in ["fn connect_pipe(", "fn pipe_name(", "use std::os::windows"] {
+        let at = lines
+            .iter()
+            .position(|l| l.trim_start().starts_with(name) || l.contains(name))
+            .unwrap_or_else(|| panic!("live.rs: no {name}"));
+        let mut before = lines[..at].iter().rev().map(|l| l.trim());
+        let attr = if name.starts_with("use") {
+            before.find(|l| l.starts_with("#["))
+        } else {
+            before.find(|l| !l.starts_with("///") && !l.is_empty())
+        };
+        assert_eq!(
+            attr,
+            Some("#[cfg(windows)]"),
+            "live.rs: {name} only on Windows"
+        );
+    }
 }
 
 /// The only channel file named is mcp-live.sock.

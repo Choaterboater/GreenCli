@@ -10,7 +10,7 @@ export interface LiveStatus {
   on: boolean;
   /** GreenCLI is listening right now. */
   listening: boolean;
-  /** macOS and Linux. */
+  /** macOS, Linux and Windows. */
   supported: boolean;
   /** Why it isn't listening although the switch is on, in plain words. */
   problem: string | null;
@@ -59,7 +59,7 @@ export default function McpLiveSwitch() {
   if (!status.supported) {
     return (
       <div className={box}>
-        <p>Show commands for AI tools outside GreenCLI aren't on Windows yet.</p>
+        <p>Show commands for AI tools outside GreenCLI aren't on this system.</p>
       </div>
     );
   }

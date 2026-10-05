@@ -90,7 +90,7 @@ export interface McpExportOptions {
  *  out ("missing": not next to GreenCLI in this build; "not-installed": GreenCLI runs from
  *  outside Applications, so the path would change). */
 export type GreencliExport =
-  | { command: string; dataDir: string; /** Its show commands are on (MCP Servers switch, macOS/Linux). */ showCommands?: boolean }
+  | { command: string; dataDir: string; /** Its show commands are on (MCP Servers switch). */ showCommands?: boolean }
   | { leftOut: 'missing' | 'not-installed' };
 
 /** The server name greencli-mcp gets in the file. */

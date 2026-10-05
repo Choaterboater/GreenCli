@@ -1,11 +1,12 @@
 // Tests for mcp_live.rs. The client side is greencli-mcp's own
 // `ask_live_with_wait`, so these also check both ends speak the same lines.
+// They run on macOS and Linux (a Unix listener) and on Windows (a named pipe).
 
 use super::*;
 use serde_json::json;
 use std::io::{Read, Write};
+#[cfg(unix)]
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
-use std::os::unix::net::UnixStream as StdStream;
 use std::path::Path;
 use std::sync::Mutex as StdMutex;
 use std::time::Instant;
@@ -66,6 +67,23 @@ fn first_ask(web: &FakeWebview) -> Option<Value> {
     web.asks.lock().unwrap().first().cloned()
 }
 
+/// A raw connection to the channel, the way a program would open it.
+#[cfg(unix)]
+fn connect_raw(dir: &Path) -> std::io::Result<std::os::unix::net::UnixStream> {
+    let s = std::os::unix::net::UnixStream::connect(dir.join(SOCKET_NAME))?;
+    s.set_read_timeout(Some(Duration::from_secs(5)))?;
+    Ok(s)
+}
+
+/// A raw connection to the channel, the way a program would open it: the
+/// pipe named in <data dir>/mcp-live.sock.
+#[cfg(windows)]
+fn connect_raw(dir: &Path) -> std::io::Result<std::fs::File> {
+    let name = std::fs::read_to_string(dir.join(SOCKET_NAME))?;
+    connect_raw_name(&name)
+}
+
+#[cfg(unix)]
 #[tokio::test]
 async fn starts_owner_only_and_removes_a_stale_file_first() {
     let dir = temp_dir();
@@ -81,6 +99,121 @@ async fn starts_owner_only_and_removes_a_stale_file_first() {
     assert!(!sock.exists());
 }
 
+/// Windows: the file holds the pipe's name, a new one each start, and the
+/// pipe lets in this user only.
+#[cfg(windows)]
+#[tokio::test]
+async fn starts_owner_only_and_removes_a_stale_file_first() {
+    let dir = temp_dir();
+    let sock = dir.join(SOCKET_NAME);
+    std::fs::write(&sock, "left over").unwrap();
+    let (ch, _web) = channel(&dir, Duration::from_secs(5));
+    ch.start_if_on().unwrap();
+    assert!(ch.is_listening());
+    let name = std::fs::read_to_string(&sock).unwrap();
+    let hex = name.strip_prefix("greencli-live-").unwrap();
+    assert_eq!(hex.len(), 32, "{name}");
+    assert!(
+        hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')),
+        "{name}"
+    );
+
+    // Exactly one rule on the pipe: this user may use it. Nobody else.
+    let pipe = connect_raw(&dir).unwrap();
+    let rules = windows::pipe_rules(&pipe).unwrap();
+    assert_eq!(rules, vec![(true, windows::current_user().unwrap())]);
+    drop(pipe);
+
+    ch.stop();
+    assert!(!sock.exists());
+    assert!(connect_raw_name(&name).is_err(), "the pipe closed");
+
+    // A new name next time.
+    ch.start_if_on().unwrap();
+    let next = std::fs::read_to_string(&sock).unwrap();
+    assert_ne!(next, name);
+    ch.stop();
+}
+
+/// Windows: an old file is opened as a pipe only when it holds a GreenCLI
+/// pipe name. Also checks a start outside any async runtime (the app's setup).
+#[cfg(windows)]
+#[test]
+fn only_greencli_pipe_names_are_tried() {
+    let hex = "0123456789abcdef0123456789abcdef";
+    assert!(is_pipe_name(&format!("greencli-live-{hex}")));
+    for bad in [
+        format!(r"greencli-live-..\{}", &hex[3..]),
+        format!(r"greencli-live-{hex}\x"),
+        format!("greencli-live-{}", hex.to_uppercase()),
+        format!("greencli-live-{hex}\n"),
+        format!("greencli-live-{}", &hex[1..]),
+        format!("other-{hex}"),
+        String::new(),
+    ] {
+        assert!(!is_pipe_name(&bad), "{bad:?}");
+    }
+    let dir = temp_dir();
+    let (ch, _web) = channel(&dir, Duration::from_secs(5));
+    ch.start_if_on().unwrap();
+    let written = std::fs::read_to_string(dir.join(SOCKET_NAME)).unwrap();
+    assert!(is_pipe_name(&written), "{written}");
+    ch.stop();
+}
+
+/// Open the pipe `name`. Busy for a moment (GreenCLI is opening the next
+/// door) is waited out, as greencli-mcp does.
+#[cfg(windows)]
+fn connect_raw_name(name: &str) -> std::io::Result<std::fs::File> {
+    const ERROR_PIPE_BUSY: i32 = 231;
+    let start = Instant::now();
+    loop {
+        match std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(format!(r"\\.\pipe\{name}"))
+        {
+            Err(e)
+                if e.raw_os_error() == Some(ERROR_PIPE_BUSY)
+                    && start.elapsed() < Duration::from_secs(2) =>
+            {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            other => return other,
+        }
+    }
+}
+
+/// Windows: the pipe is made new, never joined: a pipe of that name made
+/// before (by anyone) means GreenCLI doesn't start show commands on it.
+#[cfg(windows)]
+#[tokio::test]
+async fn a_pipe_taken_first_is_never_used() {
+    let name = format!("greencli-live-{:032x}", rand::random::<u128>());
+    let _taken = tokio::net::windows::named_pipe::ServerOptions::new()
+        .first_pipe_instance(true)
+        .create(format!(r"\\.\pipe\{name}"))
+        .unwrap();
+    let err = windows::create_pipe(&name, &windows::current_user().unwrap(), true).unwrap_err();
+    assert_eq!(err.raw_os_error(), Some(5), "access denied: {err}");
+}
+
+/// Windows: the program on the other end is checked by its own user, read
+/// from its process.
+#[cfg(windows)]
+#[tokio::test]
+async fn the_program_on_the_other_end_is_this_user() {
+    let name = format!("greencli-live-{:032x}", rand::random::<u128>());
+    let user = windows::current_user().unwrap();
+    let server = windows::create_pipe(&name, &user, true).unwrap();
+    let client = tokio::task::spawn_blocking(move || connect_raw_name(&name).unwrap());
+    server.connect().await.unwrap();
+    let (pid, peer) = windows::client_user(&server).unwrap();
+    assert_eq!(pid, std::process::id());
+    assert_eq!(peer, user);
+    drop(client.await.unwrap());
+}
+
 #[tokio::test]
 async fn a_second_greencli_does_not_take_over_a_working_channel() {
     let dir = temp_dir();
@@ -90,7 +223,7 @@ async fn a_second_greencli_does_not_take_over_a_working_channel() {
     let err = second.start_if_on().unwrap_err();
     assert!(err.contains("already open"), "{err}");
     // The first one still answers.
-    assert!(StdStream::connect(dir.join(SOCKET_NAME)).is_ok());
+    assert!(connect_raw(&dir).is_ok());
     first.stop();
 }
 
@@ -126,6 +259,7 @@ async fn switch_off_means_no_channel_and_toggling_binds_and_removes() {
     assert!(!next.is_listening());
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn a_path_too_long_is_refused_in_plain_words() {
     let mut dir = temp_dir();
@@ -243,8 +377,7 @@ async fn an_oversized_request_is_refused() {
     ch.start_if_on().unwrap();
     let dir2 = dir.clone();
     let reply = tokio::task::spawn_blocking(move || {
-        let mut s = StdStream::connect(dir2.join(SOCKET_NAME)).unwrap();
-        s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut s = connect_raw(&dir2).unwrap();
         let _ = s.write_all(&vec![b'a'; greencli_mcp::MAX_LIVE_REQUEST + 10]);
         let mut out = String::new();
         let _ = s.read_to_string(&mut out);
@@ -266,7 +399,7 @@ async fn hang_up_cancels_the_box() {
     ch.start_if_on().unwrap();
     let dir2 = dir.clone();
     let client = tokio::task::spawn_blocking(move || {
-        let mut s = StdStream::connect(dir2.join(SOCKET_NAME)).unwrap();
+        let mut s = connect_raw(&dir2).unwrap();
         s.write_all(b"{\"v\":1,\"op\":\"show\",\"tab\":\"t1\",\"show\":\"show clock\"}\n")
             .unwrap();
         s
@@ -324,8 +457,7 @@ async fn a_request_sent_after_turning_off_never_reaches_the_webview() {
     let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
     let dir2 = dir.clone();
     let client = tokio::task::spawn_blocking(move || {
-        let mut s = StdStream::connect(dir2.join(SOCKET_NAME)).unwrap();
-        s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut s = connect_raw(&dir2).unwrap();
         connected_tx.send(()).unwrap();
         go_rx.recv().unwrap();
         s.write_all(b"{\"v\":1,\"op\":\"show\",\"tab\":\"t1\",\"show\":\"show vlan\"}\n")
@@ -395,8 +527,7 @@ async fn a_program_too_slow_to_send_its_request_is_refused() {
     ch.start_if_on().unwrap();
     let dir2 = dir.clone();
     let reply = tokio::task::spawn_blocking(move || {
-        let mut s = StdStream::connect(dir2.join(SOCKET_NAME)).unwrap();
-        s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut s = connect_raw(&dir2).unwrap();
         // Half a request, then nothing.
         s.write_all(b"{\"v\":1,").unwrap();
         let mut out = String::new();

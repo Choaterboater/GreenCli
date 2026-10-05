@@ -33,8 +33,8 @@ describe('help: greencli-mcp topic', () => {
     const t = text();
     expect(t).toContain('`list_connected_devices`');
     expect(t).toContain('`device_show`');
-    expect(t).toContain('macOS and Linux');
-    expect(t).toContain('not on Windows yet');
+    expect(t).toContain('macOS, Linux and Windows');
+    expect(t).not.toContain('not on Windows yet');
     // The old promise holds for everything else.
     expect(t).toContain('never writes a file, opens a network connection or starts a program');
   });
