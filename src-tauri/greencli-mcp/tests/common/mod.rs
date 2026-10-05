@@ -4,17 +4,30 @@
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
-/// A fresh, empty folder for one test.
+/// A fresh, empty folder for one test. A counter in the name keeps tests that
+/// ask at the same moment apart (Windows' clock is coarse), and the folder is
+/// created with `create_dir`, so a name another run left behind is skipped.
 pub fn temp_dir(tag: &str) -> PathBuf {
+    use std::sync::atomic::{AtomicU32, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let dir =
-        std::env::temp_dir().join(format!("greencli-mcp-{tag}-{}-{nanos}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+    static N: AtomicU32 = AtomicU32::new(0);
+    let base = std::env::temp_dir();
+    loop {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let n = N.fetch_add(1, Ordering::SeqCst);
+        let dir = base.join(format!(
+            "greencli-mcp-{tag}-{}-{nanos}-{n}",
+            std::process::id()
+        ));
+        match std::fs::create_dir(&dir) {
+            Ok(()) => return dir,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => panic!("create test folder {}: {e}", dir.display()),
+        }
+    }
 }
 
 /// Send `input` (raw text) to the server and return each output line.
